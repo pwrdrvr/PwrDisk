@@ -209,3 +209,51 @@ your own Mac build, and how to work on the code.
 
 MIT. See [LICENSE](LICENSE) and
 [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
+
+## In the terminal
+
+![disktree-tui at 120 columns: a nested mosaic, selection details, findings, and free space](assets/tui/120.png)
+
+At 120 columns the terminal view shows the mosaic, selection details, WORTH A
+LOOK, and the volume's free space together. The same fixture also has an
+[80-column map](assets/tui/80.png) and a [45-column list](assets/tui/45.png).
+
+`disktree-tui` uses `disktree-core` for the same scan, treemap layout, disk
+accounting, findings, removal guards, and agent prompt as the window. The
+terminal interface handles its own layout and keys. It scans the filesystem
+of the machine where it runs, including in an SSH terminal, and needs no GUI
+libraries. Omarchy colours are followed when available;
+otherwise it uses the terminal or system appearance.
+
+```sh
+disktree-tui              # scan your home directory
+disktree-tui ~/src        # scan a chosen directory
+disktree-tui --disk       # scan the whole volume
+```
+
+**h/j/k/l** or the arrow keys move among tiles, **Enter** opens a directory,
+**Backspace** goes up, **Space** marks a path, and **c** reviews the marks.
+**t** rotates Size, Files, and Age; **i** includes hidden entries; **d**
+switches disk and apparent size. **[** and **]** change the drawn depth,
+while **-** and **+** work too. **w** opens WORTH A LOOK at narrower widths,
+**v** switches to a ranked list, **V** chooses a volume, and **r** rescans.
+Press **?** for the full key list. Changing the display controls uses the
+loaded scan, except when hidden entries were excluded from the initial scan.
+
+In review, **a** writes the accepted marked paths as an agent prompt after
+restoring the terminal; **s** saves the prompt to a file. **m** chooses the
+trash, **p** permanent removal, and **Enter** proceeds. Permanent removal
+requires confirmation.
+
+Builds use the same Rust toolchain on Linux, macOS, and Windows. For a static
+Linux binary:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --locked -p disktree-tui \
+  --target x86_64-unknown-linux-musl
+```
+
+On Windows, `disktree-tui.exe R:\` starts on drive R; **V** lists accessible
+drives. On macOS, the terminal needs Full Disk Access for protected folders.
+Interactive macOS rendering has not yet been checked.

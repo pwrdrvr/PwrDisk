@@ -31,6 +31,7 @@ limit (5% per volume by default), including a fresh measurement on the worker.
 
 ```sh
 make build                      # release build
+cargo build --release -p disktree-tui  # terminal build on each OS
 make run                        # build and open the source/root chooser
 make install                    # ~/.local: binary, desktop entry, icon
 make install PREFIX=/usr/local  # system-wide (needs root)
@@ -38,7 +39,7 @@ make uninstall
 make bundle                     # macOS: target/bundle/PwrDisk.app, zip and DMG
 make dock-icons                 # macOS 26: redraw the Dock icon of an unbundled run
 make lint                       # rustfmt --check, then clippy --all-targets -D warnings
-make test                       # core and window-harness tests
+make test                       # core, window-harness and terminal tests
 make ci                         # lint, then test
 make fmt                        # format in place
 cargo xtask licenses            # rewrite THIRD_PARTY_LICENSES after a dependency change
@@ -234,6 +235,11 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
 | a tool, its parameters or its wording | `crates/disktree-mcp/src/server.rs` (the MCP surface), `crates/disktree-mcp/src/session.rs` (what it does) |
 | how a listing or a plan reads to an agent | `crates/disktree-mcp/src/report.rs` |
 | what an agent is told to do, and to avoid | `skills/` (each system's cautions in `skills/pwrdisk-free-space/references/`), listed in `crates/disktree-mcp/src/skills.rs` |
+| terminal keys, marks and screen transitions | `crates/disktree-tui/src/app.rs` |
+| terminal mosaic and screen layout | `crates/disktree-tui/src/render.rs` |
+| terminal palette and optional Omarchy theme | `crates/disktree-tui/src/theme.rs` |
+| terminal lifetime and CLI arguments | `crates/disktree-tui/src/main.rs` |
+| terminal Windows console encoding | `crates/disktree-tui/src/windows_console.rs` |
 
 ## Verification expectations
 
@@ -247,6 +253,8 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
 * `disktree-mcp` tests every tool as a function against a temporary tree,
   with a stand-in window on the socket or pipe for the linked cases;
   `disktree-link` tests the transport itself.
+* Terminal tests draw compact and wide frames, exercise review and agent
+  handoff, and confirm removal leaves unmarked neighbours untouched.
 * Rendering was verified by those tests and by running the app against a real
   home directory; it has not been eyeballed in every theme and font size.
 
