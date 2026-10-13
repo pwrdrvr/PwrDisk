@@ -151,6 +151,13 @@ pub fn root(
                 this.open_updates(true, cx);
             },
         ))
+        .on_action(cx.listener(
+            |this, _: &crate::app_menu::ConnectAgent, window, cx| {
+                this.show_agent = true;
+                window.focus(&this.focus, cx);
+                cx.notify();
+            },
+        ))
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
             if this.zoom_interface(event, window) {
                 cx.notify();
