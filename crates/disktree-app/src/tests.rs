@@ -237,6 +237,19 @@ fn startup_chooser_never_scans_before_explicit_acceptance(
 }
 
 #[gpui_kit::test]
+fn title_brand_opens_source_picker(cx: &mut TestAppContext) {
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let brand = cx.debug_bounds("strip-brand").expect("title brand");
+    cx.simulate_click(brand.center(), gpui_kit::Modifiers::none());
+    draw(cx);
+    assert!(read(&view, cx, |app| app.volumes_open));
+    assert!(cx.debug_bounds("source-picker").is_some());
+}
+
+#[gpui_kit::test]
 fn entering_a_directory_scans_only_that_explicit_root(cx: &mut TestAppContext) {
     cx.update(gpui_omarchy::init);
     let selected = fixture();
