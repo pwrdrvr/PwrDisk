@@ -908,7 +908,10 @@ impl Session {
                 path: item.path.clone(),
                 bytes: item.entry.bytes,
                 is_dir: item.entry.is_dir,
-                hidden: is_hidden(&item.path),
+                hidden: is_hidden(
+                    &item.path,
+                    disktree_core::path_style::PathStyle::Native,
+                ),
             })
             .collect();
         let mut out = String::new();
@@ -1152,7 +1155,10 @@ impl Session {
             .marks
             .iter()
             .map(|mark| Target {
-                hidden: is_hidden(&mark.path),
+                hidden: is_hidden(
+                    &mark.path,
+                    disktree_core::path_style::PathStyle::Native,
+                ),
                 path: mark.path.clone(),
                 bytes: mark.bytes,
                 is_dir: mark.is_dir,
@@ -1512,7 +1518,10 @@ impl Session {
                 continue;
             }
             targets.push(Target {
-                hidden: is_hidden(&found.path),
+                hidden: is_hidden(
+                    &found.path,
+                    disktree_core::path_style::PathStyle::Native,
+                ),
                 is_dir: found.node.is_dir(),
                 bytes: found.node.bytes,
                 path: found.path,
@@ -2078,7 +2087,12 @@ impl ScanFacts {
                 .insights
                 .iter()
                 .map(|candidate| Insight {
-                    path: path_of(&scan.root, &scan.tree, &candidate.crumbs),
+                    path: path_of(
+                        &scan.root,
+                        &scan.tree,
+                        &candidate.crumbs,
+                        disktree_core::path_style::PathStyle::Native,
+                    ),
                     bytes: candidate.bytes,
                     what: candidate.finding.describe(),
                 })

@@ -9,6 +9,7 @@ use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
+use disktree_core::path_style::PathStyle;
 use disktree_core::removal::Target;
 use disktree_core::tree::{Metric, Node};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -59,7 +60,7 @@ pub struct Marks {
     // Path's component ordering makes descendants contiguous. The same
     // index answers exact membership and whether a parent has any marks
     // inside, without storing ancestor counts or scanning every mark.
-    index: BTreeSet<PathBuf>,
+    index: BTreeSet<IndexedPath>,
     resolved: Option<ResolvedMarks>,
 }
 
@@ -70,39 +71,96 @@ struct ResolvedMarks {
     tree: Weak<Node>,
     root_path: PathBuf,
     metric: Metric,
+    style: PathStyle,
     crumbs: Arc<FxHashSet<Vec<usize>>>,
 }
 
+// Component ordering keeps descendants contiguous in both namespaces. Keep
+// the original spelling as the lookup value, including native non-UTF-8 paths.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum PathKey {
+    Native(PathBuf),
+    Posix(Vec<String>),
+}
+
+impl PathKey {
+    fn new(path: &Path, style: PathStyle) -> Self {
+        match style {
+            PathStyle::Native => Self::Native(path.to_path_buf()),
+            PathStyle::Posix => Self::Posix(
+                path.to_str()
+                    .unwrap_or_default()
+                    .split('/')
+                    .map(str::to_owned)
+                    .collect(),
+            ),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct IndexedPath {
+    key: PathKey,
+    path: PathBuf,
+}
+
+impl std::borrow::Borrow<PathKey> for IndexedPath {
+    fn borrow(&self) -> &PathKey {
+        &self.key
+    }
+}
+
+impl PartialEq for IndexedPath {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+impl Eq for IndexedPath {}
+impl PartialOrd for IndexedPath {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for IndexedPath {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key.cmp(&other.key)
+    }
+}
+
 impl Marks {
-    pub fn contains(&self, path: &Path) -> bool {
-        self.index.contains(path)
+    pub fn contains(&self, path: &Path, style: PathStyle) -> bool {
+        self.index.contains(&PathKey::new(path, style))
     }
 
     /// Marked ancestor with the shortest stored spelling, excluding the
     /// path itself: the outermost one for paths built by the scan. Preserve
     /// that choice even for raw queues with redundant path separators.
-    pub fn ancestor(&self, path: &Path) -> Option<&Path> {
-        path.ancestors()
+    pub fn ancestor(&self, path: &Path, style: PathStyle) -> Option<&Path> {
+        style
+            .ancestors(path)
             .skip(1)
             .filter_map(|ancestor| {
                 #[cfg(test)]
                 work::MARKING.set(work::MARKING.get() + 1);
-                self.index.get(ancestor)
+                self.index.get(&PathKey::new(ancestor, style))
             })
-            .min_by_key(|ancestor| ancestor.as_os_str().len())
-            .map(PathBuf::as_path)
+            .min_by_key(|ancestor| ancestor.path.as_os_str().len())
+            .map(|entry| entry.path.as_path())
     }
 
     /// Drop strict descendants in one stable compaction, retaining the
     /// parent's mark and unrelated marks in their existing order.
-    pub fn absorb(&mut self, path: &Path) -> usize {
+    pub fn absorb(&mut self, path: &Path, style: PathStyle) -> usize {
         #[cfg(test)]
         work::MARKING.set(work::MARKING.get() + 1);
         let has_descendant = self
             .index
-            .range::<Path, _>((Excluded(path), Unbounded))
+            .range::<PathKey, _>((
+                Excluded(PathKey::new(path, style)),
+                Unbounded,
+            ))
             .next()
-            .is_some_and(|next| next.starts_with(path));
+            .is_some_and(|next| style.is_below(&next.path, path));
         // Most insertions are disjoint; proving that from the index keeps
         // queuing M paths from doing M full scans of the ordered item list.
         if !has_descendant {
@@ -114,10 +172,10 @@ impl Marks {
         self.items.retain(|item| {
             #[cfg(test)]
             work::COMPACTION.set(work::COMPACTION.get() + 1);
-            if item.path != path && item.path.starts_with(path) {
+            if style.is_below(&item.path, path) {
                 #[cfg(test)]
                 work::MARKING.set(work::MARKING.get() + 1);
-                index.remove(&item.path);
+                index.remove(&PathKey::new(&item.path, style));
                 false
             } else {
                 true
@@ -141,25 +199,31 @@ impl Marks {
     /// Mark `target`, or unmark it when it is already marked.
     ///
     /// Returns `true` when the path ended up marked.
-    pub fn toggle(&mut self, target: Target) -> bool {
+    pub fn toggle(&mut self, target: Target, style: PathStyle) -> bool {
         self.resolved = None;
-        if self.index.remove(&target.path) {
-            self.items.retain(|item| item.path != target.path);
+        if self.index.remove(&PathKey::new(&target.path, style)) {
+            self.items.retain(|item| {
+                PathKey::new(&item.path, style)
+                    != PathKey::new(&target.path, style)
+            });
             false
         } else {
-            self.index.insert(target.path.clone());
+            self.index.insert(IndexedPath {
+                key: PathKey::new(&target.path, style),
+                path: target.path.clone(),
+            });
             self.items.push(target);
             true
         }
     }
 
-    pub fn remove(&mut self, path: &Path) {
-        if self.index.remove(path) {
+    pub fn remove(&mut self, path: &Path, style: PathStyle) {
+        if self.index.remove(&PathKey::new(path, style)) {
             self.resolved = None;
             self.items.retain(|item| {
                 #[cfg(test)]
                 work::COMPACTION.set(work::COMPACTION.get() + 1);
-                item.path != path
+                PathKey::new(&item.path, style) != PathKey::new(path, style)
             });
         }
     }
@@ -172,11 +236,17 @@ impl Marks {
 
     /// Re-read sizes from a freshly scanned tree. Missing paths stay marked
     /// with zero bytes, so they cannot claim space that is already gone.
-    pub fn refresh(&mut self, root_path: &Path, root: &Node, _metric: Metric) {
+    pub fn refresh(
+        &mut self,
+        root_path: &Path,
+        root: &Node,
+        _metric: Metric,
+        style: PathStyle,
+    ) {
         #[cfg(test)]
         work::REFRESHES.set(work::REFRESHES.get() + 1);
         self.resolved = None;
-        let mut resolver = Resolver::new(root_path, root);
+        let mut resolver = Resolver::new(root_path, root, style);
         let mut resolved = Vec::with_capacity(self.items.len());
         for item in &self.items {
             #[cfg(test)]
@@ -185,7 +255,7 @@ impl Marks {
                 Some((_, node)) => resolved.push(Target {
                     bytes: node.bytes,
                     is_dir: node.is_dir(),
-                    hidden: is_hidden(&item.path),
+                    hidden: is_hidden(&item.path, style),
                     path: item.path.clone(),
                 }),
                 None => resolved.push(Target {
@@ -204,15 +274,17 @@ impl Marks {
         root_path: &Path,
         tree: &Arc<Node>,
         metric: Metric,
+        style: PathStyle,
     ) -> Arc<FxHashSet<Vec<usize>>> {
         if let Some(resolved) = &self.resolved
             && resolved.tree.as_ptr() == Arc::as_ptr(tree)
             && resolved.root_path == root_path
             && resolved.metric == metric
+            && resolved.style == style
         {
             return Arc::clone(&resolved.crumbs);
         }
-        let mut resolver = Resolver::new(root_path, tree);
+        let mut resolver = Resolver::new(root_path, tree, style);
         let mut crumbs = FxHashSet::default();
         for item in &self.items {
             #[cfg(test)]
@@ -226,6 +298,7 @@ impl Marks {
             tree: Arc::downgrade(tree),
             root_path: root_path.to_path_buf(),
             metric,
+            style,
             crumbs: Arc::clone(&crumbs),
         });
         crumbs
@@ -240,14 +313,16 @@ impl Marks {
 pub struct Resolver<'a> {
     root_path: &'a Path,
     root: &'a Node,
+    style: PathStyle,
     indexes: FxHashMap<*const Node, FxHashMap<&'a str, usize>>,
 }
 
 impl<'a> Resolver<'a> {
-    pub fn new(root_path: &'a Path, root: &'a Node) -> Self {
+    pub fn new(root_path: &'a Path, root: &'a Node, style: PathStyle) -> Self {
         Self {
             root_path,
             root,
+            style,
             indexes: FxHashMap::default(),
         }
     }
@@ -255,13 +330,12 @@ impl<'a> Resolver<'a> {
     /// Compare whole components with the scan's existing case-sensitive,
     /// lossy name semantics. The first equal child wins, as in a linear walk.
     pub fn resolve(&mut self, path: &Path) -> Option<(Vec<usize>, &'a Node)> {
-        let relative = path.strip_prefix(self.root_path).ok()?;
+        let relative = self.style.relative(self.root_path, path)?;
         let mut node = self.root;
         let mut crumbs = Vec::new();
-        for component in relative.components() {
+        for name in relative {
             #[cfg(test)]
             work::step();
-            let name = component.as_os_str().to_string_lossy();
             let children = self
                 .indexes
                 .entry(std::ptr::from_ref(node))
@@ -283,22 +357,29 @@ impl<'a> Resolver<'a> {
 }
 
 /// A dotfile or dot-directory by name.
-pub fn is_hidden(path: &Path) -> bool {
-    path.file_name()
+pub fn is_hidden(path: &Path, style: PathStyle) -> bool {
+    style
+        .file_name(path)
         .is_some_and(|name| name.to_string_lossy().starts_with('.'))
 }
 
 /// Shorten a path for display: `~` for the home directory, and the path with
-/// the home prefix replaced when it is below it. The separator after `~` is
-/// the platform's, so Windows shows `~\AppData\Local`, not `~/AppData\Local`.
-pub fn display_path(path: &Path, home: Option<&Path>) -> String {
-    match home
-        .and_then(|home| path.strip_prefix(home).ok().map(|rest| (home, rest)))
-    {
-        Some((_, rest)) if rest.as_os_str().is_empty() => "~".to_string(),
-        Some((_, rest)) => {
-            format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display())
-        }
+/// the home prefix replaced when it is below it. The separator is the scanned
+/// machine's, so Windows shows `~\AppData\Local`, not `~/AppData\Local`, and
+/// a Unix host shows `~/.cache` on every client.
+pub fn display_path(
+    path: &Path,
+    home: Option<&Path>,
+    style: PathStyle,
+) -> String {
+    let separator = style.separator();
+    match home.and_then(|home| style.relative(home, path)) {
+        Some(names) if names.is_empty() => "~".to_string(),
+        Some(names) => names.iter().fold("~".to_string(), |mut text, name| {
+            text.push(separator);
+            text.push_str(name);
+            text
+        }),
         None => path.display().to_string(),
     }
 }
@@ -342,17 +423,25 @@ mod tests {
                 let mut dir = Node::directory(name.as_str());
                 dir.children.push(file("payload", 1));
                 root.children.push(dir);
-                marks.toggle(Target {
-                    path: root_path.join(name).join("payload"),
-                    bytes: 0,
-                    is_dir: false,
-                    hidden: false,
-                });
+                marks.toggle(
+                    Target {
+                        path: root_path.join(name).join("payload"),
+                        bytes: 0,
+                        is_dir: false,
+                        hidden: false,
+                    },
+                    PathStyle::Native,
+                );
             }
             work::reset();
             let start = std::time::Instant::now();
             for _ in 0..4 {
-                marks.refresh(&root_path, &root, Metric::Bytes);
+                marks.refresh(
+                    &root_path,
+                    &root,
+                    Metric::Bytes,
+                    PathStyle::Native,
+                );
             }
             let elapsed = start.elapsed();
             let operations = work::RESOLUTION.get();
@@ -374,13 +463,14 @@ mod tests {
         let root_path = Path::new("/home/tobi");
         let mut root = Arc::new(tree());
         let mut marks = Marks::default();
-        marks.toggle(target("/home/tobi/.cache", 0));
-        let first = marks.crumbs(root_path, &root, Metric::Bytes);
+        marks.toggle(target("/home/tobi/.cache", 0), PathStyle::Native);
+        let first =
+            marks.crumbs(root_path, &root, Metric::Bytes, PathStyle::Native);
         assert!(first.contains(&vec![0]));
         work::reset();
         assert!(Arc::ptr_eq(
             &first,
-            &marks.crumbs(root_path, &root, Metric::Bytes)
+            &marks.crumbs(root_path, &root, Metric::Bytes, PathStyle::Native)
         ));
         assert_eq!(
             work::RESOLUTION.get(),
@@ -393,26 +483,42 @@ mod tests {
             "the cache must not retain a scan"
         );
 
-        marks.toggle(target("/home/tobi/notes.bin", 0));
-        assert_eq!(marks.crumbs(root_path, &root, Metric::Bytes).len(), 2);
-        marks.remove(Path::new("/home/tobi/.cache"));
+        marks.toggle(target("/home/tobi/notes.bin", 0), PathStyle::Native);
+        assert_eq!(
+            marks
+                .crumbs(root_path, &root, Metric::Bytes, PathStyle::Native)
+                .len(),
+            2
+        );
+        marks.remove(Path::new("/home/tobi/.cache"), PathStyle::Native);
         assert!(
             marks
                 .crumbs(root_path, &root, Metric::Bytes)
                 .contains(&vec![1])
         );
         marks.clear();
-        assert!(marks.crumbs(root_path, &root, Metric::Bytes).is_empty());
-        marks.toggle(target("/home/tobi/notes.bin", 0));
-        marks.toggle(target("/home/tobi/notes.bin", 0));
-        assert!(marks.crumbs(root_path, &root, Metric::Bytes).is_empty());
-        marks.toggle(target("/home/tobi/notes.bin", 0));
+        assert!(
+            marks
+                .crumbs(root_path, &root, Metric::Bytes, PathStyle::Native)
+                .is_empty()
+        );
+        marks.toggle(target("/home/tobi/notes.bin", 0), PathStyle::Native);
+        marks.toggle(target("/home/tobi/notes.bin", 0), PathStyle::Native);
+        assert!(
+            marks
+                .crumbs(root_path, &root, Metric::Bytes, PathStyle::Native)
+                .is_empty()
+        );
+        marks.toggle(target("/home/tobi/notes.bin", 0), PathStyle::Native);
 
-        let before = marks.crumbs(root_path, &root, Metric::Bytes);
-        let files = marks.crumbs(root_path, &root, Metric::Files);
+        let before =
+            marks.crumbs(root_path, &root, Metric::Bytes, PathStyle::Native);
+        let files =
+            marks.crumbs(root_path, &root, Metric::Files, PathStyle::Native);
         assert!(!Arc::ptr_eq(&before, &files), "metric changes invalidate");
-        marks.refresh(root_path, &root, Metric::Files);
-        let refreshed = marks.crumbs(root_path, &root, Metric::Files);
+        marks.refresh(root_path, &root, Metric::Files, PathStyle::Native);
+        let refreshed =
+            marks.crumbs(root_path, &root, Metric::Files, PathStyle::Native);
         assert!(!Arc::ptr_eq(&files, &refreshed), "refresh invalidates");
         assert!(
             marks
@@ -436,7 +542,11 @@ mod tests {
                 .contains(&vec![0])
         );
         Arc::make_mut(&mut root).children.clear();
-        assert!(marks.crumbs(root_path, &root, Metric::Files).is_empty());
+        assert!(
+            marks
+                .crumbs(root_path, &root, Metric::Files, PathStyle::Native)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -444,7 +554,7 @@ mod tests {
         let root_path = Path::new("/home/tobi");
         let mut root = tree();
         root.children.push(file("notes.bin", 200));
-        let mut resolver = Resolver::new(root_path, &root);
+        let mut resolver = Resolver::new(root_path, &root, PathStyle::Native);
         let (crumbs, node) = resolver
             .resolve(&root_path.join("notes.bin"))
             .expect("file");
@@ -468,7 +578,7 @@ mod tests {
         let name = std::ffi::OsStr::from_bytes(b"file-\xff");
         let mut root = Node::directory("root");
         root.children.push(file(&name.to_string_lossy(), 1));
-        let mut resolver = Resolver::new(root_path, &root);
+        let mut resolver = Resolver::new(root_path, &root, PathStyle::Native);
         assert_eq!(
             resolver
                 .resolve(&root_path.join(name))
@@ -489,22 +599,31 @@ mod tests {
             "/synthetic/ab",
             "/synthetic/A",
         ] {
-            marks.toggle(target(path, 1));
+            marks.toggle(target(path, 1), PathStyle::Native);
         }
         assert_eq!(
-            marks.ancestor(Path::new("/synthetic/a/child/file")),
+            marks.ancestor(
+                Path::new("/synthetic/a/child/file"),
+                PathStyle::Native
+            ),
             Some(Path::new("/synthetic/a"))
         );
-        assert_eq!(marks.ancestor(Path::new("/synthetic/a")), None);
         assert_eq!(
-            marks.ancestor(Path::new("/synthetic/a-b/file")),
+            marks.ancestor(Path::new("/synthetic/a"), PathStyle::Native),
+            None
+        );
+        assert_eq!(
+            marks.ancestor(Path::new("/synthetic/a-b/file"), PathStyle::Native),
             Some(Path::new("/synthetic/a-b"))
         );
         assert_eq!(
-            marks.ancestor(Path::new("/synthetic/A/file")),
+            marks.ancestor(Path::new("/synthetic/A/file"), PathStyle::Native),
             Some(Path::new("/synthetic/A"))
         );
-        assert_eq!(marks.absorb(Path::new("/synthetic/a")), 1);
+        assert_eq!(
+            marks.absorb(Path::new("/synthetic/a"), PathStyle::Native),
+            1
+        );
         let expected: Vec<_> = [
             "/synthetic/a",
             "/synthetic/a-b",
@@ -522,24 +641,40 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected
         );
-        assert!(marks.items().iter().all(|item| marks.contains(&item.path)));
-        assert!(!marks.contains(Path::new("/synthetic/a/child")));
-        marks.remove(Path::new("/synthetic/a"));
-        assert_eq!(marks.ancestor(Path::new("/synthetic/a/file")), None);
+        assert!(
+            marks
+                .items()
+                .iter()
+                .all(|item| marks.contains(&item.path, PathStyle::Native))
+        );
+        assert!(
+            !marks.contains(Path::new("/synthetic/a/child"), PathStyle::Native)
+        );
+        marks.remove(Path::new("/synthetic/a"), PathStyle::Native);
         assert_eq!(
-            marks.absorb(Path::new("/synthetic/a")),
+            marks.ancestor(Path::new("/synthetic/a/file"), PathStyle::Native),
+            None
+        );
+        assert_eq!(
+            marks.absorb(Path::new("/synthetic/a"), PathStyle::Native),
             0,
             "prefix lookalikes stay marked"
         );
         marks.clear();
-        assert_eq!(marks.absorb(Path::new("/synthetic")), 0);
+        assert_eq!(marks.absorb(Path::new("/synthetic"), PathStyle::Native), 0);
 
         // Raw control clients can supply redundant separators. Retain the
         // original shortest-spelling rule rather than changing notices.
-        marks.toggle(target("/synthetic/a////////////////////", 1));
-        marks.toggle(target("/synthetic/a/child", 1));
+        marks.toggle(
+            target("/synthetic/a////////////////////", 1),
+            PathStyle::Native,
+        );
+        marks.toggle(target("/synthetic/a/child", 1), PathStyle::Native);
         assert_eq!(
-            marks.ancestor(Path::new("/synthetic/a/child/file")),
+            marks.ancestor(
+                Path::new("/synthetic/a/child/file"),
+                PathStyle::Native
+            ),
             Some(Path::new("/synthetic/a/child"))
         );
     }
@@ -549,20 +684,39 @@ mod tests {
         let root_path = Path::new("/home/tobi");
         let root = Arc::new(tree());
         let mut marks = Marks::default();
-        marks.toggle(target("/home/tobi/.cache/blob.bin", 0));
-        marks.toggle(target("/home/tobi/.cache", 0));
-        marks.toggle(target("/home/tobi/gone/nested", 100));
-        let before = marks.crumbs(root_path, &root, Metric::Bytes);
+        marks
+            .toggle(target("/home/tobi/.cache/blob.bin", 0), PathStyle::Native);
+        marks.toggle(target("/home/tobi/.cache", 0), PathStyle::Native);
+        marks.toggle(target("/home/tobi/gone/nested", 100), PathStyle::Native);
+        let before =
+            marks.crumbs(root_path, &root, Metric::Bytes, PathStyle::Native);
         assert_eq!(before.len(), 2);
-        assert_eq!(marks.absorb(Path::new("/home/tobi/.cache")), 1);
-        let after = marks.crumbs(root_path, &root, Metric::Bytes);
+        assert_eq!(
+            marks.absorb(Path::new("/home/tobi/.cache"), PathStyle::Native),
+            1
+        );
+        let after =
+            marks.crumbs(root_path, &root, Metric::Bytes, PathStyle::Native);
         assert!(!Arc::ptr_eq(&before, &after));
         assert_eq!(after.len(), 1);
         assert!(after.contains(&vec![0]));
-        marks.refresh(root_path, &root, Metric::Files);
-        assert!(marks.contains(Path::new("/home/tobi/gone/nested")));
-        assert_eq!(marks.absorb(Path::new("/home/tobi/gone")), 1);
-        assert!(!marks.contains(Path::new("/home/tobi/gone/nested")));
+        marks.refresh(root_path, &root, Metric::Files, PathStyle::Native);
+        assert!(
+            marks.contains(
+                Path::new("/home/tobi/gone/nested"),
+                PathStyle::Native
+            )
+        );
+        assert_eq!(
+            marks.absorb(Path::new("/home/tobi/gone"), PathStyle::Native),
+            1
+        );
+        assert!(
+            !marks.contains(
+                Path::new("/home/tobi/gone/nested"),
+                PathStyle::Native
+            )
+        );
     }
 
     #[cfg(unix)]
@@ -573,40 +727,49 @@ mod tests {
         let parent = root.join(std::ffi::OsStr::from_bytes(b"not-\xff"));
         let child = parent.join("file");
         let mut marks = Marks::default();
-        marks.toggle(Target {
-            path: child.clone(),
-            bytes: 1,
-            is_dir: false,
-            hidden: false,
-        });
-        marks.toggle(Target {
-            path: parent.clone(),
-            bytes: 1,
-            is_dir: true,
-            hidden: false,
-        });
-        assert_eq!(marks.ancestor(&child), Some(parent.as_path()));
-        assert_eq!(marks.absorb(&parent), 1);
-        assert!(marks.contains(&parent));
-        assert!(!marks.contains(&child));
+        marks.toggle(
+            Target {
+                path: child.clone(),
+                bytes: 1,
+                is_dir: false,
+                hidden: false,
+            },
+            PathStyle::Native,
+        );
+        marks.toggle(
+            Target {
+                path: parent.clone(),
+                bytes: 1,
+                is_dir: true,
+                hidden: false,
+            },
+            PathStyle::Native,
+        );
+        assert_eq!(
+            marks.ancestor(&child, PathStyle::Native),
+            Some(parent.as_path())
+        );
+        assert_eq!(marks.absorb(&parent, PathStyle::Native), 1);
+        assert!(marks.contains(&parent, PathStyle::Native));
+        assert!(!marks.contains(&child, PathStyle::Native));
     }
 
     #[test]
     fn toggling_marks_and_unmarks() {
         let mut marks = Marks::default();
-        assert!(marks.toggle(target("/home/tobi/a", 1)));
-        assert!(marks.contains(Path::new("/home/tobi/a")));
+        assert!(marks.toggle(target("/home/tobi/a", 1), PathStyle::Native));
+        assert!(marks.contains(Path::new("/home/tobi/a"), PathStyle::Native));
         assert_eq!(marks.len(), 1);
-        assert!(!marks.toggle(target("/home/tobi/a", 1)));
+        assert!(!marks.toggle(target("/home/tobi/a", 1), PathStyle::Native));
         assert!(marks.is_empty());
     }
 
     #[test]
     fn marking_the_same_path_twice_keeps_one_entry() {
         let mut marks = Marks::default();
-        marks.toggle(target("/home/tobi/a", 1));
-        marks.toggle(target("/home/tobi/a", 1));
-        marks.toggle(target("/home/tobi/a", 1));
+        marks.toggle(target("/home/tobi/a", 1), PathStyle::Native);
+        marks.toggle(target("/home/tobi/a", 1), PathStyle::Native);
+        marks.toggle(target("/home/tobi/a", 1), PathStyle::Native);
         assert_eq!(marks.len(), 1);
     }
 
@@ -615,12 +778,12 @@ mod tests {
         let root_path = Path::new("/home/tobi");
         let root = tree();
         let mut marks = Marks::default();
-        marks.toggle(target("/home/tobi/.cache", 0));
-        marks.toggle(target("/home/tobi/gone", 500));
+        marks.toggle(target("/home/tobi/.cache", 0), PathStyle::Native);
+        marks.toggle(target("/home/tobi/gone", 500), PathStyle::Native);
 
         // Removal bytes stay measured bytes even when the treemap shows files.
         for metric in [Metric::Bytes, Metric::Files] {
-            marks.refresh(root_path, &root, metric);
+            marks.refresh(root_path, &root, metric, PathStyle::Native);
             assert_eq!(marks.items()[0].bytes, 900);
             assert!(marks.items()[0].is_dir);
             assert!(marks.items()[0].hidden, "the .cache mark is hidden");
@@ -635,7 +798,8 @@ mod tests {
     #[test]
     fn find_matches_whole_components_only() {
         let root = tree();
-        let mut resolver = Resolver::new(Path::new("/home/tobi"), &root);
+        let mut resolver =
+            Resolver::new(Path::new("/home/tobi"), &root, PathStyle::Native);
         assert!(resolver.resolve(Path::new("/home/tobi/.cache")).is_some());
         assert!(
             resolver
@@ -644,7 +808,7 @@ mod tests {
         );
         assert!(resolver.resolve(Path::new("/home/tobi/cache")).is_none());
         assert!(
-            Resolver::new(Path::new("/elsewhere"), &root)
+            Resolver::new(Path::new("/elsewhere"), &root, PathStyle::Native)
                 .resolve(Path::new("/home/tobi/notes.bin"))
                 .is_none()
         );
@@ -655,12 +819,22 @@ mod tests {
         let home = Path::new("/home/tobi");
         let separator = std::path::MAIN_SEPARATOR;
         assert_eq!(
-            display_path(&home.join(".cache").join("npm"), Some(home)),
+            display_path(
+                &home.join(".cache").join("npm"),
+                Some(home),
+                PathStyle::Native
+            ),
             format!("~{separator}.cache{separator}npm")
         );
-        assert_eq!(display_path(home, Some(home)), "~");
-        assert_eq!(display_path(Path::new("/var/log"), Some(home)), "/var/log");
-        assert_eq!(display_path(Path::new("/var/log"), None), "/var/log");
+        assert_eq!(display_path(home, Some(home), PathStyle::Native), "~");
+        assert_eq!(
+            display_path(Path::new("/var/log"), Some(home), PathStyle::Native),
+            "/var/log"
+        );
+        assert_eq!(
+            display_path(Path::new("/var/log"), None, PathStyle::Native),
+            "/var/log"
+        );
     }
     /// Vary each input separately: files, marks, path depth and refreshes
     /// must not be conflated with growing siblings and marks together.
@@ -688,18 +862,26 @@ mod tests {
                 root.children.push(folder);
                 relative.push("payload");
                 if index >= folders - marked {
-                    marks.toggle(Target {
-                        path: root_path.join(relative),
-                        bytes: 0,
-                        is_dir: false,
-                        hidden: false,
-                    });
+                    marks.toggle(
+                        Target {
+                            path: root_path.join(relative),
+                            bytes: 0,
+                            is_dir: false,
+                            hidden: false,
+                        },
+                        PathStyle::Native,
+                    );
                 }
             }
             work::reset();
             let start = std::time::Instant::now();
             for _ in 0..repeats {
-                marks.refresh(&root_path, &root, Metric::Bytes);
+                marks.refresh(
+                    &root_path,
+                    &root,
+                    Metric::Bytes,
+                    PathStyle::Native,
+                );
             }
             let operations = work::RESOLUTION.get();
             assert!(marks.items().iter().all(|item| item.bytes == 1));
@@ -720,5 +902,47 @@ mod tests {
         let more_refreshes = measure(128, 8, 1, 8);
         assert_eq!(more_refreshes, base * 8);
         assert!(more_files <= 1024 * 8 * 4);
+    }
+    /// A Unix host's paths read the same on every client: `/` after `~`, and
+    /// a name holding `\` is one name, not two.
+    #[test]
+    fn remote_paths_display_and_resolve_by_posix_rules() {
+        let posix = PathStyle::Posix;
+        let home = Path::new("/home/tobi");
+        assert_eq!(
+            display_path(Path::new("/home/tobi/.cache/npm"), Some(home), posix),
+            "~/.cache/npm"
+        );
+        assert_eq!(
+            display_path(Path::new("/home/tobix"), Some(home), posix),
+            "/home/tobix"
+        );
+        let mut root = Node::directory("home");
+        root.children.push(file(r"a\b", 7));
+        assert!(
+            Resolver::new(home, &root, posix)
+                .resolve(Path::new(r"/home/tobi/a\b"))
+                .is_some()
+        );
+        assert!(
+            Resolver::new(home, &root, posix)
+                .resolve(Path::new("/home/tobi/a/b"))
+                .is_none()
+        );
+        assert!(!is_hidden(Path::new(r"/srv/x\.hidden"), posix));
+        assert!(is_hidden(Path::new("/srv/.cache"), posix));
+    }
+
+    /// Marks are keyed by the exact path text, so `/a/b\c` and `/a/b/c`
+    /// stay two marks even where `PathBuf` would call them equal.
+    #[test]
+    fn marks_compare_the_exact_path() {
+        let mut marks = Marks::default();
+        marks.toggle(target(r"/srv/b\c", 1), PathStyle::Posix);
+        assert!(!marks.contains(Path::new("/srv/b/c"), PathStyle::Posix));
+        assert!(marks.toggle(target("/srv/b/c", 1), PathStyle::Posix));
+        assert_eq!(marks.len(), 2);
+        marks.remove(Path::new("/srv/b/c"), PathStyle::Posix);
+        assert!(marks.contains(Path::new(r"/srv/b\c"), PathStyle::Posix));
     }
 }

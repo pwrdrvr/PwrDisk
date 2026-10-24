@@ -18,6 +18,7 @@
 //! one to hide, and nothing here writes a line anywhere but the clipboard.
 //! The model, parsing and the file reads are `log_view.rs`.
 
+use disktree_core::path_style::PathStyle;
 use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -1754,7 +1755,8 @@ impl LogsWindow {
                 "{} \u{b7} rotates at 1 MB to main.old.log",
                 crate::marks::display_path(
                     &tail.path,
-                    std::env::home_dir().as_deref()
+                    std::env::home_dir().as_deref(),
+                    PathStyle::Native
                 )
             )
         });

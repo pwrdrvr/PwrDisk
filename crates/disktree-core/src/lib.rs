@@ -19,6 +19,7 @@ mod macos;
 pub mod macos_services;
 #[cfg(windows)]
 mod mft;
+pub mod path_style;
 pub mod payload;
 pub mod query;
 pub mod remote;
