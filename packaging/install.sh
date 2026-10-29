@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install a disktree release: the binary, a desktop entry and an icon.
+# Install a PwrDisk release: the binary, a desktop entry and an icon.
 #
 #   ./install.sh                  # into ~/.local, no root needed
 #   sudo PREFIX=/usr/local ./install.sh
@@ -16,24 +16,24 @@ ICONDIR=${ICONDIR:-"$PREFIX/share/icons/hicolor/scalable/apps"}
 VERSION=$(cat "$here/VERSION")
 
 install -d "$BINDIR" "$APPDIR" "$ICONDIR"
-install -m755 "$here/disktree" "$BINDIR/disktree"
-install -m644 "$here/disktree.svg" "$ICONDIR/disktree.svg"
+install -m755 "$here/pwrdisk" "$BINDIR/pwrdisk"
+install -m644 "$here/disktree.svg" "$ICONDIR/pwrdisk.svg"
 sed -e "s|@BINDIR@|$BINDIR|" -e "s|@VERSION@|$VERSION|" \
-    "$here/disktree.desktop.in" > "$APPDIR/disktree.desktop"
-chmod 644 "$APPDIR/disktree.desktop"
+    "$here/pwrdisk.desktop.in" > "$APPDIR/pwrdisk.desktop"
+chmod 644 "$APPDIR/pwrdisk.desktop"
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$APPDIR" 2>/dev/null || true
 fi
 
-echo "installed disktree $VERSION:"
-echo "  $BINDIR/disktree"
-echo "  $APPDIR/disktree.desktop"
-echo "  $ICONDIR/disktree.svg"
-resolved=$(command -v disktree 2>/dev/null || true)
-if [ -z "$resolved" ] || ! [ "$resolved" -ef "$BINDIR/disktree" ]; then
+echo "installed PwrDisk $VERSION:"
+echo "  $BINDIR/pwrdisk"
+echo "  $APPDIR/pwrdisk.desktop"
+echo "  $ICONDIR/pwrdisk.svg"
+resolved=$(command -v pwrdisk 2>/dev/null || true)
+if [ -z "$resolved" ] || ! [ "$resolved" -ef "$BINDIR/pwrdisk" ]; then
     echo
     if [ -n "$resolved" ]; then
-        echo "warning: disktree still resolves to $resolved"
+        echo "warning: pwrdisk still resolves to $resolved"
         echo "         that hides the build in $BINDIR"
     else
         echo "warning: $BINDIR is not on PATH"

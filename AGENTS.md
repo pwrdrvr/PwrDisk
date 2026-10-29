@@ -1,4 +1,9 @@
-# disktree — agent guide
+# PwrDisk — agent guide
+
+PwrDisk is a maintained fork of [disktree](https://github.com/tobi/disktree).
+The user-facing name is PwrDisk (binary `pwrdisk`, bundle ID
+`com.pwrdrvr.pwrdisk`); crate, module and type names and the SSH helper
+(`disktree-scan`) keep the upstream names so upstream merges stay clean.
 
 A GPUI + gpui-omarchy treemap explorer for disk usage on Omarchy. Read
 `README.md` for the product; this file is the working contract.
@@ -19,7 +24,7 @@ make run                        # build and open the source/root chooser
 make install                    # ~/.local: binary, desktop entry, icon
 make install PREFIX=/usr/local  # system-wide (needs root)
 make uninstall
-make bundle                     # macOS: target/bundle/disktree.app and its zip
+make bundle                     # macOS: target/bundle/PwrDisk.app and its zip
 make lint                       # rustfmt --check, then clippy --all-targets -D warnings
 make test                       # core and window-harness tests
 make ci                         # lint, then test
@@ -27,12 +32,12 @@ make fmt                        # format in place
 ```
 
 `make install` is the supported way to put this on a machine: it installs the
-release binary, `packaging/disktree.desktop.in` (rendered with the real install
+release binary, `packaging/pwrdisk.desktop.in` (rendered with the real install
 prefix and the crate version) and `assets/disktree.svg`. Keep the desktop
 entry's `Categories` to a single main category plus additional ones, or
 `desktop-file-validate` complains.
 
-On macOS `make install` installs `target/bundle/disktree.app` into
+On macOS `make install` installs `target/bundle/PwrDisk.app` into
 `~/Applications` instead, built by `cargo xtask bundle` from
 `packaging/macos/` (the `Info.plist` template and the icon's SVG). The bundle
 identifier there keys every macOS permission grant; do not change it lightly.

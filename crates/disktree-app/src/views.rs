@@ -911,7 +911,7 @@ fn logo(theme: &Theme) -> Div {
                 .text_size(text::HEADING)
                 .font_weight(FontWeight::BOLD)
                 .text_color(theme.bright)
-                .child("disktree"),
+                .child("PwrDisk"),
         )
 }
 

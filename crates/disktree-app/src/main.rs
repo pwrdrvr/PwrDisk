@@ -52,11 +52,11 @@ struct Args {
 }
 
 const USAGE: &str = "\
-disktree — a treemap of what is using your disk
+PwrDisk — a treemap of what is using your disk
 
-usage: disktree [OPTIONS] [PATH]
-       disktree ssh HOST [OPTIONS] [PATH]
-       disktree extract-scanner ARCH OUTPUT
+usage: pwrdisk [OPTIONS] [PATH]
+       pwrdisk ssh HOST [OPTIONS] [PATH]
+       pwrdisk extract-scanner ARCH OUTPUT
 
 Linux packaged builds deploy an embedded static scanner over SSH on demand.
 Unbundled development builds need disktree-scan on the remote PATH or in
@@ -112,7 +112,12 @@ fn run() -> Result<()> {
     let saved = power::settings_path()
         .map_or_else(
             || Ok(power::PowerEfficiency::default()),
-            |path| power::load(&path),
+            |path| {
+                power::load_or_legacy(
+                    &path,
+                    power::legacy_settings_path().as_deref(),
+                )
+            },
         )
         .unwrap_or_else(|error| {
             eprintln!("Cannot load Power Efficiency: {error}; using Balanced");
@@ -124,7 +129,7 @@ fn run() -> Result<()> {
         let host = args
             .remote
             .as_deref()
-            .context("--check requires disktree ssh HOST")?;
+            .context("--check requires pwrdisk ssh HOST")?;
         let scan = disktree_core::remote::RemoteScan::spawn(
             host,
             &disktree_core::remote::Request {
@@ -161,7 +166,7 @@ fn run() -> Result<()> {
         && std::env::var_os("CMUX_SURFACE_ID").is_some()
         && std::env::var_os("DISKTREE_CMUX_DETACHED").is_none()
     {
-        Command::new(std::env::current_exe().context("find disktree")?)
+        Command::new(std::env::current_exe().context("find pwrdisk")?)
             .args(std::env::args_os().skip(1))
             .env("DISKTREE_CMUX_DETACHED", "1")
             .stdin(Stdio::null())
@@ -170,7 +175,7 @@ fn run() -> Result<()> {
             // Zero makes the child the leader of a new process group.
             .process_group(0)
             .spawn()
-            .context("start disktree")?;
+            .context("start pwrdisk")?;
         return Ok(());
     }
 
@@ -202,7 +207,7 @@ fn run() -> Result<()> {
                         titlebar: Some(gpui_kit::TitlebarOptions {
                             title: Some(
                                 format!(
-                                    "disktree · {}",
+                                    "PwrDisk · {}",
                                     marks::display_path(
                                         &title_root,
                                         home.as_deref(),
@@ -214,10 +219,10 @@ fn run() -> Result<()> {
                         }),
                         // Wayland app id. Hyprland reports it as the window
                         // class, and the desktop entry's StartupWMClass and
-                        // the documented window rule both match `disktree`.
+                        // the documented window rule both match `pwrdisk`.
                         // Left unset, the class is empty and that rule never
                         // matches.
-                        app_id: Some("disktree".to_owned()),
+                        app_id: Some("pwrdisk".to_owned()),
                         // Below this the treemap stops being readable, so ask
                         // the compositor not to go there.
                         window_min_size: Some(size(px(900.), px(600.))),
@@ -250,7 +255,7 @@ fn run() -> Result<()> {
                         })
                     },
                 )
-                .expect("open the disktree window");
+                .expect("open the PwrDisk window");
 
             // The treemap owns the keyboard from the first frame; there is no
             // text field to focus first.
@@ -271,7 +276,7 @@ fn extract_scanner() -> Result<bool> {
     }
     anyhow::ensure!(
         args.len() == 3,
-        "usage: disktree extract-scanner ARCH OUTPUT"
+        "usage: pwrdisk extract-scanner ARCH OUTPUT"
     );
     let archive = disktree_core::payload::Archive::current()?
         .context("no embedded scanners; build with cargo xtask portable")?;
@@ -324,8 +329,7 @@ fn parse_args_with_power(
     let mut args = args.peekable();
     let remote = if args.peek().is_some_and(|arg| arg == "ssh") {
         args.next();
-        let host =
-            text(args.next(), "ssh needs a host, e.g. disktree ssh dev")?;
+        let host = text(args.next(), "ssh needs a host, e.g. pwrdisk ssh dev")?;
         disktree_core::remote::validate_host(&host)?;
         Some(host)
     } else {

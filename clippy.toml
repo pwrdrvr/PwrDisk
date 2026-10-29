@@ -1,0 +1,3 @@
+# The product's name, so doc comments can say it without backticks. ".."
+# keeps clippy's own list.
+doc-valid-idents = ["PwrDisk", ".."]

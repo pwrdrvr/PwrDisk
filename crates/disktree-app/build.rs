@@ -58,7 +58,7 @@ fn main() {
     );
 
     println!("cargo:rerun-if-changed={}", icon.display());
-    println!("cargo:rustc-link-arg-bin=disktree={}", res.display());
+    println!("cargo:rustc-link-arg-bin=pwrdisk={}", res.display());
 }
 
 #[cfg(not(windows))]

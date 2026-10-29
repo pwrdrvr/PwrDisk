@@ -530,7 +530,7 @@ fn ssh_error(host: &str, details: &str, fallback: &io::Error) -> io::Error {
     {
         format!(
             "Run ssh {host} in a terminal to verify your credentials. \
-             When starting disktree from a terminal, SSH can ask for a \
+             When starting PwrDisk from a terminal, SSH can ask for a \
              password there; GUI launches need an agent or SSH askpass."
         )
     } else if reason.contains("Host key verification failed") {

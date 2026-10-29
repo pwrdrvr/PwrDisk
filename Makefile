@@ -1,14 +1,14 @@
-# disktree: build, check, and install.
+# PwrDisk: build, check, and install.
 #
 # `make install` puts the binary, a desktop entry and an icon under PREFIX
-# (default: ~/.local), so disktree shows up in the Omarchy launcher and in
+# (default: ~/.local), so PwrDisk shows up in the Omarchy launcher and in
 # "Open with" for directories. The default needs no root:
 #
-#   make install                         # ~/.local/bin/disktree
+#   make install                         # ~/.local/bin/pwrdisk
 #   sudo make install PREFIX=/usr/local  # system-wide
 #
-# On macOS it installs disktree.app into ~/Applications instead (APPS to
-# change that), plus a `disktree` command in BINDIR that runs the app's
+# On macOS it installs PwrDisk.app into ~/Applications instead (APPS to
+# change that), plus a `pwrdisk` command in BINDIR that runs the app's
 # binary, so both Spotlight and a terminal find it.
 
 PREFIX ?= $(HOME)/.local
@@ -17,17 +17,17 @@ APPDIR ?= $(PREFIX)/share/applications
 ICONDIR ?= $(PREFIX)/share/icons/hicolor/scalable/apps
 
 APPS ?= $(HOME)/Applications
-BUNDLE = target/bundle/disktree.app
+BUNDLE = target/bundle/PwrDisk.app
 UNAME := $(shell uname -s)
 
 MANIFEST = Cargo.toml
 CARGO ?= cargo
-TARGET = target/release/disktree
+TARGET = target/release/pwrdisk
 ifeq ($(UNAME),Linux)
-TARGET = target/portable/disktree
+TARGET = target/portable/pwrdisk
 endif
 ICON = assets/disktree.svg
-DESKTOP = packaging/disktree.desktop.in
+DESKTOP = packaging/pwrdisk.desktop.in
 
 # Being on PATH is not enough: an older package can win earlier in it.
 define check_install_path
@@ -50,14 +50,14 @@ endef
 .PHONY: help build run install install-scan uninstall bundle lint test test-ssh ci fmt clean
 
 help:
-	@echo "disktree"
+	@echo "PwrDisk"
 	@echo
 	@echo "  make build       release build"
 	@echo "  make run         build and open the source/root chooser"
 	@echo "  make install-scan  build/install the headless SSH helper only"
 	@echo "  make install     install to $(PREFIX): binary, desktop entry, icon"
-	@echo "                   (macOS: disktree.app into $(APPS))"
-	@echo "  make bundle      macOS: build target/bundle/disktree.app and its zip"
+	@echo "                   (macOS: PwrDisk.app into $(APPS))"
+	@echo "  make bundle      macOS: build target/bundle/PwrDisk.app and its zip"
 	@echo "  make uninstall   remove what install put there"
 	@echo "  make lint        rustfmt --check and clippy -D warnings"
 	@echo "  make test        core and window-harness tests"
@@ -107,43 +107,43 @@ ifeq ($(UNAME),Darwin)
 install:
 	$(CARGO) xtask bundle
 	install -d "$(APPS)" "$(BINDIR)"
-	rm -rf "$(APPS)/disktree.app"
-	ditto "$(BUNDLE)" "$(APPS)/disktree.app"
-	ln -sf "$(APPS)/disktree.app/Contents/MacOS/disktree" "$(BINDIR)/disktree"
+	rm -rf "$(APPS)/PwrDisk.app"
+	ditto "$(BUNDLE)" "$(APPS)/PwrDisk.app"
+	ln -sf "$(APPS)/PwrDisk.app/Contents/MacOS/pwrdisk" "$(BINDIR)/pwrdisk"
 	@echo
 	@echo "installed:"
-	@echo "  $(APPS)/disktree.app"
-	@echo "  $(BINDIR)/disktree -> the app's binary"
-	$(call check_install_path,disktree)
+	@echo "  $(APPS)/PwrDisk.app"
+	@echo "  $(BINDIR)/pwrdisk -> the app's binary"
+	$(call check_install_path,pwrdisk)
 
 uninstall:
-	rm -rf "$(APPS)/disktree.app"
-	@if [ -L "$(BINDIR)/disktree" ]; then rm -f "$(BINDIR)/disktree"; fi
+	rm -rf "$(APPS)/PwrDisk.app"
+	@if [ -L "$(BINDIR)/pwrdisk" ]; then rm -f "$(BINDIR)/pwrdisk"; fi
 	@echo "removed"
 else
 install: build
 	install -d $(BINDIR) $(APPDIR) $(ICONDIR)
-	install -m755 $(TARGET) $(BINDIR)/disktree
-	install -m644 $(ICON) $(ICONDIR)/disktree.svg
+	install -m755 $(TARGET) $(BINDIR)/pwrdisk
+	install -m644 $(ICON) $(ICONDIR)/pwrdisk.svg
 	VERSION=$$(sed -n 's/^version = "\(.*\)"/\1/p' $(MANIFEST) | head -1) && \
 	sed -e 's|@BINDIR@|$(BINDIR)|' -e "s|@VERSION@|$$VERSION|" \
-	    $(DESKTOP) > $(APPDIR)/disktree.desktop && \
-	chmod 644 $(APPDIR)/disktree.desktop
+	    $(DESKTOP) > $(APPDIR)/pwrdisk.desktop && \
+	chmod 644 $(APPDIR)/pwrdisk.desktop
 	@if command -v update-desktop-database >/dev/null 2>&1; then \
 	    update-desktop-database $(APPDIR) 2>/dev/null || true; \
 	fi
 	@echo
 	@echo "installed:"
-	@echo "  $(BINDIR)/disktree"
-	@echo "  $(APPDIR)/disktree.desktop"
-	@echo "  $(ICONDIR)/disktree.svg"
+	@echo "  $(BINDIR)/pwrdisk"
+	@echo "  $(APPDIR)/pwrdisk.desktop"
+	@echo "  $(ICONDIR)/pwrdisk.svg"
 	@if command -v desktop-file-validate >/dev/null 2>&1; then \
-	    desktop-file-validate $(APPDIR)/disktree.desktop || true; \
+	    desktop-file-validate $(APPDIR)/pwrdisk.desktop || true; \
 	fi
-	$(call check_install_path,disktree)
+	$(call check_install_path,pwrdisk)
 
 uninstall:
-	rm -f $(BINDIR)/disktree $(APPDIR)/disktree.desktop $(ICONDIR)/disktree.svg
+	rm -f $(BINDIR)/pwrdisk $(APPDIR)/pwrdisk.desktop $(ICONDIR)/pwrdisk.svg
 	@if command -v update-desktop-database >/dev/null 2>&1; then \
 	    update-desktop-database $(APPDIR) 2>/dev/null || true; \
 	fi

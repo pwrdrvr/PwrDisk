@@ -1,11 +1,15 @@
-# disktree
+# PwrDisk
 
-![disktree: a home directory as a treemap, coloured by kind of data, with reclaimable space hatched and the selection, findings and free space in the side panel](assets/screenshot.png)
+> PwrDisk is a maintained fork of [disktree](https://github.com/tobi/disktree)
+> by Tobi Lütke, with signed and notarized macOS releases. All credit for the
+> design and most of the code goes to Tobi and disktree's contributors.
+
+![PwrDisk: a home directory as a treemap, coloured by kind of data, with reclaimable space hatched and the selection, findings and free space in the side panel](assets/screenshot.png)
 
 Find what is filling a disk, mark what should go, and remove it — with the
 volume's free space in view the whole time.
 
-disktree is a treemap for Omarchy. Choose a local or SSH source, then a
+pwrdisk is a treemap for Omarchy. Choose a local or SSH source, then a
 mounted volume or directory; no scan starts until you explicitly accept.
 It draws every directory as a nested mosaic sized by its real disk cost,
 and lets you walk into it with the keyboard or the mouse. Mark as much as you
@@ -18,38 +22,28 @@ Omarchy theme and behaves like the rest of the desktop.
 
 ## Install
 
-Download `disktree-*-x86_64-linux.tar.gz` (`aarch64-linux` on ARM) from the
-[latest release](https://github.com/tobi/disktree/releases/latest), unpack
-it, and run `./install.sh` inside (or just copy `disktree` onto your
+Download `pwrdisk-*-x86_64-linux.tar.gz` (`aarch64-linux` on ARM) from the
+[latest release](https://github.com/pwrdrvr/PwrDisk/releases/latest), unpack
+it, and run `./install.sh` inside (or just copy `pwrdisk` onto your
 `PATH`). Or build it:
 
 ```sh
-git clone https://github.com/tobi/disktree
-cd disktree
+git clone https://github.com/pwrdrvr/PwrDisk
+cd PwrDisk
 make install
 ```
 
 `make install` builds a release binary and puts three things under `~/.local`
 (no root needed):
 
-- `~/.local/bin/disktree`
-- a desktop entry, so disktree is in the launcher and in a file manager's
+- `~/.local/bin/pwrdisk`
+- a desktop entry, so PwrDisk is in the launcher and in a file manager's
   **Open with** for a directory (it adds a handler; it never becomes the
   default)
 - an icon
 
 `sudo make install PREFIX=/usr/local` installs system-wide; `make uninstall`
 removes exactly what was installed.
-
-On Arch, including Omarchy, disktree is in the AUR:
-[`disktree`](https://aur.archlinux.org/packages/disktree) builds each release
-from source, and
-[`disktree-bin`](https://aur.archlinux.org/packages/disktree-bin) installs
-the release binary:
-
-```sh
-yay -S disktree-bin
-```
 
 If another installed version wins on `PATH`, the installer warns which one.
 Run `export PATH="$HOME/.local/bin:$PATH"` and add that setting to your shell
@@ -70,16 +64,17 @@ first build even if `rustup default` points at something older.
 
 ### macOS
 
-Download `disktree-*-aarch64-macos.zip` (`x86_64-macos` for an Intel Mac)
-from the [latest release](https://github.com/tobi/disktree/releases/latest),
-unzip it, and drag `disktree.app` into Applications. macOS 11 or newer.
+Download `pwrdisk-*-aarch64-macos.zip` (`x86_64-macos` for an Intel Mac)
+from the [latest release](https://github.com/pwrdrvr/PwrDisk/releases/latest),
+unzip it, and drag `PwrDisk.app` into Applications. macOS 11 or newer.
 
-A release that was not signed and notarized is stopped by Gatekeeper: macOS
-says it "is damaged and can't be opened" or "cannot be verified". The app is
-fine; the browser marked the download as quarantined. Clear the mark once:
+Releases are signed with a Developer ID and notarized, so they open like
+any other downloaded app. A build that was not (one you made yourself and
+copied to another Mac, say) is stopped by Gatekeeper: macOS says it "is
+damaged and can't be opened" or "cannot be verified". Clear the mark once:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/disktree.app
+xattr -dr com.apple.quarantine /Applications/PwrDisk.app
 ```
 
 (Or open it once, then choose **Open Anyway** in System Settings › Privacy &
@@ -89,14 +84,14 @@ Or build it, with Rust 1.97 or newer and Xcode or its Command Line Tools.
 macOS does not come with Rust; install it with [rustup](https://rustup.rs).
 
 ```sh
-make install     # ~/Applications/disktree.app, and ~/.local/bin/disktree
+make install     # ~/Applications/PwrDisk.app, and ~/.local/bin/pwrdisk
 make uninstall
 ```
 
-To see everything, give disktree **Full Disk Access** in System Settings ›
+To see everything, give PwrDisk **Full Disk Access** in System Settings ›
 Privacy & Security (the panel offers a button when it is missing), then
 reopen it. Without it macOS hides Mail, Messages, Safari, other apps' data
-and the Trash, and disktree counts them as unreadable. Started from a
+and the Trash, and PwrDisk counts them as unreadable. Started from a
 terminal, it is the terminal that needs the access. macOS also asks once
 each for Desktop, Documents and Downloads.
 
@@ -122,16 +117,16 @@ NOTARY_PROFILE=<profile> cargo xtask bundle \
 
 ### Windows
 
-On Windows 10 or 11, download `disktree-*-x86_64-windows.zip`
+On Windows 10 or 11, download `pwrdisk-*-x86_64-windows.zip`
 (`aarch64-windows` on ARM) from the same release, unpack it anywhere and run
-`disktree.exe`. Or build it with Rust 1.97 or newer, from
+`pwrdisk.exe`. Or build it with Rust 1.97 or newer, from
 [rustup](https://rustup.rs), and the MSVC toolchain (Visual Studio Build
 Tools, C++ workload):
 
 ```powershell
-git clone https://github.com/tobi/disktree
-cd disktree
-cargo build --release    # target\release\disktree.exe
+git clone https://github.com/pwrdrvr/PwrDisk
+cd PwrDisk
+cargo build --release    # target\release\pwrdisk.exe
 ```
 
 See [On Windows](#on-windows) for what differs there.
@@ -139,20 +134,20 @@ See [On Windows](#on-windows) for what differs there.
 ## Use
 
 ```sh
-disktree            # choose a local/SSH source and root
-disktree ~          # explicitly scan home
-disktree --disk     # the whole disk it lives on
-disktree ~/src      # or any directory
-disktree --help     # options: apparent size, follow links, skip hidden, …
+pwrdisk            # choose a local/SSH source and root
+pwrdisk ~          # explicitly scan home
+pwrdisk --disk     # the whole disk it lives on
+pwrdisk ~/src      # or any directory
+pwrdisk --help     # options: apparent size, follow links, skip hidden, …
 ```
 
 ### Servers over SSH (read-only)
 
 ```sh
-disktree ssh dev                 # connect and choose a remote root
-disktree ssh user@server /var    # an explicit remote path
-disktree ssh dev --disk          # the disk containing the remote home
-disktree ssh dev -a /srv         # apparent size instead of allocated blocks
+pwrdisk ssh dev                 # connect and choose a remote root
+pwrdisk ssh user@server /var    # an explicit remote path
+pwrdisk ssh dev --disk          # the disk containing the remote home
+pwrdisk ssh dev -a /srv         # apparent size instead of allocated blocks
 ```
 
 Linux builds made with `make build` / `cargo xtask portable` include static
@@ -172,9 +167,9 @@ You can extract a helper without opening a window, or test the entire
 SSH/deployment/scan path headlessly:
 
 ```sh
-disktree extract-scanner x86_64 ./disktree-scan
-disktree extract-scanner aarch64 ./disktree-scan-arm64
-disktree ssh dev --check /var/log
+pwrdisk extract-scanner x86_64 ./disktree-scan
+pwrdisk extract-scanner aarch64 ./disktree-scan-arm64
+pwrdisk ssh dev --check /var/log
 ```
 
 The appended manifest stores architecture, byte ranges and SHA-256 hashes.
@@ -194,10 +189,10 @@ cargo install --path crates/disktree-scan --locked
 ```
 
 The helper can be on the server's **non-interactive SSH PATH** or at
-`~/.local/bin/disktree-scan` (the default install location); disktree tries
+`~/.local/bin/disktree-scan` (the default install location); PwrDisk tries
 both. A binary copied from another machine must match the server's OS,
 architecture and runtime. The manually built native helper may need the
-server's libc; the embedded Linux helpers are static. Disktree never runs
+server's libc; the embedded Linux helpers are static. PwrDisk never runs
 sudo or changes the server's configuration.
 SSH keeps your normal authentication settings. When launched from a
 terminal, it can ask for a password or key passphrase there; GUI launches
@@ -262,7 +257,7 @@ Remote mode is **export-only**. Mark with Space, open review with `c`, then:
 - **Copy delete script** (`y`), or **Save delete script…** (`e`): a
   GNU/Linux shell script, copied to the clipboard or saved locally.
   Running it without arguments only previews the selection. After reviewing
-  it, `sh disktree-delete.sh --delete` connects to the named SSH host and
+  it, `sh pwrdisk-delete.sh --delete` connects to the named SSH host and
   runs the exported commands there, never against the local paths.
 
 There are no trash/delete buttons or removal-mode choices in remote review.
@@ -349,7 +344,7 @@ there, then choose:
 - **Delete permanently** — `rm -rf` semantics. It always asks first, in a dialog
   that names what goes and how much comes back.
 
-When it finishes, disktree scans again so the numbers on screen match the disk,
+When it finishes, PwrDisk scans again so the numbers on screen match the disk,
 and shows how much free space was actually gained.
 
 ## Keys
@@ -432,7 +427,7 @@ host/path field or the highlighted mount. Escape cancels discovery and
 returns to the current scan, or the idle welcome screen at startup.
 
 During exploration, press `v`, click **Source…** beside the disk name,
-or click the disktree logo to reopen the same chooser. The source being
+or click the PwrDisk logo to reopen the same chooser. The source being
 browsed is shown explicitly, and connecting never retargets an existing
 scan. Changing machines on acceptance clears the old machine's marks,
 identity and navigation history; an absolute path is not an identity
@@ -448,7 +443,7 @@ a root. Explicit command-line paths and `--disk` still start directly;
 ## The whole disk
 
 Click `/` (or any directory above the scanned root) in the trail, press
-`g`, run `disktree --disk`, or use the launcher's *Scan the whole disk*
+`g`, run `pwrdisk --disk`, or use the launcher's *Scan the whole disk*
 action. `g` and `--disk` scan the disk your home directory lives on — `/`
 on Omarchy and on macOS. On macOS the Data volume's second mount,
 `/System/Volumes/Data`, is skipped: it is `/Users`, `/Applications` and the
@@ -492,10 +487,10 @@ The same program, with Windows' answers to the questions above:
   s for WizTree and about 20 s for the walk. It also sees what the walk is
   refused, such as System Volume Information. It is used only for a whole
   NTFS drive, since a folder would still cost the whole table, and not with
-  `-l`, whose links the table does not follow. disktree flushes the volume
+  `-l`, whose links the table does not follow. PwrDisk flushes the volume
   after its own removals so the rescan shows them; changes other programs
   made seconds before may not show yet.
-  Started without admin rights, disktree walks as before. On a whole NTFS
+  Started without admin rights, PwrDisk walks as before. On a whole NTFS
   drive without `-l`, or once Windows refuses the walk a folder, the side
   panel offers **Restart as Administrator**, which reopens the same folder
   and options through the UAC prompt; during a widening scan, the wider
@@ -508,7 +503,7 @@ The same program, with Windows' answers to the questions above:
   Settings turns off), any folder holding your profile, such as
   `C:\Users`, and every profile in the folder Windows keeps them in
   (`C:\Users\*`, `Public` and `Default` included), since an elevated
-  disktree may run as another account and can reach them all. What is
+  PwrDisk may run as another account and can reach them all. What is
   inside a profile can still be removed, as under your own. Names compare
   without regard to case, as Windows compares them.
 - **Hidden** means a name starting with a dot, or the hidden attribute, so
@@ -543,13 +538,13 @@ tested:
 
 ## On Hyprland
 
-Hyprland tiles new windows, so disktree opens into whatever tile it is given.
+Hyprland tiles new windows, so PwrDisk opens into whatever tile it is given.
 It is designed for a roomy window; float it, or give it a rule. The window
-class is `disktree`.
+class is `pwrdisk`.
 
 ```
-windowrule = float, class:^(disktree)$
-windowrule = size 1400 900, class:^(disktree)$
+windowrule = float, class:^(pwrdisk)$
+windowrule = size 1400 900, class:^(pwrdisk)$
 ```
 
 ## Develop

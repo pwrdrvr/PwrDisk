@@ -91,14 +91,14 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("cmd-]", GoForward, None),
     ]);
     cx.set_menus([
-        Menu::new("disktree").items([
+        Menu::new("PwrDisk").items([
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
-            MenuItem::action("Hide disktree", Hide),
+            MenuItem::action("Hide PwrDisk", Hide),
             MenuItem::action("Hide Others", HideOthers),
             MenuItem::action("Show All", ShowAll),
             MenuItem::separator(),
-            MenuItem::action("Quit disktree", Quit),
+            MenuItem::action("Quit PwrDisk", Quit),
         ]),
         Menu::new("File").items([
             MenuItem::action("Open Folder\u{2026}", OpenFolder),
