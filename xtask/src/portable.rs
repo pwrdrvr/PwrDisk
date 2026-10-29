@@ -61,10 +61,10 @@ pub fn build() -> Result<(), String> {
             target.join(triple).join("release/disktree-scan"),
         ));
     }
-    let output = target.join("portable/disktree");
+    let output = target.join("portable/pwrdisk");
     std::fs::create_dir_all(output.parent().unwrap())
         .map_err(|e| e.to_string())?;
-    std::fs::copy(target.join("release/disktree"), &output)
+    std::fs::copy(target.join("release/pwrdisk"), &output)
         .map_err(|e| e.to_string())?;
     // strip rewrites ELF and discards overlays, so it must precede embedding.
     let status = Command::new("strip")

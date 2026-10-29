@@ -118,7 +118,7 @@ impl Archive {
             .find(|entry| entry.arch == arch)
             .ok_or_else(|| {
                 io::Error::other(format!(
-                    "this disktree build has no embedded Linux {arch} scanner"
+                    "this PwrDisk build has no embedded Linux {arch} scanner"
                 ))
             })?
             .clone();

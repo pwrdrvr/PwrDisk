@@ -100,9 +100,9 @@ pub fn cpu_threads() -> usize {
 
 /// Follow each desktop's user configuration location; never write beside
 /// the executable or scanned root. No home/config location means session-only.
-pub fn settings_path() -> Option<PathBuf> {
+fn config_base() -> Option<PathBuf> {
     let home = std::env::home_dir();
-    let base = if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") {
         home.map(|home| home.join("Library/Application Support"))
     } else if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from)
@@ -111,8 +111,29 @@ pub fn settings_path() -> Option<PathBuf> {
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .or_else(|| home.map(|home| home.join(".config")))
-    };
-    base.map(|base| base.join("disktree/power-efficiency"))
+    }
+}
+
+pub fn settings_path() -> Option<PathBuf> {
+    config_base().map(|base| base.join("pwrdisk/power-efficiency"))
+}
+
+/// Where disktree, which PwrDisk was forked from, kept the same setting.
+/// Read only, so someone switching over keeps their choice; never written.
+pub fn legacy_settings_path() -> Option<PathBuf> {
+    config_base().map(|base| base.join("disktree/power-efficiency"))
+}
+
+/// `load`, except that a missing file falls back to `legacy` when that
+/// exists. The next save lands at `path`, which then wins.
+pub fn load_or_legacy(
+    path: &Path,
+    legacy: Option<&Path>,
+) -> io::Result<PowerEfficiency> {
+    match legacy {
+        Some(legacy) if !path.exists() && legacy.exists() => load(legacy),
+        _ => load(path),
+    }
 }
 
 pub fn load(path: &Path) -> io::Result<PowerEfficiency> {
@@ -203,5 +224,27 @@ mod tests {
             io::ErrorKind::InvalidData
         );
         assert!(save(dir.path(), PowerEfficiency::Miser).is_err());
+    }
+
+    #[test]
+    fn a_disktree_setting_is_read_until_pwrdisk_saves_its_own() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("pwrdisk/power-efficiency");
+        let legacy = dir.path().join("disktree/power-efficiency");
+        assert_eq!(
+            load_or_legacy(&path, Some(&legacy)).expect("neither"),
+            PowerEfficiency::Balanced
+        );
+        save(&legacy, PowerEfficiency::Miser).expect("legacy");
+        assert_eq!(
+            load_or_legacy(&path, Some(&legacy)).expect("legacy"),
+            PowerEfficiency::Miser
+        );
+        save(&path, PowerEfficiency::Aggressive).expect("save");
+        assert_eq!(
+            load_or_legacy(&path, Some(&legacy)).expect("own"),
+            PowerEfficiency::Aggressive
+        );
+        assert!(legacy.exists(), "the legacy file is never removed");
     }
 }

@@ -2909,9 +2909,9 @@ impl Disktree {
         let directory =
             std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let filename = if script {
-            "disktree-delete.sh"
+            "pwrdisk-delete.sh"
         } else {
-            "disktree-delete-list.txt"
+            "pwrdisk-delete-list.txt"
         };
         let chosen = cx.prompt_for_new_path(&directory, Some(filename));
         cx.spawn(async move |this, cx| {
@@ -3723,10 +3723,10 @@ impl Render for Disktree {
         // The titlebar names the directory on screen, however it got there:
         // a key, a click, a rescan or a folder chosen from the menu.
         let title = if self.awaiting_root {
-            "disktree · Choose a source".into()
+            "PwrDisk · Choose a source".into()
         } else {
             format!(
-                "disktree{} · {}",
+                "PwrDisk{} · {}",
                 self.remote.as_ref().map_or_else(String::new, |host| {
                     format!(" · {host} · read-only")
                 }),

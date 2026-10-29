@@ -7,7 +7,7 @@ license.workspace = true
 description = "GPUI treemap explorer for disk usage, in Omarchy's visual language"
 
 [[bin]]
-name = "disktree"
+name = "pwrdisk"
 path = "src/main.rs"
 
 [lints]

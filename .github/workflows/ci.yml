@@ -112,9 +112,9 @@ jobs:
                   string file, int index, IntPtr[] large, IntPtr[] small, uint count);
           }
           '@
-          $exe = (Resolve-Path target/release/disktree.exe).Path
+          $exe = (Resolve-Path target/release/pwrdisk.exe).Path
           if ([ExecutableIcons]::ExtractIconEx($exe, -1, $null, $null, 0) -lt 1) {
-            throw "disktree.exe has no embedded icon"
+            throw "pwrdisk.exe has no embedded icon"
           }
 
   # The other half of each release: the same tests on the architectures
