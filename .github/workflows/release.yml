@@ -25,7 +25,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -35,8 +35,18 @@ jobs:
         # into the dispatch form is text, never shell.
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           tag="$TAG"
+          # The signing environments accept only v* tags, so a rebuild
+          # dispatched from a branch would be refused after the draft is
+          # made. Fail here instead: dispatch it from the tag itself.
+          if [ "$REF_TYPE" != tag ] || [ "$REF_NAME" != "$tag" ]; then
+            echo "Run this workflow from the tag $tag (Use workflow from:" \
+              "Tags > $tag), not from $REF_TYPE $REF_NAME" >&2
+            exit 1
+          fi
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           if [ "$tag" != "v$version" ]; then
             echo "tag $tag does not match Cargo.toml version $version" >&2
@@ -69,7 +79,7 @@ jobs:
           - { runner: ubuntu-22.04-arm, arch: aarch64 }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -81,11 +91,11 @@ jobs:
             libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
             libvulkan-dev libasound2-dev libssl-dev libzstd-dev
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.97"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Test
         run: cargo xtask test
@@ -138,15 +148,15 @@ jobs:
     # build run without them.
     environment: apple-signing
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.97"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Test
         run: cargo xtask test
@@ -269,15 +279,15 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.97"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Test
         run: cargo xtask test
@@ -288,7 +298,7 @@ jobs:
       # Unsigned: signing happens in windows-sign, the only job that holds
       # the Azure credentials, and which never checks out or builds source.
       - name: Hand over the executable
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-unsigned-${{ matrix.arch }}
           path: target/release/pwrdisk.exe
@@ -330,7 +340,7 @@ jobs:
           fi
 
       - name: Collect the executables
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: windows-unsigned-*
           path: unsigned
@@ -367,8 +377,12 @@ jobs:
             if ($sig.Status -ne "Valid") {
               throw "$exe signature is $($sig.Status): $($sig.StatusMessage)"
             }
-            if ($sig.SignerCertificate.Subject -notmatch "O=$([regex]::Escape($env:EXPECTED_PUBLISHER))") {
-              throw "$exe is signed by $($sig.SignerCertificate.Subject)"
+            # The certificate's common name, compared whole: a substring
+            # of the subject would also accept a lookalike publisher.
+            $signer = $sig.SignerCertificate.GetNameInfo(
+              [Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+            if ($signer -cne $env:EXPECTED_PUBLISHER) {
+              throw "$exe is signed by '$signer', not '$env:EXPECTED_PUBLISHER'"
             }
             if (-not $sig.TimeStamperCertificate) {
               throw "$exe has no timestamp, so it stops verifying when the certificate expires"
@@ -377,21 +391,29 @@ jobs:
           }
 
       # The release's own README and LICENSE, fetched by API rather than
-      # by a checkout: this job runs no code from the repository.
-      - name: Package
-        shell: pwsh
+      # by a checkout: this job runs no code from the repository. In bash,
+      # because a PowerShell redirect re-encodes text and would mangle the
+      # notice's "Lütke".
+      - name: Fetch README and LICENSE
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p docs
+          for file in README.md LICENSE; do
+            gh api -H "Accept: application/vnd.github.raw" \
+              "repos/$GITHUB_REPOSITORY/contents/$file?ref=$TAG" \
+              > "docs/$file"
+          done
+
+      - name: Package
+        shell: pwsh
+        env:
           VERSION: ${{ needs.release.outputs.version }}
         run: |
-          New-Item -ItemType Directory -Force docs, dist | Out-Null
-          foreach ($file in "README.md", "LICENSE") {
-            gh api -H "Accept: application/vnd.github.raw" `
-              "repos/$env:GITHUB_REPOSITORY/contents/$($file)?ref=$env:TAG" `
-              > "docs/$file"
-            if ($LASTEXITCODE -ne 0) { throw "could not fetch $file" }
-          }
+          New-Item -ItemType Directory -Force dist | Out-Null
           foreach ($arch in "x86_64", "aarch64") {
             $name = "pwrdisk-$env:VERSION-$arch-windows"
             New-Item -ItemType Directory -Force "dist/$name" | Out-Null

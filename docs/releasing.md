@@ -4,6 +4,11 @@ Bump `version` in `[workspace.package]` of the root `Cargo.toml`, merge, then
 push a matching `vX.Y.Z` tag. `release.yml` drafts the release, builds Linux,
 macOS and Windows, and publishes it once every build is in.
 
+To rebuild an existing tag, run the Release workflow by hand with **Use
+workflow from** set to that tag, and the same tag in the form. The signing
+environments accept only `v*` tags, so a run started from a branch stops
+before drafting anything.
+
 ## Signing
 
 Release signing uses two GitHub environments. Both accept deployments only
