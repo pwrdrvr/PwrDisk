@@ -234,7 +234,7 @@ struct Colors {
 const DEPTHS: usize = 5;
 
 /// Every category, in the order [`category_index`] numbers them.
-const CATEGORIES: [Category; 9] = [
+const CATEGORIES: [Category; 11] = [
     Category::Code,
     Category::AgentScratch,
     Category::Toolchain,
@@ -243,6 +243,8 @@ const CATEGORIES: [Category; 9] = [
     Category::Media,
     Category::Documents,
     Category::Cache,
+    Category::FilesystemEvents,
+    Category::Spotlight,
     Category::Other,
 ];
 
@@ -617,4 +619,16 @@ fn to_window(rect: &Rect, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
 
 fn rem_px(rems: f32, rem_size: Pixels) -> Pixels {
     px(rems * rem_size.as_f32())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_categories_use_their_own_paint_colors() {
+        for category in Category::LEGEND {
+            assert_eq!(CATEGORIES[category_index(category)], category);
+        }
+    }
 }
