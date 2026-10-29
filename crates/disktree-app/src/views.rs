@@ -2048,7 +2048,7 @@ fn privacy_line(
             .border_color(color.opacity(0.5))
             .text_size(text::CAPTION)
             .child(div().text_color(color).child(format!(
-                "macOS kept {} {noun} unreadable. Give disktree Full Disk \
+                "macOS kept {} {noun} unreadable. Give PwrDisk Full Disk \
                  Access, or your terminal if you started it there, then \
                  reopen it.",
                 widgets::human_count(errors)

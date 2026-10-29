@@ -44,7 +44,7 @@ elif [ -x "$HOME/.local/bin/disktree-scan" ]; then
 exec "$HOME/.local/bin/disktree-scan" --stdio-v1
 else
 echo 'disktree-scan is not installed on this server.' >&2
-echo 'On the server, run make install-scan from the disktree checkout.' >&2
+echo 'On the server, run make install-scan from the PwrDisk checkout.' >&2
 exit 127
 fi"#;
 

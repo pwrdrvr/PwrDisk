@@ -48,7 +48,7 @@ fn main() -> io::Result<()> {
         println!(
             "disktree-scan — read-only SSH scan helper\n\
                   usage: disktree-scan --stdio-v1\n\
-                  Used by: disktree ssh HOST [PATH]\n\
+                  Used by: pwrdisk ssh HOST [PATH]\n\
                   Reads a versioned JSON request from stdin and streams a \
                   snapshot to stdout. No deletion commands."
         );
