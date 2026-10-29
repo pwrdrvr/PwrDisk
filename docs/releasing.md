@@ -39,21 +39,27 @@ with `spctl` before upload.
 
 Used by `windows-sign`, which signs the executables both Windows build jobs
 hand over. It never checks out or builds source. Signing uses Azure Artifact
-Signing, with the same account and profile as PwrAgent; see PwrAgent's
-`docs/desktop-windows-signing.md` for how they were set up.
+Signing, with the same signing account and profile as PwrAgent and its own
+Entra app registration; see PwrAgent's `docs/desktop-windows-signing.md` for
+how those were set up. Upload all seven values from the 1Password item
+"PwrDisk - Windows Azure Trusted Signing":
+
+```sh
+OP_ACCOUNT=<USER ID> scripts/release/upload-azure-signing-from-1password.sh
+```
 
 | Variable | Value |
 | --- | --- |
 | `WIN_AZURE_SIGN_ENDPOINT` | `https://eus.codesigning.azure.net/` |
 | `WIN_AZURE_SIGN_ACCOUNT` | `pwrdrvrsigning` |
 | `WIN_AZURE_SIGN_PROFILE` | `pwrdrvr-public-trust` |
-| `WIN_AZURE_SIGN_PUBLISHER_NAME` | `PwrDrvr` |
+| `WIN_AZURE_SIGN_PUBLISHER_NAME` | `PwrDrvr LLC` |
 
 | Secret | What |
 | --- | --- |
 | `AZURE_TENANT_ID` | the Entra directory (tenant) ID |
 | `AZURE_CLIENT_ID` | the signing app registration's client ID |
-| `AZURE_CLIENT_SECRET` | one of its client secrets (expires within 24 months) |
+| `AZURE_CLIENT_SECRET` | its client secret; the 1Password item records when it expires |
 
 The signature must be valid, timestamped and issued to the publisher above,
 or the job fails.
