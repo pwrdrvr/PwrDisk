@@ -643,7 +643,7 @@ jobs:
             New-Item -ItemType Directory -Force $out | Out-Null
             Get-ChildItem $out -File -Filter *.nupkg | ForEach-Object { $_.Name } |
               Set-Content (Join-Path $env:RUNNER_TEMP "previous-$arch.txt")
-            ./input/$arch/vpk-pack-windows.ps1 `
+            & "./input/$arch/vpk-pack-windows.ps1" `
               -Version $env:RELEASE_TAG.TrimStart("v") -Arch $arch `
               -PackDir "input/$arch/app" -OutputDir $out `
               -Icon "input/$arch/disktree.ico" `

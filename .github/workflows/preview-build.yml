@@ -315,7 +315,7 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           foreach ($arch in "x64", "arm64") {
             $out = "releases/$arch"
-            ./input/$arch/vpk-pack-windows.ps1 -Version $env:VERSION -Arch $arch `
+            & "./input/$arch/vpk-pack-windows.ps1" -Version $env:VERSION -Arch $arch `
               -PackDir "input/$arch/app" -OutputDir $out -Icon "input/$arch/disktree.ico"
             Get-ChildItem $out | Format-Table Name, Length
             $channel = if ($arch -eq "x64") { "win" } else { "win-$arch" }
