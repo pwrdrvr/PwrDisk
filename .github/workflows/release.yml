@@ -126,25 +126,17 @@ jobs:
       matrix:
         include:
           # `xtask bundle` names the zip after the machine it runs on, so
-          # each architecture builds on its own.
+          # each architecture builds on its own. Standard hosted runners
+          # cost nothing on a public repository.
           - { runner: macos-15, arch: aarch64 }
           - { runner: macos-15-intel, arch: x86_64 }
     runs-on: ${{ matrix.runner }}
-    env:
-      # Signing and notarizing happen only when the repository has these
-      # secrets; without them the app is signed ad hoc, and a downloaded
-      # copy needs "Open Anyway" in System Settings once.
-      #   MACOS_CERTIFICATE           base64 of the Developer ID .p12
-      #   MACOS_CERTIFICATE_PASSWORD  its password
-      #   MACOS_SIGN_IDENTITY         "Developer ID Application: Name (TEAMID)"
-      #   NOTARY_KEY_P8               base64 of an App Store Connect API key
-      #   NOTARY_KEY_ID, NOTARY_ISSUER  that key's ID and issuer
-      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-      NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
-      NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
-      NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+    # The Developer ID certificate and the notary key live in this
+    # environment, which only v* tags may use and which waits for a
+    # reviewer's approval. scripts/release/upload-csc-link-from-1password.sh
+    # fills it. Only the steps that sign see a secret: the tests and the
+    # build run without them.
+    environment: apple-signing
     steps:
       - uses: actions/checkout@v5
         with:
@@ -159,37 +151,94 @@ jobs:
       - name: Test
         run: cargo xtask test
 
-      # A keychain of its own for the certificate, deleted with the runner.
-      - name: Signing certificate
-        if: env.MACOS_CERTIFICATE != ''
+      # Built before any credential is on the machine, so no build script
+      # runs beside them; `xtask bundle` below finds it up to date.
+      - name: Build
+        run: cargo build --release --locked -p disktree-app
+
+      # A release is never quietly ad hoc signed: one that Gatekeeper
+      # rejects is why this fork exists.
+      - name: Check signing credentials
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
+          missing=()
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_BASE64 \
+              APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::apple-signing is missing: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      # A keychain of its own for the certificate, deleted below and with
+      # the runner. The identity is read back from it rather than kept as
+      # another secret.
+      - name: Signing certificate
+        id: keychain
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
           keychain="$RUNNER_TEMP/signing.keychain-db"
           password=$(uuidgen)
-          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          echo "$CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cert.p12"
           security create-keychain -p "$password" "$keychain"
           security set-keychain-settings -lut 3600 "$keychain"
           security unlock-keychain -p "$password" "$keychain"
           security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
-            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+            -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
           security set-key-partition-list -S apple-tool:,apple: \
-            -s -k "$password" "$keychain"
+            -s -k "$password" "$keychain" >/dev/null
+          # The existing list, split on purpose into one argument each.
+          # shellcheck disable=SC2046
           security list-keychains -d user -s "$keychain" \
             $(security list-keychains -d user | tr -d '"')
-          rm "$RUNNER_TEMP/cert.p12"
-
-      - name: Bundle
-        run: |
-          args=()
-          if [ -n "$MACOS_CERTIFICATE" ]; then
-            args+=(--sign "$MACOS_SIGN_IDENTITY")
-            if [ -n "$NOTARY_KEY_P8" ]; then
-              echo "$NOTARY_KEY_P8" | base64 --decode \
-                > "$RUNNER_TEMP/AuthKey.p8"
-              export NOTARY_KEY="$RUNNER_TEMP/AuthKey.p8"
-              args+=(--notarize)
-            fi
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/.*"\(Developer ID Application: .*\)"$/\1/p' \
+            | head -1)
+          if [ -z "$identity" ]; then
+            echo "::error::CSC_LINK holds no Developer ID Application identity" >&2
+            exit 1
           fi
-          cargo xtask bundle "${args[@]}"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
+
+      - name: Bundle, sign and notarize
+        env:
+          IDENTITY: ${{ steps.keychain.outputs.identity }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          export NOTARY_KEY="$RUNNER_TEMP/AuthKey.p8"
+          echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$NOTARY_KEY"
+          trap 'rm -f "$NOTARY_KEY"' EXIT
+          cargo xtask bundle --sign "$IDENTITY" --notarize
+
+      # What a downloaded copy will face: a Developer ID signature, a
+      # stapled ticket, and Gatekeeper's verdict.
+      - name: Verify
+        run: |
+          set -euo pipefail
+          app=target/bundle/PwrDisk.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+
+      - name: Remove signing keychain
+        if: always() && steps.keychain.outputs.keychain != ''
+        env:
+          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+        run: security delete-keychain "$KEYCHAIN" || true
 
       - name: Upload
         env:
@@ -236,33 +285,135 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p disktree-app
 
-      - name: Package
-        id: package
+      # Unsigned: signing happens in windows-sign, the only job that holds
+      # the Azure credentials, and which never checks out or builds source.
+      - name: Hand over the executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unsigned-${{ matrix.arch }}
+          path: target/release/pwrdisk.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-sign:
+    name: Sign and package Windows
+    needs: [release, windows]
+    # x64 for both architectures: signing hashes the file, it does not run
+    # it, and the signing action's tools are x64.
+    runs-on: windows-2025
+    # Azure Artifact Signing, as in PwrAgent: the four WIN_AZURE_SIGN_*
+    # variables and three AZURE_* secrets. Only v* tags, after approval.
+    environment: windows-signing
+    steps:
+      - run: git config --global core.autocrlf false
+
+      - name: Check signing configuration
+        shell: bash
+        env:
+          WIN_AZURE_SIGN_PUBLISHER_NAME: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
+          WIN_AZURE_SIGN_ENDPOINT: ${{ vars.WIN_AZURE_SIGN_ENDPOINT }}
+          WIN_AZURE_SIGN_ACCOUNT: ${{ vars.WIN_AZURE_SIGN_ACCOUNT }}
+          WIN_AZURE_SIGN_PROFILE: ${{ vars.WIN_AZURE_SIGN_PROFILE }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          missing=()
+          for name in WIN_AZURE_SIGN_PUBLISHER_NAME WIN_AZURE_SIGN_ENDPOINT \
+              WIN_AZURE_SIGN_ACCOUNT WIN_AZURE_SIGN_PROFILE \
+              AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::windows-signing is missing: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Collect the executables
+        uses: actions/download-artifact@v4
+        with:
+          pattern: windows-unsigned-*
+          path: unsigned
+
+      - name: Sign
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.WIN_AZURE_SIGN_ENDPOINT }}
+          signing-account-name: ${{ vars.WIN_AZURE_SIGN_ACCOUNT }}
+          certificate-profile-name: ${{ vars.WIN_AZURE_SIGN_PROFILE }}
+          files: |
+            ${{ github.workspace }}\unsigned\windows-unsigned-x86_64\pwrdisk.exe
+            ${{ github.workspace }}\unsigned\windows-unsigned-aarch64\pwrdisk.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: PwrDisk
+          description-url: https://github.com/pwrdrvr/PwrDisk
+          # No cache: a cache entry written elsewhere must never supply
+          # code to the job that holds the signing credentials.
+          cache-dependencies: false
+
+      - name: Verify
         shell: pwsh
         env:
-          VERSION: ${{ needs.release.outputs.version }}
-          ARCH: ${{ matrix.arch }}
+          EXPECTED_PUBLISHER: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
         run: |
-          $name = "pwrdisk-$env:VERSION-$env:ARCH-windows"
-          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
-          Copy-Item target/release/pwrdisk.exe, README.md, LICENSE "dist/$name/"
-          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
-          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
-          # The format `sha256sum -c` reads, with a Unix line ending.
-          [IO.File]::WriteAllText("dist/$name.zip.sha256", "$hash  $name.zip`n")
-          "archive=dist/$name.zip" >> $env:GITHUB_OUTPUT
+          foreach ($arch in "x86_64", "aarch64") {
+            $exe = "unsigned/windows-unsigned-$arch/pwrdisk.exe"
+            $sig = Get-AuthenticodeSignature -LiteralPath $exe
+            if ($sig.Status -ne "Valid") {
+              throw "$exe signature is $($sig.Status): $($sig.StatusMessage)"
+            }
+            if ($sig.SignerCertificate.Subject -notmatch "O=$([regex]::Escape($env:EXPECTED_PUBLISHER))") {
+              throw "$exe is signed by $($sig.SignerCertificate.Subject)"
+            }
+            if (-not $sig.TimeStamperCertificate) {
+              throw "$exe has no timestamp, so it stops verifying when the certificate expires"
+            }
+            "$arch: $($sig.SignerCertificate.Subject)"
+          }
+
+      # The release's own README and LICENSE, fetched by API rather than
+      # by a checkout: this job runs no code from the repository.
+      - name: Package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force docs, dist | Out-Null
+          foreach ($file in "README.md", "LICENSE") {
+            gh api -H "Accept: application/vnd.github.raw" `
+              "repos/$env:GITHUB_REPOSITORY/contents/$($file)?ref=$env:TAG" `
+              > "docs/$file"
+            if ($LASTEXITCODE -ne 0) { throw "could not fetch $file" }
+          }
+          foreach ($arch in "x86_64", "aarch64") {
+            $name = "pwrdisk-$env:VERSION-$arch-windows"
+            New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+            Copy-Item "unsigned/windows-unsigned-$arch/pwrdisk.exe", docs/README.md, docs/LICENSE "dist/$name/"
+            Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+            $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+            # The format `sha256sum -c` reads, with a Unix line ending.
+            [IO.File]::WriteAllText("dist/$name.zip.sha256", "$hash  $name.zip`n")
+          }
 
       - name: Upload
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release.outputs.tag }}
-          ARCHIVE: ${{ steps.package.outputs.archive }}
-        run: gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            dist/*.zip dist/*.zip.sha256
 
   publish:
     name: Publish
-    needs: [release, linux, macos, windows]
+    needs: [release, linux, macos, windows-sign]
     runs-on: ubuntu-24.04
     steps:
       - name: Publish
