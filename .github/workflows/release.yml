@@ -1,87 +1,46 @@
 name: Release
 
-# Push a tag like v0.9.0 to build and publish a release. The tag must match
-# the workspace version in Cargo.toml.
+# A `vX.Y.Z` tag builds every platform, then publishes one GitHub
+# Pre-release with all of them; promote it to Latest by hand once checked.
+# Ported from PwrRoute: each signed platform is two jobs. An unprivileged
+# prepare job builds from source and hands a signing-input archive, and its
+# SHA-256 as a job output, to a credentialed sign job that never checks out
+# or builds source. The sign job packs the release with Velopack's `vpk`
+# (installers and the update feed). Unlike PwrRoute, a release never ships
+# unsigned: a sign job without its credentials fails. See README.md beside
+# this file and docs/releasing.md.
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-*" # pre-release tags like v0.12.1-rc.1
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)build, e.g. v0.9.0"
+        description: "Existing tag to build, e.g. v0.12.0"
         required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.97"
+  # Through the environment, never spliced into a script: a tag typed into
+  # the dispatch form is text, not shell.
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  release:
-    name: Check the tag and draft the release
+  check:
+    name: Check release metadata and lint
     runs-on: ubuntu-24.04
-    outputs:
-      tag: ${{ steps.version.outputs.tag }}
-      version: ${{ steps.version.outputs.version }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.tag || github.ref }}
-
-      - name: Version
-        id: version
-        # Through the environment, not spliced into the script: a tag typed
-        # into the dispatch form is text, never shell.
-        env:
-          TAG: ${{ inputs.tag || github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          tag="$TAG"
-          # The signing environments accept only v* tags, so a rebuild
-          # dispatched from a branch would be refused after the draft is
-          # made. Fail here instead: dispatch it from the tag itself.
-          if [ "$REF_TYPE" != tag ] || [ "$REF_NAME" != "$tag" ]; then
-            echo "Run this workflow from the tag $tag (Use workflow from:" \
-              "Tags > $tag), not from $REF_TYPE $REF_NAME" >&2
-            exit 1
-          fi
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          if [ "$tag" != "v$version" ]; then
-            echo "tag $tag does not match Cargo.toml version $version" >&2
-            exit 1
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      # A draft, so nobody downloads from a release still missing half its
-      # builds; `publish` below makes it public once every build is in.
-      - name: Draft
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --draft --verify-tag \
-              --title "PwrDisk ${TAG#v}" --generate-notes
-          fi
-
-  linux:
-    name: Build (Linux ${{ matrix.arch }})
-    needs: release
-    strategy:
-      matrix:
-        include:
-          # The oldest supported runners: their glibc is what the binary
-          # needs at least, so building there runs on the most systems.
-          - { runner: ubuntu-22.04, arch: x86_64 }
-          - { runner: ubuntu-22.04-arm, arch: aarch64 }
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
       - name: System libraries
         run: |
@@ -93,9 +52,77 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: "1.97"
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # A cache saved under a tag is readable by that tag's runs alone.
+          save-if: false
+
+      # The signing environments accept only v* tags, so a rebuild
+      # dispatched from a branch would build everything and then be refused
+      # at signing. Fail here instead: dispatch it from the tag itself.
+      - name: Check the run starts from the tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" != tag ] || [ "$REF_NAME" != "$RELEASE_TAG" ]; then
+            echo "Run this workflow from the tag $RELEASE_TAG (Use workflow from:" \
+              "Tags > $RELEASE_TAG), not from $REF_TYPE $REF_NAME" >&2
+            exit 1
+          fi
+
+      # The tag, Cargo.toml and CHANGELOG.md agree before anything is
+      # built; the changelog section becomes the release's notes.
+      - name: Check release metadata
+        run: cargo xtask release-check --notes-file RELEASE_NOTES.md
+
+      - name: Lint
+        run: cargo xtask lint
+
+      - name: Hand over the release notes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes
+          path: RELEASE_NOTES.md
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    name: Build (Linux ${{ matrix.arch }})
+    needs: check
+    strategy:
+      matrix:
+        include:
+          # The oldest supported runners: their glibc is what the binary
+          # needs at least, so building there runs on the most systems.
+          - { runner: ubuntu-22.04, arch: x86_64 }
+          - { runner: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
+            libvulkan-dev libasound2-dev libssl-dev libzstd-dev
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: false
 
       - name: Test
         run: cargo xtask test
@@ -105,71 +132,162 @@ jobs:
           rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
           cargo xtask portable
 
+      # Velopack is not used on Linux: vpk's Linux output is an AppImage
+      # only, and its updater runs only from one. Linux packages are not
+      # signed.
       - name: Package
-        id: package
         env:
-          VERSION: ${{ needs.release.outputs.version }}
           ARCH: ${{ matrix.arch }}
         run: |
-          name="pwrdisk-$VERSION-$ARCH-linux"
+          version="${RELEASE_TAG#v}"
+          name="pwrdisk-$version-$ARCH-linux"
           mkdir -p "dist/$name"
           # portable strips before appending; stripping again loses helpers.
           cp target/portable/pwrdisk "dist/$name/"
           cp packaging/install.sh packaging/pwrdisk.desktop.in \
              assets/disktree.svg README.md LICENSE "dist/$name/"
-          echo "$VERSION" > "dist/$name/VERSION"
+          echo "$version" > "dist/$name/VERSION"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
-          echo "archive=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
 
-      - name: Upload
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release.outputs.tag }}
-          ARCHIVE: ${{ steps.package.outputs.archive }}
-        run: gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber
+      - name: Upload Linux release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 90
 
-  macos:
-    name: Build (macOS ${{ matrix.arch }})
-    needs: release
-    strategy:
-      matrix:
-        include:
-          # `xtask bundle` names the zip after the machine it runs on, so
-          # each architecture builds on its own. Standard hosted runners
-          # cost nothing on a public repository. macOS 26's Xcode compiles
-          # the Icon Composer icon into the bundle; there is no macOS 26
-          # Intel runner, so that build ships the legacy icon alone.
-          - { runner: macos-26, arch: aarch64 }
-          - { runner: macos-15-intel, arch: x86_64 }
-    runs-on: ${{ matrix.runner }}
-    # The Developer ID certificate and the notary key live in this
-    # environment, which only v* tags may use and which waits for a
-    # reviewer's approval. scripts/release/upload-csc-link-from-1password.sh
-    # fills it. Only the steps that sign see a secret: the tests and the
-    # build run without them.
-    environment: apple-signing
+  macos-prepare:
+    name: Build macOS universal and prepare signing input
+    needs: check
+    # Apple silicon; the Intel half is cross-compiled and joined with lipo.
+    # macOS 26, for Xcode 26's actool: it compiles the Icon Composer icon,
+    # which both halves then carry. Hosted, never a persistent machine:
+    # this repository takes fork PRs.
+    runs-on: macos-26
+    timeout-minutes: 60
+    outputs:
+      signing-input-sha256: ${{ steps.archive.outputs.sha256 }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: "1.97"
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: false
 
       - name: Test
         run: cargo xtask test
 
-      # Built before any credential is on the machine, so no build script
-      # runs beside them; `xtask bundle` below finds it up to date.
-      - name: Build
-        run: cargo build --release --locked -p disktree-app
+      # Ad hoc signed; vpk re-signs it in the sign job.
+      - name: Build PwrDisk.app (universal)
+        run: cargo xtask bundle --universal --app-only
 
-      # A release is never quietly ad hoc signed: one that Gatekeeper
-      # rejects is why this fork exists.
+      # The bundle quietly drops the Icon Composer icon without actool 26;
+      # a release must not, so a runner image without it stops here.
+      - name: Check the icon catalog
+        run: |
+          app=target/bundle/PwrDisk.app
+          test -f "$app/Contents/Resources/Assets.car"
+          test -f "$app/Contents/Resources/AppIcon.icns"
+          test "$(plutil -extract CFBundleIconName raw \
+            "$app/Contents/Info.plist")" = Icon
+
+      # Everything the sign job needs, and nothing else: it has no checkout.
+      - name: Stage signing input
+        run: |
+          set -euo pipefail
+          stage=$(mktemp -d "$RUNNER_TEMP/pwrdisk-macos-input.XXXXXX")
+          echo "PWRDISK_MACOS_INPUT=$stage" >> "$GITHUB_ENV"
+          ditto target/bundle/PwrDisk.app "$stage/PwrDisk.app"
+          # macos-dmg.sh finds background.png beside itself.
+          cp packaging/macos/PwrDisk.entitlements packaging/dmg/background.png \
+            scripts/release/macos-dmg.sh scripts/release/dmg-layout.py \
+            scripts/release/macos-signing.py scripts/release/install-vpk.sh \
+            "$stage/"
+          cargo xtask release-check --notes-file "$stage/RELEASE_NOTES.md"
+
+      - name: Archive signing input
+        id: archive
+        run: |
+          set -euo pipefail
+          tarball="$RUNNER_TEMP/macos-release-signing-input.tgz"
+          tar -czf "$tarball" -C "$PWRDISK_MACOS_INPUT" .
+          sha256="$(shasum -a 256 "$tarball" | awk '{print $1}')"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          printf "%s  macos-release-signing-input.tgz\n" "$sha256" > "$tarball.sha256"
+
+      - name: Upload signing input
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-release-signing-input
+          path: |
+            ${{ runner.temp }}/macos-release-signing-input.tgz
+            ${{ runner.temp }}/macos-release-signing-input.tgz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  macos-sign:
+    name: Pack, sign and notarize macOS
+    # The only macOS job with Apple credentials. It does not check out
+    # source or run cargo; it packs the verified app from macos-prepare.
+    needs: macos-prepare
+    runs-on: macos-26
+    timeout-minutes: 90
+    # Only v* tags may use this environment, and it waits for a reviewer.
+    # scripts/release/upload-csc-link-from-1password.sh fills it.
+    environment: apple-signing
+    defaults:
+      run:
+        working-directory: release-signing
+    steps:
+      # As in PwrRoute: no files from an earlier checkout may supply
+      # signing code.
+      - name: Initialize isolated signing workspace
+        working-directory: .
+        run: |
+          set -euo pipefail
+          umask 077
+          rm -rf -- release-signing
+          mkdir release-signing
+          signing_temp=$(mktemp -d "$RUNNER_TEMP/pwrdisk-signing.XXXXXX")
+          echo "PWRDISK_SIGNING_TEMP_DIR=$signing_temp" >> "$GITHUB_ENV"
+          echo "TMPDIR=$signing_temp" >> "$GITHUB_ENV"
+
+      - name: Download signing input
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-release-signing-input
+          path: release-signing/.release-input
+
+      - name: Verify signing input
+        env:
+          EXPECTED_SHA256: ${{ needs.macos-prepare.outputs.signing-input-sha256 }}
+        run: |
+          set -euo pipefail
+          cd .release-input
+          actual="$(shasum -a 256 macos-release-signing-input.tgz | awk '{print $1}')"
+          if [ -z "$EXPECTED_SHA256" ] || [ "$actual" != "$EXPECTED_SHA256" ]; then
+            echo "::error::signing input SHA-256 mismatch: expected $EXPECTED_SHA256, got $actual" >&2
+            exit 1
+          fi
+          shasum -a 256 --check macos-release-signing-input.tgz.sha256
+
+      - name: Expand signing input
+        run: mkdir input && tar -xzf .release-input/macos-release-signing-input.tgz -C input
+
+      # A release is never quietly ad hoc signed: PwrRoute packs one with a
+      # warning, PwrDisk fails instead.
       - name: Check signing credentials
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -188,91 +306,158 @@ jobs:
             exit 1
           fi
 
-      # A keychain of its own for the certificate, deleted below and with
-      # the runner. The identity is read back from it rather than kept as
-      # another secret.
-      - name: Signing certificate
+      - name: Install .NET for vpk
+        env:
+          DOTNET_INSTALL_DIR: ${{ env.PWRDISK_SIGNING_TEMP_DIR }}/dotnet
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.x
+
+      # From the signing input: pinned version, SHA-512-verified package.
+      - name: Install vpk
+        env:
+          VPK_TEMP_ROOT: ${{ env.PWRDISK_SIGNING_TEMP_DIR }}
+        run: input/install-vpk.sh
+
+      # A keychain of its own for the Developer ID certificate and the
+      # notarytool profile vpk and macos-dmg.sh use. Always cleaned below.
+      - name: Import Developer ID certificate and notary profile
         id: keychain
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          keychain="$RUNNER_TEMP/signing.keychain-db"
-          password=$(uuidgen)
-          echo "$CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security create-keychain -p "$password" "$keychain"
-          security set-keychain-settings -lut 3600 "$keychain"
-          security unlock-keychain -p "$password" "$keychain"
-          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
-            -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
-          rm "$RUNNER_TEMP/cert.p12"
-          security set-key-partition-list -S apple-tool:,apple: \
-            -s -k "$password" "$keychain" >/dev/null
-          # The existing list, split on purpose into one argument each.
-          # shellcheck disable=SC2046
-          security list-keychains -d user -s "$keychain" \
-            $(security list-keychains -d user | tr -d '"')
-          identity=$(security find-identity -v -p codesigning "$keychain" \
-            | sed -n 's/.*"\(Developer ID Application: .*\)"$/\1/p' \
-            | head -1)
-          if [ -z "$identity" ]; then
-            echo "::error::CSC_LINK holds no Developer ID Application identity" >&2
-            exit 1
-          fi
-          echo "identity=$identity" >> "$GITHUB_OUTPUT"
-          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
-
-      - name: Bundle, sign and notarize
-        env:
-          IDENTITY: ${{ steps.keychain.outputs.identity }}
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
-          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          NOTARY_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: |
-          set -euo pipefail
-          export NOTARY_KEY="$RUNNER_TEMP/AuthKey.p8"
-          echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$NOTARY_KEY"
-          trap 'rm -f "$NOTARY_KEY"' EXIT
-          cargo xtask bundle --sign "$IDENTITY" --notarize
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: T44CNHC4UH
+        run: python3 input/macos-signing.py prepare
 
-      # What a downloaded copy will face: a Developer ID signature, a
-      # stapled ticket, and Gatekeeper's verdict.
-      - name: Verify
-        run: |
-          set -euo pipefail
-          app=target/bundle/PwrDisk.app
-          codesign --verify --deep --strict --verbose=2 "$app"
-          xcrun stapler validate "$app"
-          spctl --assess --type execute --verbose=2 "$app"
-
-      - name: Remove signing keychain
-        if: always() && steps.keychain.outputs.keychain != ''
-        env:
-          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
-        run: security delete-keychain "$KEYCHAIN" || true
-
-      - name: Upload
+      # The newest published full package, so vpk can write a delta against
+      # it. The first release, or a feed that cannot be read, packs full only.
+      - name: Fetch the previous release for deltas
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release.outputs.tag }}
-          VERSION: ${{ needs.release.outputs.version }}
-          ARCH: ${{ matrix.arch }}
         run: |
-          zip="target/bundle/pwrdisk-$VERSION-$ARCH-macos.zip"
-          (cd "$(dirname "$zip")" && shasum -a 256 "$(basename "$zip")" \
-            > "$(basename "$zip").sha256")
-          gh release upload "$TAG" "$zip" "$zip.sha256" --clobber
+          if ! vpk --skip-updates download github --repoUrl "https://github.com/$GITHUB_REPOSITORY" \
+              --token "$GH_TOKEN" --pre --channel osx --outputDir releases; then
+            echo "::warning::Could not fetch the previous macOS release; packing without a delta."
+          fi
 
-  windows:
-    name: Build (Windows ${{ matrix.arch }})
-    needs: release
+      # vpk adds UpdateMac and sq.version to the app and re-signs it with
+      # PwrDisk.entitlements (none): Developer ID, hardened runtime,
+      # notarized and stapled. No .pkg installer (--noInst): it needs a
+      # Developer ID Installer certificate, which apple-signing does not
+      # hold; the DMG is the installer. --icon is read only when vpk builds
+      # the .app itself; this one keeps the AppIcon.icns bundle drew.
+      - name: Pack with vpk
+        env:
+          IDENTITY: ${{ steps.keychain.outputs.identity }}
+          KEYCHAIN: ${{ steps.keychain.outputs.path }}
+        run: |
+          set -euo pipefail
+          vpk --skip-updates pack \
+            --packId PwrDisk \
+            --packVersion "${RELEASE_TAG#v}" \
+            --packDir input/PwrDisk.app \
+            --mainExe pwrdisk \
+            --packTitle PwrDisk \
+            --packAuthors "PwrDrvr LLC" \
+            --releaseNotes input/RELEASE_NOTES.md \
+            --signEntitlements input/PwrDisk.entitlements \
+            --noInst \
+            --outputDir releases \
+            --signAppIdentity "$IDENTITY" \
+            --notaryProfile pwrdisk-notary \
+            --keychain "$KEYCHAIN"
+
+      # Cut from the packed app, so the copy dragged to Applications is the
+      # one that can update itself. The script signs, notarizes and staples
+      # the DMG with the same identity and profile.
+      - name: Put the packed app in a DMG
+        env:
+          IDENTITY: ${{ steps.keychain.outputs.identity }}
+          KEYCHAIN: ${{ steps.keychain.outputs.path }}
+          NOTARY_PROFILE: pwrdisk-notary
+        run: |
+          set -euo pipefail
+          mkdir -p dist packed
+          ditto -x -k releases/PwrDisk-osx-Portable.zip packed
+          DMG_VERSION="${RELEASE_TAG#v}" input/macos-dmg.sh "$PWD/packed/PwrDisk.app" \
+            "dist/PwrDisk-${RELEASE_TAG#v}-universal.dmg" "$IDENTITY"
+
+      # What a downloaded copy will face: the team's signature, a stapled
+      # ticket, and Gatekeeper's verdict, for the app and the DMG.
+      - name: Verify signature and notarization
+        env:
+          APPLE_TEAM_ID: T44CNHC4UH
+        run: |
+          set -euo pipefail
+          app="$PWD/packed/PwrDisk.app"
+          codesign --verify --deep --strict --all-architectures "$app"
+          details=$(codesign -dv "$app" 2>&1)
+          if ! grep -qx "TeamIdentifier=$APPLE_TEAM_ID" <<< "$details"; then
+            echo "::error::PwrDisk.app is not signed by team $APPLE_TEAM_ID." >&2
+            exit 1
+          fi
+          lipo "$app/Contents/MacOS/pwrdisk" -verify_arch arm64 x86_64
+          test -x "$app/Contents/MacOS/UpdateMac"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute -vv "$app"
+          dmg=$(ls dist/*.dmg)
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature -vv "$dmg"
+
+      - name: Remove temporary signing credentials
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${PWRDISK_SIGNING_TEMP_DIR:-}" ]; then
+            # Even a cleanup error must not retain decoded keys or the keychain.
+            trap 'rm -rf -- "$PWRDISK_SIGNING_TEMP_DIR"' EXIT
+            if [ -f input/macos-signing.py ]; then
+              python3 input/macos-signing.py cleanup
+            fi
+          fi
+
+      # This version's packages and the osx feed only: the previous
+      # release's package fetched for the delta stays in the release that
+      # owns it.
+      - name: Collect macOS release assets
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          cp "releases/PwrDisk-$version-osx-full.nupkg" releases/PwrDisk-osx-Portable.zip \
+            releases/releases.osx.json releases/assets.osx.json releases/RELEASES-osx dist/
+          if [ -f "releases/PwrDisk-$version-osx-delta.nupkg" ]; then
+            cp "releases/PwrDisk-$version-osx-delta.nupkg" dist/
+          fi
+          (cd dist && shasum -a 256 -- * > "PwrDisk-$version-macos-SHA256SUMS")
+          ls -l dist
+
+      - name: Upload macOS release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-macos
+          path: release-signing/dist/*
+          if-no-files-found: error
+          retention-days: 90
+
+  windows-prepare:
+    name: Build Windows ${{ matrix.arch }} and prepare signing input
+    needs: check
     strategy:
       matrix:
         include:
-          - { runner: windows-2025, arch: x86_64 }
-          - { runner: windows-11-arm, arch: aarch64 }
+          - { runner: windows-2025, arch: x64 }
+          - { runner: windows-11-arm, arch: arm64 }
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    # One output per architecture: a matrix job's legs share one outputs
+    # map, and each leg sets only its own key, so neither overwrites the
+    # other. windows-sign refuses an empty digest.
+    outputs:
+      sha256-x64: ${{ steps.archive.outputs.sha256-x64 }}
+      sha256-arm64: ${{ steps.archive.outputs.sha256-arm64 }}
     env:
       # The C runtime linked in, so pwrdisk.exe also runs where the Visual
       # C++ runtime was never installed. For the tests too, so both steps
@@ -284,12 +469,15 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: "1.97"
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: false
 
       - name: Test
         run: cargo xtask test
@@ -297,28 +485,90 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p disktree-app
 
-      # Unsigned: signing happens in windows-sign, the only job that holds
-      # the Azure credentials, and which never checks out or builds source.
-      - name: Hand over the executable
+      # `app/` becomes vpk's packDir: what installs under
+      # %LocalAppData%\PwrDisk\current. Files are copied, never piped
+      # through a PowerShell redirect, which re-encodes text and would
+      # mangle the "Lütke" in LICENSE.
+      - name: Stage signing input
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "windows-release-input"
+          New-Item -ItemType Directory -Force "$stage/app" | Out-Null
+          Copy-Item target/release/pwrdisk.exe, README.md, LICENSE "$stage/app/"
+          Copy-Item licenses/velopack.txt "$stage/app/VELOPACK-NOTICES.txt"
+          Copy-Item scripts/release/install-vpk.sh, scripts/release/vpk-pack-windows.ps1, assets/disktree.ico "$stage/"
+          cargo xtask release-check --notes-file "$stage/RELEASE_NOTES.md"
+          if ($LASTEXITCODE -ne 0) { throw "release-check failed (exit code $LASTEXITCODE)." }
+
+      - name: Archive signing input
+        id: archive
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          $name = "windows-release-signing-input-$env:ARCH.tgz"
+          $archive = Join-Path $env:RUNNER_TEMP $name
+          & tar.exe -czf $archive -C (Join-Path $env:RUNNER_TEMP "windows-release-input") .
+          if ($LASTEXITCODE -ne 0) { throw "Failed to archive Windows signing input (exit code $LASTEXITCODE)." }
+          $sha256 = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          "sha256-$env:ARCH=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "$sha256  $name" | Set-Content -Path "$archive.sha256" -Encoding ascii
+
+      - name: Upload signing input
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: windows-unsigned-${{ matrix.arch }}
-          path: target/release/pwrdisk.exe
+          name: windows-release-signing-input-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/windows-release-signing-input-${{ matrix.arch }}.tgz
+            ${{ runner.temp }}/windows-release-signing-input-${{ matrix.arch }}.tgz.sha256
           if-no-files-found: error
           retention-days: 7
 
   windows-sign:
-    name: Sign and package Windows
-    needs: [release, windows]
-    # x64 for both architectures: signing hashes the file, it does not run
-    # it, and the signing action's tools are x64.
+    name: Pack and sign Windows installers
+    # The only Windows job with Azure credentials. It does not check out
+    # source or run cargo; it packs the verified builds from
+    # windows-prepare. x64 for both architectures: packing and signing read
+    # the files, they do not run them.
+    needs: windows-prepare
     runs-on: windows-2025
-    # Azure Artifact Signing, as in PwrAgent: the four WIN_AZURE_SIGN_*
-    # variables and three AZURE_* secrets. Only v* tags, after approval.
+    timeout-minutes: 60
+    # Azure Artifact Signing, as in PwrAgent and PwrRoute: the four
+    # WIN_AZURE_SIGN_* variables and three AZURE_* secrets. Only v* tags,
+    # after approval.
     environment: windows-signing
     steps:
-      - run: git config --global core.autocrlf false
+      - name: Download signing input
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: windows-release-signing-input-*
+          path: .release-input
+          merge-multiple: true
 
+      - name: Verify and expand signing input
+        shell: pwsh
+        env:
+          SHA256_X64: ${{ needs.windows-prepare.outputs.sha256-x64 }}
+          SHA256_ARM64: ${{ needs.windows-prepare.outputs.sha256-arm64 }}
+        run: |
+          foreach ($arch in "x64", "arm64") {
+            $expected = [Environment]::GetEnvironmentVariable("SHA256_$($arch.ToUpper())")
+            $name = "windows-release-signing-input-$arch.tgz"
+            $archive = ".release-input/$name"
+            $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+            if (-not $expected -or $actual -ne $expected) {
+              throw "Windows $arch signing input digest mismatch: expected '$expected', got $actual."
+            }
+            $recorded = (Get-Content "$archive.sha256" -Raw).Trim()
+            if ($recorded -ne "$actual  $name") {
+              throw "Windows $arch signing input checksum file does not match the archive."
+            }
+            New-Item -ItemType Directory -Force "input/$arch" | Out-Null
+            & tar.exe -xzf $archive -C "input/$arch"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to expand the $arch signing input (exit code $LASTEXITCODE)." }
+          }
+
+      # A release is never shipped unsigned.
       - name: Check signing configuration
         shell: bash
         env:
@@ -341,107 +591,181 @@ jobs:
             exit 1
           fi
 
-      - name: Collect the executables
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      # vpk runs on .NET; so does the Azure Artifact Signing dlib it ships.
+      - name: Install .NET for vpk
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          pattern: windows-unsigned-*
-          path: unsigned
+          dotnet-version: 8.0.x
 
-      - name: Sign
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: ${{ vars.WIN_AZURE_SIGN_ENDPOINT }}
-          signing-account-name: ${{ vars.WIN_AZURE_SIGN_ACCOUNT }}
-          certificate-profile-name: ${{ vars.WIN_AZURE_SIGN_PROFILE }}
-          files: |
-            ${{ github.workspace }}\unsigned\windows-unsigned-x86_64\pwrdisk.exe
-            ${{ github.workspace }}\unsigned\windows-unsigned-aarch64\pwrdisk.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-          description: PwrDisk
-          description-url: https://github.com/pwrdrvr/PwrDisk
-          # No cache: a cache entry written elsewhere must never supply
-          # code to the job that holds the signing credentials.
-          cache-dependencies: false
+      # From the signing input: pinned version, SHA-512-verified package.
+      # Both architectures carry the same script.
+      - name: Install vpk
+        shell: bash
+        run: input/x64/install-vpk.sh
 
-      - name: Verify
+      # The metadata.json the Azure Artifact Signing dlib reads; the
+      # credentials come from the AZURE_* environment of the pack step.
+      - name: Write Azure Artifact Signing metadata
+        shell: pwsh
+        env:
+          WIN_AZURE_SIGN_ENDPOINT: ${{ vars.WIN_AZURE_SIGN_ENDPOINT }}
+          WIN_AZURE_SIGN_ACCOUNT: ${{ vars.WIN_AZURE_SIGN_ACCOUNT }}
+          WIN_AZURE_SIGN_PROFILE: ${{ vars.WIN_AZURE_SIGN_PROFILE }}
+        run: |
+          @{
+            Endpoint = $env:WIN_AZURE_SIGN_ENDPOINT
+            CodeSigningAccountName = $env:WIN_AZURE_SIGN_ACCOUNT
+            CertificateProfileName = $env:WIN_AZURE_SIGN_PROFILE
+          } | ConvertTo-Json | Set-Content -Path (Join-Path $env:RUNNER_TEMP "azure-signing.json") -Encoding utf8
+
+      # Each architecture is its own channel and its own output directory,
+      # so neither feed nor delta sees the other's packages. The previous
+      # release's full package lets vpk write a delta; the first release,
+      # or a feed that cannot be read, packs full only.
+      - name: Pack with vpk
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          foreach ($arch in "x64", "arm64") {
+            $channel = if ($arch -eq "x64") { "win" } else { "win-$arch" }
+            $out = "releases/$arch"
+            & vpk --skip-updates download github --repoUrl "https://github.com/$env:GITHUB_REPOSITORY" `
+              --token $env:GH_TOKEN --pre --channel $channel --outputDir $out
+            if ($LASTEXITCODE -ne 0) {
+              "::warning::Could not fetch the previous Windows $arch release; packing without a delta."
+            }
+            # What was there before packing: the previous release's package,
+            # which stays in the release that owns it.
+            New-Item -ItemType Directory -Force $out | Out-Null
+            Get-ChildItem $out -File -Filter *.nupkg | ForEach-Object { $_.Name } |
+              Set-Content (Join-Path $env:RUNNER_TEMP "previous-$arch.txt")
+            ./input/$arch/vpk-pack-windows.ps1 `
+              -Version $env:RELEASE_TAG.TrimStart("v") -Arch $arch `
+              -PackDir "input/$arch/app" -OutputDir $out `
+              -Icon "input/$arch/disktree.ico" `
+              -ReleaseNotes "input/$arch/RELEASE_NOTES.md" `
+              -AzureSignFile (Join-Path $env:RUNNER_TEMP "azure-signing.json")
+          }
+
+      - name: Verify Authenticode signatures
         shell: pwsh
         env:
           EXPECTED_PUBLISHER: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}
         run: |
-          foreach ($arch in "x86_64", "aarch64") {
-            $exe = "unsigned/windows-unsigned-$arch/pwrdisk.exe"
-            $sig = Get-AuthenticodeSignature -LiteralPath $exe
-            if ($sig.Status -ne "Valid") {
-              throw "$exe signature is $($sig.Status): $($sig.StatusMessage)"
+          foreach ($arch in "x64", "arm64") {
+            $channel = if ($arch -eq "x64") { "win" } else { "win-$arch" }
+            $out = "releases/$arch"
+            $portable = Join-Path $env:RUNNER_TEMP "portable-$arch"
+            Expand-Archive "$out/PwrDisk-$channel-Portable.zip" -DestinationPath $portable
+            $targets = @(
+              "$out/PwrDisk-$channel-Setup.exe",
+              "$out/PwrDisk-$channel.msi",
+              (Join-Path $portable "Update.exe"),
+              (Join-Path $portable "PwrDisk.exe"),
+              (Join-Path $portable "current/pwrdisk.exe")
+            )
+            foreach ($target in $targets) {
+              if (-not (Test-Path -LiteralPath $target)) {
+                throw "Expected signed file is missing: $target"
+              }
+              $sig = Get-AuthenticodeSignature (Resolve-Path $target).Path
+              if ($sig.Status -ne "Valid") {
+                throw "${target} signature is $($sig.Status): $($sig.StatusMessage)"
+              }
+              # The certificate's common name, compared whole: a substring
+              # of the subject would also accept a lookalike publisher.
+              $signer = $sig.SignerCertificate.GetNameInfo(
+                [Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+              if ($signer -cne $env:EXPECTED_PUBLISHER) {
+                throw "${target} is signed by '$signer', not '$env:EXPECTED_PUBLISHER'"
+              }
+              if (-not $sig.TimeStamperCertificate) {
+                throw "${target} has no timestamp, so it stops verifying when the certificate expires"
+              }
+              "signed: $target"
             }
-            # The certificate's common name, compared whole: a substring
-            # of the subject would also accept a lookalike publisher.
-            $signer = $sig.SignerCertificate.GetNameInfo(
-              [Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
-            if ($signer -cne $env:EXPECTED_PUBLISHER) {
-              throw "$exe is signed by '$signer', not '$env:EXPECTED_PUBLISHER'"
-            }
-            if (-not $sig.TimeStamperCertificate) {
-              throw "$exe has no timestamp, so it stops verifying when the certificate expires"
-            }
-            "$arch: $($sig.SignerCertificate.Subject)"
           }
 
-      # The release's own README and LICENSE, fetched by API rather than
-      # by a checkout: this job runs no code from the repository. In bash,
-      # because a PowerShell redirect re-encodes text and would mangle the
-      # notice's "Lütke".
-      - name: Fetch README and LICENSE
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release.outputs.tag }}
-        run: |
-          set -euo pipefail
-          mkdir -p docs
-          for file in README.md LICENSE; do
-            gh api -H "Accept: application/vnd.github.raw" \
-              "repos/$GITHUB_REPOSITORY/contents/$file?ref=$TAG" \
-              > "docs/$file"
-          done
-
-      - name: Package
+      # Every file vpk wrote for this version, both architectures: the
+      # installers, the portable zips, the packages and the feeds.
+      - name: Collect Windows release assets
         shell: pwsh
-        env:
-          VERSION: ${{ needs.release.outputs.version }}
         run: |
+          $version = $env:RELEASE_TAG.TrimStart("v")
           New-Item -ItemType Directory -Force dist | Out-Null
-          foreach ($arch in "x86_64", "aarch64") {
-            $name = "pwrdisk-$env:VERSION-$arch-windows"
-            New-Item -ItemType Directory -Force "dist/$name" | Out-Null
-            Copy-Item "unsigned/windows-unsigned-$arch/pwrdisk.exe", docs/README.md, docs/LICENSE "dist/$name/"
-            Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
-            $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
-            # The format `sha256sum -c` reads, with a Unix line ending.
-            [IO.File]::WriteAllText("dist/$name.zip.sha256", "$hash  $name.zip`n")
+          foreach ($arch in "x64", "arm64") {
+            $previous = @(Get-Content (Join-Path $env:RUNNER_TEMP "previous-$arch.txt") -ErrorAction SilentlyContinue)
+            Get-ChildItem "releases/$arch" -File |
+              Where-Object { $_.Extension -ne ".nupkg" -or $previous -notcontains $_.Name } |
+              ForEach-Object {
+                if (Test-Path -LiteralPath (Join-Path dist $_.Name)) {
+                  throw "Both architectures wrote $($_.Name)"
+                }
+                Copy-Item -LiteralPath $_.FullName -Destination dist
+              }
           }
+          $sums = Get-ChildItem dist -File | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant())  $($_.Name)"
+          }
+          [IO.File]::WriteAllText("dist/PwrDisk-$version-windows-SHA256SUMS", ($sums -join "`n") + "`n")
+          Get-ChildItem dist | Format-Table Name, Length
 
-      - name: Upload
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release.outputs.tag }}
-        run: |
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            dist/*.zip dist/*.zip.sha256
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 90
 
   publish:
-    name: Publish
-    needs: [release, linux, macos, windows-sign]
+    name: Create the release
+    needs: [linux, macos-sign, windows-sign]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: release-${{ inputs.tag || github.ref_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
     steps:
-      - name: Publish
+      # One directory per artifact: merging would let a same-named file
+      # from one platform silently replace another's.
+      - name: Download platform artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: release-artifacts
+
+      - name: Check asset names are unique
+        run: |
+          set -euo pipefail
+          mv release-artifacts/release-notes/RELEASE_NOTES.md "$RUNNER_TEMP/"
+          rmdir release-artifacts/release-notes
+          dupes=$(find release-artifacts -type f -exec basename {} \; | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "::error::Two platforms produced the same asset name: $dupes" >&2
+            exit 1
+          fi
+          mkdir release-assets
+          find release-artifacts -type f -exec mv {} release-assets/ \;
+          ls -l release-assets
+
+      # Born a Pre-release: the update channel's Stable · Latest slot
+      # follows promoted releases only, so a release reaches installed
+      # copies on that channel when it is promoted to Latest by hand.
+      - name: Create the pre-release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release.outputs.tag }}
-        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --prerelease \
+            --title "PwrDisk ${RELEASE_TAG#v}" \
+            --notes-file "$RUNNER_TEMP/RELEASE_NOTES.md" \
+            release-assets/*

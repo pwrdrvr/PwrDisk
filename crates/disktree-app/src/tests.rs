@@ -1131,6 +1131,59 @@ fn the_help_overlay_opens_and_closes(cx: &mut TestAppContext) {
     assert!(!read(&view, cx, |app| app.show_help));
 }
 
+/// The Updates panel draws, owns the keyboard while open, and saves the
+/// channel picked. A test binary is no Velopack install, so it says so and
+/// offers no restart; nothing reaches the network.
+#[gpui_kit::test]
+fn the_updates_panel_picks_a_channel_and_keeps_the_keys(
+    cx: &mut TestAppContext,
+) {
+    use crate::update_channel::{Slot, UpdateSettings};
+
+    cx.update(gpui_omarchy::init);
+    let temp = fixture();
+    let settings = tempfile::TempDir::new().expect("tempdir");
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, _| {
+        app.updates_dir = Some(settings.path().to_path_buf());
+    });
+    draw(cx);
+    let crumbs = read(&view, cx, |app| app.crumbs.clone());
+
+    press(cx, "shift-u");
+    assert!(read(&view, cx, |app| app.updates_open));
+    assert!(cx.debug_bounds("updates-panel").is_some());
+    assert!(cx.debug_bounds("update-slot-3").is_some());
+    assert!(
+        cx.debug_bounds("updates-restart").is_none(),
+        "nothing is downloaded, so there is nothing to restart into"
+    );
+
+    // Behind the panel nothing moves and nothing is marked.
+    press(cx, "space");
+    press(cx, "u");
+    assert_eq!(read(&view, cx, |app| app.marks.len()), 0);
+    assert_eq!(read(&view, cx, |app| app.crumbs.clone()), crumbs);
+
+    press(cx, "down");
+    press(cx, "enter");
+    assert_eq!(
+        crate::updater::selection().resolve("0.12.0"),
+        Slot::STABLE_PRERELEASE
+    );
+    let saved =
+        std::fs::read_to_string(settings.path().join("update-channel.json"))
+            .expect("the pick is saved");
+    assert!(saved.contains("\"prerelease\""), "{saved}");
+
+    press(cx, "escape");
+    assert!(!read(&view, cx, |app| app.updates_open));
+    assert!(cx.debug_bounds("updates-panel").is_none());
+
+    // The selection is process-wide; leave the default for other tests.
+    let _ = crate::updater::set_selection(UpdateSettings::default(), None);
+}
+
 #[gpui_kit::test]
 fn the_volume_picker_opens_moves_and_closes(cx: &mut TestAppContext) {
     cx.update(init);

@@ -1,0 +1,338 @@
+name: Preview Build
+
+# The release's packaging, unsigned, for a pull request or a branch: a
+# macOS universal DMG cut from the vpk-packed app, and Windows x64 and ARM64
+# Setup.exe, MSI and portable zip. The same jobs and scripts as release.yml,
+# minus credentials, release notes and deltas, so a packaging change is seen
+# working before a tag. See README.md beside this file.
+on:
+  pull_request:
+    # `labeled`: the build-preview label was just applied. `synchronize`:
+    # a later push to a PR that has it; without this the only way to re-run
+    # after a fix is to remove and re-add the label.
+    types: [labeled, synchronize]
+  # Packages a branch without a PR. Only from the default branch's copy of
+  # this file, as GitHub runs every dispatch.
+  workflow_dispatch:
+
+concurrency:
+  # A new push to a labeled PR cancels the preview it supersedes. Adding
+  # any other label makes a skipped run, which gets its own group so it
+  # cannot cancel an active build. Dispatch runs never cancel each other.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'build-preview' && '-unrelated-label' || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# No secrets are used, and the token only reads. Every runner is
+# GitHub-hosted and discarded after the job, so a labeled fork PR reaches
+# no persistent machine.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.97"
+  # `0.12.0-pr.12` on a PR, `0.12.0-dev.34` on dispatch. xtask and vpk stamp
+  # packages with it; Cargo.toml is left alone so `--locked` still holds.
+  PREVIEW_SUFFIX: ${{ github.event.pull_request.number && format('pr.{0}', github.event.pull_request.number) || format('dev.{0}', github.run_number) }}
+
+jobs:
+  version:
+    name: Preview version
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.action == 'labeled' && github.event.label.name == 'build-preview') ||
+      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Compute preview version
+        id: version
+        run: |
+          base=$(sed -n 's/^version = "\([0-9]*\.[0-9]*\.[0-9]*\).*"/\1/p' Cargo.toml | head -1)
+          echo "version=${base}-${PREVIEW_SUFFIX}" >> "$GITHUB_OUTPUT"
+          echo "Preview version: ${base}-${PREVIEW_SUFFIX}"
+
+  macos-prepare:
+    name: Build macOS universal
+    needs: version
+    # macOS 26 for actool 26 and the Icon Composer icon, as release.yml.
+    runs-on: macos-26
+    timeout-minutes: 60
+    outputs:
+      signing-input-sha256: ${{ steps.archive.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build PwrDisk.app (universal)
+        env:
+          PWRDISK_VERSION: ${{ needs.version.outputs.version }}
+        run: cargo xtask bundle --universal --app-only
+
+      # The bundle quietly drops the Icon Composer icon without actool 26;
+      # nor may a release, which this previews, so a runner image without it stops here.
+      - name: Check the icon catalog
+        run: |
+          app=target/bundle/PwrDisk.app
+          test -f "$app/Contents/Resources/Assets.car"
+          test -f "$app/Contents/Resources/AppIcon.icns"
+          test "$(plutil -extract CFBundleIconName raw \
+            "$app/Contents/Info.plist")" = Icon
+
+      - name: Stage and archive pack input
+        id: archive
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/macos-input"
+          mkdir "$stage"
+          ditto target/bundle/PwrDisk.app "$stage/PwrDisk.app"
+          cp packaging/macos/PwrDisk.entitlements packaging/dmg/background.png \
+            scripts/release/macos-dmg.sh scripts/release/dmg-layout.py \
+            scripts/release/install-vpk.sh "$stage/"
+          tarball="$RUNNER_TEMP/macos-preview-input.tgz"
+          tar -czf "$tarball" -C "$stage" .
+          echo "sha256=$(shasum -a 256 "$tarball" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload pack input
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-preview-input
+          path: ${{ runner.temp }}/macos-preview-input.tgz
+          if-no-files-found: error
+          retention-days: 3
+
+  # release.yml's macos-sign, ad hoc: no checkout, the same vpk and DMG
+  # steps on the same macos-26 image.
+  macos-pack:
+    name: Pack macOS DMG (ad hoc signed)
+    needs: [version, macos-prepare]
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Download pack input
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-preview-input
+          path: .preview-input
+
+      - name: Verify and expand pack input
+        env:
+          EXPECTED_SHA256: ${{ needs.macos-prepare.outputs.signing-input-sha256 }}
+        run: |
+          set -euo pipefail
+          actual="$(shasum -a 256 .preview-input/macos-preview-input.tgz | awk '{print $1}')"
+          if [ -z "$EXPECTED_SHA256" ] || [ "$actual" != "$EXPECTED_SHA256" ]; then
+            echo "::error::pack input SHA-256 mismatch: expected $EXPECTED_SHA256, got $actual" >&2
+            exit 1
+          fi
+          mkdir input
+          tar -xzf .preview-input/macos-preview-input.tgz -C input
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install vpk
+        run: input/install-vpk.sh
+
+      # Ad hoc (`-`): an app vpk changed but did not sign fails
+      # `codesign --verify`.
+      - name: Pack with vpk
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          vpk --skip-updates pack \
+            --packId PwrDisk \
+            --packVersion "$VERSION" \
+            --packDir input/PwrDisk.app \
+            --mainExe pwrdisk \
+            --packTitle PwrDisk \
+            --packAuthors "PwrDrvr LLC" \
+            --signEntitlements input/PwrDisk.entitlements \
+            --noInst \
+            --outputDir releases \
+            --signAppIdentity -
+          ls -l releases
+
+      - name: Put the packed app in a DMG
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist packed
+          ditto -x -k releases/PwrDisk-osx-Portable.zip packed
+          DMG_VERSION="$VERSION" input/macos-dmg.sh "$PWD/packed/PwrDisk.app" \
+            "dist/PwrDisk-$VERSION-universal.dmg"
+          cp releases/PwrDisk-osx-Portable.zip dist/
+
+      # What release.yml checks, short of the team signature and Gatekeeper,
+      # plus the DMG's contents.
+      - name: Verify
+        run: |
+          set -euo pipefail
+          app="$PWD/packed/PwrDisk.app"
+          codesign --verify --deep --strict --all-architectures "$app"
+          lipo "$app/Contents/MacOS/pwrdisk" -verify_arch arm64 x86_64
+          test -x "$app/Contents/MacOS/UpdateMac"
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" dist/*.dmg
+          trap 'hdiutil detach "$mount" -quiet || true' EXIT
+          test -d "$mount/PwrDisk.app/Contents/MacOS"
+          test -x "$mount/PwrDisk.app/Contents/MacOS/UpdateMac"
+          [ "$(readlink "$mount/Applications")" = /Applications ]
+          test -f "$mount/.DS_Store"
+          test -f "$mount/.background/background.png"
+          test -f "$mount/.VolumeIcon.icns"
+
+      - name: Upload macOS preview
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: PwrDisk-${{ needs.version.outputs.version }}-preview-macos
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-prepare:
+    name: Build Windows ${{ matrix.arch }}
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - { runner: windows-2025, arch: x64 }
+          - { runner: windows-11-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    # As in release.yml: one output per architecture, which also proves the
+    # hand-off the signing job relies on.
+    outputs:
+      sha256-x64: ${{ steps.archive.outputs.sha256-x64 }}
+      sha256-arm64: ${{ steps.archive.outputs.sha256-arm64 }}
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build (unsigned)
+        run: cargo build --release --locked -p disktree-app
+
+      - name: Stage and archive pack input
+        id: archive
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "windows-input"
+          New-Item -ItemType Directory -Force "$stage/app" | Out-Null
+          Copy-Item target/release/pwrdisk.exe, README.md, LICENSE "$stage/app/"
+          Copy-Item licenses/velopack.txt "$stage/app/VELOPACK-NOTICES.txt"
+          Copy-Item scripts/release/install-vpk.sh, scripts/release/vpk-pack-windows.ps1, assets/disktree.ico "$stage/"
+          $name = "windows-preview-input-$env:ARCH.tgz"
+          $archive = Join-Path $env:RUNNER_TEMP $name
+          & tar.exe -czf $archive -C $stage .
+          if ($LASTEXITCODE -ne 0) { throw "tar failed (exit code $LASTEXITCODE)." }
+          $sha256 = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          "sha256-$env:ARCH=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Upload pack input
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-preview-input-${{ matrix.arch }}
+          path: ${{ runner.temp }}/windows-preview-input-${{ matrix.arch }}.tgz
+          if-no-files-found: error
+          retention-days: 3
+
+  # release.yml's windows-sign, unsigned: no checkout, both architectures
+  # packed by the same script on one x64 runner.
+  windows-pack:
+    name: Pack Windows Setup.exe, MSI and zip (unsigned)
+    needs: [version, windows-prepare]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Download pack input
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: windows-preview-input-*
+          path: .preview-input
+          merge-multiple: true
+
+      - name: Verify and expand pack input
+        shell: pwsh
+        env:
+          SHA256_X64: ${{ needs.windows-prepare.outputs.sha256-x64 }}
+          SHA256_ARM64: ${{ needs.windows-prepare.outputs.sha256-arm64 }}
+        run: |
+          foreach ($arch in "x64", "arm64") {
+            $expected = [Environment]::GetEnvironmentVariable("SHA256_$($arch.ToUpper())")
+            $archive = ".preview-input/windows-preview-input-$arch.tgz"
+            $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+            if (-not $expected -or $actual -ne $expected) {
+              throw "Windows $arch pack input digest mismatch: expected '$expected', got $actual."
+            }
+            New-Item -ItemType Directory -Force "input/$arch" | Out-Null
+            & tar.exe -xzf $archive -C "input/$arch"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to expand the $arch input (exit code $LASTEXITCODE)." }
+          }
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install vpk
+        shell: bash
+        run: input/x64/install-vpk.sh
+
+      - name: Pack with vpk
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          foreach ($arch in "x64", "arm64") {
+            $out = "releases/$arch"
+            ./input/$arch/vpk-pack-windows.ps1 -Version $env:VERSION -Arch $arch `
+              -PackDir "input/$arch/app" -OutputDir $out -Icon "input/$arch/disktree.ico"
+            Get-ChildItem $out | Format-Table Name, Length
+            $channel = if ($arch -eq "x64") { "win" } else { "win-$arch" }
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "$out/PwrDisk-$channel-Portable.zip").Path)
+            $names = $zip.Entries | ForEach-Object { $_.FullName }
+            $zip.Dispose()
+            foreach ($expected in "Update.exe", "current/pwrdisk.exe", "current/VELOPACK-NOTICES.txt") {
+              if ($names -notcontains $expected) { throw "$arch portable zip has no $expected" }
+            }
+            Copy-Item "$out/PwrDisk-$channel-Setup.exe", "$out/PwrDisk-$channel.msi", "$out/PwrDisk-$channel-Portable.zip" dist/ -ErrorAction Stop
+          }
+
+      - name: Upload Windows preview
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: PwrDisk-${{ needs.version.outputs.version }}-preview-windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

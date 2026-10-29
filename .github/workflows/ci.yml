@@ -191,9 +191,10 @@ jobs:
       - name: Test
         run: cargo xtask test
 
-      # The app bundle, signed ad hoc: catches a broken Info.plist, icon or
-      # signature before a release does. This runner's Xcode has no actool
-      # 26, so this is the bundle without the Icon Composer icon.
+      # The app bundle, signed ad hoc, and the DMG release.yml cuts the same
+      # way: catches a broken Info.plist, icon, signature or DMG layout
+      # before a release does. This runner's Xcode has no actool 26, so
+      # this is the bundle without the Icon Composer icon.
       - name: Bundle
         run: cargo xtask bundle
 

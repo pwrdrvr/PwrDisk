@@ -8,6 +8,7 @@
 
 mod bundle;
 mod portable;
+mod release;
 
 use std::process::{Command, ExitCode, Stdio};
 
@@ -19,12 +20,18 @@ tasks:
   fmt       rustfmt --check over the workspace
   fmt-fix   rustfmt in place
   clippy    clippy --workspace --all-targets -- -D warnings
-  test      cargo test --workspace
+  test      cargo test --workspace, then (Unix) the release scripts' tests
   ci        lint, then test
-  portable  Linux: desktop executable with static x86_64/ARM64 scanners\n  bundle    macOS: target/bundle/PwrDisk.app and its zip
+  portable  Linux: desktop executable with static x86_64/ARM64 scanners
+  bundle    macOS: target/bundle/PwrDisk.app, its zip and a DMG
               --sign IDENTITY   sign with a Developer ID (default: ad hoc)
               --notarize        notarize and staple; needs NOTARY_PROFILE, or
                                 NOTARY_KEY, NOTARY_KEY_ID and NOTARY_ISSUER
+              --universal       both architectures, joined with lipo
+              --app-only        stop at the signed app: no zip, no DMG
+  release-check --tag vX.Y.Z [--notes-file PATH]
+            the tag, Cargo.toml version and CHANGELOG.md agree; optionally
+            write that version's notes
 ";
 
 fn main() -> ExitCode {
@@ -39,6 +46,7 @@ fn main() -> ExitCode {
         "test" => test(),
         "ci" => fmt(false).and_then(|()| clippy()).and_then(|()| test()),
         "bundle" => bundle::bundle(&args[1..]),
+        "release-check" => release::check(&args[1..]),
         "portable" => portable::build(),
         "help" | "-h" | "--help" => {
             println!("{USAGE}");
@@ -79,7 +87,26 @@ fn clippy() -> Result<(), String> {
 }
 
 fn test() -> Result<(), String> {
-    run(&["test", "--workspace"])
+    run(&["test", "--workspace"])?;
+    // The DMG layout and the signing keychain's cleanup, with `security`
+    // and `xcrun` mocked: no credentials, so they run anywhere with a
+    // Python 3. Windows has neither the tools nor the scripts' shell.
+    if cfg!(unix) {
+        let status = Command::new("python3")
+            .args(["-B", "-m", "unittest", "discover", "-s"])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../scripts/release"),
+            )
+            .args(["-p", "*_test.py"])
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|err| format!("could not start python3: {err}"))?;
+        if !status.success() {
+            return Err("the release scripts' tests failed".into());
+        }
+    }
+    Ok(())
 }
 
 fn run(args: &[&str]) -> Result<(), String> {

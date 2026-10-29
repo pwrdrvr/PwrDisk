@@ -9,6 +9,15 @@
 //! Signing is ad hoc unless an identity is given. An ad-hoc app runs on the
 //! Mac that built it; a downloaded one needs a Developer ID signature and
 //! notarization, or Gatekeeper stops it.
+//!
+//! `--universal` builds both Mac architectures and joins them with `lipo`,
+//! as releases ship. `--app-only` stops at the signed app: release.yml's
+//! unprivileged job hands that to the signing job, where `vpk pack` adds the
+//! updater and `scripts/release/macos-dmg.sh` cuts the DMG. Without it the
+//! app is also zipped and put in the same DMG, laid out by that script.
+//!
+//! `PWRDISK_VERSION` stamps another version than the crate's, for preview
+//! builds (`0.12.0-pr.4`); Cargo.toml is left alone so `--locked` holds.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,6 +28,16 @@ const EXECUTABLE: &str = "pwrdisk";
 /// What the binary is built for at least; `LSMinimumSystemVersion` in
 /// `packaging/macos/Info.plist.in` says the same, and GPUI needs 10.15.7.
 const DEPLOYMENT_TARGET: &str = "11.0";
+/// What `--universal` joins, in the order `lipo` takes them.
+const TARGETS: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
+/// The DMG's layout, shared with release.yml's signing job.
+const DMG_SCRIPT: &str = "scripts/release/macos-dmg.sh";
+/// Velopack's native binaries' notices: `vpk pack` adds `UpdateMac` to the
+/// released app, so the app carries them.
+const NOTICES: [(&str, &str); 2] = [
+    ("LICENSE", "LICENSE"),
+    ("licenses/velopack.txt", "VELOPACK-NOTICES.txt"),
+];
 
 /// The iconset `iconutil` expects: each point size at 1x and 2x.
 const ICON_SIZES: [(&str, u32); 10] = [
@@ -41,6 +60,10 @@ struct Options {
     /// when absent.
     identity: Option<String>,
     notarize: bool,
+    /// Both architectures, joined with `lipo`.
+    universal: bool,
+    /// Stop at the signed app: no zip, no DMG.
+    app_only: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -60,6 +83,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 options.identity = Some(identity.clone());
             }
             "--notarize" => options.notarize = true,
+            "--universal" => options.universal = true,
+            "--app-only" => options.app_only = true,
             other => return Err(format!("unknown bundle option {other}")),
         }
     }
@@ -67,6 +92,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
         return Err("--notarize needs --sign: Apple notarizes Developer ID \
              signatures only"
             .into());
+    }
+    // Apple notarizes an archive, and --app-only makes none; release.yml's
+    // signing job notarizes through vpk instead.
+    if options.notarize && options.app_only {
+        return Err(
+            "--notarize needs the zip and DMG that --app-only skips".into()
+        );
     }
     Ok(options)
 }
@@ -77,23 +109,36 @@ pub fn bundle(args: &[String]) -> Result<(), String> {
     }
     let options = parse(args)?;
     let root = workspace_root();
-    let version = env!("CARGO_PKG_VERSION");
+    let version = std::env::var("PWRDISK_VERSION")
+        .ok()
+        .filter(|version| !version.trim().is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
     let out = root.join("target/bundle");
     let app = out.join(APP);
+    fs::create_dir_all(&out)
+        .map_err(|err| format!("cannot create {}: {err}", out.display()))?;
 
     // The target directory is named rather than inherited: a
     // `CARGO_TARGET_DIR` or `build.target-dir` elsewhere would put the fresh
     // binary there and leave a stale one here to be bundled.
     let target = root.join("target");
-    let cargo = option_env!("CARGO").unwrap_or("cargo");
-    tool(
-        Command::new(cargo)
-            .current_dir(&root)
-            .args(["build", "--release", "--locked", "-p", "disktree-app"])
-            .arg("--target-dir")
-            .arg(&target)
-            .env("MACOSX_DEPLOYMENT_TARGET", DEPLOYMENT_TARGET),
-    )?;
+    let (built, arch) = if options.universal {
+        let mut lipo = Command::new("lipo");
+        let joined = out.join(format!("{EXECUTABLE}-universal"));
+        lipo.arg("-create").arg("-output").arg(&joined);
+        for triple in TARGETS {
+            build(&root, &target, Some(triple))?;
+            lipo.arg(target.join(triple).join("release").join(EXECUTABLE));
+        }
+        tool(&mut lipo)?;
+        (joined, "universal")
+    } else {
+        build(&root, &target, None)?;
+        (
+            target.join("release").join(EXECUTABLE),
+            std::env::consts::ARCH,
+        )
+    };
 
     // Only ever the bundle this task made, never anything else in target/.
     if app.exists() {
@@ -109,7 +154,7 @@ pub fn bundle(args: &[String]) -> Result<(), String> {
     }
 
     let binary = macos.join(EXECUTABLE);
-    copy(&target.join("release").join(EXECUTABLE), &binary)?;
+    copy(&built, &binary)?;
     // Local symbols only: the backtrace of a panic still names functions.
     tool(Command::new("strip").arg("-x").arg(&binary))?;
 
@@ -122,9 +167,12 @@ pub fn bundle(args: &[String]) -> Result<(), String> {
 
     let plist = fs::read_to_string(root.join("packaging/macos/Info.plist.in"))
         .map_err(|err| format!("cannot read the Info.plist template: {err}"))?;
+    for (from, to) in NOTICES {
+        copy(&root.join(from), &resources.join(to))?;
+    }
     write(
         &contents.join("Info.plist"),
-        &plist.replace("@VERSION@", version).replace(
+        &plist.replace("@VERSION@", short_version(&version)).replace(
             ICON_CATALOG_MARKER,
             if catalog { ICON_CATALOG_KEYS } else { "" },
         ),
@@ -136,11 +184,12 @@ pub fn bundle(args: &[String]) -> Result<(), String> {
     )?;
 
     sign(&app, options.identity.as_deref())?;
+    if options.app_only {
+        println!("\n{}", app.display());
+        return Ok(());
+    }
 
-    let zip = out.join(format!(
-        "pwrdisk-{version}-{}-macos.zip",
-        std::env::consts::ARCH
-    ));
+    let zip = out.join(format!("pwrdisk-{version}-{arch}-macos.zip"));
     archive(&app, &zip)?;
 
     if options.notarize {
@@ -156,8 +205,55 @@ pub fn bundle(args: &[String]) -> Result<(), String> {
         )?;
     }
 
-    println!("\n{}\n{}", app.display(), zip.display());
+    let dmg = out.join(format!("PwrDisk-{version}-{arch}.dmg"));
+    // The script signs only through a notary keychain profile, which local
+    // builds do not have, so the DMG is signed and notarized here.
+    tool(
+        Command::new(root.join(DMG_SCRIPT))
+            .env("DMG_VERSION", &version)
+            .arg(&app)
+            .arg(&dmg),
+    )?;
+    if let Some(identity) = &options.identity {
+        tool(
+            Command::new("codesign")
+                .args(["--force", "--timestamp", "--sign", identity])
+                .arg(&dmg),
+        )?;
+        if options.notarize {
+            notarize(&dmg)?;
+            tool(Command::new("xcrun").args(["stapler", "staple"]).arg(&dmg))?;
+        }
+    }
+
+    println!("\n{}\n{}\n{}", app.display(), zip.display(), dmg.display());
     Ok(())
+}
+
+/// A release build of the app, for `triple` or the host.
+fn build(
+    root: &Path,
+    target: &Path,
+    triple: Option<&str>,
+) -> Result<(), String> {
+    let cargo = option_env!("CARGO").unwrap_or("cargo");
+    let mut command = Command::new(cargo);
+    command
+        .current_dir(root)
+        .args(["build", "--release", "--locked", "-p", "disktree-app"])
+        .arg("--target-dir")
+        .arg(target)
+        .env("MACOSX_DEPLOYMENT_TARGET", DEPLOYMENT_TARGET);
+    if let Some(triple) = triple {
+        command.args(["--target", triple]);
+    }
+    tool(&mut command)
+}
+
+/// `0.12.0` from `0.12.0-pr.4`: `CFBundleShortVersionString` takes three
+/// numbers only, and macOS compares versions by it.
+fn short_version(version: &str) -> &str {
+    version.split(['-', '+']).next().unwrap_or(version)
 }
 
 /// `AppIcon.icns` from the SVG, through an iconset of every size.
@@ -340,7 +436,7 @@ fn archive(app: &Path, zip: &Path) -> Result<(), String> {
     )
 }
 
-/// Submit `zip` and wait for Apple's verdict.
+/// Submit `zip` (or a DMG) and wait for Apple's verdict.
 ///
 /// Credentials come from the environment, never the command line, so they
 /// stay out of shell history and CI logs: `NOTARY_PROFILE`, a keychain
@@ -438,6 +534,94 @@ mod tests {
             parse(&args(&["--sign", ""])).is_err(),
             "an empty identity is not one"
         );
+    }
+
+    #[test]
+    fn app_only_stops_before_notarizing() {
+        let options = parse(&args(&["--universal", "--app-only"]))
+            .expect("an unsigned universal app");
+        assert!(options.universal && options.app_only);
+        let error = parse(&args(&[
+            "--sign",
+            "Developer ID Application: X",
+            "--notarize",
+            "--app-only",
+        ]))
+        .expect_err("nothing to notarize");
+        assert!(error.contains("--app-only"), "{error}");
+    }
+
+    #[test]
+    fn the_short_version_drops_a_prerelease() {
+        assert_eq!(short_version("0.12.0"), "0.12.0");
+        assert_eq!(short_version("0.12.0-pr.4"), "0.12.0");
+        assert_eq!(short_version("0.12.0-dev.7+abc"), "0.12.0");
+    }
+
+    /// dmg-layout.py places the icons and generate-dmg-background.swift
+    /// paints the arrow between them; the committed PNG is the window's
+    /// size.
+    #[test]
+    fn the_dmg_layout_matches_its_background() {
+        let root = workspace_root();
+        let read = |path: &str| {
+            fs::read_to_string(root.join(path)).expect("a packaging file")
+        };
+        let layout = read("scripts/release/dmg-layout.py");
+        let swift = read("scripts/release/generate-dmg-background.swift");
+        for (python, swift_name, value) in [
+            ("WINDOW_SIZE = (660, 400)", "width", 660),
+            ("WINDOW_SIZE = (660, 400)", "height", 400),
+            ("ICON_SIZE = 112", "iconSize", 112),
+            ("\"PwrDisk.app\": (170, 230)", "appIconX", 170),
+            ("\"Applications\": (500, 230)", "applicationsX", 500),
+            ("\"PwrDisk.app\": (170, 230)", "iconY", 230),
+        ] {
+            assert!(layout.contains(python), "dmg-layout.py: no {python}");
+            assert!(
+                swift
+                    .lines()
+                    .any(|line| line == format!("let {swift_name} = {value}")),
+                "generate-dmg-background.swift: {swift_name} is not {value}"
+            );
+        }
+        let png = fs::read(root.join("packaging/dmg/background.png"))
+            .expect("the background");
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "not a PNG");
+        // IHDR's width and height, big-endian, at bytes 16..24.
+        let size = |at: usize| {
+            u32::from_be_bytes(png[at..at + 4].try_into().expect("4 bytes"))
+        };
+        assert_eq!((size(16), size(20)), (660, 400));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_dmg_script_parses_and_wants_two_or_three_arguments() {
+        let script = workspace_root().join(DMG_SCRIPT);
+        let syntax = Command::new("bash")
+            .arg("-n")
+            .arg(&script)
+            .status()
+            .expect("bash");
+        assert!(syntax.success(), "bash -n {DMG_SCRIPT}");
+        let usage = Command::new("bash")
+            .arg(&script)
+            .arg("only-one")
+            .output()
+            .expect("bash");
+        assert_eq!(usage.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&usage.stderr)
+                .contains("usage: macos-dmg.sh")
+        );
+    }
+
+    #[test]
+    fn the_notices_the_app_carries_exist() {
+        for (from, _) in NOTICES {
+            assert!(workspace_root().join(from).is_file(), "{from}");
+        }
     }
 
     #[test]

@@ -146,6 +146,11 @@ pub fn root(
                 }
             },
         ))
+        .on_action(cx.listener(
+            |this, _: &crate::app_menu::CheckForUpdates, _, cx| {
+                this.open_updates(true, cx);
+            },
+        ))
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
             if this.zoom_interface(event, window) {
                 cx.notify();
@@ -174,6 +179,9 @@ pub fn root(
     }
     if app.show_help {
         root = root.child(help_overlay(app, cx));
+    }
+    if app.updates_open {
+        root = root.child(updates_panel(app, cx));
     }
     if app.volumes_open {
         root = root.child(volumes_dialog(app, window, cx));
@@ -4070,6 +4078,10 @@ fn help_overlay(app: &Disktree, cx: &gpui_kit::App) -> Div {
                 "Show it in the file manager"
             },
         ),
+        (
+            "shift-u",
+            "Updates: the version, the release channel, check now",
+        ),
         ("q", "Quit"),
         ("", ""),
         (
@@ -4166,6 +4178,206 @@ fn savings(lower: u64, upper: u64) -> String {
         human_bytes(lower)
     } else {
         format!("{}–{}", human_bytes(lower), human_bytes(upper))
+    }
+}
+
+/// The Updates panel: what this copy is, the release channel it follows,
+/// what the last check found, and Restart to update once a release is
+/// downloaded. The updater's state is read fresh each frame; a check that
+/// starts or finishes redraws the window (`updater::install`).
+fn updates_panel(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
+    use crate::update_channel::Slot;
+    use crate::updater::{self, Installation};
+
+    let theme = cx.omarchy().clone();
+    let installation = updater::installation();
+    let installed = updater::installed_version();
+    let selection = updater::selection();
+    let slot = selection.resolve(&installed);
+    let state = updater::state();
+    let ready = updater::ready(&state, &installed, slot);
+
+    let about = match &installation {
+        Installation::Velopack { .. } => format!(
+            "PwrDisk {installed}. Checks GitHub Releases at startup and \
+             every six hours, and downloads what it finds."
+        ),
+        Installation::NotInstalled { .. } => format!(
+            "PwrDisk {installed}. Not installed from the DMG, Setup.exe or \
+             the MSI, so this copy does not update itself."
+        ),
+    };
+
+    let mut rows = div().flex().flex_col();
+    for (index, choice) in Slot::ALL.into_iter().enumerate() {
+        let current = choice == slot;
+        let highlighted = index == app.updates_row;
+        let note = match (current, selection.is_inferred()) {
+            (true, true) => " \u{00b7} follows this build",
+            (true, false) => " \u{00b7} picked",
+            _ => "",
+        };
+        rows = rows.child(
+            div()
+                .id(ElementId::Name(format!("update-slot-{index}").into()))
+                .debug_selector(move || format!("update-slot-{index}"))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(space::MD)
+                .px(space::MD)
+                .py(space::SM)
+                .when(highlighted, |row| row.bg(theme.accent.opacity(0.18)))
+                .hover(|row| row.bg(theme.accent.opacity(0.1)))
+                .child(div().w(icon::MD).flex_shrink_0().when(
+                    current,
+                    |mark| {
+                        mark.child(
+                            gpui_omarchy::icon(gpui_omarchy::IconName::Check)
+                                .size(icon::MD)
+                                .text_color(theme.accent),
+                        )
+                    },
+                ))
+                .child(
+                    div()
+                        .w(size::UPDATE_SLOT)
+                        .flex_shrink_0()
+                        .text_size(text::BODY)
+                        .text_color(if current {
+                            theme.bright
+                        } else {
+                            theme.foreground
+                        })
+                        .child(choice.to_string()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(text::CAPTION)
+                        .text_color(theme.secondary)
+                        .child(format!("{}{note}", slot_purpose(choice))),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.pick_update_slot(choice, cx);
+                })),
+        );
+    }
+
+    let status = if state.checking {
+        "Checking\u{2026}".to_owned()
+    } else {
+        match &state.last {
+            Some((when, outcome)) => {
+                let now = std::time::SystemTime::now();
+                let ago = now.duration_since(*when).unwrap_or_default();
+                let ago = if ago.as_secs() < 60 {
+                    "just now".to_owned()
+                } else {
+                    format!("{} min ago", ago.as_secs() / 60)
+                };
+                format!("Last check, {ago}: {outcome}")
+            }
+            None => "Not checked yet this session.".to_owned(),
+        }
+    };
+
+    let mut actions = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_end()
+        .gap(space::SM)
+        .child(
+            button("updates-check", "Check now", ButtonVariant::Secondary, cx)
+                .disabled(state.checking)
+                .on_click(cx.listener(|_, _, _, cx| {
+                    updater::check_in_background(updater::Trigger::Manual);
+                    cx.notify();
+                })),
+        );
+    if let Some(held) = &ready {
+        let verb = if held.switch_back { "switch" } else { "update" };
+        actions = actions.child(
+            button(
+                "updates-restart",
+                format!("Restart to {verb} to {}", held.version),
+                ButtonVariant::Primary,
+                cx,
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.restart_to_update(cx);
+            })),
+        );
+    }
+
+    let restart_key = if ready.is_some() {
+        " \u{00b7} r restarts"
+    } else {
+        ""
+    };
+    let card = div()
+        .debug_selector(|| "updates-panel".into())
+        .flex()
+        .flex_col()
+        .gap(space::MD)
+        .w(size::UPDATES)
+        .p(space::XL)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.surface)
+        .child(
+            div()
+                .text_size(text::TITLE)
+                .font_weight(FontWeight::BOLD)
+                .text_color(theme.bright)
+                .child("Updates"),
+        )
+        .child(
+            div()
+                .text_size(text::BODY)
+                .text_color(theme.foreground)
+                .child(about),
+        )
+        .child(widgets::section("Release channel", cx))
+        .child(rows)
+        .child(
+            div()
+                .debug_selector(|| "updates-status".into())
+                .text_size(text::BODY)
+                .text_color(theme.foreground)
+                .child(status),
+        )
+        .child(actions)
+        .child(
+            div()
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(format!(
+                    "\u{2191}\u{2193} and enter pick a channel \u{00b7} c \
+                     checks{restart_key} \u{00b7} esc closes"
+                )),
+        );
+
+    let close = cx.entity().downgrade();
+    centred_popup(card, move |_, _, cx| {
+        let _ = close.update(cx, |this, cx| {
+            this.updates_open = false;
+            cx.notify();
+        });
+    })
+    .bg(theme.background.opacity(0.86))
+}
+
+/// What each release channel slot is for, in the family's words.
+const fn slot_purpose(slot: crate::update_channel::Slot) -> &'static str {
+    use crate::update_channel::{Track, Train};
+    match (slot.train, slot.track) {
+        (Train::Stable, Track::Latest) => "Releases promoted after a check",
+        (Train::Stable, Track::Prerelease) => "Candidates for the next one",
+        (Train::Beta, Track::Latest) => "Beta builds off main",
+        (Train::Beta, Track::Prerelease) => "The newest alpha; may not work",
     }
 }
 

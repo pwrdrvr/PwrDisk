@@ -1,0 +1,35 @@
+# cargo-about's configuration for scripts/release/velopack-notices.sh, which
+# writes licenses/velopack.txt for the Velopack binaries vpk adds to the
+# release. Copied from PwrRoute's about.toml; a license id that is not
+# accepted here fails the script, and adding one is a legal decision.
+accepted = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "bzip2-1.0.6",
+]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false
+
+# Per-crate exceptions, mirroring deny.toml's [[licenses.exceptions]].
+[webpki-roots]
+accepted = ["CDLA-Permissive-2.0"]

@@ -21,6 +21,25 @@ anyhow = { workspace = true }
 dunce = "1.0.5"
 rustc-hash = { workspace = true }
 tempfile = "3"
+# Installer and auto-updater. Pinned with `=` because the `vpk` CLI that
+# packs releases must be the same version: VPK_VERSION (and its SHA-512) in
+# scripts/release/install-vpk.sh. Upgrade them together.
+velopack = "=1.2.161"
+# Velopack logs through `log`; the updater's own lines go there too.
+log = "0.4"
+# Wakes the window when a background update check changes what it shows.
+# Already in the tree through GPUI.
+async-channel = "2"
+# The release channel: SemVer precedence for picking each slot's release.
+# Already in the tree through Velopack.
+semver = "1"
+# The release channel setting and the held download, as JSON, and the
+# release list GitHub's API returns.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Reads the published release list from GitHub's API, as PwrRoute does.
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # AppKit for the Dock icon of a run outside the app bundle (dock_icon.rs):

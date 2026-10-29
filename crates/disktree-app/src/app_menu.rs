@@ -35,6 +35,8 @@ mod menu_actions {
             OpenFolder,
             /// Reveal the tile a key acts on in Finder.
             ShowInFinder,
+            /// Open the Updates panel and check now.
+            CheckForUpdates,
             /// Back through the directories visited.
             GoBack,
             /// Forward again, after going back.
@@ -60,8 +62,9 @@ pub fn install(cx: &mut App) {
             let _ = window.update(cx, |_, window, _| window.remove_window());
         }
     });
-    // `Rescan`, `OpenFolder`, `ShowInFinder` and the history are handled by
-    // the window, which owns the scan and the selection; see `views::root`.
+    // `Rescan`, `OpenFolder`, `ShowInFinder`, `CheckForUpdates` and the
+    // history are handled by the window, which owns the scan, the selection
+    // and the Updates panel; see `views::root`.
     if !cfg!(target_os = "macos") {
         cx.bind_keys([
             KeyBinding::new("ctrl-q", Quit, None),
@@ -92,6 +95,8 @@ pub fn install(cx: &mut App) {
     ]);
     cx.set_menus([
         Menu::new("PwrDisk").items([
+            MenuItem::action("Check for Updates\u{2026}", CheckForUpdates),
+            MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
             MenuItem::action("Hide PwrDisk", Hide),

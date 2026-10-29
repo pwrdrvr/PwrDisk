@@ -27,7 +27,7 @@ make run                        # build and open the source/root chooser
 make install                    # ~/.local: binary, desktop entry, icon
 make install PREFIX=/usr/local  # system-wide (needs root)
 make uninstall
-make bundle                     # macOS: target/bundle/PwrDisk.app and its zip
+make bundle                     # macOS: target/bundle/PwrDisk.app, zip and DMG
 make dock-icons                 # macOS 26: redraw the Dock icon of an unbundled run
 make lint                       # rustfmt --check, then clippy --all-targets -D warnings
 make test                       # core and window-harness tests
@@ -60,6 +60,14 @@ so `dock_icon.rs` paints one: `DockIcon.png`, or on macOS 26
 `DockIcon-glass.png`, the shipped icon as that macOS itself draws it, since
 Liquid Glass is never applied to an image set at run time. `make dock-icons`
 redraws both on a macOS 26 with Xcode 26; run it after either SVG changes.
+
+Releases are cut by `release.yml` from a `vX.Y.Z` tag that matches the
+workspace version and a `## vX.Y.Z` section of `CHANGELOG.md` (`cargo xtask
+release-check`); `docs/releasing.md` is the procedure and
+`.github/workflows/README.md` the design. macOS ships a DMG and Windows a
+Velopack Setup.exe, MSI and portable zip, both of which update themselves
+from GitHub Releases. The `velopack` crate pin and `VPK_VERSION` in
+`scripts/release/install-vpk.sh` move together.
 
 `cargo xtask lint` is the gate. It must be green before anything is called
 done, and it must not fix anything: a red local run is the same signal CI gives.
@@ -166,6 +174,9 @@ and `cargo build --release` directly; CI runs the gate on both systems.
 | colours derived from the theme | `crates/disktree-app/src/palette.rs` |
 | the title strip, window controls, the client-side frame | `crates/disktree-app/src/chrome.rs` |
 | the macOS icon, in any of its looks | `packaging/macos/` — the SVGs and `AppIcon.icon`, then `make dock-icons` |
+| checking, downloading and applying updates | `crates/disktree-app/src/updater.rs` |
+| which release a release channel picks | `crates/disktree-app/src/update_channel.rs` |
+| release packaging, the DMG, `vpk` | `scripts/release/`, `xtask/src/bundle.rs`, `.github/workflows/release.yml` |
 
 ## Verification expectations
 
