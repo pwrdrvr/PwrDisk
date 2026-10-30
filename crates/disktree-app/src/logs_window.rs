@@ -189,7 +189,11 @@ pub fn open_window(
 /// The window's view.
 pub struct LogsWindow {
     pub path: Option<PathBuf>,
-    pub lines: Vec<Line>,
+    /// Shared with the list's row builder, so a frame clones no line.
+    pub lines: Rc<Vec<Line>>,
+    /// Error and Warn lines, for the toggles: counted as lines arrive,
+    /// not on every frame.
+    counts: [usize; 2],
     /// Indexes into `lines` that pass the levels and the filter.
     pub shown: Rc<Vec<usize>>,
     pub levels: [bool; 4],
@@ -244,7 +248,8 @@ impl LogsWindow {
         .detach();
         let mut view = Self {
             path,
-            lines: Vec::new(),
+            lines: Rc::new(Vec::new()),
+            counts: [0; 2],
             shown: Rc::new(Vec::new()),
             // Debug is off until asked for, as the family's viewers start.
             levels: [true, true, true, false],
@@ -271,9 +276,13 @@ impl LogsWindow {
         let length = file.metadata().map_or(0, |meta| meta.len());
         if length < self.offset {
             // Rotated: main.log is a new file.
-            self.lines.clear();
+            self.lines = Rc::new(Vec::new());
+            self.counts = [0; 2];
             self.offset = 0;
             self.partial.clear();
+            // Now, not after the next read: the shown indexes point into
+            // the lines just cleared, and the new file may still be empty.
+            self.refilter(cx);
         }
         if length == self.offset
             || file.seek(SeekFrom::Start(self.offset)).is_err()
@@ -294,15 +303,20 @@ impl LogsWindow {
             .unwrap_or_default()
             .clone_into(&mut self.partial);
         let first = self.lines.last().map_or(1, |line| line.number + 1);
-        self.lines.extend(
+        // Copied only if the list still holds the last frame's.
+        let lines = Rc::make_mut(&mut self.lines);
+        lines.extend(
             pieces
                 .into_iter()
                 .enumerate()
                 .map(|(index, raw)| parse(first + index, raw.trim_end())),
         );
-        if self.lines.len() > KEEP {
-            self.lines.drain(..self.lines.len() - KEEP);
+        if lines.len() > KEEP {
+            lines.drain(..lines.len() - KEEP);
         }
+        self.counts = [Level::Error, Level::Warn].map(|level| {
+            self.lines.iter().filter(|line| line.level == level).count()
+        });
         self.refilter(cx);
         if self.live {
             self.scroll.scroll_to_item(
@@ -333,8 +347,12 @@ impl LogsWindow {
         out
     }
 
-    fn count(&self, level: Level) -> usize {
-        self.lines.iter().filter(|line| line.level == level).count()
+    const fn count(&self, level: Level) -> usize {
+        match level {
+            Level::Error => self.counts[0],
+            Level::Warn => self.counts[1],
+            Level::Info | Level::Debug => 0,
+        }
     }
 }
 
@@ -471,11 +489,7 @@ impl Render for LogsWindow {
             );
 
         let rows = self.shown.clone();
-        let lines: Rc<Vec<Line>> = Rc::new(
-            rows.iter()
-                .map(|&index| self.lines[index].clone())
-                .collect(),
-        );
+        let lines = self.lines.clone();
         let list_theme = theme.clone();
         let body = if self.path.is_none() {
             div()
@@ -488,8 +502,10 @@ impl Render for LogsWindow {
                 )
                 .into_any_element()
         } else {
-            uniform_list("logs-lines", lines.len(), move |range, _, _| {
-                range.map(|index| row(&lines[index], &list_theme)).collect()
+            uniform_list("logs-lines", rows.len(), move |range, _, _| {
+                range
+                    .map(|index| row(&lines[rows[index]], &list_theme))
+                    .collect()
             })
             .track_scroll(&self.scroll)
             .flex_1()

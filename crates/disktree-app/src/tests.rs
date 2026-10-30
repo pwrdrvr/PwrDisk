@@ -1288,6 +1288,59 @@ fn logs_follow_the_file_and_filter(cx: &mut TestAppContext) {
     assert!(text.ends_with("removal refused\n"), "{text}");
 }
 
+/// A rotation that leaves `main.log` empty clears the window at once:
+/// the lines shown pointed into the old file, and drawing them would
+/// index past the end.
+#[gpui_kit::test]
+fn logs_survive_a_rotation_to_an_empty_file(cx: &mut TestAppContext) {
+    use crate::logs_window::LogsWindow;
+
+    cx.update(init);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("main.log");
+    std::fs::write(
+        &path,
+        "2026-10-30T00:00:01.000-04:00 WARN  pwrdisk: one\n\
+         2026-10-30T00:00:02.000-04:00 ERROR pwrdisk: two\n",
+    )
+    .expect("write the log");
+    let log = path.clone();
+    let (view, cx) = cx.add_window_view(move |window, cx| {
+        LogsWindow::new(Some(log), window, cx)
+    });
+    draw(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).shown.len()), 2);
+
+    std::fs::write(&path, "").expect("rotate");
+    cx.update(|_, cx| view.update(cx, super::logs_window::LogsWindow::read));
+    draw(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).shown.len()), 0);
+    assert_eq!(cx.update(|_, cx| view.read(cx).shown_text()), "");
+}
+
+/// Restart to update never exits while a removal runs, wherever it is
+/// asked from (Settings goes through the main window): it says why.
+#[gpui_kit::test]
+fn restart_to_update_waits_for_a_removal(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.run = Some(disktree_core::removal::spawn(
+            disktree_core::removal::Plan::default(),
+            RemovalMode::Trash,
+        ));
+        assert!(!app.can_restart_to_update());
+        app.restart_to_update(cx);
+    });
+    let notice = read(&view, cx, |app| app.notice.clone());
+    assert!(
+        notice.is_some_and(|(text, _)| text.contains("removal")),
+        "restart refused while removing"
+    );
+    update(&view, cx, |app, _| app.run = None);
+}
+
 /// Off macOS the strip carries the menu button, and its dropdown lists the
 /// menu bar's template; Escape closes it.
 #[gpui_kit::test]
@@ -1579,6 +1632,10 @@ fn the_review_screen_switches_removal_mode(cx: &mut TestAppContext) {
     draw(cx);
 
     press(cx, "m");
+    assert_eq!(read(&view, cx, |app| app.removal_mode), RemovalMode::Trash);
+    // A Ctrl chord is not its letter: Edit's rows replay them (Select All
+    // is ctrl-a), and ctrl-p must not choose permanent removal.
+    press(cx, "ctrl-p");
     assert_eq!(read(&view, cx, |app| app.removal_mode), RemovalMode::Trash);
     press(cx, "p");
     assert_eq!(

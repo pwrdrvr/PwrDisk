@@ -164,9 +164,10 @@ fn ci_tag(on_ci: bool) -> Option<String> {
 }
 
 /// Run again when HEAD moves (a checkout, a commit on a detached HEAD), a
-/// branch or tag changes (a commit) or anything under `crates/` does (an
-/// edit that makes or clears uncommitted changes). Not on the index: tools
-/// that only refresh it would rebuild the app for nothing.
+/// branch or tag changes (a commit) or anything compiled in does (an edit
+/// under `crates/` or to a document, which makes or clears uncommitted
+/// changes). Not on the index: tools that only refresh it would rebuild
+/// the app for nothing.
 fn watch(
     manifest: &Path,
     git_dir: Option<&String>,
@@ -186,7 +187,16 @@ fn watch(
     if let Some(crates) = manifest.parent() {
         println!("cargo:rerun-if-changed={}", crates.display());
         if let Some(root) = crates.parent() {
-            for file in ["Cargo.toml", "Cargo.lock"] {
+            // The documents the app compiles in (`doc_window.rs`) live
+            // outside `crates/`, and an edit to one makes the build more
+            // than its commit too.
+            for file in [
+                "Cargo.toml",
+                "Cargo.lock",
+                "CHANGELOG.md",
+                "LICENSE",
+                "THIRD_PARTY_LICENSES",
+            ] {
                 println!(
                     "cargo:rerun-if-changed={}",
                     root.join(file).display()

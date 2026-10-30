@@ -209,6 +209,15 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Whether the main window would let a restart through now.
+    fn can_restart(cx: &App) -> bool {
+        cx.windows()
+            .into_iter()
+            .filter_map(|window| window.downcast::<Disktree>())
+            .filter_map(|main| main.read(cx).ok())
+            .all(Disktree::can_restart_to_update)
+    }
+
     /// Restart into the download, through the main window: it refuses
     /// while a removal runs, and says so in its notice line.
     fn restart(cx: &mut App) {
@@ -258,7 +267,7 @@ impl SettingsWindow {
                 cx.notify();
             }
             "enter" | "space" => self.pick(Slot::ALL[self.updates_row], cx),
-            "c" => {
+            "c" if !updater::state().checking => {
                 updater::check_in_background(updater::Trigger::Manual);
                 cx.notify();
             }
@@ -474,6 +483,9 @@ impl SettingsWindow {
                     cx,
                 )
                 .debug_selector(|| RESTART_ID.into())
+                // As the panel had it: never while a removal runs, which an
+                // exit would stop partway through the marked list.
+                .disabled(!Self::can_restart(cx))
                 .on_click(|_, _, cx| cx.defer(Self::restart)),
             );
         }
@@ -541,14 +553,13 @@ impl SettingsWindow {
             vec![model.version_line().into_any_element()],
             theme,
         ));
-        for section in &model.sections {
-            if section.title == "Paths" {
-                continue;
-            }
+        // Paths and Session have their own cards below.
+        for section in model
+            .sections
+            .iter()
+            .filter(|section| !matches!(section.title, "Paths" | "Session"))
+        {
             for fact in &section.facts {
-                if section.title == "Session" {
-                    continue;
-                }
                 this_copy = this_copy.child(field(
                     fact.label,
                     None,

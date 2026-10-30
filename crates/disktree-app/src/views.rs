@@ -4322,8 +4322,10 @@ fn app_menu_dropdown(cx: &Context<'_, Disktree>) -> impl IntoElement {
                 continue;
             };
             let shortcut = keymap
+                // The last binding wins, as the menu bar shows it; Edit's and
+                // zoom's are in the menu-only context, and count.
                 .bindings_for_action(action.as_ref())
-                .rfind(|binding| binding.predicate().is_none())
+                .next_back()
                 .map(|binding| {
                     binding
                         .keystrokes()

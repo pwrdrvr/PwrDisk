@@ -441,7 +441,7 @@ pub struct Disktree {
     /// Enter was pressed before the search finished: apply on arrival.
     apply_pending: bool,
     pub show_help: bool,
-    /// The \"work with an AI agent\" overlay is open.
+    /// The "work with an AI agent" overlay is open.
     pub show_agent: bool,
     /// Off macOS, the strip's menu: the menu bar's template as one
     /// dropdown (`app_menu::menus`), since there is no global menu bar.
@@ -3293,7 +3293,10 @@ impl Disktree {
             Screen::Explore if alt && key == "left" => self.go_back(cx),
             Screen::Explore if alt && key == "right" => self.go_forward(cx),
             Screen::Explore => self.on_explore_key(key, control, shift, cx),
-            Screen::Review => self.on_review_key(key, cx),
+            // No review key is a Ctrl chord, and Edit's rows replay those
+            // (Select All is ctrl-a), so a chord must not act as its letter.
+            Screen::Review if !control => self.on_review_key(key, cx),
+            Screen::Review => {}
             Screen::Running => {
                 if key == "escape"
                     && let Some(run) = &self.run

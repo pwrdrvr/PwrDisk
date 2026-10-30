@@ -160,7 +160,13 @@ pub fn install(cx: &mut App) {
         cx.defer(|cx| settings::open(settings::Pane::About, cx));
     });
     cx.on_action(|_: &CheckForUpdates, cx| {
-        crate::updater::check_in_background(crate::updater::Trigger::Manual);
+        // One already running is left to finish, rather than queueing a
+        // second right behind it.
+        if !crate::updater::state().checking {
+            crate::updater::check_in_background(
+                crate::updater::Trigger::Manual,
+            );
+        }
         cx.defer(|cx| settings::open(settings::Pane::Updates, cx));
     });
     // The main window's rows (Rescan, Open Folder, Choose Source, Show in
