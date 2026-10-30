@@ -3839,7 +3839,7 @@ fn the_tooltip_follows_the_pointer_inside_a_client_side_frame(
 /// hello, mark, show, open the review, unmark, hang up. The marks land in
 /// the window, the screen follows, and the header names the agent while it
 /// is there.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[gpui_kit::test]
 fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     use disktree_link::{Link, MarkRequest, Request, Response};
@@ -3850,7 +3850,16 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     let (view, cx) = view_over(temp.path(), cx);
     draw(cx);
 
+    #[cfg(not(windows))]
     let socket = temp.path().join("link.sock");
+    #[cfg(windows)]
+    let socket = PathBuf::from(format!(
+        r"\\.\pipe\pwrdisk-test-{}",
+        temp.path()
+            .file_name()
+            .expect("temp name")
+            .to_string_lossy()
+    ));
     let listener =
         disktree_link::Listener::bind_at(&socket).expect("bind the link");
     update(&view, cx, |app, cx| app.attach_agent(listener, cx));

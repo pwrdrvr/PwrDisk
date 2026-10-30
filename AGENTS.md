@@ -21,7 +21,7 @@ the removal mode, the confirmation). Marking is never destructive.
 
 `pwrdisk mcp` is the same thing for an AI agent: an MCP server over stdio
 that scans with `disktree-core`, marks, and opens the review screen in a
-window over a per-user socket (`disktree-link`). The agent marks; the
+window over a per-user socket or pipe (`disktree-link`). The agent marks; the
 person removes. There is no tool that deletes, and the link has no request
 that deletes.
 
@@ -171,9 +171,11 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
     the window says. The session's own scans are read only while no
     window is open. The listing and search logic is `core::query`, shared
     by both sides, so they answer alike.
-13. **The link is a same-user socket, nothing more.** `disktree-link`
-    binds `0600` in a per-user directory and has no token, because the
-    agent already runs as the user and `pwrdisk mcp` scans on its own.
+13. **The link is a same-user socket or pipe, nothing more.** `disktree-link`
+    binds `0600` in a per-user directory on Unix. On Windows it uses a
+    named pipe keyed by the user's SID, with a protected DACL granting only
+    that user access and `PIPE_REJECT_REMOTE_CLIENTS`. It has no token:
+    the agent already runs as the user and `pwrdisk mcp` scans on its own.
     Do not add a port.
     A window showing an SSH host answers only `hello` and `state`: an
     agent's paths are this computer's.
@@ -230,10 +232,10 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
 * The screens are covered by window-harness tests that draw frames and press
   keys, including one that marks a directory, confirms the removal and checks
   the files are gone while unmarked neighbours are untouched, and one that
-  drives the window over the real socket as `pwrdisk mcp` does.
+  drives the window over the real socket or pipe as `pwrdisk mcp` does.
 * `disktree-mcp` tests every tool as a function against a temporary tree,
-  with a stand-in window on the socket for the linked cases;
-  `disktree-link` tests the socket itself.
+  with a stand-in window on the socket or pipe for the linked cases;
+  `disktree-link` tests the transport itself.
 * Rendering was verified by those tests and by running the app against a real
   home directory; it has not been eyeballed in every theme and font size.
 

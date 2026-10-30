@@ -3,14 +3,16 @@
 What Windows keeps outside a file scan, what PwrDisk refuses, and what to
 leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
 
-## No window link yet
+## Working with the window
 
-On Windows `pwrdisk mcp` scans, lists, finds and marks on its own, but it
-cannot reach a PwrDisk window: `pwrdisk_show` and `pwrdisk_review` say so
-and do nothing. The marks stay in the agent's session. To hand over, give
-the user the agreed list of paths with sizes. They open PwrDisk, scan the
-same root, mark those paths and review them there. Do not remove them
-yourself, and do not keep calling `pwrdisk_review`.
+On Windows `pwrdisk mcp` connects to an open PwrDisk window over a local
+named pipe restricted to the current Windows account. The window is the
+source of truth: scans, listings, searches and marks use its tree, and the
+agent's marks appear there. `pwrdisk_show` moves its view and
+`pwrdisk_review` opens its review screen; only the person confirms removal.
+Without a window the agent scans and marks in its own session and can
+launch a window for the handover. Agree the list before marking unless the
+user gave a standing instruction. Never remove files yourself.
 
 ## Reading the numbers
 

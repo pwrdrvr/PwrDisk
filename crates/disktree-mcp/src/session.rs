@@ -42,8 +42,8 @@ const TOP: usize = 12;
 const DEFAULT_LIMIT: usize = 20;
 /// The most rows any listing shows: past this the agent should filter.
 const MAX_LIMIT: usize = 200;
-/// What `show` and `review` say where no window can be linked (Windows,
-/// for now): the person takes the list over by hand.
+/// What `show` and `review` say on remaining unsupported targets:
+/// the person takes the list over by hand.
 const NO_LINK: &str = "This system has no window link yet, so PwrDisk \
 cannot show these marks in a window or open its review screen for them. \
 Give the user the marked paths and the plan, and ask them to open PwrDisk, \
@@ -1750,14 +1750,28 @@ pub fn run_scan(root: PathBuf, options: ScanOptions) -> Result<Scan, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use disktree_link::{Incoming, Listener, Mark, Refused, Removal};
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use std::sync::Mutex;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use std::sync::atomic::{AtomicBool, Ordering};
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use std::thread;
+
+    fn endpoint(dir: &Path) -> PathBuf {
+        #[cfg(windows)]
+        {
+            PathBuf::from(format!(
+                r"\\.\pipe\pwrdisk-test-{}",
+                dir.file_name().expect("temp name").to_string_lossy()
+            ))
+        }
+        #[cfg(not(windows))]
+        {
+            dir.join("window.sock")
+        }
+    }
 
     /// A small tree on disk: a cache, a build directory, a checkout with a
     /// large file, and a stray download.
@@ -1780,7 +1794,7 @@ mod tests {
     }
 
     /// Apparent sizes, so the numbers are the bytes written, not blocks.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn apparent() -> ScanOptions {
         ScanOptions {
             apparent_size: true,
@@ -1805,7 +1819,7 @@ mod tests {
     }
 
     fn unlinked(dir: &Path) -> Session {
-        Session::detached(dir.join("no-window.sock"), None)
+        Session::detached(endpoint(dir), None)
     }
 
     #[test]
@@ -1991,7 +2005,7 @@ mod tests {
     /// A stand-in for the window: holds a real tree of the fixture, answers
     /// over the real socket the way the app does, and records what it was
     /// asked.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     struct FakeWindow {
         listener: Arc<Listener>,
         asked: Arc<Mutex<Vec<Request>>>,
@@ -1999,7 +2013,7 @@ mod tests {
         stop: Arc<AtomicBool>,
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     struct FakeTree {
         root: PathBuf,
         tree: Arc<Node>,
@@ -2010,7 +2024,7 @@ mod tests {
         busy: bool,
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     impl FakeTree {
         fn state(&self, screen: &str) -> State {
             State {
@@ -2139,7 +2153,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     impl FakeWindow {
         fn open(socket: &Path, root: &Path) -> Self {
             Self::showing(socket, root, None)
@@ -2213,7 +2227,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     impl Drop for FakeWindow {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Relaxed);
@@ -2221,11 +2235,11 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn with_a_window_open_its_tree_is_what_the_agent_reads() {
         let temp = fixture();
-        let socket = temp.path().join("window.sock");
+        let socket = endpoint(temp.path());
         let window = FakeWindow::open(&socket, temp.path());
         let mut session = Session::detached(socket, None);
         session.set_client("claude-code");
@@ -2321,11 +2335,11 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn with_a_window_open_marks_live_there_and_review_opens_it() {
         let temp = fixture();
-        let socket = temp.path().join("window.sock");
+        let socket = endpoint(temp.path());
         let window = FakeWindow::open(&socket, temp.path());
         let mut session = Session::detached(socket, None);
 
@@ -2363,11 +2377,11 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn marks_made_before_the_window_opened_are_handed_over() {
         let temp = fixture();
-        let socket = temp.path().join("window.sock");
+        let socket = endpoint(temp.path());
         let mut session = Session::detached(socket.clone(), None);
         scanned(&mut session, temp.path());
         session
@@ -2649,11 +2663,11 @@ mod tests {
     /// A window that will not take the marks made before it linked is not
     /// followed: the marks stay here, and the agent is told why instead of
     /// losing them.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn marks_a_window_refuses_are_kept_and_explained() {
         let temp = fixture();
-        let socket = temp.path().join("window.sock");
+        let socket = endpoint(temp.path());
         let mut session = Session::detached(socket.clone(), None);
         scanned(&mut session, temp.path());
         session
@@ -2671,11 +2685,11 @@ mod tests {
     }
 
     /// A listing is answered even when the window cannot follow it.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn ls_with_show_keeps_the_listing_when_the_window_cannot_follow() {
         let temp = fixture();
-        let socket = temp.path().join("window.sock");
+        let socket = endpoint(temp.path());
         let _window =
             FakeWindow::showing(&socket, temp.path(), Some("build-box"));
         let mut session = Session::detached(socket, None);
@@ -2694,11 +2708,11 @@ mod tests {
     /// A window showing an SSH host holds another machine's paths: the
     /// session works on this computer without it, never hands it a mark,
     /// and says why when asked to show or review.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn a_window_on_an_ssh_host_is_not_driven() {
         let temp = fixture();
-        let socket = temp.path().join("window.sock");
+        let socket = endpoint(temp.path());
         let window =
             FakeWindow::showing(&socket, temp.path(), Some("build-box"));
         let mut session = Session::detached(socket, None);
