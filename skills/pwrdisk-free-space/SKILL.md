@@ -103,14 +103,19 @@ Looking is free; acting is the user's call.
   `pwrdisk mcp` runs on. If `pwrdisk_status` says the window is on an SSH
   host, it is not followed; ask the user to choose This computer in it.
   PwrDisk does not remove files over SSH.
+- **Linking keeps the window where it is.** If marks made before linking
+  are outside the window's root, the session keeps all of them and reports
+  that the window is not followed. Call `pwrdisk_scan` on a directory
+  containing all marked paths to move the window explicitly and hand them
+  over before review. Do not unmark agreed paths to force a link.
 
 ## Procedure
 
 1. **Measure the gap.** `pwrdisk_status` shows the volumes, their free
-   space, whether a PwrDisk window is open, and the system. When a window is
-   open its tree is what every tool reads: you and the user look at the same
-   numbers, and a path outside its root needs a `pwrdisk_scan` from higher
-   up, which the window follows. Ask what the user wants: a number, or
+   space, whether a PwrDisk window is open, and the system. When a window
+   is linked its tree is what every tool reads: you and the user look at
+   the same numbers, and a path outside its root needs a `pwrdisk_scan`
+   from higher up, which the window follows. Ask what the user wants: a number, or
    whatever is safe.
 2. **Scan.** `pwrdisk_scan` with no path scans the home directory in a few
    seconds; `disk: true` scans the whole volume. With a window open it does
