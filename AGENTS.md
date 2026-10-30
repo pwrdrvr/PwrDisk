@@ -80,6 +80,11 @@ done, and it must not fix anything: a red local run is the same signal CI gives.
 On Windows, where there is no make, run `cargo xtask lint`, `cargo xtask test`
 and `cargo build --release` directly; CI runs the gate on both systems.
 
+When Sandboxer MCP tools are available, run Linux builds, lint, tests and
+integration checks there. Read [remote verification](docs/sandboxer.md)
+first. Use local checks when Sandboxer is unavailable. Verify macOS and
+Windows changes on those systems.
+
 ## House rules
 
 * **Strict lints from omatrack's style.** `clippy::all` and `clippy::pedantic`

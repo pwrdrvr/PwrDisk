@@ -1,7 +1,7 @@
 // Optional Linux integration test: isolated unprivileged OpenSSH server.
 // No user SSH keys/configuration or remote hosts are used or changed.
 // Run with: bun scripts/test-ssh.ts
-import {mkdtempSync, readFileSync, writeFileSync, rmSync} from 'node:fs';
+import {existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync} from 'node:fs';
 import {spawn, spawnSync} from 'node:child_process';
 import {tmpdir, userInfo} from 'node:os';
 import {join} from 'node:path';
@@ -29,7 +29,9 @@ try {
   const client = join(dir,'ssh_config');
   writeFileSync(join(dir,'known_hosts'), `[127.0.0.1]:${port} ${readFileSync(join(dir,'host.pub'),'utf8')}`);
   writeFileSync(client, `Host fixture\n HostName 127.0.0.1\n Port ${port}\n User ${userInfo().username}\n IdentityFile ${dir}/client\n IdentitiesOnly yes\n BatchMode yes\n UserKnownHostsFile ${dir}/known_hosts\n StrictHostKeyChecking yes\n ConnectTimeout 5\n`);
-  server = spawn('/usr/bin/sshd', ['-D','-e','-f',config], {stdio:['ignore','ignore','pipe']});
+  const sshd = ['/usr/sbin/sshd', '/usr/bin/sshd'].find(existsSync);
+  if (!sshd) throw new Error('OpenSSH server not found; install openssh-server');
+  server = spawn(sshd, ['-D','-e','-f',config], {stdio:['ignore','ignore','pipe']});
   let log='';
   await new Promise((resolve,reject) => {
     const timer = setTimeout(()=>reject(new Error('sshd startup timed out: '+log)),5000);
@@ -49,7 +51,7 @@ try {
     for (const mode of ['ssh-plain', 'ssh']) {
       for (let trial=0; trial<5; trial++) run(binary, [mode,root,client,helper]);
     }
-  } else run('cargo',['test','-p','disktree-core','real_ssh_transport_','--','--ignored','--nocapture'], {...process.env,DISKTREE_TEST_SSH_CONFIG:client,DISKTREE_TEST_HELPER:join(process.cwd(),`target/${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-unknown-linux-musl/release/disktree-scan`),DISKTREE_TEST_ARCHIVE:join(process.cwd(),'target/portable/disktree')});
+  } else run('cargo',['test','-p','disktree-core','real_ssh_transport_','--','--ignored','--nocapture'], {...process.env,DISKTREE_TEST_SSH_CONFIG:client,DISKTREE_TEST_HELPER:join(process.cwd(),`target/${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-unknown-linux-musl/release/disktree-scan`),DISKTREE_TEST_ARCHIVE:join(process.cwd(),'target/portable/pwrdisk')});
   console.log(`${process.env.DISKTREE_PROFILE_ROOT ? 'SSH PROFILING COMPLETE' : 'REAL SSH SCAN PASSED'}. Temporary host key, client key and server will be removed.`);
 } finally {
   if (server && server.exitCode === null) {
