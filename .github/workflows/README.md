@@ -24,9 +24,9 @@ The Linux `licenses` job runs `cargo xtask licenses --check` on every push
 to `main` and on PRs changing `Cargo.lock`, any `Cargo.toml`, `licenses/**`
 or `THIRD_PARTY_LICENSES`. Changes to `ci.yml` or `xtask/src/licenses.rs`
 also run it so edits to the gate or generator are checked. It installs
-`cargo-about@0.9.2` with `cargo install --locked` and caches the binary by
-OS, architecture, generator version and Rust version. Like PwrRoute, the
-generator is pinned and the notice check runs on Linux only.
+`cargo-about@0.9.2` with `cargo install --locked --features cli` and caches
+the binary by OS, architecture, generator version and Rust version. Like
+PwrRoute, the generator is pinned and the notice check runs on Linux only.
 
 The existing changed-file classifier selects this job, including both
 paths of renames. Unrelated PRs skip it; a failed classifier or incomplete

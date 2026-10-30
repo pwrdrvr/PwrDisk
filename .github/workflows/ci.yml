@@ -158,6 +158,9 @@ jobs:
           toolchain: "1.97"
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # The versioned binary cache below owns cargo-about.
+          cache-bin: false
 
       # cargo-about's output changes between releases; keep this pin and
       # the binary cache key together, as PwrRoute pins its generator too.
@@ -170,7 +173,8 @@ jobs:
 
       - name: Install cargo-about
         if: steps.cargo-about.outputs.cache-hit != 'true'
-        run: cargo install --locked cargo-about@0.9.2
+        # 0.9.2 requires this feature to install its binary.
+        run: cargo install --locked cargo-about@0.9.2 --features cli
 
       - name: Check notices
         run: cargo xtask licenses --check
