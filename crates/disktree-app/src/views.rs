@@ -2638,7 +2638,16 @@ fn key_bar(app: &Disktree, theme: &Theme, cx: &App) -> Div {
         );
     }
     let scan = if app.scan.is_some() || app.remote_scan.is_some() {
-        "Indexing · incomplete".to_string()
+        app.scan_fraction().map_or_else(
+            || {
+                if app.scan_finalizing() {
+                    "Building the treemap…".into()
+                } else {
+                    "Indexing · incomplete".into()
+                }
+            },
+            |fraction| format!("Indexing · ≈{:.0}% scanned", fraction * 100.0),
+        )
     } else if app.progress.cancelled {
         format!(
             "scan cancelled \u{00b7} {} entries \u{00b7} r scans again",
@@ -2744,7 +2753,19 @@ fn indexing_compact(
                 .min_w_0()
                 .truncate()
                 .font_family(theme.mono_font.clone())
-                .child(format!("{} measured", human_bytes(app.progress.bytes))),
+                .child(app.scan_fraction().map_or_else(
+                    || {
+                        if app.scan_finalizing() {
+                            "Building treemap…".into()
+                        } else {
+                            format!(
+                                "{} measured",
+                                human_bytes(app.progress.bytes)
+                            )
+                        }
+                    },
+                    |fraction| format!("≈{:.0}% scanned", fraction * 100.0),
+                )),
         )
         .child(
             button("cancel-scan", "Stop", ButtonVariant::Outline, cx).on_click(
@@ -2764,6 +2785,7 @@ fn indexing_progress(
     cx: &Context<'_, Disktree>,
 ) -> Div {
     let elapsed = app.scan_started.map_or(0, |at| at.elapsed().as_secs());
+    let fraction = app.scan_fraction();
     let row = |label: &'static str, value: String, id: &'static str| {
         div()
             .flex()
@@ -2815,9 +2837,54 @@ fn indexing_progress(
         .text_size(text::BODY)
         .text_color(theme.foreground)
         .child(widgets::eyebrow("Indexing", cx))
+        .child(
+            div()
+                .debug_selector(|| "indexing-percent".into())
+                .h(size::SCAN_STATUS)
+                .min_w_0()
+                .truncate()
+                .font_family(theme.mono_font.clone())
+                .text_size(text::FIGURE)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(fraction.map_or_else(
+                    || {
+                        if app.scan_finalizing() {
+                            "Finalizing…".into()
+                        } else {
+                            "Scanning…".into()
+                        }
+                    },
+                    |fraction| format!("≈{:.0}% scanned", fraction * 100.0),
+                )),
+        )
+        .child(div().h(size::METER).child(widgets::bar(
+            fraction.unwrap_or(0.0),
+            theme.accent,
+            cx,
+        )))
+        .child(with_tooltip(
+            div()
+                .id("indexing-estimate")
+                .h(size::PROGRESS_ROW)
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(if fraction.is_some() {
+                    "Used-space estimate"
+                } else if app.scan_finalizing() {
+                    "Finishing totals and categories"
+                } else {
+                    "Total scan size is unknown"
+                }),
+            "Measured file bytes ÷ drive used space at scan start. \
+             Shared blocks, snapshots and unreadable paths affect this \
+             estimate; it does not predict time remaining. \
+             Folder and filtered scans have no known total.",
+        ))
         .child(div().h(size::PROGRESS_ROW).truncate().child(
             if app.remote.is_some() {
                 app.remote_progress.stage.label()
+            } else if app.scan_finalizing() {
+                "Building the treemap"
             } else {
                 "Reading this computer"
             },
@@ -2843,6 +2910,14 @@ fn indexing_progress(
             "indexing-errors",
         ))
         .child(row("Elapsed", format!("{elapsed} s"), "indexing-elapsed"))
+        .child(row(
+            "Average rate",
+            format!(
+                "{} files/s",
+                widgets::human_count(app.progress.files / elapsed.max(1))
+            ),
+            "indexing-rate",
+        ))
         .child(
             div()
                 .h(size::PROGRESS_ROW)

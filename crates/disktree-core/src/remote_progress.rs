@@ -33,6 +33,7 @@ pub struct Progress {
     pub files: u64,
     pub dirs: u64,
     pub bytes: u64,
+    pub volume_used: Option<u64>,
     pub errors: u64,
     pub directory: Option<PathBuf>,
     pub updated: Option<Instant>,

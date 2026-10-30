@@ -104,6 +104,8 @@ pub struct ScanProgress {
     service_errors: AtomicU64,
     service_root: OnceLock<PathBuf>,
     finished: AtomicBool,
+    finalizing: AtomicBool,
+    volume_used: OnceLock<u64>,
     cancelled: AtomicBool,
     messages: Mutex<Vec<String>>,
     preview_root: OnceLock<PathBuf>,
@@ -125,6 +127,10 @@ pub struct ScanSnapshot {
     /// Service-store failures remain errors, but do not request disk access.
     pub service_errors: u64,
     pub finished: bool,
+    /// Enumeration is over; totals, sharing and categories are being built.
+    pub finalizing: bool,
+    /// Used space at scan start, only when scanning a whole volume.
+    pub volume_used: Option<u64>,
     pub cancelled: bool,
     /// Admitted directory jobs, not a machine-wide thread limit.
     pub threads: usize,
@@ -217,6 +223,8 @@ impl ScanProgress {
             errors: self.errors.load(Ordering::Relaxed),
             service_errors: self.service_errors.load(Ordering::Relaxed),
             finished: self.finished.load(Ordering::Relaxed),
+            finalizing: self.finalizing.load(Ordering::Relaxed),
+            volume_used: self.volume_used.get().copied(),
             cancelled: self.is_cancelled(),
             threads: self.threads.load(Ordering::Relaxed),
             threads_settled: self.threads_settled.load(Ordering::Relaxed),
@@ -1010,6 +1018,14 @@ fn scan_on_pool(
     }
     let resolved = root.canonicalize().ok();
     let canonical = resolved.as_deref().unwrap_or(root);
+    if let Some(used) = crate::space::scan_volume_used(
+        canonical,
+        crate::space::volume_root_for(canonical).as_deref(),
+        crate::space::space_info(canonical).ok(),
+        std::env::consts::OS,
+    ) {
+        let _ = context.progress.volume_used.set(used);
+    }
     if let Some(data) = crate::space::data_services_only(root, canonical) {
         let _ = context.data_services.set(data);
     }
@@ -1048,6 +1064,7 @@ fn scan_on_pool(
             if progress.is_cancelled() {
                 return Err(crate::mft::cancelled());
             }
+            progress.finalizing.store(true, Ordering::Relaxed);
             let node = finish_tree(node, &context.options, pool);
             // The reader counted every file on the volume; the tree may
             // hold fewer.
@@ -1125,6 +1142,7 @@ fn scan_on_pool(
     let node = node.ok_or_else(|| {
         io::Error::other(format!("{} produced no tree", root.display()))
     })?;
+    context.progress.finalizing.store(true, Ordering::Relaxed);
     Ok(finish_tree(node, &context.options, pool))
 }
 
@@ -2074,6 +2092,8 @@ mod tests {
 
         let snapshot = handle.progress.snapshot();
         assert!(snapshot.finished);
+        assert!(snapshot.finalizing);
+        assert_eq!(snapshot.volume_used, None, "a folder has no known total");
         assert_eq!(snapshot.files, 2);
         assert_eq!(snapshot.errors, 0);
         let preview = handle.progress.preview();

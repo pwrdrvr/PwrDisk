@@ -335,10 +335,17 @@ explicitly instead of returning a partial tree. Symlinks are not followed,
 and every nested mount is skipped, even a bind mount or same-device
 subvolume. Select those as separate roots.
 
-While indexing, a quiet sidebar shows live files, directories, measured
-bytes, read errors and elapsed time. Counters and paths use monospace type
-in fixed lanes; changing values do not re-center or reflow the screen.
-Narrow windows use a compact progress footer instead.
+While indexing, the sidebar shows a progress bar and estimated percentage
+for whole-volume scans, using measured file bytes versus the drive's used
+space at scan start. Shared blocks, snapshots and unreadable paths affect
+this estimate; it stays below 100% while scanning and does not predict
+time remaining. Folder, filtered, apparent-size and cross-volume scans
+have no known total. Live file and directory counts, measured bytes, read
+errors, elapsed time and average files per second remain visible. After
+enumeration, the status changes to **Building treemap** while totals and
+categories finish. Counters and paths use monospace type in fixed lanes;
+changing values do not re-center or reflow the screen. Narrow windows use
+a compact progress footer instead.
 
 Ordinary local walks and current SSH helpers paint a **live top-level
 overview** before the full tree arrives. These are measured contributions,

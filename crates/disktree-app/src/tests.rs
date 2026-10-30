@@ -280,9 +280,12 @@ fn loading_values_and_paths_do_not_move_the_sidebar(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("scan-preview").is_some());
     assert!(cx.debug_bounds("scan-reading").is_none());
     update(&view, cx, |app, _| {
+        app.options.apparent_size = false;
+        app.progress.volume_used = Some(1000);
         app.progress.files = 99_999_999;
         app.progress.bytes = u64::MAX / 2;
         app.remote = Some("fixture-only".into());
+        app.remote_progress.volume_used = Some(1000);
         app.remote_progress.directory = Some(PathBuf::from(
             "/a/very/long/directory/whose/text/must/not/move/the/layout",
         ));
@@ -291,6 +294,12 @@ fn loading_values_and_paths_do_not_move_the_sidebar(cx: &mut TestAppContext) {
     assert_eq!(panel, cx.debug_bounds("indexing-progress").unwrap());
     assert_eq!(files, cx.debug_bounds("indexing-files").unwrap());
     assert_eq!(path, cx.debug_bounds("scan-directory").unwrap());
+    update(&view, cx, |app, _| {
+        app.remote = None;
+        app.progress.finalizing = true;
+    });
+    draw(cx);
+    assert_eq!(panel, cx.debug_bounds("indexing-progress").unwrap());
     let preview = cx.debug_bounds("scan-preview").unwrap();
     cx.simulate_click(preview.center(), gpui_kit::Modifiers::none());
     press(cx, "space");
@@ -302,6 +311,69 @@ fn loading_values_and_paths_do_not_move_the_sidebar(cx: &mut TestAppContext) {
     draw(cx);
     assert!(cx.debug_bounds("scan-preview").is_none());
     assert!(read(&view, cx, |app| app.scan_preview.is_none()));
+}
+
+#[gpui_kit::test]
+fn scan_percentage_is_bounded_and_rejects_incompatible_totals(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, _| {
+        app.scan = Some(disktree_core::scan::ScanHandle::spawn(
+            temp.path().into(),
+            options(),
+        ));
+        app.options.apparent_size = false;
+        app.progress.volume_used = Some(1000);
+        for (bytes, expected) in [(0, 0.0), (450, 0.45), (2000, 0.99)] {
+            app.progress.bytes = bytes;
+            assert!((app.scan_fraction().unwrap() - expected).abs() < 0.001);
+        }
+        let allocated = app.options.clone();
+        for incompatible in [
+            ScanOptions {
+                apparent_size: true,
+                ..allocated
+            },
+            ScanOptions {
+                one_filesystem: false,
+                ..allocated
+            },
+            ScanOptions {
+                include_hidden: false,
+                ..allocated
+            },
+            ScanOptions {
+                follow_links: true,
+                ..allocated
+            },
+            ScanOptions {
+                max_depth: Some(1),
+                ..allocated
+            },
+        ] {
+            app.options = incompatible;
+            assert!(app.scan_fraction().is_none());
+        }
+        app.options = allocated;
+        app.progress.finalizing = true;
+        assert!(app.scan_fraction().is_none());
+        app.progress.finalizing = false;
+        app.progress.volume_used = None;
+        assert!(app.scan_fraction().is_none());
+        app.remote = Some("fixture-only".into());
+        app.remote_progress.volume_used = Some(1000);
+        assert!((app.scan_fraction().unwrap() - 0.99).abs() < 0.001);
+        app.remote_progress.stage =
+            disktree_core::remote_progress::Stage::Finalizing;
+        assert!(app.scan_fraction().is_none());
+        app.remote = None;
+        app.scan = None;
+        app.progress.volume_used = Some(1000);
+        assert!(app.scan_fraction().is_none());
+    });
 }
 
 #[gpui_kit::test]
