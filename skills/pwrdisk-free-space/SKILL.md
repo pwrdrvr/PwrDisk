@@ -150,8 +150,10 @@ Looking is free; acting is the user's call.
 8. **Hand it over.** Say you are opening the review screen, then call
    `pwrdisk_review`. Tell the user what is marked, what it frees, that
    Enter there moves it to the Trash, and that the space returns when they
-   empty it. Where there is no window link (Windows, for now), give them
-   the list to mark in PwrDisk themselves.
+   empty it. On macOS, Linux and Windows the marks appear in the linked
+   window, and review opens that window's review screen. Only if the tools
+   report that linking is unavailable, give the user the agreed list to
+   mark and review in PwrDisk themselves.
 9. **Report.** After they confirm, `pwrdisk_status` reports what was
    actually freed, measured before and after. Report that number, not the
    projection.
