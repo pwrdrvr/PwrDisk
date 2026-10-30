@@ -203,9 +203,12 @@ test('nothing compiled in with include_str! or include_bytes! is on the allowlis
   const included = [];
   for (const source of sources) {
     const text = readFileSync(join(root, source), 'utf8');
-    for (const [, literal] of text.matchAll(/include_(?:str|bytes)!\(\s*"([^"]+)"/g)) {
+    for (const [call, literal] of text.matchAll(/include_(?:str|bytes)!\(\s*("[^"]+"\s*\))?/g)) {
+      // Only a plain literal can be checked here. A concat!/env! or raw
+      // string path would slip past, so it fails until rewritten as one.
+      assert.ok(literal, `${source}: \`${call}\` needs a plain string literal path`);
       // Paths are relative to the including file, as rustc resolves them.
-      const path = relative(root, join(root, dirname(source), literal)).split('\\').join(posix.sep);
+      const path = relative(root, join(root, dirname(source), literal.slice(1, literal.lastIndexOf('"')))).split('\\').join(posix.sep);
       included.push(path);
     }
   }

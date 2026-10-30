@@ -121,6 +121,10 @@ jobs:
       # the classifier, so a failure turns this check red and, through the
       # job's result, still runs full CI.
       - uses: actions/checkout@v5
+        with:
+          # The test runs the PR's own script, and this job's token is the
+          # only one with pull-requests: read; keep it out of .git/config.
+          persist-credentials: false
       - name: Test the classifier
         run: node --test scripts/ci/classify-changes.test.cjs
 
