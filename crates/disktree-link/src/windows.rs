@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::ffi::OsStrExt as _;
-use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle as _, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -39,6 +39,8 @@ use windows_sys::Win32::Security::{
     GetTokenInformation, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
     TokenUser,
 };
+use windows_sys::Win32::System::IO::CancelIoEx;
+use windows_sys::Win32::System::Pipes::DisconnectNamedPipe;
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, OpenProcessToken,
 };
@@ -207,7 +209,11 @@ async fn exchange(
     queue: &Queue,
     id: u64,
 ) -> io::Result<()> {
-    let mut pipe = BufReader::new(server);
+    let mut owned = PipeIo {
+        pipe: server,
+        server: true,
+    };
+    let mut pipe = BufReader::new(&mut owned.pipe);
     loop {
         let Some(line) = read_line(&mut pipe).await? else {
             return Ok(());
@@ -286,10 +292,17 @@ impl Link {
                 let setup = (|| {
                     let runtime = runtime()?;
                     let pipe = runtime.block_on(connect(&path))?;
-                    Ok::<_, io::Error>((runtime, BufReader::new(pipe)))
+                    Ok::<_, io::Error>((
+                        runtime,
+                        PipeIo {
+                            pipe,
+                            server: false,
+                        },
+                    ))
                 })();
                 match setup {
-                    Ok((runtime, mut pipe)) => {
+                    Ok((runtime, mut owned)) => {
+                        let mut pipe = BufReader::new(&mut owned.pipe);
                         if ready.send(Ok(())).is_err() {
                             return;
                         }
@@ -356,6 +369,32 @@ async fn connect(path: &Path) -> io::Result<NamedPipeClient> {
         }
     })
     .await?
+}
+
+/// Mio deliberately lets pending writes finish after dropping a pipe.
+/// Cancel them explicitly: a peer that never reads must not retain this
+/// instance after a timeout or prevent a new window from claiming its name.
+#[derive(Debug)]
+struct PipeIo<T: AsRawHandle> {
+    pipe: T,
+    server: bool,
+}
+
+impl<T: AsRawHandle> Drop for PipeIo<T> {
+    fn drop(&mut self) {
+        // SAFETY: pipe owns a live overlapped handle. Null means every I/O
+        // operation on it; Mio retains each OVERLAPPED until completion.
+        unsafe {
+            CancelIoEx(self.pipe.as_raw_handle(), ptr::null());
+        }
+        if self.server {
+            // SAFETY: only a server pipe sets this flag. Disconnect also
+            // invalidates idle client handles before the server closes.
+            unsafe {
+                DisconnectNamedPipe(self.pipe.as_raw_handle());
+            }
+        }
+    }
 }
 
 fn runtime() -> io::Result<Runtime> {
@@ -533,7 +572,6 @@ impl Security {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Security::Authorization::{
         GetSecurityInfo, SE_KERNEL_OBJECT,
     };
@@ -658,10 +696,13 @@ mod tests {
                             reply.send(Response::Ok);
                             // Keep the listener alive until the response
                             // has left its background runtime.
-                            while listener.connections() != 0 {
+                            for _ in 0..200 {
+                                if listener.connections() == 0 {
+                                    return;
+                                }
                                 thread::sleep(CONNECT_TICK);
                             }
-                            return;
+                            panic!("client did not disconnect");
                         }
                     }
                     thread::sleep(CONNECT_TICK);
@@ -683,12 +724,15 @@ mod tests {
         let _idle = Link::connect_at(&path).expect("idle");
         let mut link = Link::connect_at(&path).expect("pending");
         let request = thread::spawn(move || link.call(&Request::State));
-        let pending = loop {
-            if let Some(incoming) = listener.drain().into_iter().next() {
-                break incoming;
-            }
-            thread::sleep(CONNECT_TICK);
-        };
+        let pending = (0..200)
+            .find_map(|_| {
+                let incoming = listener.drain().into_iter().next();
+                if incoming.is_none() {
+                    thread::sleep(CONNECT_TICK);
+                }
+                incoming
+            })
+            .expect("request must reach the listener");
         assert!(matches!(pending, Incoming::Request { .. }));
         drop(listener);
         assert!(request.join().expect("client thread").is_err());
@@ -696,5 +740,51 @@ mod tests {
         let _replacement =
             Listener::bind_at(&path).expect("rebind immediately");
         drop(pending);
+    }
+
+    #[test]
+    fn a_client_that_never_reads_cannot_hold_listener_shutdown() {
+        use std::io::Write as _;
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
+        };
+
+        let (_dir, path) = endpoint();
+        let listener = Listener::bind_at(&path).expect("bind");
+        let mut client = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(SECURITY_IDENTIFICATION | SECURITY_SQOS_PRESENT)
+            .open(&path)
+            .expect("raw client");
+        client
+            .write_all(encode(&Request::State).expect("encode").as_bytes())
+            .expect("request");
+        let incoming = (0..200)
+            .find_map(|_| {
+                let incoming = listener.drain().into_iter().next();
+                if incoming.is_none() {
+                    thread::sleep(CONNECT_TICK);
+                }
+                incoming
+            })
+            .expect("request");
+        let Incoming::Request { reply, .. } = incoming else {
+            panic!("closed first");
+        };
+        // Much larger than the pipe buffer: this write cannot complete
+        // while the client retains its handle without reading.
+        reply.send(Response::error("x".repeat(MAX_LINE / 2)));
+        thread::sleep(Duration::from_millis(100));
+        let start = std::time::Instant::now();
+        drop(listener);
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "shutdown waited for a reader"
+        );
+        drop(client);
+        let _replacement =
+            Listener::bind_at(&path).expect("rebind after cancelled write");
     }
 }
