@@ -165,6 +165,11 @@ impl LogLine {
         &self.raw
     }
 
+    /// The line in lowercase, as the search reads it.
+    pub fn lower(&self) -> &str {
+        &self.lower
+    }
+
     /// Case-insensitive: every word of the query is somewhere in the line.
     pub fn matches(&self, words: &[String]) -> bool {
         words.iter().all(|word| self.lower.contains(word.as_str()))
@@ -642,8 +647,10 @@ pub struct Tail {
     pub path: PathBuf,
     /// Bytes of `main.log` already read.
     offset: u64,
-    /// A partial last line, kept until its newline arrives.
-    pending: String,
+    /// A partial last line, kept as bytes until its newline arrives: a
+    /// read can stop inside a character, and decoding then would mangle
+    /// it.
+    pending: Vec<u8>,
     /// The file read, so a rotation is noticed even after the new file grew
     /// past the old offset.
     identity: Option<u64>,
@@ -667,7 +674,7 @@ impl Tail {
         Self {
             path,
             offset: 0,
-            pending: String::new(),
+            pending: Vec::new(),
             identity: None,
             missing: false,
         }
@@ -690,23 +697,22 @@ impl Tail {
                 self.missing = false;
                 file.read_to_end(&mut current)?;
             }
-            Err(error)
-                if error.kind() == io::ErrorKind::NotFound
-                    && !old.is_empty() =>
-            {
+            // Not there yet, rotated or never written: shown as no output,
+            // and read again once it appears.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.identity = None;
                 self.missing = true;
             }
             Err(error) => return Err(error),
         }
         self.offset = current.len() as u64;
-        let mut text = String::from_utf8_lossy(&old).into_owned();
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
+        let mut bytes = old;
+        if bytes.last().is_some_and(|&byte| byte != b'\n') {
+            bytes.push(b'\n');
         }
-        text.push_str(&String::from_utf8_lossy(&current));
+        bytes.extend_from_slice(&current);
         self.pending.clear();
-        Ok(self.complete_lines(text))
+        Ok(self.complete_lines(bytes))
     }
 
     /// What changed since the last read.
@@ -727,12 +733,9 @@ impl Tail {
         let mut bytes = Vec::new();
         file.take(len - self.offset).read_to_end(&mut bytes)?;
         self.offset += bytes.len() as u64;
-        let text = format!(
-            "{}{}",
-            std::mem::take(&mut self.pending),
-            String::from_utf8_lossy(&bytes)
-        );
-        let text = self.complete_lines(text);
+        let mut joined = std::mem::take(&mut self.pending);
+        joined.extend_from_slice(&bytes);
+        let text = self.complete_lines(joined);
         Ok(if text.is_empty() {
             Read::Nothing
         } else {
@@ -740,13 +743,15 @@ impl Tail {
         })
     }
 
-    /// `text` up to its last newline; the rest waits in `pending`.
-    fn complete_lines(&mut self, mut text: String) -> String {
-        if let Some(end) = text.rfind('\n') {
-            self.pending = text.split_off(end + 1);
-            text
+    /// `bytes` up to its last newline, decoded; the rest waits in
+    /// `pending`. A newline byte never sits inside a UTF-8 character, so
+    /// what is decoded holds only whole ones.
+    fn complete_lines(&mut self, mut bytes: Vec<u8>) -> String {
+        if let Some(end) = bytes.iter().rposition(|&byte| byte == b'\n') {
+            self.pending = bytes.split_off(end + 1);
+            String::from_utf8_lossy(&bytes).into_owned()
         } else {
-            self.pending = text;
+            self.pending = bytes;
             String::new()
         }
     }
@@ -872,9 +877,42 @@ mod tests {
         assert_eq!(tail.read_all().unwrap(), "old\n");
         std::fs::write(&path, "new\n").unwrap();
         assert_eq!(tail.poll().unwrap(), Read::All("old\nnew\n".to_owned()));
-        // With neither file, it is an error the window shows.
-        let mut none = Tail::new(dir.path().join("nothing/main.log"));
-        assert!(none.read_all().is_err());
+        // With neither file there is no output yet, and the first line
+        // written is read.
+        let other = tempfile::tempdir().unwrap();
+        let fresh = other.path().join("main.log");
+        let mut none = Tail::new(fresh.clone());
+        assert_eq!(none.read_all().unwrap(), "");
+        std::fs::write(&fresh, "first\n").unwrap();
+        assert_eq!(none.poll().unwrap(), Read::All("first\n".to_owned()));
+    }
+
+    #[test]
+    fn a_character_cut_by_a_read_arrives_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.log");
+        std::fs::write(&path, "").unwrap();
+        let mut tail = Tail::new(path.clone());
+        assert_eq!(tail.read_all().unwrap(), "");
+        let line = "Settings \u{203a} Updates\n".as_bytes();
+        // Up to the middle of the three-byte '›'.
+        let cut = "Settings ".len() + 1;
+        let append = |bytes: &[u8]| {
+            use std::io::Write as _;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap()
+                .write_all(bytes)
+                .unwrap();
+        };
+        append(&line[..cut]);
+        assert_eq!(tail.poll().unwrap(), Read::Nothing);
+        append(&line[cut..]);
+        assert_eq!(
+            tail.poll().unwrap(),
+            Read::More("Settings \u{203a} Updates\n".to_owned())
+        );
     }
 
     #[test]

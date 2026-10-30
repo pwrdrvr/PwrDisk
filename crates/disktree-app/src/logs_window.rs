@@ -43,8 +43,8 @@ use serde::{Deserialize, Serialize};
 use crate::aux_window::{self, Spec};
 use crate::chrome::Drags;
 use crate::log_view::{
-    CONTEXT_CHOICES, Level, LogView, Read, Row, RowKey, SearchMode, Shown,
-    Tail, thousands,
+    CONTEXT_CHOICES, Level, LogLine, LogView, Read, Row, RowKey, SearchMode,
+    Shown, Tail, thousands,
 };
 use crate::ui::{icon as icon_size, size, space, text};
 
@@ -334,8 +334,15 @@ impl LogsWindow {
                 self.view.replace(&text);
                 self.problem = None;
                 self.selection = None;
+                self.follows_tail = false;
+                self.new_lines = 0;
+                self.new_errors = 0;
+                // Numbers start again at 1 for other text, so a row's key
+                // no longer names what the list measured: start it over.
+                self.list_keys.clear();
             }
             Read::More(text) => {
+                self.problem = None;
                 let newest = self.view.newest();
                 let before = self.view.lines.len() + self.view.first_number;
                 let errors = self.view.append(&text);
@@ -1425,7 +1432,7 @@ impl LogsWindow {
         // current match's first hit is solid.
         if shown == Shown::Match {
             let active = self.view.active() == Some(number);
-            let hits = search_hits(&raw, &self.query);
+            let hits = search_hits(line, &self.query);
             if !hits.is_empty() {
                 let styled: Vec<_> = hits
                     .into_iter()
@@ -1931,12 +1938,13 @@ fn hit_style(current: bool, theme: &Theme) -> HighlightStyle {
 }
 
 /// Byte ranges of each search word in `line`, ignoring case, sorted and
-/// merged.
-pub fn search_hits(line: &str, query: &str) -> Vec<Range<usize>> {
-    let lower = line.to_lowercase();
+/// merged. Found in the lowercase copy the line keeps for the search, so
+/// a frame does not lowercase every row again.
+fn search_hits(line: &LogLine, query: &str) -> Vec<Range<usize>> {
+    let lower = line.lower();
     // Lowercasing can change byte lengths outside ASCII; then skip
     // highlighting rather than cut a character.
-    if lower.len() != line.len() {
+    if lower.len() != line.raw().len() {
         return Vec::new();
     }
     let mut hits: Vec<Range<usize>> = Vec::new();
@@ -2012,13 +2020,16 @@ mod tests {
     #[test]
     fn hits_are_found_ignoring_case_and_merged() {
         assert_eq!(
-            search_hits("GitHub said 403; github again", "github"),
+            search_hits(
+                &LogLine::parse("GitHub said 403; github again"),
+                "github"
+            ),
             [0..6, 17..23]
         );
         // Overlapping words merge into one hit.
-        let merged = search_hits("abcdef", "abc cde");
+        let merged = search_hits(&LogLine::parse("abcdef"), "abc cde");
         assert_eq!((merged.len(), merged.first()), (1, Some(&(0..5))));
-        assert!(search_hits("anything", "").is_empty());
+        assert!(search_hits(&LogLine::parse("anything"), "").is_empty());
     }
 
     #[test]

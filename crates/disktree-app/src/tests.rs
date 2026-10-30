@@ -1591,12 +1591,20 @@ fn logs_survive_a_rotation_to_an_empty_file(cx: &mut TestAppContext) {
          2026-10-30T00:00:02.000-04:00 ERROR pwrdisk: two\n",
     );
     assert_eq!(cx.update(|_, cx| view.read(cx).view.visible().len()), 2);
+    // Paused, with a line waiting behind the pill.
+    view.update(cx, |logs, cx| logs.set_live(false, cx));
+    append_log(&path, "2026-10-30T00:00:02.500-04:00 INFO  pwrdisk: more\n");
+    poll_logs(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).new_lines), 1);
 
     std::fs::rename(&path, dir.path().join("main.old.log")).expect("rotate");
     std::fs::write(&path, "").expect("a new main.log");
     poll_logs(cx);
-    // The old file's lines, from main.old.log, and nothing past them.
-    assert_eq!(cx.update(|_, cx| view.read(cx).view.visible().len()), 2);
+    // The old file's lines, from main.old.log, and nothing past them;
+    // the pill counted lines of a reading that is gone.
+    assert_eq!(cx.update(|_, cx| view.read(cx).view.visible().len()), 3);
+    assert_eq!(cx.update(|_, cx| view.read(cx).new_lines), 0);
+    view.update(cx, |logs, cx| logs.set_live(true, cx));
     // A real rotation only ever moves a main.log with lines in it: an
     // empty file swapped for another empty one may keep its inode (Linux)
     // or have none (Windows), and there is nothing to notice then.
@@ -1605,7 +1613,7 @@ fn logs_survive_a_rotation_to_an_empty_file(cx: &mut TestAppContext) {
         "2026-10-30T00:00:03.000-04:00 INFO  pwrdisk: three\n",
     );
     poll_logs(cx);
-    assert_eq!(cx.update(|_, cx| view.read(cx).view.visible().len()), 3);
+    assert_eq!(cx.update(|_, cx| view.read(cx).view.visible().len()), 4);
     std::fs::write(dir.path().join("main.old.log"), "").expect("emptied");
     std::fs::write(&path, "").expect("truncated");
     poll_logs(cx);
