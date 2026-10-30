@@ -136,7 +136,9 @@ for (const [name, input] of [
   ['API failure', { paths: agentGuidance, apiError: true }],
 ]) {
   test(`${name} runs full CI`, async () => {
-    assert.equal((await run(input)).outputs.code_impacting, 'true');
+    const { outputs } = await run(input);
+    assert.equal(outputs.code_impacting, 'true');
+    assert.equal(outputs.licenses_impacting, 'true');
   });
 }
 
@@ -152,27 +154,57 @@ test('uses the paginating API for more than one page', async () => {
 test('pushes always run full CI without querying PR files', async () => {
   const result = await run({ paths: agentGuidance, event: 'push' });
   assert.equal(result.outputs.code_impacting, 'true');
+  assert.equal(result.outputs.licenses_impacting, 'true');
   assert.equal(result.calls.length, 0);
 });
 
-test('classifier job output fails open to full CI after script failures or missing output', async () => {
-  assert.match(workflow, /continue-on-error: true/);
-  const expression = workflow.match(/code_impacting: \$\{\{ (.+) \}\}/)[1];
-  const output = (outcome, value) => new Function('steps', `return (${expression});`)({
-    classify: { outcome, outputs: { code_impacting: value } },
-  });
-  assert.equal(output('success', 'false'), false);
-  for (const [outcome, value] of [
-    ['success', 'true'], ['success', undefined], ['failure', 'false'],
-    ['failure', undefined], ['skipped', undefined], ['cancelled', 'false'],
-  ]) assert.equal(output(outcome, value), true);
-  await assert.rejects(run({ paths: agentGuidance, summaryError: true }), /summary unavailable/);
+test('license inputs and gate changes select the notice check, including renames', async () => {
+  for (const path of [
+    'Cargo.lock', 'Cargo.toml', 'crates/disktree-app/Cargo.toml',
+    'xtask/Cargo.toml', 'licenses/about.toml', 'licenses/about.hbs',
+    'licenses/bundled.txt', 'licenses/velopack.txt', 'licenses/nested/NOTES.md',
+    'THIRD_PARTY_LICENSES', '.github/workflows/ci.yml', 'xtask/src/licenses.rs',
+  ]) {
+    for (const status of ['modified', 'added', 'removed']) {
+      assert.equal((await run({ files: [{ filename: path, status }] }))
+        .outputs.licenses_impacting, 'true', `${status}: ${path}`);
+    }
+    for (const [previous_filename, filename] of [[path, 'docs/old.md'], ['docs/old.md', path]]) {
+      assert.equal((await run({ files: [{ filename, previous_filename, status: 'renamed' }] }))
+        .outputs.licenses_impacting, 'true', `rename: ${previous_filename} to ${filename}`);
+    }
+  }
 });
 
-test('every other job runs on classifier failure and skips only on explicit non-code success', () => {
+test('unrelated changes skip the notice check even when they run full CI', async () => {
+  for (const paths of [agentGuidance, [
+    'crates/disktree-core/src/scan.rs', 'assets/disktree.svg', 'CHANGELOG.md',
+    'docs/Cargo.toml.md', 'other/Cargo.lock', 'licenses-other/about.toml',
+  ]]) {
+    assert.equal((await run({ paths })).outputs.licenses_impacting, 'false');
+  }
+});
+
+for (const field of ['code_impacting', 'licenses_impacting']) {
+  test(`${field} job output fails open after script failures or missing output`, async () => {
+    assert.match(workflow, /continue-on-error: true/);
+    const expression = workflow.match(new RegExp(`${field}: \\$\\{\\{ (.+) \\}\\}`))[1];
+    const output = (outcome, value) => new Function('steps', `return (${expression});`)({
+      classify: { outcome, outputs: { [field]: value } },
+    });
+    assert.equal(output('success', 'false'), false);
+    for (const [outcome, value] of [
+      ['success', 'true'], ['success', undefined], ['failure', 'false'],
+      ['failure', undefined], ['skipped', undefined], ['cancelled', 'false'],
+    ]) assert.equal(output(outcome, value), true);
+    await assert.rejects(run({ paths: agentGuidance, summaryError: true }), /summary unavailable/);
+  });
+}
+
+test('every other job runs on classifier failure and skips only on explicit irrelevant success', () => {
   const jobs = workflow.split('\njobs:\n')[1];
   const ids = [...jobs.matchAll(/^  ([a-z][\w-]*):\n/gm)].map(m => m[1]);
-  assert.deepEqual(ids, ['changes', 'check', 'check-macos', 'bundle-macos-26', 'windows',
+  assert.deepEqual(ids, ['changes', 'licenses', 'check', 'check-macos', 'bundle-macos-26', 'windows',
     'other-architectures'],
     'a new job needs a decision here: gate it on the classifier or not');
   for (const id of ids.slice(1)) {
@@ -187,7 +219,9 @@ test('every other job runs on classifier failure and skips only on explicit non-
       ['success', '', true], ['failure', 'false', true], ['failure', '', true],
       ['skipped', '', true],
     ]) {
-      const needs = { changes: { result, outputs: { code_impacting: output } } };
+      const field = id === 'licenses' ? 'licenses_impacting' : 'code_impacting';
+      const otherField = id === 'licenses' ? 'code_impacting' : 'licenses_impacting';
+      const needs = { changes: { result, outputs: { [field]: output, [otherField]: 'false' } } };
       assert.equal(evaluate(needs, () => false), expected, `${id}: ${result}/${output}`);
       assert.equal(evaluate(needs, () => true), false, `${id}: cancelled`);
     }

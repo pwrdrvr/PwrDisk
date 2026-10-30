@@ -36,6 +36,7 @@ jobs:
     outputs:
       # Only an explicit false from a successful classifier may skip CI.
       code_impacting: ${{ steps.classify.outcome != 'success' || steps.classify.outputs.code_impacting != 'false' }}
+      licenses_impacting: ${{ steps.classify.outcome != 'success' || steps.classify.outputs.licenses_impacting != 'false' }}
     steps:
       - name: Classify changed files
         id: classify
@@ -46,6 +47,7 @@ jobs:
           script: |
             const fullCi = (reason) => {
               core.setOutput("code_impacting", "true");
+              core.setOutput("licenses_impacting", "true");
               core.notice(`Running full CI: ${reason}`);
             };
 
@@ -104,8 +106,19 @@ jobs:
               return paths.some((path) => !isNonCodePath(path));
             });
             const nonCodeOnly = codeImpactingFile === undefined;
+            const isLicensePath = (path) =>
+              path === "Cargo.lock" || path === "Cargo.toml" ||
+              path.endsWith("/Cargo.toml") || path.startsWith("licenses/") ||
+              path === "THIRD_PARTY_LICENSES" ||
+              // Exercise changes to the gate and generator themselves.
+              path === ".github/workflows/ci.yml" ||
+              path === "xtask/src/licenses.rs";
+            const licensesImpacting = files.some((file) =>
+              [file.filename, file.previous_filename].filter(Boolean)
+                .some(isLicensePath));
 
             core.setOutput("code_impacting", String(!nonCodeOnly));
+            core.setOutput("licenses_impacting", String(licensesImpacting));
             await core.summary
               .addHeading("Changed-file classification")
               .addTable([
@@ -129,6 +142,38 @@ jobs:
           persist-credentials: false
       - name: Test the classifier
         run: node --test scripts/ci/classify-changes.test.cjs
+
+  licenses:
+    name: Check third-party licenses
+    runs-on: ubuntu-24.04
+    needs: changes
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.licenses_impacting != 'false')
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+
+      - uses: Swatinem/rust-cache@v2
+
+      # cargo-about's output changes between releases; keep this pin and
+      # the binary cache key together, as PwrRoute pins its generator too.
+      - name: Cache cargo-about
+        id: cargo-about
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-about
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-about-0.9.2-rust-1.97
+
+      - name: Install cargo-about
+        if: steps.cargo-about.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-about@0.9.2
+
+      - name: Check notices
+        run: cargo xtask licenses --check
 
   check:
     name: Lint and test
