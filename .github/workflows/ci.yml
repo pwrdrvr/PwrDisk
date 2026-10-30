@@ -17,9 +17,125 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The pull_request trigger stays path-unfiltered so every job reports on
+  # every PR: a skipped job satisfies a required check, a missing one leaves
+  # it pending. PRs that touch only docs, Markdown, agent skills and
+  # templates skip the jobs below instead. Ported from PwrRoute, which took
+  # it from PwrAgent; scripts/ci/classify-changes.test.cjs runs this script
+  # against fixtures, and the allowlist's reasons are at its top. Should
+  # branch protection come, note that a skipped matrix job reports one check
+  # under its unexpanded name, `Test (${{ matrix.name }})`, so require the
+  # other jobs or an aggregate, not a matrix leg.
+  changes:
+    name: Classify Changes
+    runs-on: ubuntu-24.04
+    # pulls.listFiles needs pull-requests: read; no other job gets it.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      # Only an explicit false from a successful classifier may skip CI.
+      code_impacting: ${{ steps.classify.outcome != 'success' || steps.classify.outputs.code_impacting != 'false' }}
+    steps:
+      - name: Classify changed files
+        id: classify
+        # A script/runtime failure must select full CI, too.
+        continue-on-error: true
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fullCi = (reason) => {
+              core.setOutput("code_impacting", "true");
+              core.notice(`Running full CI: ${reason}`);
+            };
+
+            if (context.eventName !== "pull_request") {
+              fullCi(`${context.eventName} events always run full CI`);
+              return;
+            }
+
+            let files;
+            try {
+              files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                per_page: 100,
+              });
+            } catch (error) {
+              fullCi(`changed-file lookup failed (${error.message})`);
+              return;
+            }
+
+            const reportedCount = context.payload.pull_request.changed_files;
+            if (!Array.isArray(files) || !Number.isSafeInteger(reportedCount) ||
+                reportedCount <= 0 || files.length !== reportedCount) {
+              fullCi(
+                `changed-file list was incomplete (received ${files?.length} of ${reportedCount})`,
+              );
+              return;
+            }
+
+            // Unknown/malformed entries are not evidence for skipping CI.
+            if (files.some((file) => !file || typeof file.filename !== "string" ||
+                file.filename.length === 0 ||
+                (file.previous_filename !== undefined &&
+                 (typeof file.previous_filename !== "string" || file.previous_filename.length === 0)) ||
+                (file.status === "renamed" && !file.previous_filename)) ||
+                new Set(files.map((file) => file.filename)).size !== reportedCount) {
+              fullCi("changed-file list had invalid or duplicate entries");
+              return;
+            }
+
+            const isNonCodePath = (path) => {
+              // Read by xtask's release check and its tests.
+              if (path === "CHANGELOG.md") return false;
+              return path === ".github/dependabot.yml" ||
+                path.startsWith("docs/") ||
+                path.startsWith(".agents/skills/") ||
+                path.startsWith(".github/ISSUE_TEMPLATE/") ||
+                path.startsWith(".github/PULL_REQUEST_TEMPLATE/") ||
+                path.toLowerCase().endsWith(".md");
+            };
+            const codeImpactingFile = files.find((file) => {
+              const paths = [file.filename, file.previous_filename].filter(Boolean);
+              return paths.some((path) => !isNonCodePath(path));
+            });
+            const nonCodeOnly = codeImpactingFile === undefined;
+
+            core.setOutput("code_impacting", String(!nonCodeOnly));
+            await core.summary
+              .addHeading("Changed-file classification")
+              .addTable([
+                [{data: "Classification", header: true}, {data: "Files", header: true}],
+                [nonCodeOnly ? "Non-code only" : "Code impacting", String(files.length)],
+              ])
+              .addRaw(
+                nonCodeOnly
+                  ? "Only documentation, agent skills, PR/issue templates or Dependabot configuration changed; expensive CI jobs are skipped."
+                  : `Full CI runs because \`${codeImpactingFile.filename}\` requires it.`,
+              )
+              .write();
+
+      # Here rather than in `cargo xtask lint`, which stays Rust-only. After
+      # the classifier, so a failure turns this check red and, through the
+      # job's result, still runs full CI.
+      - uses: actions/checkout@v5
+        with:
+          # The test runs the PR's own script, and this job's token is the
+          # only one with pull-requests: read; keep it out of .git/config.
+          persist-credentials: false
+      - name: Test the classifier
+        run: node --test scripts/ci/classify-changes.test.cjs
+
   check:
     name: Lint and test
     runs-on: ubuntu-24.04
+    needs: changes
+    # Runs unless the classifier succeeded and said non-code only.
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
       - uses: actions/checkout@v5
 
@@ -54,6 +170,11 @@ jobs:
     # either: gpui-kit builds GPUI with runtime shader compilation, so the
     # shaders compile when the app starts, not here.
     runs-on: macos-15
+    needs: changes
+    # Runs unless the classifier succeeded and said non-code only.
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
       - uses: actions/checkout@v5
 
@@ -78,6 +199,11 @@ jobs:
   windows:
     name: Lint and test (Windows)
     runs-on: windows-2025
+    needs: changes
+    # Runs unless the classifier succeeded and said non-code only.
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
       # Check out with the repository's own line endings, as on Linux.
       - run: git config --global core.autocrlf false
@@ -129,6 +255,11 @@ jobs:
           - { name: macOS x86_64, runner: macos-15-intel }
           - { name: Windows aarch64, runner: windows-11-arm }
     runs-on: ${{ matrix.runner }}
+    needs: changes
+    # Runs unless the classifier succeeded and said non-code only.
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
       - if: runner.os == 'Windows'
         run: git config --global core.autocrlf false
