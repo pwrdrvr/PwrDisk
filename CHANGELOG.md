@@ -9,8 +9,8 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## v0.12.0
 
-The first PwrDisk release: disktree 0.11.0, renamed, signed, and installed
-and updated through Velopack.
+The first PwrDisk release, continuing from disktree 0.11.0 with local and
+SSH exploration, AI-assisted review, and signed installers.
 
 - PwrDisk - The app, binary and bundle are PwrDisk (`pwrdisk`,
   `com.pwrdrvr.pwrdisk`), a maintained fork of tobi/disktree. A Power
@@ -21,12 +21,44 @@ and updated through Velopack.
   x64, and the same for ARM64 (`PwrDisk-win-arm64-*`), signed through Azure
   Artifact Signing. Setup installs to your profile without administrator
   rights and adds a Start menu shortcut.
+- Sources and SSH - Choose a local volume or an SSH host and root before
+  scanning. Explore remote disks with live scan progress and treemap
+  previews, then export a cleanup plan; remote scans are read-only.
+- AI agents - `pwrdisk mcp` lets an agent inspect disk usage and mark an
+  agreed cleanup list. Marks appear in the open window on macOS, Linux
+  and Windows, and the agent can open Review for you. Only a person can
+  confirm removal. Embedded skills explain each system's storage and
+  cleanup cautions.
+- Scan progress - Whole-drive scans show estimated byte coverage and
+  average files per second, followed by an explicit finalizing state.
+  Progress scrolls in short windows while the free-space meter stays
+  visible. Folder and filtered scans keep counts when no compatible
+  total is available.
+- APFS space estimates - Show clone sharing separately from treemap
+  sizes and estimate what the marked set can reclaim together. Retained
+  clones and hardlinks reduce projected savings; the volume meter uses
+  the conservative estimate and reports measured free space after removal.
+- macOS service stores - Show measured Spotlight-index and FSEvents
+  usage when readable, label partial results, and keep those stores
+  protected from raw removal. Unreadable service stores do not produce
+  repeated Full Disk Access hints.
+- Explore and Review - Custom window chrome and faster marking, path
+  lookup and review keep large cleanup queues responsive.
 - Updates - Copies installed from the DMG, Setup.exe or the MSI check
   GitHub Releases at startup and every six hours, and download a newer
   release in the background. Shift-U (or PwrDisk › Check for Updates… on
-  macOS) shows the version, the release channel and what the last check
-  found; Restart to update installs a download at once, and otherwise it
-  installs when PwrDisk quits. Pick Stable or Beta, Latest or Prerelease
-  there; a copy follows the channel its version implies until you do.
+  macOS) opens Settings › Updates; Restart to update installs a download
+  at once, and otherwise it installs when PwrDisk quits. Pick Stable or
+  Beta, Latest or Prerelease there; a copy follows the channel its version
+  implies until you do.
+- Settings and Help - Shared menus, separate Updates, Diagnostics and
+  About panes, and offline Changelog, License and Third-Party Notices
+  windows make support information easier to find. Copy Diagnostics Info
+  omits scanned paths, SSH hosts and volume names.
+- Logs - A live viewer adds wrapped lines, search with Filter and
+  Highlight modes, context rows, line selection, and marks for copying
+  just one action's output. Following pauses while you read, and display
+  preferences persist. Logs record counts and durations, never scanned
+  paths.
 - Linux - The tarball and `install.sh` are unchanged. Linux copies do not
   update themselves; download the next release.
