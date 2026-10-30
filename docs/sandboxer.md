@@ -6,8 +6,14 @@ the Rust compile load off the local machine. Use the local commands in
 [AGENTS.md](../AGENTS.md#commands) when Sandboxer is not available.
 
 This procedure follows PwrRoute's Sandboxer workflow. It uses committed
-source, one VM per thread, a persistent Cargo cache and saved exit codes.
+source, one VM per thread, a shared base snapshot and saved exit codes.
 Use only the Sandboxer MCP tools. Do not use the `sbx` CLI.
+
+Start new VMs from `pwrdisk-base-us-east` in `us-east`. The snapshot has
+the tools, dependencies and Cargo build cache from a verified commit.
+This avoids repeated installation and compilation for each thread. Keep
+the checkout at `~/pwrdisk/repo` to reuse that cache. Always transfer and
+check out the commit under test; the snapshot's commit can be older.
 
 ## Select a sandbox
 
@@ -15,11 +21,14 @@ Use only the Sandboxer MCP tools. Do not use the `sbx` CLI.
    `search_mcp_tools`, then `call_mcp_tool` to call a discovered tool.
 2. Call `list_sandboxes`. Reuse this thread's VM. Use `resume_sandbox` if
    it is stopped. Do not use a VM that belongs to another thread.
-3. If necessary, call `create_sandbox` with these values:
+3. If a new VM is necessary, call `list_snapshots` with
+   `name: "pwrdisk-base-us-east"`. Then call `create_sandbox` with these
+   values:
 
    | Field | Value |
    | --- | --- |
    | `name` | `pwrdisk-<branch>`, with `/` replaced by `-` |
+   | `from` | `pwrdisk-base-us-east` |
    | `noEnv` | `true` |
    | `region` | `us-east` |
    | `type` | `large` |
@@ -30,6 +39,9 @@ Use only the Sandboxer MCP tools. Do not use the `sbx` CLI.
    If the schema does not have this field, report the blocker. Do not
    create the VM. The TTL stops the VM after two hours, even during a run.
    Select a longer TTL at creation if the checks need more time.
+   Always set `region`; the default can select another region.
+   If the snapshot is missing, [build and test it](#build-or-refresh-the-base-snapshot).
+   Do not silently create a cold VM for each thread.
 4. Pass `sandboxId` on every later call. The implicit default can refer to
    another task's VM.
 
@@ -43,7 +55,15 @@ Commit the changes first. Verify `HEAD`, including the scripts in this
 guide. Do not transfer a working tree with uncommitted changes.
 
 For a commit already pushed to `pwrdrvr/PwrDisk`, use the public HTTPS
-remote. No GitHub token is required. In a new VM:
+remote. No GitHub token is required. In a VM started from the snapshot:
+
+```sh
+cd ~/pwrdisk/repo
+git fetch origin <branch>
+git checkout --detach <full-commit-sha>
+```
+
+Only a cold VM needs a clone:
 
 ```sh
 mkdir -p ~/pwrdisk
@@ -63,10 +83,10 @@ The two transfer scripts come from PwrRoute, with PwrDisk paths and a
 check that rejects uncommitted changes. They also retrieve logs and
 artifacts without passing file contents through the agent's context.
 
-1. Read [transfer.py](../scripts/sandboxer/transfer.py) locally. Use the
-   MCP `write_file` tool to put that content at
-   `/home/user/pwrdisk/bin/transfer.py` in the VM. This bootstraps a VM
-   that does not yet have the repository.
+1. The base snapshot has `~/pwrdisk/bin/transfer.py`. For a cold VM, read
+   [transfer.py](../scripts/sandboxer/transfer.py) locally. Use the MCP
+   `write_file` tool to put that content at
+   `/home/user/pwrdisk/bin/transfer.py` in the VM.
 2. Use `exec` with `detached: true` to start the server:
 
    ```sh
@@ -83,7 +103,7 @@ artifacts without passing file contents through the agent's context.
    ```
 
    The script uploads a Git bundle and prints the full commit SHA.
-5. In a new VM, replace `<sha>` with that value:
+5. In a cold VM, replace `<sha>` with that value:
 
    ```sh
    cd ~/pwrdisk
@@ -94,7 +114,7 @@ artifacts without passing file contents through the agent's context.
    rm ../files/<sha>.bundle
    ```
 
-   For later runs in the same VM:
+   In a VM started from the base snapshot, or for later runs:
 
    ```sh
    cd ~/pwrdisk/repo
@@ -134,8 +154,9 @@ not start a second run because the first call has returned.
 fails. Its final exit code is nonzero if any check fails. The script holds
 a lock to prevent concurrent runs in the same checkout.
 
-Run `setup` once before individual checks. Repeat it when the toolchain
-or system dependencies change. Examples:
+Run `setup` once before individual checks. In a VM started from the base,
+installed tools and downloaded dependencies are reused. Repeat setup when
+the toolchain or system dependencies change. Examples:
 
 ```sh
 scripts/sandboxer/verify.sh setup
@@ -188,6 +209,61 @@ The transfer server accepts single file names. Archive a directory before
 download. Use contrived trees for screenshots. Follow the separate
 [PR attachment procedure](pr-screenshots.md) before uploading media.
 
+## Build or refresh the base snapshot
+
+Refresh `pwrdisk-base-us-east` when `Cargo.lock`, `rust-toolchain.toml`,
+the setup script or CI's system libraries change. Also refresh it when
+its commit is far behind `main`. New threads must still select their own
+commit; a base snapshot is a cache, not proof that a change passes.
+
+1. Use a builder VM owned by this thread. Create it in `us-east` with
+   `type: "large"`, `noEnv: true`, and `name: "pwrdisk-base-builder"`.
+   Start from the existing base when possible. Omit `from` only when no
+   base exists. A stopped, verified VM from this thread can be the builder.
+2. Transfer the commit to cache, normally the latest `main`. Use the PR's
+   commit when the snapshot tools are first added. Check it out at
+   `~/pwrdisk/repo`. Run `scripts/sandboxer/verify.sh all` with a detached
+   `exec`. Wait for exit 0 and record every status line. Resolve failures
+   before publishing a base.
+3. Stop any transfer server with `kill_command`. Check that no build or
+   test is running. Keep a copy of the transfer script outside the checkout:
+
+   ```sh
+   mkdir -p ~/pwrdisk/bin ~/pwrdisk/files
+   cp ~/pwrdisk/repo/scripts/sandboxer/transfer.py ~/pwrdisk/bin/transfer.py
+   ```
+
+4. Remove verification logs, transferred files and temporary test artifacts
+   from the builder. Keep `target/`, the Cargo registry and installed tools.
+   For the standard paths:
+
+   ```sh
+   cd ~/pwrdisk/repo
+   rm -rf .local/sandboxer
+   find ~/pwrdisk/files -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+   git status --porcelain
+   git rev-parse HEAD
+   ```
+
+   Inspect `/tmp` and remove any test fixtures or logs left by this thread.
+   The Git status must be empty. Verify that the builder has no account
+   tokens or private artifacts. `noEnv` does not remove files inherited
+   from an earlier snapshot.
+5. Call `save_snapshot` with `sandboxId`, `name: "pwrdisk-base-us-east"`
+   and labels `repo: pwrdisk`, `role: base`, `region: us-east`,
+   `commit: <full-sha>`. Wait for it to finish. Check `list_snapshots` for
+   the name, ready state and labels. Saving an existing unversioned name
+   replaces it; coordinate refreshes so builders do not overwrite each other.
+6. Test a new VM from the saved snapshot. Pass `from: "pwrdisk-base-us-east"`,
+   `region: "us-east"`, `type: "large"` and `noEnv: true` to
+   `create_sandbox`. Check the inherited commit, clean Git status,
+   `target/`, both musl scanner targets and the transfer script. Run
+   `scripts/sandboxer/verify.sh all` there. Require exit 0 for every step.
+   A second run in the builder does not test snapshot restoration.
+7. Record the builder commit, test VM ID and step times in the PR or task
+   results. Stop both VMs after the test. Delete a dedicated builder when
+   it is no longer needed; the named snapshot survives its deletion.
+
 ## Scope and lifecycle
 
 - Linux checks do not verify macOS, Windows, another CPU architecture or
@@ -210,8 +286,5 @@ download. Use contrived trees for screenshots. Follow the separate
   thread when its attached PRs merge or close. Check that the PR is
   attached; report a cleanup failure. Without that integration, delete
   this thread's VM with `delete_sandbox` when it is no longer needed.
-- A base snapshot is optional. Use `list_snapshots` to find a suitable
-  PwrDisk snapshot before passing `from` to `create_sandbox`. Do not assume
-  one exists or use a PwrRoute snapshot. Before `save_snapshot`, remove
-  transferred bundles, logs and private artifacts. Record the commit in
-  the snapshot labels. Do not replace a shared snapshot without a request.
+- Use PwrDisk's base in `us-east`. Do not use a PwrRoute snapshot. Keep the
+  named base when deleting a thread's VM; it serves later threads too.

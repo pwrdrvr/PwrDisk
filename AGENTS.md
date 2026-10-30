@@ -81,9 +81,9 @@ On Windows, where there is no make, run `cargo xtask lint`, `cargo xtask test`
 and `cargo build --release` directly; CI runs the gate on both systems.
 
 When Sandboxer MCP tools are available, run Linux builds, lint, tests and
-integration checks there. Read [remote verification](docs/sandboxer.md)
-first. Use local checks when Sandboxer is unavailable. Verify macOS and
-Windows changes on those systems.
+integration checks there. Start from `pwrdisk-base-us-east` in `us-east`;
+read [remote verification](docs/sandboxer.md) first. Use local checks when
+Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
 
 ## House rules
 
