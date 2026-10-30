@@ -236,7 +236,8 @@ impl Diagnostics {
 }
 
 /// "1,204,331": exact, since a count in an issue is compared, not read.
-fn thousands(value: u64) -> String {
+/// The Logs window counts its lines with it too.
+pub fn thousands(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {

@@ -117,10 +117,21 @@ pub mod size {
     pub const SETTINGS_NAV: Rems = Rems(12.25);
     pub const SETTINGS_PANE: Rems = Rems(47.5);
     pub const SETTINGS_LABEL: Rems = Rems(10.0);
-    /// Logs: the filter, the line number's lane and the level's.
+    /// Logs: the search field's least width, so a query still reads
+    /// beside its match count and chevrons.
     pub const LOG_FILTER: Rems = Rems(16.25);
-    pub const LOG_NUMBER: Rems = Rems(3.0);
-    pub const LOG_LEVEL: Rems = Rems(3.0);
+    /// Logs: the line-number gutter, room for five digits.
+    pub const LOG_GUTTER: Rems = Rems(3.5);
+    /// Logs: one row of a line, body mono text at 1.67.
+    pub const LOG_ROW: Rems = Rems(1.25);
+    /// Logs: a gap row and the mark's row, a little taller than a line so
+    /// they read as breaks rather than lines.
+    pub const LOG_GAP: Rems = Rems(1.375);
+    pub const LOG_MARK: Rems = Rems(1.75);
+    /// Logs: the Context menu.
+    pub const LOG_CONTEXT_MENU: Rems = Rems(10.0);
+    /// Logs: the new-lines pill sits above the selection bar.
+    pub const LOG_PILL_ABOVE_BAR: Rems = Rems(3.75);
     /// The strip's menu button off macOS: as tall as a window button.
     pub const MENU_BUTTON: Rems = Rems(1.625);
     /// Its dropdown: wide enough for a row and its shortcut.
