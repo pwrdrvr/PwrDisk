@@ -147,8 +147,37 @@ pub fn root(
             },
         ))
         .on_action(cx.listener(
-            |this, _: &crate::app_menu::CheckForUpdates, _, cx| {
-                this.open_updates(true, cx);
+            |this, _: &crate::app_menu::ChooseSource, _, cx| {
+                this.open_volumes(cx);
+            },
+        ))
+        .on_action(cx.listener(
+            |this, _: &crate::app_menu::ShowExplore, _, cx| {
+                if this.screen == Screen::Review {
+                    this.screen = Screen::Explore;
+                    cx.notify();
+                }
+            },
+        ))
+        .on_action(cx.listener(
+            |this, _: &crate::app_menu::ShowReview, _, cx| {
+                if this.screen == Screen::Explore {
+                    this.open_review(cx);
+                }
+            },
+        ))
+        .on_action(cx.listener(
+            |this, _: &crate::app_menu::ShowKeyboardShortcuts, _, cx| {
+                this.show_help = true;
+                cx.notify();
+            },
+        ))
+        .on_action(cx.listener(
+            |this, _: &crate::app_menu::ToggleAppMenu, _, cx| {
+                if frame_has_app_menu(this.chrome_pin.as_ref()) {
+                    this.app_menu_open = !this.app_menu_open;
+                    cx.notify();
+                }
             },
         ))
         .on_action(cx.listener(
@@ -187,8 +216,8 @@ pub fn root(
     if app.show_help {
         root = root.child(help_overlay(app, cx));
     }
-    if app.updates_open {
-        root = root.child(updates_panel(app, cx));
+    if app.app_menu_open {
+        root = root.child(app_menu_dropdown(cx));
     }
     if app.show_agent {
         root = root.child(agent_overlay(app, cx));
@@ -666,6 +695,8 @@ fn title_strip(
     let explore = app.screen == Screen::Explore;
     let width_rems = window.viewport_size().width.as_f32() / app.rem;
     let wordmark = !explore || width_rems >= WORDMARK_SHOWN_REMS;
+    let menu =
+        frame_has_app_menu(Some(frame)).then(|| app_menu_button(app, cx));
     let content = if explore {
         div()
             .flex()
@@ -673,6 +704,7 @@ fn title_strip(
             .items_center()
             .flex_1()
             .min_w_0()
+            .children(menu)
             // Where you are is navigation, and it belongs to the whole window.
             .child(trail(app, &theme, cx))
             // The space between the trail and the settings is all title
@@ -689,8 +721,14 @@ fn title_strip(
         div()
             .flex()
             .flex_1()
+            .items_center()
             .self_stretch()
-            .child(chrome::drag_area(frame, "strip-drag", cx).flex_1())
+            .children(menu)
+            .child(
+                chrome::drag_area(frame, "strip-drag", cx)
+                    .flex_1()
+                    .self_stretch(),
+            )
     };
     chrome::strip(frame, wordmark, content, window, cx)
 }
@@ -4193,204 +4231,152 @@ fn savings(lower: u64, upper: u64) -> String {
     }
 }
 
-/// The Updates panel: what this copy is, the release channel it follows,
-/// what the last check found, and Restart to update once a release is
-/// downloaded. The updater's state is read fresh each frame; a check that
-/// starts or finishes redraws the window (`updater::install`).
-fn updates_panel(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
-    use crate::update_channel::Slot;
-    use crate::updater::{self, Installation};
+// ── the menu, off macOS ─────────────────────────────────────────────────
 
+/// Whether the strip carries the menu button: off macOS, where there is no
+/// global menu bar. Tests pin a frame to draw another system's strip.
+fn frame_has_app_menu(pin: Option<&Frame>) -> bool {
+    pin.map_or(crate::chrome::Platform::current(), |frame| frame.platform)
+        != crate::chrome::Platform::MacOs
+}
+
+/// The strip's menu button: the menu bar's place off macOS.
+fn app_menu_button(
+    app: &Disktree,
+    cx: &Context<'_, Disktree>,
+) -> impl IntoElement {
     let theme = cx.omarchy().clone();
-    let installation = updater::installation();
-    let installed = updater::installed_version();
-    let selection = updater::selection();
-    let slot = selection.resolve(&installed);
-    let state = updater::state();
-    let ready = updater::ready(&state, &installed, slot);
-
-    let about = match &installation {
-        Installation::Velopack { .. } => format!(
-            "PwrDisk {installed}. Checks GitHub Releases at startup and \
-             every six hours, and downloads what it finds."
-        ),
-        Installation::NotInstalled { .. } => format!(
-            "PwrDisk {installed}. Not installed from the DMG, Setup.exe or \
-             the MSI, so this copy does not update itself."
-        ),
-    };
-
-    let mut rows = div().flex().flex_col();
-    for (index, choice) in Slot::ALL.into_iter().enumerate() {
-        let current = choice == slot;
-        let highlighted = index == app.updates_row;
-        let note = match (current, selection.is_inferred()) {
-            (true, true) => " \u{00b7} follows this build",
-            (true, false) => " \u{00b7} picked",
-            _ => "",
-        };
-        rows = rows.child(
-            div()
-                .id(ElementId::Name(format!("update-slot-{index}").into()))
-                .debug_selector(move || format!("update-slot-{index}"))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(space::MD)
-                .px(space::MD)
-                .py(space::SM)
-                .when(highlighted, |row| row.bg(theme.accent.opacity(0.18)))
-                .hover(|row| row.bg(theme.accent.opacity(0.1)))
-                .child(div().w(icon::MD).flex_shrink_0().when(
-                    current,
-                    |mark| {
-                        mark.child(
-                            gpui_omarchy::icon(gpui_omarchy::IconName::Check)
-                                .size(icon::MD)
-                                .text_color(theme.accent),
-                        )
-                    },
-                ))
-                .child(
-                    div()
-                        .w(size::UPDATE_SLOT)
-                        .flex_shrink_0()
-                        .text_size(text::BODY)
-                        .text_color(if current {
-                            theme.bright
-                        } else {
-                            theme.foreground
-                        })
-                        .child(choice.to_string()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(text::CAPTION)
-                        .text_color(theme.secondary)
-                        .child(format!("{}{note}", slot_purpose(choice))),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.pick_update_slot(choice, cx);
-                })),
-        );
-    }
-
-    let status = if state.checking {
-        "Checking\u{2026}".to_owned()
-    } else {
-        match &state.last {
-            Some((when, outcome)) => {
-                let then = when
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |since| {
-                        i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-                    });
-                let ago = widgets::ago(crate::state::now_seconds(), then);
-                format!("Last check, {ago}: {outcome}")
-            }
-            None => "Not checked yet this session.".to_owned(),
-        }
-    };
-
-    let mut actions = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_end()
-        .gap(space::SM)
-        .child(
-            button("updates-check", "Check now", ButtonVariant::Secondary, cx)
-                .disabled(state.checking)
-                .on_click(cx.listener(|_, _, _, cx| {
-                    updater::check_in_background(updater::Trigger::Manual);
-                    cx.notify();
-                })),
-        );
-    if let Some(held) = &ready {
-        let verb = if held.switch_back { "switch" } else { "update" };
-        actions = actions.child(
-            button(
-                "updates-restart",
-                format!("Restart to {verb} to {}", held.version),
-                ButtonVariant::Primary,
-                cx,
+    with_tooltip(
+        div()
+            .id("app-menu-button")
+            .debug_selector(|| "app-menu-button".into())
+            .flex()
+            .items_center()
+            .justify_center()
+            .flex_shrink_0()
+            .size(size::MENU_BUTTON)
+            .mr(space::SM)
+            .border_1()
+            .border_color(if app.app_menu_open {
+                theme.border
+            } else {
+                theme.background.opacity(0.)
+            })
+            .when(app.app_menu_open, |button| {
+                button.bg(theme.accent.opacity(0.18))
+            })
+            .hover(|button| button.bg(theme.hover_fill()))
+            .cursor_pointer()
+            .text_color(theme.bright)
+            .child(
+                gpui_omarchy::icon(gpui_omarchy::IconName::Menu).size(icon::MD),
             )
-            .disabled(!app.can_restart_to_update())
             .on_click(cx.listener(|this, _, _, cx| {
-                this.restart_to_update(cx);
+                this.app_menu_open = !this.app_menu_open;
+                cx.notify();
             })),
-        );
-    }
+        "Menu \u{b7} Alt",
+    )
+}
 
-    let restart_key = if ready.is_some() {
-        " \u{00b7} r restarts"
-    } else {
-        ""
-    };
-    let card = div()
-        .debug_selector(|| "updates-panel".into())
+/// The menu bar's template (`app_menu::menus`) as one dropdown, its menus
+/// as headed groups rather than cascades: one level, nothing to aim at
+/// diagonally. A row runs its action as the menu bar's would.
+fn app_menu_dropdown(cx: &Context<'_, Disktree>) -> impl IntoElement {
+    use gpui_kit::MenuItem;
+    let theme = cx.omarchy().clone();
+    let keymap = cx.key_bindings();
+    let keymap = keymap.borrow();
+    let mut list = div()
+        .id("app-menu")
+        .debug_selector(|| "app-menu".into())
         .flex()
         .flex_col()
-        .gap(space::MD)
-        .w(size::UPDATES)
-        .p(space::XL)
+        .w(size::APP_MENU)
+        .max_h(size::APP_MENU_HEIGHT)
+        .overflow_y_scroll()
+        .py(space::XS)
         .border_1()
         .border_color(theme.border)
         .bg(theme.surface)
-        .child(
+        .shadow_lg()
+        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+            this.app_menu_open = false;
+            cx.notify();
+        }));
+    let menus = crate::app_menu::menus(crate::app_menu::Platform::Other);
+    let count = menus.len();
+    for (group, menu) in menus.into_iter().enumerate() {
+        list = list.child(
             div()
-                .text_size(text::TITLE)
-                .font_weight(FontWeight::BOLD)
-                .text_color(theme.bright)
-                .child("Updates"),
-        )
-        .child(
-            div()
-                .text_size(text::BODY)
-                .text_color(theme.foreground)
-                .child(about),
-        )
-        .child(widgets::section("Release channel", cx))
-        .child(rows)
-        .child(
-            div()
-                .debug_selector(|| "updates-status".into())
-                .text_size(text::BODY)
-                .text_color(theme.foreground)
-                .child(status),
-        )
-        .child(actions)
-        .child(
-            div()
+                .px(space::MD)
+                .pt(space::SM)
+                .pb(space::XXS)
+                .font_family(theme.mono_font.clone())
                 .text_size(text::CAPTION)
                 .text_color(theme.secondary)
-                .child(format!(
-                    "\u{2191}\u{2193} and enter pick a channel \u{00b7} c \
-                     checks{restart_key} \u{00b7} esc closes"
-                )),
+                .child(menu.name.to_uppercase()),
         );
-
-    let close = cx.entity().downgrade();
-    centred_popup(card, move |_, _, cx| {
-        let _ = close.update(cx, |this, cx| {
-            this.updates_open = false;
-            cx.notify();
-        });
-    })
-    .bg(theme.background.opacity(0.86))
-}
-
-/// What each release channel slot is for, in the family's words.
-const fn slot_purpose(slot: crate::update_channel::Slot) -> &'static str {
-    use crate::update_channel::{Track, Train};
-    match (slot.train, slot.track) {
-        (Train::Stable, Track::Latest) => "Releases promoted after a check",
-        (Train::Stable, Track::Prerelease) => "Candidates for the next one",
-        (Train::Beta, Track::Latest) => "Beta builds off main",
-        (Train::Beta, Track::Prerelease) => "The newest alpha; may not work",
+        for (index, item) in menu.items.into_iter().enumerate() {
+            let MenuItem::Action { name, action, .. } = item else {
+                continue;
+            };
+            let shortcut = keymap
+                // The last binding wins, as the menu bar shows it; Edit's and
+                // zoom's are in the menu-only context, and count.
+                .bindings_for_action(action.as_ref())
+                .next_back()
+                .map(|binding| {
+                    binding
+                        .keystrokes()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                });
+            let id = format!("app-menu-{group}-{index}");
+            list = list.child(
+                div()
+                    .id(ElementId::Name(id.clone().into()))
+                    .debug_selector(move || id)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(space::LG)
+                    .px(space::MD)
+                    .py(space::XXS)
+                    .hover(|row| row.bg(theme.accent.opacity(0.18)))
+                    .cursor_pointer()
+                    .child(
+                        div().flex_1().text_color(theme.foreground).child(name),
+                    )
+                    .children(shortcut.map(|keys| {
+                        div()
+                            .font_family(theme.mono_font.clone())
+                            .text_size(text::CAPTION)
+                            .text_color(theme.secondary)
+                            .child(keys)
+                    }))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.app_menu_open = false;
+                        window.dispatch_action(action.boxed_clone(), cx);
+                        cx.notify();
+                    })),
+            );
+        }
+        if group + 1 < count {
+            list =
+                list.child(div().my(space::XS).h(px(1.)).bg(theme.divider()));
+        }
     }
+    deferred(
+        anchored()
+            .position(gpui_kit::point(
+                crate::ui::chrome::STOPLIGHT_ZONE,
+                crate::ui::chrome::STRIP,
+            ))
+            .child(list),
+    )
 }
 
 /// Who is driving the window, in the top bar: the agent's name and what it

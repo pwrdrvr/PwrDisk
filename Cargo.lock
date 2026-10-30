@@ -1485,6 +1485,7 @@ version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-channel",
+ "chrono",
  "disktree-core",
  "disktree-link",
  "disktree-mcp",

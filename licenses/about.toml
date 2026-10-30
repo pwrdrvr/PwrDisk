@@ -1,7 +1,9 @@
-# cargo-about's configuration for scripts/release/velopack-notices.sh, which
-# writes licenses/velopack.txt for the Velopack binaries vpk adds to the
-# release. Copied from PwrRoute's about.toml; a license id that is not
-# accepted here fails the script, and adding one is a legal decision.
+# cargo-about's configuration, for `cargo xtask licenses` (PwrDisk's own
+# crates, into THIRD_PARTY_LICENSES) and for
+# scripts/release/velopack-notices.sh, which writes licenses/velopack.txt for
+# the Velopack binaries vpk adds to the release. Copied from PwrRoute's
+# about.toml; a license id that is not accepted here fails both, and adding
+# one is a legal decision.
 accepted = [
     "0BSD",
     "Apache-2.0",

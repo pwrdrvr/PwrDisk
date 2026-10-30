@@ -441,17 +441,11 @@ pub struct Disktree {
     /// Enter was pressed before the search finished: apply on arrival.
     apply_pending: bool,
     pub show_help: bool,
-    /// The Updates panel: the version, the release channel and the last
-    /// check. Its state lives in [`crate::updater`]; only the panel's own
-    /// is here.
-    pub updates_open: bool,
-    /// The channel row the arrow keys are on, as an index into
-    /// [`crate::update_channel::Slot::ALL`].
-    pub updates_row: usize,
-    /// Where a picked channel is saved; `None` keeps it for the session.
-    pub updates_dir: Option<PathBuf>,
     /// The "work with an AI agent" overlay is open.
     pub show_agent: bool,
+    /// Off macOS, the strip's menu: the menu bar's template as one
+    /// dropdown (`app_menu::menus`), since there is no global menu bar.
+    pub app_menu_open: bool,
     pub show_selection: bool,
     pub focus: FocusHandle,
     /// A trail crumb's sibling menu, when open.
@@ -632,10 +626,8 @@ impl Disktree {
             finding: false,
             apply_pending: false,
             show_help: false,
-            updates_open: false,
-            updates_row: 0,
-            updates_dir: crate::updater::settings_dir(),
             show_agent: false,
+            app_menu_open: false,
             show_selection: true,
             focus: cx.focus_handle(),
             crumb_menu: None,
@@ -1179,6 +1171,27 @@ impl Disktree {
         cx.notify();
     }
 
+    /// One line in the diagnostic log for a scan that ended: its kind, the
+    /// files and the time, or that it failed. Never the root or the error's
+    /// text, which can name a path.
+    fn log_scan_outcome(&self, kind: &str) {
+        let elapsed = self
+            .scan_started
+            .map_or(0.0, |started| started.elapsed().as_secs_f64());
+        match (&self.scan_error, &self.tree) {
+            (Some(_), _) => log::warn!(
+                target: "pwrdisk::scan",
+                "{kind} scan failed after {elapsed:.1} s"
+            ),
+            (None, Some(tree)) => log::info!(
+                target: "pwrdisk::scan",
+                "{kind} scan finished: {} files in {elapsed:.1} s",
+                tree.files
+            ),
+            (None, None) => {}
+        }
+    }
+
     /// Changing resource policy leaves the current scan and result intact;
     /// rescan, navigation to a new root and restart use the new fixed budget.
     pub fn set_power_efficiency(
@@ -1221,39 +1234,16 @@ impl Disktree {
         cx.notify();
     }
 
-    /// Open the Updates panel on the channel in force. `check` also checks
-    /// now, as "Check for Updates…" does; a check already running is left
-    /// to finish.
-    pub fn open_updates(&mut self, check: bool, cx: &mut Context<'_, Self>) {
-        let installed = crate::updater::installed_version();
-        self.updates_row =
-            crate::updater::selection().resolve(&installed).index();
-        self.updates_open = true;
-        self.show_help = false;
-        if check && !crate::updater::state().checking {
-            crate::updater::check_in_background(
-                crate::updater::Trigger::Manual,
-            );
-        }
-        cx.notify();
-    }
-
-    /// Follow `slot` for updates from now on, and save the pick.
-    pub fn pick_update_slot(
-        &mut self,
-        slot: crate::update_channel::Slot,
-        cx: &mut Context<'_, Self>,
-    ) {
-        use crate::update_channel::UpdateSettings;
-        self.updates_row = slot.index();
-        if let Err(error) = crate::updater::set_selection(
-            UpdateSettings::picked(slot),
-            self.updates_dir.as_deref(),
-        ) {
+    /// The review screen, once something is marked; until then the notice
+    /// says how to mark.
+    pub fn open_review(&mut self, cx: &mut Context<'_, Self>) {
+        if self.marks.is_empty() {
             self.notice = Some((
-                format!("Updates follow {slot} until PwrDisk quits: {error}"),
+                "mark something first: space marks the selected tile".into(),
                 Status::Warning,
             ));
+        } else {
+            self.screen = Screen::Review;
         }
         cx.notify();
     }
@@ -1281,37 +1271,6 @@ impl Disktree {
                 Some((format!("Cannot update: {error}"), Status::Warning));
             cx.notify();
         }
-    }
-
-    /// Keys while the Updates panel is open. It owns the keyboard, as the
-    /// help overlay does: nothing behind it acts.
-    fn on_updates_key(
-        &mut self,
-        key: &str,
-        shift: bool,
-        cx: &mut Context<'_, Self>,
-    ) {
-        use crate::update_channel::Slot;
-        let rows = Slot::ALL.len();
-        match key {
-            "escape" | "q" => self.updates_open = false,
-            "u" if shift => self.updates_open = false,
-            "down" | "j" => self.updates_row = (self.updates_row + 1) % rows,
-            "up" | "k" => {
-                self.updates_row = (self.updates_row + rows - 1) % rows;
-            }
-            "enter" | "space" => {
-                self.pick_update_slot(Slot::ALL[self.updates_row], cx);
-            }
-            "c" => {
-                crate::updater::check_in_background(
-                    crate::updater::Trigger::Manual,
-                );
-            }
-            "r" => self.restart_to_update(cx),
-            _ => return,
-        }
-        cx.notify();
     }
 
     /// Open the Power Efficiency menu on the current preset, or close it.
@@ -1516,6 +1475,7 @@ impl Disktree {
                     self.scan_error = Some(error.to_string());
                 }
             }
+            self.log_scan_outcome("SSH");
             self.remote_scan = None;
             self.scan_preview = None;
             self.progress.finished = true;
@@ -1577,6 +1537,7 @@ impl Disktree {
             }
             Err(error) => self.scan_error = Some(error.to_string()),
         }
+        self.log_scan_outcome("local");
         self.scan = None;
         self.scan_preview = None;
         self.progress.finished = true;
@@ -2896,6 +2857,12 @@ impl Disktree {
                     self.run_summary.removed = removed;
                     self.run_summary.bytes = bytes;
                     self.run_summary.failed = failed;
+                    // Counts only: the paths removed are the user's.
+                    log::info!(
+                        target: "pwrdisk::removal",
+                        "removal finished: {removed} removed, {bytes} bytes, \
+                         {failed} failed"
+                    );
                     finished = true;
                 }
             }
@@ -3268,8 +3235,11 @@ impl Disktree {
             return;
         }
 
-        if self.updates_open {
-            self.on_updates_key(key, shift, cx);
+        if self.app_menu_open {
+            if key == "escape" {
+                self.app_menu_open = false;
+                cx.notify();
+            }
             return;
         }
 
@@ -3323,7 +3293,10 @@ impl Disktree {
             Screen::Explore if alt && key == "left" => self.go_back(cx),
             Screen::Explore if alt && key == "right" => self.go_forward(cx),
             Screen::Explore => self.on_explore_key(key, control, shift, cx),
-            Screen::Review => self.on_review_key(key, cx),
+            // No review key is a Ctrl chord, and Edit's rows replay those
+            // (Select All is ctrl-a), so a chord must not act as its letter.
+            Screen::Review if !control => self.on_review_key(key, cx),
+            Screen::Review => {}
             Screen::Running => {
                 if key == "escape"
                     && let Some(run) = &self.run
@@ -3388,7 +3361,10 @@ impl Disktree {
                 self.move_selection(Direction::Down, cx);
             }
             // Shift-U, not `u`: plain `u` goes up a level, as backspace.
-            "u" if shift && !control => self.open_updates(false, cx),
+            // Updates is Settings › Updates now, in its own window.
+            "u" if shift && !control => cx.defer(|cx| {
+                crate::settings::open(crate::settings::Pane::Updates, cx);
+            }),
             "backspace" | "u" if !control => self.ascend(cx),
             // A filter is the first thing Escape takes away.
             "escape" if self.matches.is_some() => self.clear_filter(),
@@ -3406,18 +3382,7 @@ impl Disktree {
             "space" => self.toggle_mark_selected(cx),
             "x" if !control => self.toggle_mark_selected(cx),
             "tab" => self.cycle_sibling(if shift { -1 } else { 1 }, cx),
-            "c" if !control => {
-                if self.marks.is_empty() {
-                    self.notice = Some((
-                        "mark something first: space marks the selected tile"
-                            .into(),
-                        Status::Warning,
-                    ));
-                } else {
-                    self.screen = Screen::Review;
-                }
-                cx.notify();
-            }
+            "c" if !control => self.open_review(cx),
             "[" => self.adjust_depth(-1, cx),
             "]" => self.adjust_depth(1, cx),
             "-" => {

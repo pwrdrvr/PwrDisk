@@ -1,3 +1,12 @@
-# The product's name, so doc comments can say it without backticks. ".."
-# keeps clippy's own list.
-doc-valid-idents = ["PwrDisk", ".."]
+# The product's name and its family's, so doc comments can say them without
+# backticks. ".." keeps clippy's own list.
+doc-valid-idents = [
+    "PwrDisk",
+    "PwrRoute",
+    "PwrGit",
+    "PwrAgnt",
+    "PwrAgent",
+    "PwrSnap",
+    "PwrSuite",
+    "..",
+]

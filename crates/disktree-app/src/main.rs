@@ -14,14 +14,22 @@
 mod agent;
 mod app_menu;
 mod appearance;
+mod aux_window;
+mod build_info;
 mod chrome;
+mod diag_log;
+mod diagnostics;
+mod doc_window;
 #[cfg(target_os = "macos")]
 mod dock_icon;
 mod git;
 mod github_releases;
+mod help;
+mod logs_window;
 mod marks;
 mod palette;
 mod power;
+mod settings;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -113,6 +121,15 @@ fn main() -> Result<()> {
     updater::run_startup_hooks();
     #[cfg(windows)]
     console::attach();
+    // After the hooks, which exit at once and have nothing to say; before
+    // anything else, so a failure from here on is in main.log.
+    diag_log::install();
+    log::info!(
+        target: "pwrdisk",
+        "started PwrDisk {} on {}",
+        env!("CARGO_PKG_VERSION"),
+        diagnostics::os_description()
+    );
     let outcome = run();
     #[cfg(windows)]
     console::detach();
@@ -306,10 +323,11 @@ fn run() -> Result<()> {
                 let focus = this.focus.clone();
                 window.focus(&focus, cx);
             });
-            // A check that starts or finishes redraws the window, so the
-            // Updates panel shows it without waiting for input.
+            // A check that starts or finishes redraws the window and
+            // Settings › Updates, so they show it without waiting for input.
             updater::install(cx, move |cx| {
                 let _ = window.update(cx, |_, _, cx| cx.notify());
+                settings::refresh(cx);
             });
             updater::check_in_background(updater::Trigger::Startup);
 

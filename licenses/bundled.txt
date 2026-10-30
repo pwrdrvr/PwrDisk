@@ -1,0 +1,15 @@
+Bundled Non-Cargo Components
+----------------------------
+
+These ship inside PwrDisk but are not crates, so cargo-about cannot list
+them. Edit licenses/bundled.txt when one changes.
+
+- disktree, by Tobi Lütke, which PwrDisk is a fork of. MIT; its notice is
+  PwrDisk's own, in LICENSE.
+- Velopack's native binaries, added to release packages by `vpk pack`
+  1.2.161: Update.exe, Setup.exe and the launcher stub (Windows), the MSI's
+  velopack_wix custom-action DLL, and UpdateMac (macOS). MIT, Copyright (c)
+  2021 Caelan Sayler, Copyright (c) 2024 Velopack Ltd. | https://github.com/velopack/velopack
+  The Rust crates compiled into them, with their license texts, are under
+  "Velopack's Native Binaries" below (licenses/velopack.txt, written by
+  scripts/release/velopack-notices.sh).
