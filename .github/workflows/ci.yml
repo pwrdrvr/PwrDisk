@@ -203,6 +203,11 @@ jobs:
     # The bundle with the Icon Composer icon: Xcode 26's actool compiles it
     # into Assets.car, and the plist names it, which the job checks.
     runs-on: macos-26
+    needs: changes
+    # Runs unless the classifier succeeded and said non-code only.
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
       - uses: actions/checkout@v5
 
