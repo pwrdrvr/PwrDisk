@@ -14,11 +14,12 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CustomRequest, CustomResult, ErrorCode, GetPromptResult, Implementation,
-    JsonObject, ListResourcesResult, PromptMessage, ReadResourceRequestParams,
-    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role,
-    ServerCapabilities, ServerConfig,
+    InitializeRequestParams, InitializeResult, JsonObject, ListResourcesResult,
+    PromptMessage, ReadResourceRequestParams, ReadResourceResponse,
+    ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities,
+    ServerConfig,
 };
-use rmcp::service::{NotificationContext, RequestContext, RoleServer};
+use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{
     ErrorData, ServerHandler, prompt, prompt_handler, prompt_router, tool,
     tool_handler, tool_router,
@@ -322,11 +323,17 @@ impl ServerHandler for Server {
             .with_instructions(INSTRUCTIONS)
     }
 
-    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
-        if let Some(info) = context.peer.peer_info() {
-            let name = info.client_info.name.clone();
-            self.with(|s| s.set_client(&name));
-        }
+    /// Learn the client's name before answering: a client may call a tool
+    /// as soon as it has the answer, before `initialized` arrives, and the
+    /// window's header names the agent from the first `hello`.
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        self.with(|s| s.set_client(&request.client_info.name));
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
     }
 
     async fn list_resources(
