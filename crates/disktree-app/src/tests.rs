@@ -1597,9 +1597,17 @@ fn logs_survive_a_rotation_to_an_empty_file(cx: &mut TestAppContext) {
     poll_logs(cx);
     // The old file's lines, from main.old.log, and nothing past them.
     assert_eq!(cx.update(|_, cx| view.read(cx).view.visible().len()), 2);
+    // A real rotation only ever moves a main.log with lines in it: an
+    // empty file swapped for another empty one may keep its inode (Linux)
+    // or have none (Windows), and there is nothing to notice then.
+    append_log(
+        &path,
+        "2026-10-30T00:00:03.000-04:00 INFO  pwrdisk: three\n",
+    );
+    poll_logs(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).view.visible().len()), 3);
     std::fs::write(dir.path().join("main.old.log"), "").expect("emptied");
-    std::fs::remove_file(&path).expect("gone");
-    std::fs::write(&path, "").expect("again");
+    std::fs::write(&path, "").expect("truncated");
     poll_logs(cx);
     assert_eq!(cx.update(|_, cx| view.read(cx).view.visible().len()), 0);
     assert!(cx.debug_bounds("logs-count").is_some());
