@@ -1,7 +1,7 @@
 //! What one connected agent knows: the window it is driving, or failing
 //! that its own scans, and the marks.
 //!
-//! When a disktree window is open it is the source of truth: `ls`, `find`
+//! When a PwrDisk window is open it is the source of truth: `ls`, `find`
 //! and `scan` read the tree the person is looking at, and the marks live
 //! there. Without a window this process scans for itself, so an agent in a
 //! terminal needs nothing else. Either way the words an agent reads come
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use disktree_core::classify::Category;
 use disktree_core::insights::{Candidate, worth_a_look};
 use disktree_core::query::{self, Kind};
-use disktree_core::removal::{Target, normalize, plan};
+use disktree_core::removal::{Target, detect_trash_backend, normalize, plan};
 use disktree_core::scan::{ScanHandle, ScanOptions};
 use disktree_core::size::{human_bytes, human_count, share};
 use disktree_core::space::{
@@ -42,12 +42,39 @@ const TOP: usize = 12;
 const DEFAULT_LIMIT: usize = 20;
 /// The most rows any listing shows: past this the agent should filter.
 const MAX_LIMIT: usize = 200;
+/// What `show` and `review` say where no window can be linked (Windows,
+/// for now): the person takes the list over by hand.
+const NO_LINK: &str = "This system has no window link yet, so PwrDisk \
+cannot show these marks in a window or open its review screen for them. \
+Give the user the marked paths and the plan, and ask them to open PwrDisk, \
+scan the same root, mark those paths and review them there. Do not remove \
+them yourself.";
 /// How long to wait for a window that was just launched to start listening.
 const LAUNCH_WAIT: Duration = Duration::from_secs(20);
 /// A window that did not answer is not launched again sooner than this: it
 /// may still be coming up, and a second one would only compete for the
 /// socket.
 const RELAUNCH_AFTER: Duration = Duration::from_mins(1);
+
+/// The system this server runs on, and the skill reference written for it.
+fn system_line() -> String {
+    let system = match std::env::consts::OS {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
+    };
+    crate::skills::platform_reference().map_or_else(
+        || format!("System: {system}.\n"),
+        |path| {
+            format!(
+                "System: {system}. Before marking, read {}: what this \
+                 system hides from a scan and what never to mark.\n",
+                crate::skills::uri("pwrdisk-free-space", path)
+            )
+        },
+    )
+}
 
 /// Unix seconds now.
 pub fn now() -> i64 {
@@ -56,7 +83,7 @@ pub fn now() -> i64 {
         .map_or(0, |since| since.as_secs().cast_signed())
 }
 
-/// Starts a disktree window on a root, for the review screen when none is
+/// Starts a PwrDisk window on a root, for the review screen when none is
 /// open. Swapped out in tests.
 pub type Launcher = Box<dyn Fn(&Path) -> io::Result<()> + Send>;
 
@@ -86,7 +113,7 @@ pub enum ScanPlan {
     Window { root: PathBuf },
 }
 
-/// What `disktree_scan` takes.
+/// What `pwrdisk_scan` takes.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScanParams {
@@ -112,7 +139,7 @@ pub struct ScanParams {
     pub max_depth: Option<usize>,
 }
 
-/// What `disktree_ls` takes.
+/// What `pwrdisk_ls` takes.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LsParams {
@@ -120,12 +147,12 @@ pub struct LsParams {
     pub path: PathBuf,
     /// How many entries to list, largest first. Default 20, at most 200.
     pub limit: Option<usize>,
-    /// Also move the disktree window there, so the user sees what you see.
+    /// Also move the PwrDisk window there, so the user sees what you see.
     #[serde(default)]
     pub show: bool,
 }
 
-/// What kind of entry `disktree_find` matches; [`Kind`] as a parameter.
+/// What kind of entry `pwrdisk_find` matches; [`Kind`] as a parameter.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq,
 )]
@@ -148,7 +175,7 @@ impl From<KindName> for Kind {
     }
 }
 
-/// A kind of data, as `disktree_find` filters it; [`Category`] as a
+/// A kind of data, as `pwrdisk_find` filters it; [`Category`] as a
 /// parameter.
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -180,7 +207,7 @@ impl From<CategoryName> for Category {
     }
 }
 
-/// What `disktree_find` takes.
+/// What `pwrdisk_find` takes.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindParams {
@@ -227,17 +254,17 @@ impl FindParams {
     }
 }
 
-/// What `disktree_mark` and `disktree_unmark` take.
+/// What `pwrdisk_mark` and `pwrdisk_unmark` take.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PathsParams {
-    /// Absolute paths under the scanned root. For `disktree_unmark`, an
+    /// Absolute paths under the scanned root. For `pwrdisk_unmark`, an
     /// empty list unmarks everything.
     #[serde(default)]
     pub paths: Vec<PathBuf>,
 }
 
-/// What `disktree_show` takes.
+/// What `pwrdisk_show` takes.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ShowParams {
@@ -259,6 +286,9 @@ pub struct Session {
     link: Option<Link>,
     /// What the window last said about itself.
     window: Option<State>,
+    /// The SSH host an open window is showing. Its paths are another
+    /// machine's, so the session does not link to it and says why.
+    remote_window: Option<String>,
     /// When a window was last started from here, so one that is slow to
     /// come up is not started twice.
     launched: Option<Instant>,
@@ -275,7 +305,7 @@ impl std::fmt::Debug for Session {
     }
 }
 
-/// Start a disktree window on `root`, detached from this process so the
+/// Start a PwrDisk window on `root`, detached from this process so the
 /// agent's exit does not take the window with it.
 fn launch_window(root: &Path) -> io::Result<()> {
     let exe = std::env::current_exe()?;
@@ -304,10 +334,14 @@ impl Default for Session {
 impl Session {
     /// A session over the real socket, able to launch a window.
     pub fn new() -> Self {
-        Self::detached(
-            disktree_link::socket_path(),
-            Some(Box::new(launch_window)),
-        )
+        // Where no window can be linked, starting one would only leave a
+        // window the agent cannot reach, and another on every retry.
+        let launcher: Option<Launcher> = if disktree_link::SUPPORTED {
+            Some(Box::new(launch_window))
+        } else {
+            None
+        };
+        Self::detached(disktree_link::socket_path(), launcher)
     }
 
     /// A session over `socket`, launching windows with `launcher` or not at
@@ -322,6 +356,7 @@ impl Session {
             marks: Vec::new(),
             link: None,
             window: None,
+            remote_window: None,
             launched: None,
         }
     }
@@ -536,8 +571,8 @@ impl Session {
             }
         }
         out.push_str(
-            "Next: disktree_ls goes into a directory, disktree_find lists \
-             the largest files or every cache, disktree_mark marks what \
+            "Next: pwrdisk_ls goes into a directory, pwrdisk_find lists \
+             the largest files or every cache, pwrdisk_mark marks what \
              should go.",
         );
         out
@@ -566,7 +601,7 @@ impl Session {
         let path = self.absolute(path)?;
         if self.scans.is_empty() {
             return Err(
-                "Nothing is scanned yet. Call disktree_scan first; with no \
+                "Nothing is scanned yet. Call pwrdisk_scan first; with no \
                  arguments it scans the home directory."
                     .to_string(),
             );
@@ -619,9 +654,9 @@ impl Session {
             return Ok(state.root.clone());
         }
         Err(format!(
-            "{} is outside the disktree window's tree, which is rooted at \
+            "{} is outside the PwrDisk window's tree, which is rooted at \
              {}. The window is what the user sees, so it is what you read: \
-             call disktree_scan on a directory containing it and the window \
+             call pwrdisk_scan on a directory containing it and the window \
              follows.",
             self.show(path),
             self.show(&state.root)
@@ -703,10 +738,8 @@ impl Session {
             vec![(located.path, located.node)]
         } else {
             if self.scans.is_empty() {
-                return Err(
-                    "Nothing is scanned yet. Call disktree_scan first."
-                        .to_string(),
-                );
+                return Err("Nothing is scanned yet. Call pwrdisk_scan first."
+                    .to_string());
             }
             self.scans
                 .iter()
@@ -776,6 +809,7 @@ impl Session {
             return true;
         }
         let Ok(link) = Link::connect_at(&self.socket) else {
+            self.remote_window = None;
             return false;
         };
         self.link = Some(link);
@@ -785,7 +819,8 @@ impl Session {
             client: self.client.clone(),
             version: VERSION,
         };
-        if self.call(&request).is_err() {
+        if self.call(&request).is_err() || self.remote_window.is_some() {
+            self.link = None;
             self.marks = mine;
             return false;
         }
@@ -800,10 +835,16 @@ impl Session {
         if self.try_connect() {
             return Ok(());
         }
+        if let Some(host) = &self.remote_window {
+            return Err(disktree_link::remote_refusal(host));
+        }
+        if !disktree_link::SUPPORTED {
+            return Err(NO_LINK.to_string());
+        }
         let Some(launcher) = &self.launcher else {
             return Err(format!(
-                "No disktree window is open, and this session cannot open \
-                 one here ({}). Start `disktree {}` yourself, then call \
+                "No PwrDisk window is open, and this session cannot open \
+                 one here ({}). Start `pwrdisk {}` yourself, then call \
                  again.",
                 Link::connect_at(&self.socket)
                     .err()
@@ -815,15 +856,15 @@ impl Session {
             && launched.elapsed() < RELAUNCH_AFTER
         {
             return Err(format!(
-                "A disktree window was started {} s ago and has not \
+                "A PwrDisk window was started {} s ago and has not \
                  answered yet. Give it a moment and call again; if none \
-                 appeared, start `disktree {}` by hand.",
+                 appeared, start `pwrdisk {}` by hand.",
                 launched.elapsed().as_secs(),
                 root.display()
             ));
         }
         launcher(root).map_err(|error| {
-            format!("could not start a disktree window: {error}")
+            format!("could not start a PwrDisk window: {error}")
         })?;
         let started = Instant::now();
         self.launched = Some(started);
@@ -834,7 +875,7 @@ impl Session {
                 return Ok(());
             }
         }
-        Err("A disktree window was started but did not answer in time. \
+        Err("A PwrDisk window was started but did not answer in time. \
              Call again once it is open."
             .to_string())
     }
@@ -858,13 +899,22 @@ impl Session {
             Err(error) => {
                 self.link = None;
                 self.window = None;
-                Err(format!("the disktree window went away: {error}"))
+                Err(format!("the PwrDisk window went away: {error}"))
             }
         }
     }
 
-    /// The window's marks are the marks: keep ours in step.
+    /// The window's marks are the marks: keep ours in step. A window on an
+    /// SSH host is only noted, and the link to it dropped: its marks are
+    /// another machine's paths.
     fn adopt(&mut self, state: &State) {
+        if let Some(host) = &state.remote {
+            self.remote_window = Some(host.clone());
+            self.window = None;
+            self.link = None;
+            return;
+        }
+        self.remote_window = None;
         self.marks = state
             .marks
             .iter()
@@ -940,6 +990,13 @@ impl Session {
         if self.try_connect() {
             let _ = self.call(&Request::State);
         }
+        if let Some(host) = &self.remote_window {
+            return format!(
+                "Window: open on the SSH host {host}, which these tools do \
+                 not follow; they measure and mark this computer. Ask the \
+                 user to choose This computer in it to bring it along."
+            );
+        }
         match &self.window {
             Some(state) => {
                 let tree = match &state.tree {
@@ -953,7 +1010,7 @@ impl Session {
                 };
                 format!(
                     "Window: open on {}{tree}, {} screen{}{}. Its tree is \
-                     what disktree_ls and disktree_find read.",
+                     what pwrdisk_ls and pwrdisk_find read.",
                     self.show(&state.root),
                     state.screen,
                     if state.scanning { ", scanning" } else { "" },
@@ -965,8 +1022,13 @@ impl Session {
                 )
             }
             None if self.launcher.is_some() => {
-                "Window: none open. disktree_review opens one on the marks \
-                 for the user to confirm; disktree_show opens one on a path."
+                "Window: none open. pwrdisk_review opens one on the marks \
+                 for the user to confirm; pwrdisk_show opens one on a path."
+                    .to_string()
+            }
+            None if !disktree_link::SUPPORTED => {
+                "Window: no link on this system yet. The marks stay in this \
+                 session; pwrdisk_review says how the user takes them over."
                     .to_string()
             }
             None => "Window: none open, and none can be opened from here."
@@ -1250,8 +1312,9 @@ impl Session {
     /// Open the review screen in the window, launching one if needed.
     pub fn review(&mut self) -> Result<String, String> {
         if self.marks.is_empty() {
-            return Err("Nothing is marked. disktree_mark some paths first."
-                .to_string());
+            return Err(
+                "Nothing is marked. pwrdisk_mark some paths first.".to_string()
+            );
         }
         let marks = self.marks.clone();
         let root = self
@@ -1265,12 +1328,26 @@ impl Session {
         }
         let _ = self.call(&Request::State);
         let total: u64 = self.marks.iter().map(|mark| mark.bytes).sum();
+        // The window starts in the trash whenever this machine has one, and
+        // otherwise deletes; the agent has to say which before the user
+        // presses Enter.
+        let backend = detect_trash_backend();
+        let how = if backend.is_available() {
+            format!(
+                "Enter moves the marks to {}, where they can be recovered \
+                 and their space comes back only once it is emptied; \
+                 permanent deletion is a choice away and always asks first",
+                backend.label()
+            )
+        } else {
+            "This system has no trash, so Enter deletes the marks \
+             permanently; tell the user that before they confirm"
+                .to_string()
+        };
         Ok(format!(
-            "The review screen is open in disktree: {} marked, {} to free. \
-             The user decides there. Enter moves the marks to the trash, \
-             where they can be recovered; permanent deletion is a choice \
-             away and always asks first. Afterwards disktree_status reports \
-             what was actually freed.",
+            "The review screen is open in PwrDisk: {} marked, {} to free. \
+             The user decides there. {how}. Afterwards pwrdisk_status \
+             reports what was actually freed.",
             self.marks.len(),
             human_bytes(total)
         ))
@@ -1284,17 +1361,18 @@ impl Session {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "disktree {} serving {} over MCP. The agent marks; the person \
+            "PwrDisk {} serving {} over MCP. The agent marks; the person \
              removes on the review screen.",
             env!("CARGO_PKG_VERSION"),
             self.client
         );
+        out.push_str(&system_line());
         out.push_str(&self.window_line());
         out.push('\n');
         if self.scans.is_empty() {
             if self.link.is_none() {
                 out.push_str(
-                    "Scans: none yet. disktree_scan with no arguments scans \
+                    "Scans: none yet. pwrdisk_scan with no arguments scans \
                      the home directory in seconds; disk: true scans the \
                      volume.\n",
                 );
@@ -1345,8 +1423,8 @@ impl Session {
             let total: u64 = self.marks.iter().map(|mark| mark.bytes).sum();
             let _ = writeln!(
                 out,
-                "Marked: {} \u{00b7} {} (disktree_mark with no new paths, or \
-                 disktree_unmark, shows the plan)",
+                "Marked: {} \u{00b7} {} (pwrdisk_mark with no new paths, or \
+                 pwrdisk_unmark, shows the plan)",
                 self.marks.len(),
                 human_bytes(total)
             );
@@ -1601,7 +1679,7 @@ mod tests {
         assert!(report.contains("6 files"), "{report}");
         assert!(report.contains(".cache/"), "{report}");
         assert!(report.contains("Top level, largest first:"), "{report}");
-        assert!(report.contains("Next: disktree_ls"), "{report}");
+        assert!(report.contains("Next: pwrdisk_ls"), "{report}");
         assert_eq!(session.scans().len(), 1);
         // Scanning again replaces, not duplicates.
         scanned(&mut session, temp.path());
@@ -1618,7 +1696,7 @@ mod tests {
                 ..LsParams::default()
             })
             .expect_err("nothing scanned");
-        assert!(missing.contains("disktree_scan"), "{missing}");
+        assert!(missing.contains("pwrdisk_scan"), "{missing}");
 
         scanned(&mut session, temp.path());
         let listing = session
@@ -1731,7 +1809,14 @@ mod tests {
         assert!(plan.starts_with("Marked 3"), "{plan}");
         assert!(plan.contains("Covered by another mark (1)"), "{plan}");
         assert!(plan.contains("Frees"), "{plan}");
-        assert!(plan.contains("Window: none open, and none can be opened"));
+        assert!(
+            plan.contains(if disktree_link::SUPPORTED {
+                "Window: none open, and none can be opened"
+            } else {
+                "Window: no link on this system yet"
+            }),
+            "{plan}"
+        );
         assert_eq!(session.marks().len(), 3);
 
         let fewer = session
@@ -1765,6 +1850,8 @@ mod tests {
         root: PathBuf,
         tree: Arc<Node>,
         marks: Vec<Mark>,
+        /// The SSH host the window shows, as a window on one answers.
+        remote: Option<String>,
     }
 
     #[cfg(unix)]
@@ -1802,10 +1889,16 @@ mod tests {
                     bytes: 400_000,
                     what: "reclaimable: cache".into(),
                 }],
+                remote: self.remote.clone(),
             }
         }
 
         fn answer(&mut self, request: &Request) -> Response {
+            if let Some(host) = &self.remote
+                && !matches!(request, Request::Hello { .. } | Request::State)
+            {
+                return Response::error(disktree_link::remote_refusal(host));
+            }
             match request {
                 Request::Hello { .. } | Request::State => {
                     Response::State(self.state("explore"))
@@ -1886,6 +1979,12 @@ mod tests {
     #[cfg(unix)]
     impl FakeWindow {
         fn open(socket: &Path, root: &Path) -> Self {
+            Self::showing(socket, root, None)
+        }
+
+        /// A window showing `remote`, an SSH host, rather than this
+        /// computer.
+        fn showing(socket: &Path, root: &Path, remote: Option<&str>) -> Self {
             let listener = Arc::new(Listener::bind_at(socket).expect("bind"));
             let asked = Arc::new(Mutex::new(Vec::new()));
             let marks: Arc<Mutex<Vec<Mark>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1902,6 +2001,7 @@ mod tests {
                     disktree_core::scan::scan(root, apparent()).expect("scan"),
                 ),
                 marks: Vec::new(),
+                remote: remote.map(str::to_owned),
             };
             thread::spawn(move || {
                 while !s.load(Ordering::Relaxed) {
@@ -1971,7 +2071,7 @@ mod tests {
             })
             .expect_err("outside the window");
         assert!(outside.contains("window's tree"), "{outside}");
-        assert!(outside.contains("disktree_scan"), "{outside}");
+        assert!(outside.contains("pwrdisk_scan"), "{outside}");
 
         let reclaim = session
             .find(&FindParams {
@@ -2111,6 +2211,53 @@ mod tests {
             handed.map(|targets| targets[0].path.clone()),
             Some(temp.path().join("Downloads"))
         );
+    }
+
+    /// A window showing an SSH host holds another machine's paths: the
+    /// session works on this computer without it, never hands it a mark,
+    /// and says why when asked to show or review.
+    #[cfg(unix)]
+    #[test]
+    fn a_window_on_an_ssh_host_is_not_driven() {
+        let temp = fixture();
+        let socket = temp.path().join("window.sock");
+        let window =
+            FakeWindow::showing(&socket, temp.path(), Some("build-box"));
+        let mut session = Session::detached(socket, None);
+
+        let status = session.status();
+        assert!(status.contains("SSH host build-box"), "{status}");
+
+        // Reads and marks fall back to this session's own scan.
+        scanned(&mut session, temp.path());
+        let plan = session
+            .mark(&PathsParams {
+                paths: vec![temp.path().join(".cache")],
+            })
+            .expect("mark here");
+        assert!(plan.starts_with("Marked 1"), "{plan}");
+        assert!(plan.contains("SSH host build-box"), "{plan}");
+        assert_eq!(session.marks().len(), 1);
+
+        let review = session.review().expect_err("no review on a host");
+        assert!(review.contains("SSH host build-box"), "{review}");
+        assert!(review.contains("This computer"), "{review}");
+        let shown = session
+            .show_path(&ShowParams {
+                path: temp.path().join("src"),
+            })
+            .expect_err("no show on a host");
+        assert!(shown.contains("SSH host build-box"), "{shown}");
+
+        assert!(
+            window.asked().iter().all(|request| matches!(
+                request,
+                Request::Hello { .. } | Request::State
+            )),
+            "only hello and state reach a window on a host: {:?}",
+            window.asked()
+        );
+        assert!(window.marks().is_empty());
     }
 
     #[test]

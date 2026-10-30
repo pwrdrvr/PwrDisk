@@ -1,6 +1,6 @@
 # PwrDisk — agent guide
 
-PwrDisk is a maintained fork of [disktree](https://github.com/tobi/disktree).
+PwrDisk is a maintained fork of [disktree](https://github.com/pwrdrvr/PwrDisk).
 The user-facing name is PwrDisk (binary `pwrdisk`, bundle ID
 `com.pwrdrvr.pwrdisk`); crate, module and type names and the SSH helper
 (`disktree-scan`) keep the upstream names so upstream merges stay clean.
@@ -19,7 +19,7 @@ phases after choosing a local/SSH source and root: explore (treemap,
 breadcrumbs, selection and status) and review (the marked list,
 the removal mode, the confirmation). Marking is never destructive.
 
-`disktree mcp` is the same thing for an AI agent: an MCP server over stdio
+`pwrdisk mcp` is the same thing for an AI agent: an MCP server over stdio
 that scans with `disktree-core`, marks, and opens the review screen in a
 window over a per-user socket (`disktree-link`). The agent marks; the
 person removes. There is no tool that deletes, and the link has no request
@@ -145,20 +145,6 @@ and `cargo build --release` directly; CI runs the gate on both systems.
    the tree, which `-X` and the media exception allow, is reported and never
    added to this volume's free space; see `space::attribution`. The final number
    comes from `statvfs` before and after.
-10. **An agent marks; a person removes.** `disktree mcp` has no tool that
-    deletes, and the window link has no request that does. `review` only
-    opens the review screen. When a window is linked it is the agent's
-    source of truth: `ls`, `find` and `scan` are answered from its tree,
-    a mark is measured from it, and its marks are the marks — every link
-    answer carries them, and the MCP session replaces its own with what
-    the window says. The session's own scans are read only while no
-    window is open. The listing and search logic is `core::query`, shared
-    by both sides, so they answer alike.
-11. **The link is a same-user socket, nothing more.** `disktree-link`
-    binds `0600` in a per-user directory and has no token, because the
-    agent already runs as the user and `disktree mcp` scans on its own.
-    Do not add a port.
-
 10. **Discovery is not a scan.** No implicit home walk at startup. List
     mounts in the selected machine's namespace without probing them; scans
     stop at nested mounts, including bind mounts and same-device subvolumes.
@@ -169,6 +155,29 @@ and `cargo build --release` directly; CI runs the gate on both systems.
     bounded display summaries separate from `Disktree::tree` and all path,
     mark and removal APIs. Only a complete scan may replace the real tree.
     Counters and sampled paths belong in fixed, monospace progress lanes.
+
+12. **An agent marks; a person removes.** `pwrdisk mcp` has no tool that
+    deletes, and the window link has no request that does. `review` only
+    opens the review screen. When a window is linked it is the agent's
+    source of truth: `ls`, `find` and `scan` are answered from its tree,
+    a mark is measured from it, and its marks are the marks — every link
+    answer carries them, and the MCP session replaces its own with what
+    the window says. The session's own scans are read only while no
+    window is open. The listing and search logic is `core::query`, shared
+    by both sides, so they answer alike.
+13. **The link is a same-user socket, nothing more.** `disktree-link`
+    binds `0600` in a per-user directory and has no token, because the
+    agent already runs as the user and `pwrdisk mcp` scans on its own.
+    Do not add a port.
+    A window showing an SSH host answers only `hello` and `state`: an
+    agent's paths are this computer's.
+14. **The skills are the agent's safety brief.** `skills/` is compiled
+    into `pwrdisk mcp` (`disktree-mcp/src/skills.rs` lists every file;
+    a URI is looked up, never turned into a path). They tell the agent
+    to agree the list before marking unless the user gave a standing
+    instruction, and never to delete by other means. A change to what
+    the guards refuse, what removal does, or what a system hides from a
+    scan updates the matching `references/<system>.md` in the same PR.
 
 ## Where changes belong
 
@@ -199,7 +208,7 @@ and `cargo build --release` directly; CI runs the gate on both systems.
 | what an agent can ask of the window, and the answer | `crates/disktree-link/src/lib.rs` (messages), `crates/disktree-app/src/agent.rs` (handling) |
 | a tool, its parameters or its wording | `crates/disktree-mcp/src/server.rs` (the MCP surface), `crates/disktree-mcp/src/session.rs` (what it does) |
 | how a listing or a plan reads to an agent | `crates/disktree-mcp/src/report.rs` |
-| the procedure an agent follows | `skills/disktree-free-space/SKILL.md` |
+| what an agent is told to do, and to avoid | `skills/` (each system's cautions in `skills/pwrdisk-free-space/references/`), listed in `crates/disktree-mcp/src/skills.rs` |
 
 ## Verification expectations
 
@@ -209,7 +218,7 @@ and `cargo build --release` directly; CI runs the gate on both systems.
 * The screens are covered by window-harness tests that draw frames and press
   keys, including one that marks a directory, confirms the removal and checks
   the files are gone while unmarked neighbours are untouched, and one that
-  drives the window over the real socket as `disktree mcp` does.
+  drives the window over the real socket as `pwrdisk mcp` does.
 * `disktree-mcp` tests every tool as a function against a temporary tree,
   with a stand-in window on the socket for the linked cases;
   `disktree-link` tests the socket itself.

@@ -1,6 +1,6 @@
 //! The window's end of the agent link.
 //!
-//! `disktree mcp` scans and marks on its own; this is how an open window
+//! `pwrdisk mcp` scans and marks on its own; this is how an open window
 //! follows along. A listener on the per-user socket queues what an agent
 //! asks, the UI thread answers between frames, and every answer carries the
 //! window's state, so the agent's view of the marks is always the window's.
@@ -83,13 +83,13 @@ pub fn connect_commands(exe: &Path) -> Vec<(&'static str, String)> {
     vec![
         (
             "Claude Code",
-            format!("claude mcp add --scope user disktree -- \"{exe}\" mcp"),
+            format!("claude mcp add --scope user pwrdisk -- \"{exe}\" mcp"),
         ),
-        ("Codex", format!("codex mcp add disktree -- \"{exe}\" mcp")),
+        ("Codex", format!("codex mcp add pwrdisk -- \"{exe}\" mcp")),
         (
             "Other MCP clients",
             format!(
-                "{{\"mcpServers\": {{\"disktree\": {{\"command\": \"{exe}\", \
+                "{{\"mcpServers\": {{\"pwrdisk\": {{\"command\": \"{exe}\", \
                  \"args\": [\"mcp\"]}}}}}}"
             ),
         ),
@@ -98,7 +98,7 @@ pub fn connect_commands(exe: &Path) -> Vec<(&'static str, String)> {
 
 /// What to ask an agent once it is connected.
 pub const FIRST_PROMPT: &str =
-    "What is eating my disk? Use disktree to find out and mark what can go.";
+    "What is eating my disk? Use PwrDisk to find out and mark what can go.";
 
 impl Disktree {
     /// Start answering agents on `listener`.
@@ -175,11 +175,19 @@ impl Disktree {
         });
     }
 
-    fn answer_agent(
+    pub(crate) fn answer_agent(
         &mut self,
         request: &Request,
         cx: &mut Context<'_, Self>,
     ) -> Response {
+        // A window on an SSH host holds that host's paths. An agent's paths
+        // are this computer's, and a mark or a scan would be read against
+        // the wrong machine; it only learns where the window is.
+        if let Some(host) = &self.remote
+            && !matches!(request, Request::Hello { .. } | Request::State)
+        {
+            return Response::error(disktree_link::remote_refusal(host));
+        }
         match request {
             Request::Hello { client, version } => {
                 if *version != VERSION {
@@ -582,6 +590,7 @@ impl Disktree {
                         .collect()
                 })
                 .unwrap_or_default(),
+            remote: self.remote.clone(),
         }
     }
 

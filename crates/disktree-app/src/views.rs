@@ -4496,14 +4496,14 @@ fn agent_line(
 fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Div {
     let theme = cx.omarchy().clone();
     let exe = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("disktree"));
+        .unwrap_or_else(|_| std::path::PathBuf::from("pwrdisk"));
     let mut body = div().flex().flex_col().gap(space::MD);
     body = body.child(
         div()
             .text_size(text::BODY)
             .text_color(theme.foreground)
             .child(
-                "An agent such as Claude Code or Codex can run disktree as \
+                "An agent such as Claude Code or Codex can run PwrDisk as \
                  an MCP server: it scans, walks the tree and marks what \
                  can go, and this window follows along. Removing stays \
                  yours: the agent opens the review screen, and you press \

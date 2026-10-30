@@ -75,7 +75,7 @@ impl Listener {
                 if UnixStream::connect(path).is_ok() {
                     return Err(io::Error::new(
                         io::ErrorKind::AddrInUse,
-                        "another disktree window is already linked",
+                        "another PwrDisk window is already linked",
                     ));
                 }
                 std::fs::remove_file(path)?;
@@ -331,6 +331,7 @@ mod tests {
             removal: None,
             tree: None,
             insights: Vec::new(),
+            remote: None,
         };
         match pump(&listener) {
             Incoming::Request { request, reply, .. } => {

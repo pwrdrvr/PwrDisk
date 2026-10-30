@@ -64,7 +64,7 @@ PwrDisk — a treemap of what is using your disk
 usage: pwrdisk [OPTIONS] [PATH]
        pwrdisk ssh HOST [OPTIONS] [PATH]
        pwrdisk extract-scanner ARCH OUTPUT
-       disktree mcp
+       pwrdisk mcp
 
 Linux packaged builds deploy an embedded static scanner over SSH on demand.
 Unbundled development builds need disktree-scan on the remote PATH or in
@@ -76,7 +76,7 @@ Use --check with ssh to deploy and scan without opening a window.
 arguments:
   PATH              explicit directory to scan; omitted opens root selection
   mcp               serve an AI agent over stdio instead of opening a
-                    window: `claude mcp add disktree -- disktree mcp`
+                    window: `claude mcp add pwrdisk -- pwrdisk mcp`
 
 Without PATH, choose this computer or SSH, then a mount or directory.
 No scan starts before explicit acceptance. Nested mounts are excluded.
@@ -120,7 +120,7 @@ fn main() -> Result<()> {
 }
 
 fn run() -> Result<()> {
-    // `disktree mcp` is the agent's disktree: it scans and marks over stdin
+    // `pwrdisk mcp` is the agent's disktree: it scans and marks over stdin
     // and stdout and opens no window of its own, though it may open one for
     // the review screen.
     if std::env::args_os().nth(1).is_some_and(|arg| arg == "mcp") {

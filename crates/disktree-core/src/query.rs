@@ -1,7 +1,7 @@
 //! Questions an agent asks of a scanned tree: what is in a directory, and
 //! the largest things matching a description.
 //!
-//! The window answers these over its link and `disktree mcp` answers them
+//! The window answers these over its link and `pwrdisk mcp` answers them
 //! over its own scans, so the logic lives here, once.
 
 use std::path::{Path, PathBuf};

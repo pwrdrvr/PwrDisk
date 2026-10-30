@@ -1,6 +1,6 @@
-//! `disktree mcp`: disktree as a Model Context Protocol server over stdio.
+//! `pwrdisk mcp`: PwrDisk as a Model Context Protocol server over stdio.
 //!
-//! An agent runs `disktree mcp` as a subprocess, the same way it would run
+//! An agent runs `pwrdisk mcp` as a subprocess, the same way it would run
 //! any other tool, and talks to it over stdin and stdout. There is no port,
 //! no token and no sign-in: the agent already runs as this user, and this
 //! process can do no more than the user's shell can. It scans with
@@ -15,13 +15,9 @@
 pub mod report;
 pub mod server;
 pub mod session;
+pub mod skills;
 
 pub use session::Session;
-
-/// The free-space procedure, served as a prompt and a resource so the
-/// agent can read how to use the tools well before it starts.
-pub const SKILL: &str =
-    include_str!("../../../skills/disktree-free-space/SKILL.md");
 
 /// Serve MCP on stdin and stdout until the client hangs up.
 pub fn serve() -> anyhow::Result<()> {

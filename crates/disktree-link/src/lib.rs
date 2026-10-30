@@ -1,6 +1,6 @@
-//! The link between a running disktree window and the agent that drives it.
+//! The link between a running PwrDisk window and the agent that drives it.
 //!
-//! `disktree mcp` scans on its own, so an agent needs no window. When one is
+//! `pwrdisk mcp` scans on its own, so an agent needs no window. When one is
 //! open, though, the agent's marks should appear in the mosaic and the
 //! free-space meter, and its `show` and `review` should move the screen.
 //! This crate is the wire between the two: one request per line of JSON
@@ -9,7 +9,7 @@
 //! When a window is open it is the agent's source of truth: the agent lists
 //! and searches the tree the person is looking at, and its marks live in the
 //! window. The listing and search logic is [`disktree_core::query`], shared
-//! with `disktree mcp`'s own scans, so both answer alike.
+//! with `pwrdisk mcp`'s own scans, so both answer alike.
 //!
 //! The socket is the trust boundary, and it is the same one the shell has:
 //! only this user can reach it. There is no token and no approval step, by
@@ -33,15 +33,19 @@ mod unsupported;
 #[cfg(not(unix))]
 pub use unsupported::{Incoming, Link, Listener};
 
+/// Whether a window can be linked on this system at all. Off Unix there is
+/// no socket yet, so a window started for an agent could never answer it.
+pub const SUPPORTED: bool = cfg!(unix);
+
 /// Protocol version, bumped when a message changes shape. Both sides are
 /// built from one tree, so a mismatch means an old window is still open.
 pub const VERSION: u32 = 2;
 
 /// Environment variable naming the socket, for tests and for a second copy
-/// of disktree that should not meet the first.
-pub const SOCKET_ENV: &str = "DISKTREE_LINK";
+/// of PwrDisk that should not meet the first.
+pub const SOCKET_ENV: &str = "PWRDISK_LINK";
 
-/// Where the window listens: `$DISKTREE_LINK` if set, else a socket in the
+/// Where the window listens: `$PWRDISK_LINK` if set, else a socket in the
 /// user's runtime directory.
 pub fn socket_path() -> PathBuf {
     socket_path_in(
@@ -66,9 +70,9 @@ pub fn socket_path_in(
         return path;
     }
     match runtime_dir.or(tmp_dir) {
-        Some(dir) => dir.join("disktree.sock"),
+        Some(dir) => dir.join("pwrdisk.sock"),
         None => PathBuf::from("/tmp").join(format!(
-            "disktree-{}.sock",
+            "pwrdisk-{}.sock",
             user.unwrap_or_else(|| "user".into())
         )),
     }
@@ -366,6 +370,22 @@ pub struct State {
     pub tree: Option<TreeSummary>,
     /// The biggest things that could plausibly go, as the panel lists them.
     pub insights: Vec<Insight>,
+    /// The SSH host the window is showing, if not this computer. The
+    /// agent's tools measure and mark this computer only, so a window on a
+    /// host answers nothing but `hello` and `state`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+}
+
+/// Why a window on an SSH host does not do what an agent asks.
+pub fn remote_refusal(host: &str) -> String {
+    format!(
+        "The PwrDisk window is showing the SSH host {host}. The agent's \
+         tools measure and mark this computer only, and PwrDisk does not \
+         remove files over SSH. Ask the user to choose This computer in the \
+         window to bring it along, or to close it; until then the agent \
+         works without the window."
+    )
 }
 
 /// The window's answer.
@@ -443,15 +463,15 @@ mod tests {
         );
         assert_eq!(
             socket_path_in(None, Some("/run/user/1000".into()), None, None),
-            PathBuf::from("/run/user/1000/disktree.sock")
+            PathBuf::from("/run/user/1000/pwrdisk.sock")
         );
         assert_eq!(
             socket_path_in(None, None, Some("/var/t".into()), None),
-            PathBuf::from("/var/t/disktree.sock")
+            PathBuf::from("/var/t/pwrdisk.sock")
         );
         assert_eq!(
             socket_path_in(None, None, None, Some("ann".into())),
-            PathBuf::from("/tmp/disktree-ann.sock")
+            PathBuf::from("/tmp/pwrdisk-ann.sock")
         );
     }
 }

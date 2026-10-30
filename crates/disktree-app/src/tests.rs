@@ -3494,7 +3494,7 @@ fn the_tooltip_follows_the_pointer_inside_a_client_side_frame(
     assert_eq!(tip.top(), at.y + px(gap));
 }
 
-/// Drive the window as `disktree mcp` does, over the real socket: say
+/// Drive the window as `pwrdisk mcp` does, over the real socket: say
 /// hello, mark, show, open the review, unmark, hang up. The marks land in
 /// the window, the screen follows, and the header names the agent while it
 /// is there.
@@ -3776,7 +3776,7 @@ fn the_agent_overlay_opens_and_closes(cx: &mut TestAppContext) {
     assert!(
         commands[0]
             .1
-            .starts_with("claude mcp add --scope user disktree")
+            .starts_with("claude mcp add --scope user pwrdisk")
     );
     assert!(
         commands
@@ -3784,4 +3784,54 @@ fn the_agent_overlay_opens_and_closes(cx: &mut TestAppContext) {
             .all(|(_, command)| command.contains("/opt/disktree/disktree"))
     );
     assert!(commands[2].1.contains("\"args\": [\"mcp\"]"));
+}
+
+/// A window showing an SSH host answers an agent with where it is and
+/// nothing more: an agent's paths are this computer's, and a mark or a
+/// scan read against the host would land on the wrong machine.
+#[gpui_kit::test]
+fn a_window_on_an_ssh_host_refuses_the_agent(cx: &mut TestAppContext) {
+    use disktree_link::{MarkRequest, Request, Response, VERSION};
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, window) = view_over(temp.path(), cx);
+    let junk = temp.path().join("junk");
+    let answers = update(&view, window, |app, cx| {
+        app.remote = Some("build-box".into());
+        let hello = app.answer_agent(
+            &Request::Hello {
+                client: "test".into(),
+                version: VERSION,
+            },
+            cx,
+        );
+        let mark = app.answer_agent(
+            &Request::Mark {
+                root: temp.path().to_path_buf(),
+                targets: vec![MarkRequest {
+                    path: junk.clone(),
+                    bytes: 1,
+                    is_dir: true,
+                }],
+            },
+            cx,
+        );
+        let review = app.answer_agent(&Request::Review, cx);
+        (hello, mark, review, app.marks.is_empty())
+    });
+    let (hello, mark, review, unmarked) = answers;
+    assert!(
+        matches!(&hello, Response::State(state)
+            if state.remote.as_deref() == Some("build-box")),
+        "{hello:?}"
+    );
+    for refused in [mark, review] {
+        assert!(
+            matches!(&refused, Response::Error { message }
+                if message.contains("SSH host build-box")),
+            "{refused:?}"
+        );
+    }
+    assert!(unmarked, "a refused mark leaves no mark behind");
 }
