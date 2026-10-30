@@ -1,0 +1,3 @@
+interface:
+  display_name: "PwrDisk Release"
+  short_description: "Prepare PwrDisk releases and verify publication"
