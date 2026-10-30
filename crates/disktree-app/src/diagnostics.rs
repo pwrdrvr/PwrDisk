@@ -405,12 +405,19 @@ mod tests {
             ),
             "{report}"
         );
+        // `~` is joined with this system's separator, so on Windows the
+        // fixture's Unix paths come back as `~\Library/...`.
+        let sep = std::path::MAIN_SEPARATOR;
+        let settings = format!(
+            "Settings folder: ~{sep}Library/Application Support/pwrdisk\n"
+        );
+        let log = format!("Log: ~{sep}Library/Logs/PwrDisk/main.log\n");
         for line in [
             "\n[Platform]\nOperating system: macOS 26.1 (aarch64)\n",
             "\n[Updates]\nInstalled: Velopack 0.5.0\n",
             "Last check: Not checked this session\n",
-            "Settings folder: ~/Library/Application Support/pwrdisk\n",
-            "Log: ~/Library/Logs/PwrDisk/main.log\n",
+            &settings,
+            &log,
             "\n[Session]\nScan: SSH, allocated size, complete\n",
             "Files: 1,204 in 14.2 s\n",
             "Marked: 3\n",

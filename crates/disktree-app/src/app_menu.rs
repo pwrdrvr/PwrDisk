@@ -112,10 +112,12 @@ impl Platform {
 
     /// What the file manager is called, for Show in Finder.
     const fn file_manager(self) -> &'static str {
-        if cfg!(windows) {
-            "Show in Explorer"
-        } else if matches!(self, Self::Mac) {
+        // The Mac menu is checked first so its template reads the same
+        // wherever the tests that build it run.
+        if matches!(self, Self::Mac) {
             "Show in Finder"
+        } else if cfg!(windows) {
+            "Show in Explorer"
         } else {
             "Show in File Manager"
         }
