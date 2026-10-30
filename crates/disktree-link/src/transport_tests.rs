@@ -192,10 +192,18 @@ fn an_oversized_unterminated_request_is_dropped() {
     raw.write_all(&vec![b'x'; crate::MAX_LINE])
         .expect("write oversized line");
     let mut byte = [0];
-    // Windows reports a disconnected pipe as BrokenPipe, Unix as EOF.
+    // Windows can report either a broken pipe or PIPE_NOT_CONNECTED after
+    // the server disconnects it; Unix reports EOF.
     match raw.read(&mut byte) {
         Ok(0) => {}
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+        #[cfg(windows)]
+        Err(error)
+            if error.raw_os_error()
+                == Some(
+                    windows_sys::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED
+                        .cast_signed(),
+                ) => {}
         result => panic!("expected disconnection, got {result:?}"),
     }
     assert!(matches!(pump(&listener), Incoming::Closed { .. }));
