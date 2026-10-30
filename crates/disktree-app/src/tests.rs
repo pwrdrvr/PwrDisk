@@ -1376,81 +1376,233 @@ fn help_documents_draw_and_copy(cx: &mut TestAppContext) {
     }
 }
 
-/// Logs reads the file, filters by level and words, and follows lines
-/// written after it opened.
-#[gpui_kit::test]
-fn logs_follow_the_file_and_filter(cx: &mut TestAppContext) {
-    use crate::logs_window::{Level, LogsWindow};
-
+/// A contrived `main.log` in a temporary folder, and the Logs window over
+/// it at its opening size. Nothing is remembered: there is no settings
+/// file.
+fn logs_over<'a>(
+    cx: &'a mut TestAppContext,
+    text: &str,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Entity<crate::logs_window::LogsWindow>,
+    &'a mut Window,
+) {
     cx.update(init);
     let dir = tempfile::TempDir::new().expect("tempdir");
     let path = dir.path().join("main.log");
-    std::fs::write(
-        &path,
-        "2026-10-30T00:00:01.000-04:00 INFO  pwrdisk: started PwrDisk\n\
-         2026-10-30T00:00:02.000-04:00 WARN  pwrdisk::updater: GitHub said 403\n\
-         2026-10-30T00:00:03.000-04:00 DEBUG pwrdisk::scan: 8 workers\n",
-    )
-    .expect("write the log");
+    std::fs::write(&path, text).expect("write the log");
     let log = path.clone();
     let (view, cx) = cx.add_window_view(move |window, cx| {
-        LogsWindow::new(Some(log), window, cx)
+        crate::logs_window::LogsWindow::new(Some(log), None, window, cx)
     });
+    cx.simulate_resize(gpui_kit::size(
+        gpui_kit::px(1120.0),
+        gpui_kit::px(720.0),
+    ));
     draw(cx);
-    assert!(cx.debug_bounds("logs-count").is_some());
-    let shown = |cx: &mut Window| cx.update(|_, cx| view.read(cx).shown.len());
-    // Debug starts off.
-    assert_eq!(shown(cx), 2);
-    cx.update(|_, cx| {
-        view.update(cx, |view, cx| view.toggle(Level::Debug, cx));
-    });
-    assert_eq!(shown(cx), 3);
-
-    // A line written later is read on the next poll.
-    let mut file = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .expect("open the log");
-    std::io::Write::write_all(
-        &mut file,
-        b"2026-10-30T00:00:04.000-04:00 ERROR pwrdisk: removal refused\n",
-    )
-    .expect("append");
-    cx.update(|_, cx| view.update(cx, super::logs_window::LogsWindow::read));
     draw(cx);
-    assert_eq!(shown(cx), 4);
-    let text = cx.update(|_, cx| view.read(cx).shown_text());
-    assert!(text.ends_with("removal refused\n"), "{text}");
+    (dir, path, view, cx)
 }
 
-/// A rotation that leaves `main.log` empty clears the window at once:
-/// the lines shown pointed into the old file, and drawing them would
-/// index past the end.
-#[gpui_kit::test]
-fn logs_survive_a_rotation_to_an_empty_file(cx: &mut TestAppContext) {
-    use crate::logs_window::LogsWindow;
+fn append_log(path: &std::path::Path, text: &str) {
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open the log");
+    std::io::Write::write_all(&mut file, text.as_bytes()).expect("append");
+}
 
-    cx.update(init);
-    let dir = tempfile::TempDir::new().expect("tempdir");
-    let path = dir.path().join("main.log");
-    std::fs::write(
-        &path,
-        "2026-10-30T00:00:01.000-04:00 WARN  pwrdisk: one\n\
-         2026-10-30T00:00:02.000-04:00 ERROR pwrdisk: two\n",
-    )
-    .expect("write the log");
-    let log = path.clone();
-    let (view, cx) = cx.add_window_view(move |window, cx| {
-        LogsWindow::new(Some(log), window, cx)
+/// One poll of the file, as the window's timer runs it.
+fn poll_logs(cx: &mut Window) {
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
+    draw(cx);
+}
+
+fn click_on(cx: &mut Window, selector: &'static str) {
+    draw(cx);
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is drawn"));
+    cx.simulate_click(bounds.center(), gpui_kit::Modifiers::none());
+    draw(cx);
+}
+
+fn clipboard(cx: &Window) -> String {
+    cx.read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default()
+}
+
+/// Logs reads the file, filters by level and by search, steps through the
+/// matches, wraps long lines rather than clip them, follows lines written
+/// after it opened (or counts them while paused), and copies the lines
+/// picked in the gutter exactly as the file has them.
+#[gpui_kit::test]
+fn logs_follow_the_file_and_filter(cx: &mut TestAppContext) {
+    use crate::log_view::Level;
+    use crate::logs_window::{
+        LIVE_ID, MARK_ID, NEXT_ID, PILL_ID, PREV_ID, SINCE_MARK_ID, WRAP_ID,
+    };
+
+    let long = format!(
+        "2026-10-30T00:00:02.000-04:00 WARN  pwrdisk::updater: GitHub said \
+         403 {}",
+        "and kept saying so ".repeat(30)
+    );
+    let started =
+        "2026-10-30T00:00:01.000-04:00 INFO  pwrdisk: started PwrDisk";
+    let workers =
+        "2026-10-30T00:00:03.000-04:00 DEBUG pwrdisk::scan: 8 workers";
+    let failed = "2026-10-30T00:00:04.000-04:00 ERROR pwrdisk::scan: \
+                  local scan failed after 0.2 s";
+    let (_dir, path, view, cx) =
+        logs_over(cx, &format!("{started}\n{long}\n{workers}\n{failed}\n"));
+    let visible =
+        |cx: &mut Window| cx.update(|_, cx| view.read(cx).view.visible().len());
+    assert!(cx.debug_bounds("logs-count").is_some());
+    // Debug starts off; its toggle shows it.
+    assert_eq!(visible(cx), 3);
+    click_on(cx, "logs-level-debug");
+    assert_eq!(visible(cx), 4);
+    click_on(cx, "logs-level-debug");
+
+    // Wrap is on: the long line takes several rows, the short one one, and
+    // its rows cover it at word boundaries within the room it has.
+    let row = cx.debug_bounds("log-row-1").expect("line 1").size.height;
+    let tall = cx.debug_bounds("log-row-2").expect("line 2").size.height;
+    assert!(tall >= row * 3.0, "{tall:?} vs {row:?}");
+    let (segments, len) = cx.update(|window, cx| {
+        let logs = view.read(cx);
+        let raw = logs.view.lines[1].raw().clone();
+        (logs.segments(&raw, window, cx), raw.len())
+    });
+    assert!(segments.len() >= 3, "{segments:?}");
+    assert_eq!(segments.first().map(|s| s.start), Some(0));
+    assert_eq!(segments.last().map(|s| s.end), Some(len));
+    assert!(segments.windows(2).all(|pair| pair[0].end == pair[1].start));
+    // Off, every line is one row, and the text scrolls sideways.
+    click_on(cx, WRAP_ID);
+    assert!(!cx.update(|_, cx| view.read(cx).wrap));
+    let unwrapped = cx.debug_bounds("log-row-2").expect("line 2").size.height;
+    assert_eq!(unwrapped, row);
+    let at = cx.debug_bounds("log-row-2").expect("line 2").center();
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: at,
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+            gpui_kit::px(-120.0),
+            gpui_kit::px(0.0),
+        )),
+        ..Default::default()
     });
     draw(cx);
-    assert_eq!(cx.update(|_, cx| view.read(cx).shown.len()), 2);
+    assert!(cx.update(|_, cx| view.read(cx).h_offset) > 0.0);
+    click_on(cx, WRAP_ID);
 
-    std::fs::write(&path, "").expect("rotate");
-    cx.update(|_, cx| view.update(cx, super::logs_window::LogsWindow::read));
+    // A search filters, and Enter, Shift-Enter and the chevrons step
+    // through what it found.
+    let search = cx.update(|_, cx| view.read(cx).search_state());
+    cx.update(|window, cx| {
+        search.update(cx, |search, cx| search.focus(window, cx));
+    });
+    cx.simulate_input("pwrdisk");
     draw(cx);
-    assert_eq!(cx.update(|_, cx| view.read(cx).shown.len()), 0);
-    assert_eq!(cx.update(|_, cx| view.read(cx).shown_text()), "");
+    let active =
+        |cx: &mut Window| cx.update(|_, cx| view.read(cx).view.active());
+    assert!(!cx.update(|_, cx| view.read(cx).live), "a search pauses");
+    assert_eq!(cx.update(|_, cx| view.read(cx).view.match_count()), 3);
+    assert_eq!(active(cx), Some(1));
+    cx.simulate_keystrokes("enter");
+    assert_eq!(active(cx), Some(2));
+    cx.simulate_keystrokes("shift-enter shift-enter");
+    assert_eq!(active(cx), Some(4));
+    click_on(cx, NEXT_ID);
+    assert_eq!(active(cx), Some(1));
+    click_on(cx, PREV_ID);
+    assert_eq!(active(cx), Some(4));
+    // Esc clears it, and every line is back.
+    cx.update(|window, cx| {
+        search.update(cx, |search, cx| search.focus(window, cx));
+    });
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert!(!cx.update(|_, cx| view.read(cx).view.searching()));
+    assert_eq!(visible(cx), 3);
+    click_on(cx, LIVE_ID);
+    assert!(cx.update(|_, cx| view.read(cx).live));
+
+    // Lines picked in the gutter copy as the file has them; Select All
+    // takes every line shown.
+    click_on(cx, "log-number-1");
+    let gutter = cx.debug_bounds("log-number-4").expect("line 4's number");
+    cx.simulate_click(gutter.center(), gpui_kit::Modifiers::shift());
+    draw(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).selection), Some((1, 4)));
+    cx.simulate_keystrokes("ctrl-c");
+    assert_eq!(clipboard(cx), format!("{started}\n{long}\n{failed}\n"));
+    click_on(cx, "log-number-4");
+    cx.simulate_keystrokes("ctrl-c");
+    assert_eq!(clipboard(cx), format!("{failed}\n"));
+    cx.simulate_keystrokes("ctrl-a ctrl-c");
+    assert_eq!(clipboard(cx), format!("{started}\n{long}\n{failed}\n"));
+    cx.simulate_keystrokes("escape");
+    assert_eq!(cx.update(|_, cx| view.read(cx).selection), None);
+
+    // A line written later is read on the next poll.
+    let refused = "2026-10-30T00:00:05.000-04:00 ERROR pwrdisk::removal: \
+                   removal finished: 0 removed, 0 bytes, 1 failed";
+    append_log(&path, &format!("{refused}\n"));
+    poll_logs(cx);
+    assert_eq!(visible(cx), 4);
+    assert_eq!(cx.update(|_, cx| view.read(cx).view.count(Level::Error)), 2);
+
+    // Paused, new lines are counted on the pill, which follows again.
+    click_on(cx, LIVE_ID);
+    append_log(&path, &format!("{started}\n{refused}\n"));
+    poll_logs(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).new_lines), 2);
+    click_on(cx, PILL_ID);
+    assert!(cx.update(|_, cx| view.read(cx).live));
+
+    // The mark selects what came after it, and that grows with the log.
+    click_on(cx, MARK_ID);
+    assert!(cx.debug_bounds("log-mark").is_some());
+    append_log(&path, &format!("{started}\n"));
+    poll_logs(cx);
+    click_on(cx, SINCE_MARK_ID);
+    assert_eq!(cx.update(|_, cx| view.read(cx).selection), Some((8, 8)));
+    append_log(&path, &format!("{refused}\n"));
+    poll_logs(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).selection), Some((8, 9)));
+    cx.simulate_keystrokes("ctrl-c");
+    assert_eq!(clipboard(cx), format!("{started}\n{refused}\n"));
+}
+
+/// A rotation reads the files again, even when it leaves `main.log` empty:
+/// what was shown pointed into the old file, and drawing it would index
+/// past the end.
+#[gpui_kit::test]
+fn logs_survive_a_rotation_to_an_empty_file(cx: &mut TestAppContext) {
+    let (dir, path, view, cx) = logs_over(
+        cx,
+        "2026-10-30T00:00:01.000-04:00 WARN  pwrdisk: one\n\
+         2026-10-30T00:00:02.000-04:00 ERROR pwrdisk: two\n",
+    );
+    assert_eq!(cx.update(|_, cx| view.read(cx).view.visible().len()), 2);
+
+    std::fs::rename(&path, dir.path().join("main.old.log")).expect("rotate");
+    std::fs::write(&path, "").expect("a new main.log");
+    poll_logs(cx);
+    // The old file's lines, from main.old.log, and nothing past them.
+    assert_eq!(cx.update(|_, cx| view.read(cx).view.visible().len()), 2);
+    std::fs::write(dir.path().join("main.old.log"), "").expect("emptied");
+    std::fs::remove_file(&path).expect("gone");
+    std::fs::write(&path, "").expect("again");
+    poll_logs(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).view.visible().len()), 0);
+    assert!(cx.debug_bounds("logs-count").is_some());
 }
 
 /// Restart to update never exits while a removal runs, wherever it is

@@ -25,6 +25,7 @@ mod dock_icon;
 mod git;
 mod github_releases;
 mod help;
+mod log_view;
 mod logs_window;
 mod marks;
 mod palette;
