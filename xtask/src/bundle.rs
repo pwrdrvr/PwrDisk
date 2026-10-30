@@ -32,10 +32,12 @@ const DEPLOYMENT_TARGET: &str = "11.0";
 const TARGETS: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
 /// The DMG's layout, shared with release.yml's signing job.
 const DMG_SCRIPT: &str = "scripts/release/macos-dmg.sh";
-/// Velopack's native binaries' notices: `vpk pack` adds `UpdateMac` to the
-/// released app, so the app carries them.
-const NOTICES: [(&str, &str); 2] = [
+/// The notices the app carries: its license, every crate compiled in
+/// (also shown by Help › Third-Party Notices), and Velopack's native
+/// binaries', since `vpk pack` adds `UpdateMac` to the released app.
+const NOTICES: [(&str, &str); 3] = [
     ("LICENSE", "LICENSE"),
+    ("THIRD_PARTY_LICENSES", "THIRD_PARTY_LICENSES"),
     ("licenses/velopack.txt", "VELOPACK-NOTICES.txt"),
 ];
 

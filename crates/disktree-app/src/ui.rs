@@ -103,13 +103,28 @@ pub mod size {
     pub const SOURCE_VIEWPORT_FRACTION: f32 = 0.92;
     /// The keyboard overlay.
     pub const HELP: Rems = Rems(32.5);
-    /// The Updates panel: room for a channel's name and what it is for on
-    /// one line each.
-    pub const UPDATES: Rems = Rems(34.0);
-    /// The channel names' lane, so their descriptions line up.
+    /// Settings › Updates' channel names' lane, so their descriptions line
+    /// up.
     pub const UPDATE_SLOT: Rems = Rems(9.5);
     /// The key column of the keyboard overlay.
     pub const KEY_LANE: Rems = Rems(7.0);
+    /// A document's measure (the changelog): about 90 characters.
+    pub const DOCUMENT: Rems = Rems(47.5);
+    /// A changelog bullet's square.
+    pub const BULLET: Rems = Rems(0.25);
+    /// Settings: the nav, the panes' measure and a field's label lane.
+    pub const SETTINGS_NAV: Rems = Rems(12.25);
+    pub const SETTINGS_PANE: Rems = Rems(47.5);
+    pub const SETTINGS_LABEL: Rems = Rems(10.0);
+    /// Logs: the filter, the line number's lane and the level's.
+    pub const LOG_FILTER: Rems = Rems(16.25);
+    pub const LOG_NUMBER: Rems = Rems(3.0);
+    pub const LOG_LEVEL: Rems = Rems(3.0);
+    /// The strip's menu button off macOS: as tall as a window button.
+    pub const MENU_BUTTON: Rems = Rems(1.625);
+    /// Its dropdown: wide enough for a row and its shortcut.
+    pub const APP_MENU: Rems = Rems(18.0);
+    pub const APP_MENU_HEIGHT: Rems = Rems(36.0);
 }
 
 /// The title strip across the top of the window.

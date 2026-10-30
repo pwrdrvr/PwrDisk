@@ -219,6 +219,18 @@ static MARK: LazyLock<Arc<Image>> = LazyLock::new(|| {
     ))
 });
 
+/// A window whose strip moves it. The press arms a move that the first
+/// motion starts (see [`drag_area`]); the view keeps that one flag.
+pub trait Drags: 'static {
+    fn strip_drag(&mut self) -> &mut bool;
+}
+
+impl Drags for Disktree {
+    fn strip_drag(&mut self) -> &mut bool {
+        &mut self.strip_drag
+    }
+}
+
 /// Windows' own close-button red, which it uses whatever the theme.
 const CLOSE_RED: u32 = 0x00c4_2b1c;
 
@@ -302,14 +314,112 @@ pub fn strip(
         .children(trailing)
 }
 
+/// The strip of a window that is not the main one: Settings, Help's
+/// documents and Logs. The same band, controls and brand, then the
+/// window's place as crumbs ("Help › Changelog"), and `actions` at the
+/// end. Everything but the controls and `actions` moves the window.
+pub fn aux_strip<V: Drags>(
+    frame: &Frame,
+    crumbs: &[&'static str],
+    actions: impl gpui_kit::IntoElement,
+    window: &Window,
+    cx: &Context<'_, V>,
+) -> Stateful<Div> {
+    let theme = cx.omarchy().clone();
+    let maximized = window.is_maximized();
+    let leading = controls(
+        frame,
+        &frame.leading,
+        "window-controls-leading",
+        maximized,
+        &theme,
+        cx,
+    );
+    let trailing = controls(
+        frame,
+        &frame.trailing,
+        "window-controls-trailing",
+        maximized,
+        &theme,
+        cx,
+    );
+    let last = crumbs.len().saturating_sub(1);
+    let trail = crumbs.iter().enumerate().fold(
+        div().flex().flex_row().items_center().gap(space::SM),
+        |trail, (index, crumb)| {
+            trail
+                .child(
+                    div()
+                        .text_size(crate::ui::text::TITLE)
+                        .text_color(theme.secondary)
+                        .child("\u{203a}"),
+                )
+                .child(
+                    div()
+                        .text_size(crate::ui::text::TITLE)
+                        .whitespace_nowrap()
+                        .when(index == last, |crumb| {
+                            crumb
+                                .text_color(theme.bright)
+                                .font_weight(FontWeight::SEMIBOLD)
+                        })
+                        .when(index != last, |crumb| {
+                            crumb.text_color(theme.foreground)
+                        })
+                        .child(*crumb),
+                )
+        },
+    );
+    div()
+        .id("title-strip")
+        .debug_selector(|| "title-strip".into())
+        .flex()
+        .flex_row()
+        .items_center()
+        .flex_shrink_0()
+        .min_h(chrome::STRIP + px(1.))
+        .border_b_1()
+        .border_color(theme.divider())
+        .when(frame.trailing == Controls::None, |strip| {
+            strip.pr(space::LG)
+        })
+        .children(leading)
+        .child(
+            drag_area(frame, "aux-strip-drag", cx)
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(space::SM)
+                .self_stretch()
+                .flex_1()
+                .min_w_0()
+                .when(frame.leading == Controls::None, |area| {
+                    area.pl(space::LG)
+                })
+                .child(brand(true, &theme))
+                .child(trail),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(space::SM)
+                .flex_shrink_0()
+                .when(frame.trailing != Controls::None, |row| row.mr(space::SM))
+                .child(actions),
+        )
+        .children(trailing)
+}
+
 /// Part of the strip that moves the window: everything that is not a
 /// control. On Windows the system is told where its caption is and does
 /// the rest — moving, snapping, maximizing on a double click and the system
 /// menu on a right click.
-pub fn drag_area(
+pub fn drag_area<V: Drags>(
     frame: &Frame,
     id: &'static str,
-    cx: &Context<'_, Disktree>,
+    cx: &Context<'_, V>,
 ) -> Stateful<Div> {
     let area = div().id(id).debug_selector(move || id.into());
     let platform = frame.platform;
@@ -322,7 +432,7 @@ pub fn drag_area(
     area.on_mouse_down(
         MouseButton::Left,
         cx.listener(move |this, event: &MouseDownEvent, window, _| {
-            this.strip_drag = event.click_count < 2;
+            *this.strip_drag() = event.click_count < 2;
             if event.click_count >= 2 {
                 if platform == Platform::MacOs {
                     // Zoom, minimize or nothing, as System Settings says.
@@ -336,21 +446,23 @@ pub fn drag_area(
     .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, _| {
         // The move starts on the first motion, not on the press, so that
         // a second press can still arrive as a double click.
-        if this.strip_drag && event.pressed_button == Some(MouseButton::Left) {
-            this.strip_drag = false;
+        if *this.strip_drag()
+            && event.pressed_button == Some(MouseButton::Left)
+        {
+            *this.strip_drag() = false;
             window.start_window_move();
         }
     }))
     .on_mouse_up(
         MouseButton::Left,
-        cx.listener(|this, _, _, _| this.strip_drag = false),
+        cx.listener(|this: &mut V, _, _, _| *this.strip_drag() = false),
     )
     // Motion only reaches the area while the pointer is over it, so a
     // press that leaves before its first motion is released elsewhere; it
     // must not stay armed for the next drag that crosses the strip.
     .on_mouse_up_out(
         MouseButton::Left,
-        cx.listener(|this, _, _, _| this.strip_drag = false),
+        cx.listener(|this: &mut V, _, _, _| *this.strip_drag() = false),
     )
     .when(platform == Platform::Linux, |area| {
         area.on_mouse_down(MouseButton::Right, |event, window, _| {
@@ -381,13 +493,13 @@ fn brand(wordmark: bool, theme: &Theme) -> Div {
 }
 
 /// One end of the strip.
-fn controls(
+fn controls<V: Drags>(
     frame: &Frame,
     controls: &Controls,
     selector: &'static str,
     maximized: bool,
     theme: &Theme,
-    cx: &Context<'_, Disktree>,
+    cx: &Context<'_, V>,
 ) -> Option<AnyElement> {
     match controls {
         Controls::None => None,

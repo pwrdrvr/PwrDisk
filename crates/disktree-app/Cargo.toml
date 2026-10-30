@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "GPUI treemap explorer for disk usage, in Omarchy's visual language"
 
 [[bin]]
@@ -27,8 +28,11 @@ tempfile = "3"
 # packs releases must be the same version: VPK_VERSION (and its SHA-512) in
 # scripts/release/install-vpk.sh. Upgrade them together.
 velopack = "=1.2.161"
-# Velopack logs through `log`; the updater's own lines go there too.
+# Velopack logs through `log`; the updater's own lines go there too, and
+# diag_log.rs writes them all to main.log.
 log = "0.4"
+# The log's and the diagnostics' local times. Already in the tree.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Wakes the window when a background update check changes what it shows.
 # Already in the tree through GPUI.
 async-channel = "2"

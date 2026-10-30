@@ -7,6 +7,7 @@
 //! signal CI gives.
 
 mod bundle;
+mod licenses;
 mod portable;
 mod release;
 
@@ -22,6 +23,9 @@ tasks:
   clippy    clippy --workspace --all-targets -- -D warnings
   test      cargo test --workspace, then (Unix) the release scripts' tests
   ci        lint, then test
+  licenses [--check]
+            write THIRD_PARTY_LICENSES with cargo-about, or check it is
+            current
   portable  Linux: desktop executable with static x86_64/ARM64 scanners
   bundle    macOS: target/bundle/PwrDisk.app, its zip and a DMG
               --sign IDENTITY   sign with a Developer ID (default: ad hoc)
@@ -48,6 +52,7 @@ fn main() -> ExitCode {
         "bundle" => bundle::bundle(&args[1..]),
         "release-check" => release::check(&args[1..]),
         "portable" => portable::build(),
+        "licenses" => licenses::licenses(args.iter().any(|a| a == "--check")),
         "help" | "-h" | "--help" => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;

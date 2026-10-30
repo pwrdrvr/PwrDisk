@@ -1131,40 +1131,48 @@ fn the_help_overlay_opens_and_closes(cx: &mut TestAppContext) {
     assert!(!read(&view, cx, |app| app.show_help));
 }
 
-/// The Updates panel draws, owns the keyboard while open, and saves the
-/// channel picked. A test binary is no Velopack install, so it says so and
-/// offers no restart; nothing reaches the network.
+/// Settings › Updates draws, keeps the panel's keys and saves the channel
+/// picked. A test binary is no Velopack install, so it offers no restart;
+/// nothing reaches the network.
 #[gpui_kit::test]
-fn the_updates_panel_picks_a_channel_and_keeps_the_keys(
+fn settings_updates_picks_a_channel_and_keeps_the_keys(
     cx: &mut TestAppContext,
 ) {
+    use crate::settings::{Pane, SettingsWindow};
     use crate::update_channel::{Slot, UpdateSettings};
 
-    cx.update(gpui_omarchy::init);
-    let temp = fixture();
-    let settings = tempfile::TempDir::new().expect("tempdir");
-    let (view, cx) = view_over(temp.path(), cx);
-    update(&view, cx, |app, _| {
-        app.updates_dir = Some(settings.path().to_path_buf());
+    cx.update(init);
+    let saved_in = tempfile::TempDir::new().expect("tempdir");
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let view = SettingsWindow::new(Pane::Updates, cx);
+        window.focus(&cx.focus_handle(), cx);
+        view
     });
+    let root = cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            view.updates_dir = Some(saved_in.path().to_path_buf());
+            cx.focus_handle()
+        })
+    });
+    drop(root);
     draw(cx);
-    let crumbs = read(&view, cx, |app| app.crumbs.clone());
-
-    press(cx, "shift-u");
-    assert!(read(&view, cx, |app| app.updates_open));
-    assert!(cx.debug_bounds("updates-panel").is_some());
+    let focus = cx.update(|window, cx| {
+        let _ = window;
+        view.read(cx).pane
+    });
+    assert_eq!(focus, Pane::Updates);
+    assert!(cx.debug_bounds(crate::settings::ROOT_ID).is_some());
     assert!(cx.debug_bounds("update-slot-3").is_some());
+    assert!(cx.debug_bounds(crate::settings::CHECK_ID).is_some());
     assert!(
-        cx.debug_bounds("updates-restart").is_none(),
+        cx.debug_bounds(crate::settings::RESTART_ID).is_none(),
         "nothing is downloaded, so there is nothing to restart into"
     );
 
-    // Behind the panel nothing moves and nothing is marked.
-    press(cx, "space");
-    press(cx, "u");
-    assert_eq!(read(&view, cx, |app| app.marks.len()), 0);
-    assert_eq!(read(&view, cx, |app| app.crumbs.clone()), crumbs);
-
+    // The keys, as the in-window panel had them, once the pane has focus.
+    let slot = cx.debug_bounds("update-slot-0").expect("first row");
+    cx.simulate_click(slot.center(), gpui_kit::Modifiers::none());
+    draw(cx);
     press(cx, "down");
     press(cx, "enter");
     assert_eq!(
@@ -1172,32 +1180,173 @@ fn the_updates_panel_picks_a_channel_and_keeps_the_keys(
         Slot::STABLE_PRERELEASE
     );
     let saved =
-        std::fs::read_to_string(settings.path().join("update-channel.json"))
+        std::fs::read_to_string(saved_in.path().join("update-channel.json"))
             .expect("the pick is saved");
     assert!(saved.contains("\"prerelease\""), "{saved}");
 
-    // A removal in progress is never cut short by a restart: `r` says so
-    // instead of exiting.
-    update(&view, cx, |app, _| {
-        app.run = Some(disktree_core::removal::spawn(
-            disktree_core::removal::Plan::default(),
-            RemovalMode::Trash,
-        ));
-    });
-    press(cx, "r");
-    let notice = read(&view, cx, |app| app.notice.clone());
+    // Tab walks the panes; every one draws.
+    press(cx, "tab");
     assert!(
-        notice.is_some_and(|(text, _)| text.contains("removal")),
-        "restart refused while removing"
+        cx.debug_bounds(crate::settings::COPY_DIAGNOSTICS_ID)
+            .is_some()
     );
-    update(&view, cx, |app, _| app.run = None);
-
-    press(cx, "escape");
-    assert!(!read(&view, cx, |app| app.updates_open));
-    assert!(cx.debug_bounds("updates-panel").is_none());
+    press(cx, "tab");
+    assert!(cx.debug_bounds(crate::settings::COPY_BUILD_ID).is_some());
+    assert!(cx.debug_bounds("about-notices").is_some());
 
     // The selection is process-wide; leave the default for other tests.
     let _ = crate::updater::set_selection(UpdateSettings::default(), None);
+}
+
+/// Shift-U, which opened the Updates panel, opens Settings › Updates in
+/// its own window now; the main window is left as it was.
+#[gpui_kit::test]
+fn shift_u_opens_settings_updates(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let crumbs = read(&view, cx, |app| app.crumbs.clone());
+    press(cx, "shift-u");
+    cx.run_until_parked();
+    let settings = cx.update(|_, cx| {
+        crate::aux_window::find::<crate::settings::SettingsWindow>(cx, |_| true)
+            .and_then(|handle| handle.read(cx).ok().map(|view| view.pane))
+    });
+    assert_eq!(settings, Some(crate::settings::Pane::Updates));
+    assert_eq!(read(&view, cx, |app| app.crumbs.clone()), crumbs);
+}
+
+/// Help's documents draw from what this build ships, and Copy puts the
+/// whole document on the clipboard.
+#[gpui_kit::test]
+fn help_documents_draw_and_copy(cx: &mut TestAppContext) {
+    use crate::doc_window::{Doc, DocWindow};
+
+    cx.update(init);
+    for doc in [Doc::Changelog, Doc::License, Doc::ThirdPartyNotices] {
+        let (_, cx) = cx.add_window_view(move |_, _| DocWindow::new(doc));
+        draw(cx);
+        assert!(cx.debug_bounds("title-strip").is_some(), "{doc:?}");
+        let copy = cx
+            .debug_bounds(crate::doc_window::COPY_ID)
+            .unwrap_or_else(|| panic!("{doc:?} has Copy"));
+        cx.simulate_click(copy.center(), gpui_kit::Modifiers::none());
+        draw(cx);
+        let copied = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default();
+        assert_eq!(copied, doc.source(), "{doc:?}");
+    }
+}
+
+/// Logs reads the file, filters by level and words, and follows lines
+/// written after it opened.
+#[gpui_kit::test]
+fn logs_follow_the_file_and_filter(cx: &mut TestAppContext) {
+    use crate::logs_window::{Level, LogsWindow};
+
+    cx.update(init);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("main.log");
+    std::fs::write(
+        &path,
+        "2026-10-30T00:00:01.000-04:00 INFO  pwrdisk: started PwrDisk\n\
+         2026-10-30T00:00:02.000-04:00 WARN  pwrdisk::updater: GitHub said 403\n\
+         2026-10-30T00:00:03.000-04:00 DEBUG pwrdisk::scan: 8 workers\n",
+    )
+    .expect("write the log");
+    let log = path.clone();
+    let (view, cx) = cx.add_window_view(move |window, cx| {
+        LogsWindow::new(Some(log), window, cx)
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("logs-count").is_some());
+    let shown = |cx: &mut Window| cx.update(|_, cx| view.read(cx).shown.len());
+    // Debug starts off.
+    assert_eq!(shown(cx), 2);
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| view.toggle(Level::Debug, cx));
+    });
+    assert_eq!(shown(cx), 3);
+
+    // A line written later is read on the next poll.
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("open the log");
+    std::io::Write::write_all(
+        &mut file,
+        b"2026-10-30T00:00:04.000-04:00 ERROR pwrdisk: removal refused\n",
+    )
+    .expect("append");
+    cx.update(|_, cx| view.update(cx, super::logs_window::LogsWindow::read));
+    draw(cx);
+    assert_eq!(shown(cx), 4);
+    let text = cx.update(|_, cx| view.read(cx).shown_text());
+    assert!(text.ends_with("removal refused\n"), "{text}");
+}
+
+/// Off macOS the strip carries the menu button, and its dropdown lists the
+/// menu bar's template; Escape closes it.
+#[gpui_kit::test]
+fn the_strip_menu_lists_the_menus_off_macos(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    for (name, frame) in window_frames() {
+        update(&view, cx, |app, cx| {
+            app.chrome_pin = Some(frame.clone());
+            cx.notify();
+        });
+        draw(cx);
+        let mac = frame.platform == crate::chrome::Platform::MacOs;
+        assert_eq!(
+            cx.debug_bounds("app-menu-button").is_some(),
+            !mac,
+            "{name}"
+        );
+    }
+    let button = cx.debug_bounds("app-menu-button").expect("menu button");
+    cx.simulate_click(button.center(), gpui_kit::Modifiers::none());
+    draw(cx);
+    assert!(read(&view, cx, |app| app.app_menu_open));
+    assert!(cx.debug_bounds("app-menu").is_some());
+    // The first group's first row: File › Open Folder….
+    assert!(cx.debug_bounds("app-menu-0-0").is_some());
+    press(cx, "escape");
+    assert!(!read(&view, cx, |app| app.app_menu_open));
+    assert!(cx.debug_bounds("app-menu").is_none());
+}
+
+/// Copy Diagnostics Info writes the report, with the main window's
+/// session and no path it scanned, and says so in the notice line.
+#[gpui_kit::test]
+fn copy_diagnostics_info_names_no_scanned_path(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    // As the menu runs it: after the dispatch that asked.
+    cx.update(|_, cx| cx.defer(crate::help::copy_diagnostics));
+    cx.run_until_parked();
+    let report = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert!(
+        report.starts_with("PwrDisk diagnostics, collected "),
+        "{report}"
+    );
+    assert!(report.contains("\n[Session]\nScan: local"), "{report}");
+    let root = temp.path().display().to_string();
+    assert!(!report.contains(&root), "{report}");
+    let notice = read(&view, cx, |app| app.notice.clone());
+    assert!(
+        notice.is_some_and(|(text, _)| text.starts_with("Diagnostics copied")),
+        "the main window says it copied"
+    );
 }
 
 #[gpui_kit::test]

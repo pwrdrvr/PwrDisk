@@ -39,6 +39,7 @@ make lint                       # rustfmt --check, then clippy --all-targets -D 
 make test                       # core and window-harness tests
 make ci                         # lint, then test
 make fmt                        # format in place
+cargo xtask licenses            # rewrite THIRD_PARTY_LICENSES after a dependency change
 ```
 
 `make install` is the supported way to put this on a machine: it installs the
@@ -201,6 +202,12 @@ and `cargo build --release` directly; CI runs the gate on both systems.
 | layout of a screen | `crates/disktree-app/src/views.rs` |
 | colours derived from the theme | `crates/disktree-app/src/palette.rs` |
 | the title strip, window controls, the client-side frame | `crates/disktree-app/src/chrome.rs` |
+| the menu bar, its shortcuts, the strip's menu off macOS | `crates/disktree-app/src/app_menu.rs`, the dropdown in `views.rs` |
+| Help's rows, Copy Diagnostics Info | `crates/disktree-app/src/help.rs`, the report in `diagnostics.rs` |
+| Settings (Updates, Diagnostics, About) | `crates/disktree-app/src/settings.rs` |
+| Changelog, License, Third-Party Notices, Logs windows | `doc_window.rs`, `logs_window.rs`, framed by `aux_window.rs` |
+| what goes in `main.log`, and where it lives | `crates/disktree-app/src/diag_log.rs` — never a scanned path |
+| `THIRD_PARTY_LICENSES` | `cargo xtask licenses` (cargo-about), then commit it; non-crate parts in `licenses/bundled.txt` |
 | the macOS icon, in any of its looks | `packaging/macos/` — the SVGs and `AppIcon.icon`, then `make dock-icons` |
 | checking, downloading and applying updates | `crates/disktree-app/src/updater.rs` |
 | which release a release channel picks | `crates/disktree-app/src/update_channel.rs` |
