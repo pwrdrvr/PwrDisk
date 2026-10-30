@@ -286,9 +286,10 @@ pub struct Session {
     link: Option<Link>,
     /// What the window last said about itself.
     window: Option<State>,
-    /// The SSH host an open window is showing. Its paths are another
-    /// machine's, so the session does not link to it and says why.
-    remote_window: Option<String>,
+    /// Why an open window is not linked: it shows an SSH host, speaks
+    /// another link version, or refused the marks made here. Said instead
+    /// of starting a window that could not link either.
+    unlinked: Option<String>,
     /// When a window was last started from here, so one that is slow to
     /// come up is not started twice.
     launched: Option<Instant>,
@@ -356,7 +357,7 @@ impl Session {
             marks: Vec::new(),
             link: None,
             window: None,
-            remote_window: None,
+            unlinked: None,
             launched: None,
         }
     }
@@ -650,6 +651,16 @@ impl Session {
         let Some(state) = &self.window else {
             return Err("the window has not said where it is".to_string());
         };
+        // A window still on the source chooser has no root, and an empty
+        // path is a prefix of every path.
+        if state.root.as_os_str().is_empty() {
+            return Err(format!(
+                "The PwrDisk window has no tree yet: it is waiting for a \
+                 source. Call pwrdisk_scan on a directory containing {} and \
+                 the window scans it.",
+                self.show(path)
+            ));
+        }
         if path.starts_with(&state.root) {
             return Ok(state.root.clone());
         }
@@ -715,7 +726,14 @@ impl Session {
         }
         out.push_str(&children(&listing, now));
         if params.show {
-            out.push_str(&self.show_in_window(&listing.root, &path)?);
+            // The listing stands on its own; a window that cannot follow
+            // is a note, not a reason to lose it.
+            match self.show_in_window(&listing.root, &path) {
+                Ok(shown) => out.push_str(&shown),
+                Err(reason) => {
+                    let _ = writeln!(out, "Window: not shown. {reason}");
+                }
+            }
         }
         Ok(out)
     }
@@ -741,8 +759,16 @@ impl Session {
                 return Err("Nothing is scanned yet. Call pwrdisk_scan first."
                     .to_string());
             }
+            // A scan inside another one holds the same entries again; the
+            // outer scan already counts them.
             self.scans
                 .iter()
+                .filter(|scan| {
+                    !self.scans.iter().any(|outer| {
+                        outer.root != scan.root
+                            && scan.root.starts_with(&outer.root)
+                    })
+                })
                 .map(|scan| (scan.root.clone(), &*scan.tree))
                 .collect()
         };
@@ -809,7 +835,7 @@ impl Session {
             return true;
         }
         let Ok(link) = Link::connect_at(&self.socket) else {
-            self.remote_window = None;
+            self.unlinked = None;
             return false;
         };
         self.link = Some(link);
@@ -819,15 +845,32 @@ impl Session {
             client: self.client.clone(),
             version: VERSION,
         };
-        if self.call(&request).is_err() || self.remote_window.is_some() {
-            self.link = None;
-            self.marks = mine;
-            return false;
+        let refused = match self.call(&request) {
+            // A window on an SSH host answers, and `adopt` noted why it is
+            // not followed.
+            Ok(Response::State(_)) if self.unlinked.is_some() => None,
+            Ok(Response::State(_)) => match self.push_marks(&mine) {
+                Ok(()) => return true,
+                Err(error) => Some(format!(
+                    "The open PwrDisk window did not take the marks made \
+                     before it was linked ({error}); they are kept here."
+                )),
+            },
+            // A version mismatch, said in the window's words.
+            Ok(Response::Error { message }) => Some(message),
+            Ok(other) => Some(unexpected(&other)),
+            Err(_) => {
+                self.unlinked = None;
+                None
+            }
+        };
+        if refused.is_some() {
+            self.unlinked = refused;
         }
-        if self.push_marks(&mine).is_err() {
-            return false;
-        }
-        true
+        self.link = None;
+        self.window = None;
+        self.marks = mine;
+        false
     }
 
     /// Open the link, launching a window on `root` when none answers.
@@ -835,8 +878,8 @@ impl Session {
         if self.try_connect() {
             return Ok(());
         }
-        if let Some(host) = &self.remote_window {
-            return Err(disktree_link::remote_refusal(host));
+        if let Some(reason) = &self.unlinked {
+            return Err(reason.clone());
         }
         if !disktree_link::SUPPORTED {
             return Err(NO_LINK.to_string());
@@ -909,12 +952,12 @@ impl Session {
     /// another machine's paths.
     fn adopt(&mut self, state: &State) {
         if let Some(host) = &state.remote {
-            self.remote_window = Some(host.clone());
+            self.unlinked = Some(disktree_link::remote_refusal(host));
             self.window = None;
             self.link = None;
             return;
         }
-        self.remote_window = None;
+        self.unlinked = None;
         self.marks = state
             .marks
             .iter()
@@ -941,10 +984,12 @@ impl Session {
                     is_dir: target.is_dir,
                 })
                 .collect();
-            self.call(&Request::Mark {
+            if let Response::Error { message } = self.call(&Request::Mark {
                 root: root.clone(),
                 targets,
-            })?;
+            })? {
+                return Err(message);
+            }
         }
         Ok(())
     }
@@ -990,12 +1035,8 @@ impl Session {
         if self.try_connect() {
             let _ = self.call(&Request::State);
         }
-        if let Some(host) = &self.remote_window {
-            return format!(
-                "Window: open on the SSH host {host}, which these tools do \
-                 not follow; they measure and mark this computer. Ask the \
-                 user to choose This computer in it to bring it along."
-            );
+        if let Some(reason) = &self.unlinked {
+            return format!("Window: open, but not followed. {reason}");
         }
         match &self.window {
             Some(state) => {
@@ -1768,6 +1809,22 @@ mod tests {
         assert!(none.contains("Nothing"), "{none}");
     }
 
+    /// A scan inside another one is not searched twice.
+    #[test]
+    fn find_counts_nested_scans_once() {
+        let temp = fixture();
+        let mut session = unlinked(temp.path());
+        scanned(&mut session, temp.path());
+        scanned(&mut session, &temp.path().join("src"));
+        let found = session
+            .find(&FindParams {
+                name: Some("main.rs".into()),
+                ..FindParams::default()
+            })
+            .expect("find");
+        assert!(found.starts_with("1 match "), "{found}");
+    }
+
     #[test]
     fn marks_are_planned_with_the_guards_and_without_a_window() {
         let temp = fixture();
@@ -1852,6 +1909,8 @@ mod tests {
         marks: Vec<Mark>,
         /// The SSH host the window shows, as a window on one answers.
         remote: Option<String>,
+        /// A removal is running: marks are refused, as the app does.
+        busy: bool,
     }
 
     #[cfg(unix)]
@@ -1898,6 +1957,9 @@ mod tests {
                 && !matches!(request, Request::Hello { .. } | Request::State)
             {
                 return Response::error(disktree_link::remote_refusal(host));
+            }
+            if self.busy && matches!(request, Request::Mark { .. }) {
+                return Response::error("a removal is running");
             }
             match request {
                 Request::Hello { .. } | Request::State => {
@@ -1985,6 +2047,20 @@ mod tests {
         /// A window showing `remote`, an SSH host, rather than this
         /// computer.
         fn showing(socket: &Path, root: &Path, remote: Option<&str>) -> Self {
+            Self::serving(socket, root, remote, false)
+        }
+
+        /// A window in the middle of a removal, refusing new marks.
+        fn removing(socket: &Path, root: &Path) -> Self {
+            Self::serving(socket, root, None, true)
+        }
+
+        fn serving(
+            socket: &Path,
+            root: &Path,
+            remote: Option<&str>,
+            busy: bool,
+        ) -> Self {
             let listener = Arc::new(Listener::bind_at(socket).expect("bind"));
             let asked = Arc::new(Mutex::new(Vec::new()));
             let marks: Arc<Mutex<Vec<Mark>>> = Arc::new(Mutex::new(Vec::new()));
@@ -2002,6 +2078,7 @@ mod tests {
                 ),
                 marks: Vec::new(),
                 remote: remote.map(str::to_owned),
+                busy,
             };
             thread::spawn(move || {
                 while !s.load(Ordering::Relaxed) {
@@ -2211,6 +2288,51 @@ mod tests {
             handed.map(|targets| targets[0].path.clone()),
             Some(temp.path().join("Downloads"))
         );
+    }
+
+    /// A window that will not take the marks made before it linked is not
+    /// followed: the marks stay here, and the agent is told why instead of
+    /// losing them.
+    #[cfg(unix)]
+    #[test]
+    fn marks_a_window_refuses_are_kept_and_explained() {
+        let temp = fixture();
+        let socket = temp.path().join("window.sock");
+        let mut session = Session::detached(socket.clone(), None);
+        scanned(&mut session, temp.path());
+        session
+            .mark(&PathsParams {
+                paths: vec![temp.path().join("Downloads")],
+            })
+            .expect("mark offline");
+
+        let _window = FakeWindow::removing(&socket, temp.path());
+        let status = session.status();
+        assert!(status.contains("a removal is running"), "{status}");
+        assert_eq!(session.marks().len(), 1, "the mark is kept");
+        let review = session.review().expect_err("not followed");
+        assert!(review.contains("did not take the marks"), "{review}");
+    }
+
+    /// A listing is answered even when the window cannot follow it.
+    #[cfg(unix)]
+    #[test]
+    fn ls_with_show_keeps_the_listing_when_the_window_cannot_follow() {
+        let temp = fixture();
+        let socket = temp.path().join("window.sock");
+        let _window =
+            FakeWindow::showing(&socket, temp.path(), Some("build-box"));
+        let mut session = Session::detached(socket, None);
+        scanned(&mut session, temp.path());
+        let listing = session
+            .ls(&LsParams {
+                path: temp.path().join("src"),
+                limit: None,
+                show: true,
+            })
+            .expect("the listing stands");
+        assert!(listing.contains("app/"), "{listing}");
+        assert!(listing.contains("Window: not shown."), "{listing}");
     }
 
     /// A window showing an SSH host holds another machine's paths: the

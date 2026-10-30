@@ -96,9 +96,11 @@ pub fn connect_commands(exe: &Path) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// What to ask an agent once it is connected.
-pub const FIRST_PROMPT: &str =
-    "What is eating my disk? Use PwrDisk to find out and mark what can go.";
+/// What to ask an agent once it is connected. It asks for a proposal, not
+/// a standing instruction: the skill marks without asking only when told
+/// to.
+pub const FIRST_PROMPT: &str = "What is eating my disk? Use PwrDisk to \
+find out, and show me what could go before you mark anything.";
 
 impl Disktree {
     /// Start answering agents on `listener`.
@@ -271,10 +273,21 @@ impl Disktree {
             self.screen = Screen::Explore;
             self.start_scan(cx);
         } else {
-            self.set_root(root.to_path_buf(), cx);
+            self.agent_set_root(root, cx);
         }
         cx.notify();
         Response::State(self.agent_state())
+    }
+
+    /// Scan `root` for an agent. A window still on the source chooser
+    /// leaves it first: the agent's request names the root explicitly,
+    /// and `start_scan` would otherwise only reopen the chooser.
+    fn agent_set_root(&mut self, root: &Path, cx: &mut Context<'_, Self>) {
+        if self.awaiting_root {
+            self.awaiting_root = false;
+            self.close_volumes(cx);
+        }
+        self.set_root(root.to_path_buf(), cx);
     }
 
     /// The node at `path` in the tree on screen, or why there is none.
@@ -355,7 +368,7 @@ impl Disktree {
             return Response::error("a removal is running");
         }
         if root != self.root_path {
-            self.set_root(root.to_path_buf(), cx);
+            self.agent_set_root(root, cx);
         }
         let mut marked = 0_usize;
         let mut refused = Vec::new();
@@ -460,7 +473,7 @@ impl Disktree {
             format!("looking at {}", display_path(path, self.home.as_deref())),
         );
         if root != self.root_path {
-            self.set_root(root.to_path_buf(), cx);
+            self.agent_set_root(root, cx);
         }
         if self.scan.is_some() || self.tree.is_none() {
             // The tree is on its way; show the path when it lands.

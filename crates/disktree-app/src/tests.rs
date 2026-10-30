@@ -3835,3 +3835,32 @@ fn a_window_on_an_ssh_host_refuses_the_agent(cx: &mut TestAppContext) {
     }
     assert!(unmarked, "a refused mark leaves no mark behind");
 }
+
+/// A window still on the source chooser scans the root an agent names:
+/// the request is explicit, and the chooser would otherwise reopen and
+/// leave the agent waiting on a scan that never starts.
+#[gpui_kit::test]
+fn an_agent_scan_leaves_the_chooser(cx: &mut TestAppContext) {
+    use disktree_link::{Request, ScanOptionsRequest};
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) =
+        cx.add_window_view(|_, cx| Disktree::choose(options(), 3, None, cx));
+    cx.run_until_parked();
+    update(&view, cx, |app, cx| {
+        assert!(app.awaiting_root);
+        app.answer_agent(
+            &Request::Scan {
+                root: temp.path().to_path_buf(),
+                options: ScanOptionsRequest::default(),
+            },
+            cx,
+        );
+        assert!(!app.awaiting_root);
+        assert!(!app.volumes_open, "the chooser is closed");
+        assert!(app.scan.is_some(), "the agent's root is being scanned");
+        assert_eq!(app.root_path, temp.path());
+    });
+    finish_scan(&view, cx);
+}

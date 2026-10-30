@@ -1,0 +1,4 @@
+# The MCP server compiles skills/ in and serves each file with its
+# sha256; a CRLF checkout would change the digests and break the
+# frontmatter it reads.
+skills/** text eol=lf
