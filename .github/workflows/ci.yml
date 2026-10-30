@@ -90,6 +90,8 @@ jobs:
             const isNonCodePath = (path) => {
               // Read by xtask's release check and its tests.
               if (path === "CHANGELOG.md") return false;
+              // The MCP server compiles these in, and its tests read them.
+              if (path.startsWith("skills/")) return false;
               return path === ".github/dependabot.yml" ||
                 path.startsWith("docs/") ||
                 path.startsWith(".agents/skills/") ||

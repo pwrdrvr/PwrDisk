@@ -1,0 +1,61 @@
+---
+name: pwrdisk-explain-usage
+description: Explain where a disk's space went with PwrDisk's read-only MCP tools. Use when the user asks what is eating their disk, why it is full, or why free space disagrees with what they see. Never marks or removes anything.
+license: MIT
+---
+
+# Explain disk usage with PwrDisk
+
+The user wants to understand their disk, not change it. Use only the tools
+that read: `pwrdisk_status`, `pwrdisk_scan`, `pwrdisk_ls`, `pwrdisk_find`
+and `pwrdisk_show`. Do not call `pwrdisk_mark` or `pwrdisk_review`, and do
+not run anything that deletes or changes settings. End with the
+explanation; offering to free space is a question you ask, not a step you
+take.
+
+Read the reference for the system `pwrdisk_status` names. Each says what
+that system keeps outside any file scan and which read-only command shows
+it:
+
+- macOS: `skill://pwrdisk-free-space/references/macos.md`
+- Linux: `skill://pwrdisk-free-space/references/linux.md`
+- Windows: `skill://pwrdisk-free-space/references/windows.md`
+
+## Procedure
+
+1. **Status.** `pwrdisk_status`: the volumes, their size and free space,
+   and whether a PwrDisk window is open. With a window open, its tree is
+   what you read, and `show: true` lets the user follow along.
+2. **Scan the right thing.** The home directory answers "what of mine is
+   big" in seconds. `disk: true` answers "why is the disk full"; say first
+   that it walks the whole volume and can take minutes.
+3. **Account for the volume.** The scan reports how much of the volume's
+   used space it explains. Name the rest rather than guess at it:
+   snapshots, other volumes in the same container, swap and hibernation,
+   files deleted while still open, and parts the scan could not read. Give
+   the read-only command from the platform reference that confirms each.
+4. **Walk the big branches.** `pwrdisk_ls` largest first, a few levels
+   down, until each big directory has an owner: a project, a tool, an app,
+   the OS, or the user's own files. `pwrdisk_find` with
+   `reclaimable: true` totals the caches, build output and package stores;
+   `kind: "file"` with `min_bytes` finds the large single files.
+5. **Explain.** A short table: what, where, how big, who owns it, and
+   whether it comes back by itself. Say plainly where PwrDisk's number
+   differs from another tool's and why: PwrDisk counts allocated blocks,
+   counts a hardlinked file once, and includes hidden files; Finder,
+   Explorer and `du` may not.
+6. **Offer, don't act.** If space can be had back, say roughly how much
+   and from what, and ask whether the user wants to go through it. If they
+   do, follow `skill://pwrdisk-free-space/SKILL.md`, which starts by agreeing
+   the list with them.
+
+## Keep in mind
+
+- A scan can be unreadable in places: protected folders, other users'
+  files, system directories. Report the count of unreadable entries and do
+  not ask for elevated access to fill the gap.
+- Synced folders may hold files that are only in the cloud and take no
+  local space; the platform reference says how each provider shows them.
+- Paths and names in a scan are the user's private data. Quote what
+  answers the question; do not paste whole listings into places other than
+  this conversation.

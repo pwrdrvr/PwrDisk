@@ -17,6 +17,11 @@ icon = "test"
 command = "cargo xtask lint"
 
 [[actions]]
-name = "Start"
+name = "Start - Debug"
+icon = "run"
+command = "cargo run --locked -p disktree-app"
+
+[[actions]]
+name = "Start - Release"
 icon = "run"
 command = "cargo run --release --locked -p disktree-app"

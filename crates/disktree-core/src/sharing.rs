@@ -1,8 +1,9 @@
 //! APFS sharing, reported separately from the treemap's allocated bytes.
 //!
-//! Ported from huntharo/diskhound's clone accounting (PR #4). Clone IDs
-//! describe full data-fork clones, not every shared extent of modified files.
-//! The source license is retained in `licenses/diskhound-MIT.txt`.
+//! Harold Hunt's clone accounting, ported from huntharo/disktree#3. He
+//! first wrote it for diskhound (huntharo/diskhound#4, contributed as
+//! tzarebczan/diskhound#40). Clone IDs describe full data-fork clones, not
+//! every shared extent of modified files.
 
 use rustc_hash::FxHashMap;
 

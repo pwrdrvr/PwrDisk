@@ -8,7 +8,8 @@
 // - `docs/**` and Markdown anywhere (`.md`, any case): nothing builds or
 //   tests them. `README.md` is copied into release archives by release.yml,
 //   which is not this workflow. The exception is `CHANGELOG.md`: xtask's
-//   release check reads it, and so does a test of that check.
+//   release check reads it, and so does a test of that check. So is
+//   `skills/**`: `pwrdisk mcp` compiles those skills in and tests them.
 // - `.agents/skills/**`: agent resources, not app or CI inputs.
 // - `.github/ISSUE_TEMPLATE/**`, `.github/PULL_REQUEST_TEMPLATE/**` and
 //   exactly `.github/dependabot.yml`.
@@ -94,7 +95,8 @@ for (const path of [
   'packaging/pwrdisk.desktop.in', 'scripts/release/install-vpk.sh',
   '.github/workflows/ci.yml', '.github/workflows/release.yml',
   'scripts/ci/classify-changes.test.cjs', 'licenses/velopack.txt',
-  'LICENSE', 'CHANGELOG.md', '.gitignore', '.agents/config.toml', 'unknown.yaml',
+  'LICENSE', 'CHANGELOG.md', 'skills/pwrdisk-free-space/SKILL.md',
+  'skills/pwrdisk-free-space/references/macos.md', '.gitignore', '.agents/config.toml', 'unknown.yaml',
 ]) {
   test(`${path} alone or mixed with docs runs full CI`, async () => {
     for (const paths of [[path], [...agentGuidance, path]]) {
