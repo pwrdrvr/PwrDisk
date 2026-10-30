@@ -4,14 +4,14 @@
 //! open, though, the agent's marks should appear in the mosaic and the
 //! free-space meter, and its `show` and `review` should move the screen.
 //! This crate is the wire between the two: one request per line of JSON
-//! over a per-user socket, one line back.
+//! over a per-user socket or Windows named pipe, one line back.
 //!
 //! When a window is open it is the agent's source of truth: the agent lists
 //! and searches the tree the person is looking at, and its marks live in the
 //! window. The listing and search logic is [`disktree_core::query`], shared
 //! with `pwrdisk mcp`'s own scans, so both answer alike.
 //!
-//! The socket is the trust boundary, and it is the same one the shell has:
+//! The endpoint is the trust boundary, the same one the shell has:
 //! only this user can reach it. There is no token and no approval step, by
 //! design. The agent cannot remove anything over it; the review screen it
 //! opens is where the person decides.
@@ -28,31 +28,49 @@ mod unix;
 #[cfg(unix)]
 pub use unix::{Incoming, Link, Listener};
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::{Incoming, Link, Listener};
+
+#[cfg(not(any(unix, windows)))]
 mod unsupported;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub use unsupported::{Incoming, Link, Listener};
 
-/// Whether a window can be linked on this system at all. Off Unix there is
-/// no socket yet, so a window started for an agent could never answer it.
-pub const SUPPORTED: bool = cfg!(unix);
+#[cfg(all(test, any(unix, windows)))]
+mod transport_tests;
+
+/// Whether a window can be linked on this system at all.
+pub const SUPPORTED: bool = cfg!(any(unix, windows));
 
 /// Protocol version, bumped when a message changes shape. Both sides are
 /// built from one tree, so a mismatch means an old window is still open.
 pub const VERSION: u32 = 2;
 
-/// Environment variable naming the socket, for tests and for a second copy
+/// Environment variable naming the endpoint, for tests and a second copy
 /// of PwrDisk that should not meet the first.
 pub const SOCKET_ENV: &str = "PWRDISK_LINK";
 
 /// Where the window listens: `$PWRDISK_LINK` if set, else a socket in the
-/// user's runtime directory.
+/// user's runtime directory, or a Windows pipe named for the user's SID.
+#[cfg(not(windows))]
 pub fn socket_path() -> PathBuf {
     socket_path_in(
         std::env::var_os(SOCKET_ENV).map(PathBuf::from),
         std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
         std::env::var_os("TMPDIR").map(PathBuf::from),
         std::env::var_os("USER").map(|user| user.to_string_lossy().into()),
+    )
+}
+
+#[cfg(windows)]
+pub fn socket_path() -> PathBuf {
+    std::env::var_os(SOCKET_ENV).map_or_else(
+        // Fail closed if Windows cannot identify this user. An empty path
+        // is rejected by both ends rather than sharing a fallback name.
+        || windows::default_path().unwrap_or_default(),
+        PathBuf::from,
     )
 }
 
@@ -416,10 +434,10 @@ impl Response {
 
 /// A line longer than this is not a request; it is a mistake or an attack
 /// on memory, and the connection is dropped.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const MAX_LINE: usize = 8 * 1024 * 1024;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn encode<T: Serialize>(value: &T) -> std::io::Result<String> {
     let mut line =
         serde_json::to_string(value).map_err(std::io::Error::other)?;
@@ -427,7 +445,7 @@ fn encode<T: Serialize>(value: &T) -> std::io::Result<String> {
     Ok(line)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn decode<T: for<'de> Deserialize<'de>>(line: &str) -> std::io::Result<T> {
     serde_json::from_str(line.trim_end()).map_err(std::io::Error::other)
 }
@@ -436,7 +454,7 @@ fn decode<T: for<'de> Deserialize<'de>>(line: &str) -> std::io::Result<T> {
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn requests_round_trip_through_json_lines() {
         let request = Request::Mark {

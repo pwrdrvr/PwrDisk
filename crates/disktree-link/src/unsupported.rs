@@ -1,7 +1,5 @@
-//! Off Unix there is no socket yet: the agent works headless, and `show`
-//! and `review` say so. A named pipe would bring the window along on
-//! Windows; the protocol and these types are ready for it, so the window
-//! and the server compile unchanged.
+//! Targets without Unix sockets or Windows named pipes work headless;
+//! `show` and `review` explain how to hand the plan over manually.
 
 use std::io;
 use std::path::Path;

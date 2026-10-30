@@ -61,9 +61,9 @@ follows; pass show: true to pwrdisk_ls or call pwrdisk_show to move the \
 view. Linking never changes its root: if earlier marks are outside it, \
 they stay in this session until pwrdisk_scan explicitly names a directory \
 containing them all. The tools work on this computer only: a window \
-showing an SSH host is not followed. On Windows there is no window link \
-yet, so give the user \
-the list to mark in PwrDisk themselves. \
+showing an SSH host is not followed. Window linking works on macOS, Linux \
+and Windows: marks appear in the open window and pwrdisk_review opens its \
+review screen. \
 Skills, as resources, through skills/list, and as the prompts \
 explain-usage and free-space: skill://pwrdisk-explain-usage/SKILL.md \
 answers where the space went without changing anything; \

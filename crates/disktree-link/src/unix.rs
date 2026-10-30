@@ -286,70 +286,11 @@ impl Link {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Mark, State, VERSION};
-
-    fn socket() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let path = dir.path().join("l.sock");
-        (dir, path)
-    }
-
-    fn pump(listener: &Listener) -> Incoming {
-        for _ in 0..200 {
-            if let Some(incoming) = listener.drain().into_iter().next() {
-                return incoming;
-            }
-            thread::sleep(Duration::from_millis(5));
-        }
-        panic!("nothing arrived");
-    }
-
-    #[test]
-    fn a_request_reaches_the_queue_and_its_reply_reaches_the_client() {
-        let (_dir, path) = socket();
-        let listener = Listener::bind_at(&path).expect("bind");
-        let mut link = Link::connect_at(&path).expect("connect");
-        let answer = thread::spawn(move || {
-            link.call(&Request::Hello {
-                client: "test".into(),
-                version: VERSION,
-            })
-        });
-        let state = State {
-            version: VERSION,
-            root: "/r".into(),
-            current: "/r".into(),
-            screen: "explore".into(),
-            scanning: false,
-            scanned: true,
-            marks: vec![Mark {
-                path: "/r/x".into(),
-                bytes: 1,
-                is_dir: false,
-            }],
-            space: None,
-            removal: None,
-            tree: None,
-            insights: Vec::new(),
-            remote: None,
-        };
-        match pump(&listener) {
-            Incoming::Request { request, reply, .. } => {
-                assert!(matches!(request, Request::Hello { .. }));
-                assert_eq!(listener.connections(), 1);
-                reply.send(Response::State(state.clone()));
-            }
-            Incoming::Closed { .. } => panic!("closed first"),
-        }
-        assert_eq!(
-            answer.join().expect("thread").expect("reply"),
-            Response::State(state)
-        );
-    }
 
     #[test]
     fn hanging_up_is_reported_and_a_stale_socket_is_replaced() {
-        let (_dir, path) = socket();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("l.sock");
         let listener = Listener::bind_at(&path).expect("bind");
         {
             let _link = Link::connect_at(&path).expect("connect");
@@ -361,7 +302,19 @@ mod tests {
             }
             assert_eq!(listener.connections(), 1);
         }
-        assert!(matches!(pump(&listener), Incoming::Closed { .. }));
+        let mut closed = false;
+        for _ in 0..200 {
+            if listener
+                .drain()
+                .iter()
+                .any(|item| matches!(item, Incoming::Closed { .. }))
+            {
+                closed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(closed, "hanging up must reach the listener");
         drop(listener);
         // The file is gone with the listener; put a dead one back and a new
         // listener must take its place.
@@ -371,33 +324,5 @@ mod tests {
         let again = Listener::bind_at(&path).expect("rebind over stale");
         assert!(Link::connect_at(&path).is_ok());
         drop(again);
-    }
-
-    #[test]
-    fn a_live_socket_is_not_stolen() {
-        let (_dir, path) = socket();
-        let first = Listener::bind_at(&path).expect("bind");
-        let second = Listener::bind_at(&path);
-        assert_eq!(
-            second.err().map(|e| e.kind()),
-            Some(io::ErrorKind::AddrInUse)
-        );
-        drop(first);
-    }
-
-    #[test]
-    fn garbage_gets_an_error_line_not_a_hang() {
-        let (_dir, path) = socket();
-        let listener = Listener::bind_at(&path).expect("bind");
-        let mut raw = UnixStream::connect(&path).expect("connect");
-        raw.set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("timeout");
-        raw.write_all(b"not json\n").expect("write");
-        let mut reader = BufReader::new(raw);
-        let mut line = String::new();
-        reader.read_line(&mut line).expect("read");
-        let response: Response = decode(&line).expect("decode");
-        assert!(matches!(response, Response::Error { .. }));
-        drop(listener);
     }
 }
