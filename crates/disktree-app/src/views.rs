@@ -401,8 +401,8 @@ fn delete_dialog(
         targets => format!("Delete {} items permanently?", targets.len()),
     };
     let body = format!(
-        "This frees {}. Deleted files can\u{2019}t be recovered; move them to the trash if you might need them again.",
-        human_bytes(plan.bytes())
+        "Estimated to free ≈ {}. Shared blocks and snapshots may retain space. Deleted files can\u{2019}t be recovered; move them to the trash if you might need them again.",
+        savings(plan.reclaimable_bytes(), plan.possible_bytes())
     );
     let confirm = cx.entity().downgrade();
     let cancel = confirm.clone();
@@ -1408,6 +1408,19 @@ fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
             widgets::human_count(files),
             widgets::human_count(dirs)
         ))
+        .when(tree.is_some_and(|node| node.sharing().files > 0), |this| {
+            let sharing = tree.expect("checked above").sharing();
+            this.child(format!(
+                "· APFS clones: {} · ≈ {} counted again{}",
+                human_bytes(sharing.bytes),
+                human_bytes(sharing.duplicate_bytes),
+                if sharing.groups_truncated {
+                    " (partial)"
+                } else {
+                    ""
+                }
+            ))
+        })
         .when(errors > 0, |this| {
             this.child(div().text_color(theme.warning).child(format!(
                 "· {} unreadable",
@@ -1639,7 +1652,24 @@ fn selection_section(
             text::TITLE,
             cx,
         ))
-        .child(widgets::bar(share, highlight, cx));
+        .child(widgets::bar(share, highlight, cx))
+        .when(node.sharing().estimate.is_some(), |this| {
+            this.child(
+                div()
+                    .text_size(text::CAPTION)
+                    .text_color(theme.secondary)
+                    .child(format!(
+                        "Estimated space freed · ≈ {}",
+                        savings(
+                            node.sharing().reclaimable(node.bytes),
+                            node.sharing().possible(node.bytes)
+                        )
+                    )),
+            )
+            .when(node.sharing().unknown_files > 0, |this| {
+                this.child("Some clone private sizes are unavailable")
+            })
+        });
 
     let fourth = if app.remote.is_none()
         && node.is_dir()
@@ -2420,7 +2450,7 @@ fn disk_section(
                         ))
                         .text_color(highlight)
                         .child(format!(
-                            "→ {} free",
+                            "→ ≈ {} free",
                             human_bytes(after.available)
                         )),
                 )
@@ -2542,7 +2572,7 @@ fn review_button(
                 .overflow_hidden()
                 .text_ellipsis()
                 .child(format!(
-                    "Review {count} marked · frees {}…",
+                    "Review {count} marked · frees ≈ {}…",
                     human_bytes(reclaiming)
                 )),
         )
@@ -3020,9 +3050,9 @@ fn review(
         .child(screen_header(
             "Review",
             &format!(
-                "{} marked \u{00b7} {} to free",
+                "{} marked \u{00b7} ≈ {} to free",
                 app.marks.len(),
-                human_bytes(plan.bytes())
+                savings(plan.reclaimable_bytes(), plan.possible_bytes())
             ),
             &theme,
             cx,
@@ -3244,13 +3274,22 @@ fn review_summary(
                     cx,
                 ))
                 .child(widgets::row(
-                    "Space freed",
-                    human_bytes(plan.bytes()),
+                    if app.removal_mode == RemovalMode::Trash {
+                        "After emptying trash (est.)"
+                    } else {
+                        "Estimated space freed"
+                    },
+                    savings(plan.reclaimable_bytes(), plan.possible_bytes()),
                     cx,
                 ))
                 .children(left_out),
         );
 
+    if cfg!(target_os = "macos") && app.remote.is_none() {
+        panel = panel.child(div().text_size(text::CAPTION)
+            .text_color(theme.secondary)
+            .child("Complete clone groups count shared data once. Remaining hardlinks retain file data. Ranges show unmeasured sharing; snapshots and open files can retain space. Rescan to update estimates."));
+    }
     if let Some(volume) = app.space {
         panel = panel.child(
             div()
@@ -4119,6 +4158,15 @@ fn help_overlay(app: &Disktree, cx: &gpui_kit::App) -> Div {
                         )),
                 ),
         )
+}
+
+/// Both ends are scan-derived; the meter uses the lower bound only.
+fn savings(lower: u64, upper: u64) -> String {
+    if lower == upper {
+        human_bytes(lower)
+    } else {
+        format!("{}–{}", human_bytes(lower), human_bytes(upper))
+    }
 }
 
 #[cfg(test)]
