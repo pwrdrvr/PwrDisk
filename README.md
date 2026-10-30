@@ -1,6 +1,6 @@
 # PwrDisk
 
-> PwrDisk is a maintained fork of [disktree](https://github.com/tobi/disktree)
+> PwrDisk is a maintained fork of [disktree](https://github.com/pwrdrvr/PwrDisk)
 > by Tobi Lütke, with signed installers for macOS and Windows that keep
 > themselves up to date. All credit for the
 > design and most of the code goes to Tobi and disktree's contributors.
@@ -510,6 +510,68 @@ first (git work that exists nowhere else, a tool's own clean command) and
 touching nothing else. A name holding a newline is left out of the list and
 escaped in the prompt, so it cannot pass for another path.
 
+## With an AI agent
+
+PwrDisk is also an [MCP](https://modelcontextprotocol.io) server, so an
+agent such as Claude Code or Codex can do the looking while you keep the
+deciding. One command connects it, and there is nothing to configure, sign
+in to or approve: the agent runs `pwrdisk mcp` as you, over stdio, and can
+do no more than your shell can.
+
+```sh
+claude mcp add --scope user pwrdisk -- pwrdisk mcp
+```
+
+(Codex: `codex mcp add pwrdisk -- pwrdisk mcp`. Any other client: a
+server named `pwrdisk` with the command `pwrdisk` and the argument `mcp`.
+On macOS the command lives inside the app, at
+`PwrDisk.app/Contents/MacOS/pwrdisk`. The window's **Work with an AI
+agent** line, under the disk, and **Help › Work with an AI Agent…** on
+macOS, show each command with the binary's full path and a Copy button.)
+
+Then ask it what is eating your disk. The agent walks the tree largest
+first, lists every cache, build directory and package store at once, and
+proposes what can go. It marks what you agree to, and marking is all it
+can do: `pwrdisk_review` opens PwrDisk's review screen, and you press Enter
+there. There is no tool that deletes.
+
+When a PwrDisk window is open, its tree is what the agent reads. `ls`,
+`find` and `scan` are answered from the mosaic on screen, a mark is
+measured from it, and the two of you see the same numbers. The agent's
+marks appear in the mosaic and in the free-space meter as it makes them,
+`show` moves the view to what it is looking at, a scan it asks for runs in
+the window, and the header names the agent and its last action while it is
+connected. With no window open the agent scans on its own, in seconds for a
+home directory, and can open a window for the review. Without a display it
+works headless and says so. A window showing an SSH server is not followed:
+the agent's tools measure this computer, and PwrDisk does not remove files
+over SSH.
+
+The tools: `pwrdisk_status`, `pwrdisk_scan`, `pwrdisk_ls`,
+`pwrdisk_find`, `pwrdisk_show`, `pwrdisk_mark`, `pwrdisk_unmark` and
+`pwrdisk_review`. Each `mark` answers with the real plan: what the guards
+below keep back and why, what another mark already covers, and the free
+space it gives back on the volume, counted the way the meter counts it.
+
+The server carries its own skills, so the agent knows how to use the tools
+and what to be careful of before it starts:
+
+| skill | for |
+| --- | --- |
+| `pwrdisk-explain-usage` | where the space went, read-only: never marks anything |
+| `pwrdisk-free-space` | freeing space: agree the list with you first, unless you gave a standing instruction, then mark and hand over the review |
+| `pwrdisk-free-space/references/` | macOS, Linux and Windows: what each hides from a scan (snapshots, clones, cloud placeholders), what PwrDisk refuses, and what never to propose |
+
+They are served as `skill://` resources, through the skills extension's
+`skills/list`, and as the prompts `free-space` and `explain-usage` (in
+Claude Code, `/mcp__pwrdisk__free-space`), which add the reference for the
+system the server runs on. The files are in `skills/`.
+
+The window listens on a socket only you can reach: `$XDG_RUNTIME_DIR` or
+`$TMPDIR`, or `PWRDISK_LINK` to choose. On Windows the agent works
+headless for now, because the window link needs a named pipe there: it
+scans and marks, and hands you the list to mark and review in PwrDisk.
+
 ## What it measures
 
 - **Disk usage** by default: `st_blocks × 512`, the number `du` reports and the
@@ -685,6 +747,9 @@ gone while their neighbours are not.
 | path | what lives there |
 | --- | --- |
 | `crates/disktree-core` | scanning, the tree, the squarified layout, free space and removal — no UI |
+| `crates/disktree-mcp` | `pwrdisk mcp`: the agent's tools and skills over stdio, on `disktree-core` |
+| `crates/disktree-link` | the socket between a window and an agent, and its messages |
+| `skills/` | the skills `pwrdisk mcp` compiles in: explain usage, free space, and each system's cautions |
 | `crates/disktree-app/src/state.rs` | every action the interface can take, and the key map |
 | `crates/disktree-app/src/views.rs` | the screens |
 | `crates/disktree-app/src/treemap_view.rs` | painting the mosaic and its labels |
