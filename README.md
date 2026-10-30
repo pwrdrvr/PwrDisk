@@ -1,7 +1,8 @@
 # PwrDisk
 
 > PwrDisk is a maintained fork of [disktree](https://github.com/tobi/disktree)
-> by Tobi Lütke, with signed and notarized macOS releases. All credit for the
+> by Tobi Lütke, with signed installers for macOS and Windows that keep
+> themselves up to date. All credit for the
 > design and most of the code goes to Tobi and disktree's contributors.
 
 ![PwrDisk: a home directory as a treemap, coloured by kind of data, with reclaimable space hatched and the selection, findings and free space in the side panel](assets/screenshot.png)
@@ -64,12 +65,14 @@ first build even if `rustup default` points at something older.
 
 ### macOS
 
-Download `pwrdisk-*-aarch64-macos.zip` (`x86_64-macos` for an Intel Mac)
-from the [latest release](https://github.com/pwrdrvr/PwrDisk/releases/latest),
-unzip it, and drag `PwrDisk.app` into Applications. macOS 11 or newer.
+Download `PwrDisk-*-universal.dmg` from the
+[latest release](https://github.com/pwrdrvr/PwrDisk/releases/latest), open
+it, and drag PwrDisk into Applications. One app for Apple silicon and Intel;
+macOS 11 or newer.
 
 Releases are signed with a Developer ID and notarized, so they open like
-any other downloaded app. A build that was not (one you made yourself and
+any other downloaded app. A copy installed from the DMG keeps itself up to
+date: see [Updates](#updates). A build that was not (one you made yourself and
 copied to another Mac, say) is stopped by Gatekeeper: macOS says it "is
 damaged and can't be opened" or "cannot be verified". Clear the mark once:
 
@@ -182,8 +185,11 @@ indexing is enabled, consuming space and work again; disabling indexing reduces
 search coverage. A failed status query is unknown, not evidence of disabled
 indexing. PwrDisk does not run these commands or alter indexing settings.
 
-To sign and notarize a build for others, with a Developer ID certificate in
-the keychain and credentials saved by `xcrun notarytool store-credentials`:
+`make bundle` (or `cargo xtask bundle`) builds `target/bundle/PwrDisk.app`,
+a zip of it and a DMG laid out like the release's, signed ad hoc; add
+`--universal` for both architectures. To sign and notarize a build for
+others, with a Developer ID certificate in the keychain and credentials
+saved by `xcrun notarytool store-credentials`:
 
 ```sh
 NOTARY_PROFILE=<profile> cargo xtask bundle \
@@ -192,9 +198,18 @@ NOTARY_PROFILE=<profile> cargo xtask bundle \
 
 ### Windows
 
-On Windows 10 or 11, download `pwrdisk-*-x86_64-windows.zip`
-(`aarch64-windows` on ARM) from the same release, unpack it anywhere and run
-`pwrdisk.exe`. Or build it with Rust 1.97 or newer, from
+On Windows 10 or 11, download `PwrDisk-win-Setup.exe`
+(`PwrDisk-win-arm64-Setup.exe` on ARM) from the
+[latest release](https://github.com/pwrdrvr/PwrDisk/releases/latest) and run
+it. It installs PwrDisk for you alone, under `%LocalAppData%\PwrDisk`,
+without asking for administrator rights, adds it to the Start menu, and
+keeps it up to date (see [Updates](#updates)); uninstall it from Settings ›
+Apps. `PwrDisk-win.msi` (`PwrDisk-win-arm64.msi`) installs the same way for
+deployment tools, and `PwrDisk-win-Portable.zip`
+(`PwrDisk-win-arm64-Portable.zip`) runs from wherever it is unpacked. All of
+them are signed by PwrDrvr LLC.
+
+Or build it with Rust 1.97 or newer, from
 [rustup](https://rustup.rs), and the MSVC toolchain (Visual Studio Build
 Tools, C++ workload):
 
@@ -205,6 +220,33 @@ cargo build --release    # target\release\pwrdisk.exe
 ```
 
 See [On Windows](#on-windows) for what differs there.
+
+### Updates
+
+A copy installed from the DMG, Setup.exe or the MSI checks the project's
+GitHub releases when it starts and every six hours, and downloads a newer
+release in the background. The download installs when PwrDisk quits, or at
+once from **Restart to update**. Nothing is sent but the request for the
+release list.
+
+**Shift-U** opens the Updates panel (on macOS also **PwrDisk › Check for
+Updates…**): the version, what the last check found, **Check now**, and the
+release channel:
+
+| Channel | Gets |
+| --- | --- |
+| Stable · Latest | Releases promoted after a check. The default. |
+| Stable · Prerelease | Candidates for the next stable release. |
+| Beta · Latest | Beta builds (`-beta` tags). |
+| Beta · Prerelease | The newest alpha (`-alpha` tags); may not work. |
+
+Until you pick one, a copy follows the channel its own version implies, so
+a beta keeps getting betas. Picking an older line downloads its release on
+**Check now**, and it installs only from **Restart to switch**.
+
+Copies that did not come from an installer — the Linux tarball, `make
+install`, `cargo build` — do not update themselves; download the next
+release.
 
 ## Use
 
@@ -451,6 +493,7 @@ and shows how much free space was actually gained.
 | `p` | show or hide the selection line |
 | `o` | show it in Finder, File Explorer or the file manager |
 | right-click | show that tile in Finder, File Explorer or the file manager |
+| `shift u` | updates: the version, the release channel, check now |
 | `?` | every key |
 | `q` | quit |
 

@@ -191,9 +191,10 @@ jobs:
       - name: Test
         run: cargo xtask test
 
-      # The app bundle, signed ad hoc: catches a broken Info.plist, icon or
-      # signature before a release does. This runner's Xcode has no actool
-      # 26, so this is the bundle without the Icon Composer icon.
+      # The app bundle, signed ad hoc, and the DMG release.yml cuts the same
+      # way: catches a broken Info.plist, icon, signature or DMG layout
+      # before a release does. This runner's Xcode has no actool 26, so
+      # this is the bundle without the Icon Composer icon.
       - name: Bundle
         run: cargo xtask bundle
 
@@ -202,6 +203,11 @@ jobs:
     # The bundle with the Icon Composer icon: Xcode 26's actool compiles it
     # into Assets.car, and the plist names it, which the job checks.
     runs-on: macos-26
+    needs: changes
+    # Runs unless the classifier succeeded and said non-code only.
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
       - uses: actions/checkout@v5
 

@@ -103,6 +103,11 @@ pub mod size {
     pub const SOURCE_VIEWPORT_FRACTION: f32 = 0.92;
     /// The keyboard overlay.
     pub const HELP: Rems = Rems(32.5);
+    /// The Updates panel: room for a channel's name and what it is for on
+    /// one line each.
+    pub const UPDATES: Rems = Rems(34.0);
+    /// The channel names' lane, so their descriptions line up.
+    pub const UPDATE_SLOT: Rems = Rems(9.5);
     /// The key column of the keyboard overlay.
     pub const KEY_LANE: Rems = Rems(7.0);
 }

@@ -441,6 +441,15 @@ pub struct Disktree {
     /// Enter was pressed before the search finished: apply on arrival.
     apply_pending: bool,
     pub show_help: bool,
+    /// The Updates panel: the version, the release channel and the last
+    /// check. Its state lives in [`crate::updater`]; only the panel's own
+    /// is here.
+    pub updates_open: bool,
+    /// The channel row the arrow keys are on, as an index into
+    /// [`crate::update_channel::Slot::ALL`].
+    pub updates_row: usize,
+    /// Where a picked channel is saved; `None` keeps it for the session.
+    pub updates_dir: Option<PathBuf>,
     pub show_selection: bool,
     pub focus: FocusHandle,
     /// A trail crumb's sibling menu, when open.
@@ -619,6 +628,9 @@ impl Disktree {
             finding: false,
             apply_pending: false,
             show_help: false,
+            updates_open: false,
+            updates_row: 0,
+            updates_dir: crate::updater::settings_dir(),
             show_selection: true,
             focus: cx.focus_handle(),
             crumb_menu: None,
@@ -1200,6 +1212,99 @@ impl Disktree {
                 Status::Warning,
             ),
         });
+        cx.notify();
+    }
+
+    /// Open the Updates panel on the channel in force. `check` also checks
+    /// now, as "Check for Updates…" does; a check already running is left
+    /// to finish.
+    pub fn open_updates(&mut self, check: bool, cx: &mut Context<'_, Self>) {
+        let installed = crate::updater::installed_version();
+        self.updates_row =
+            crate::updater::selection().resolve(&installed).index();
+        self.updates_open = true;
+        self.show_help = false;
+        if check && !crate::updater::state().checking {
+            crate::updater::check_in_background(
+                crate::updater::Trigger::Manual,
+            );
+        }
+        cx.notify();
+    }
+
+    /// Follow `slot` for updates from now on, and save the pick.
+    pub fn pick_update_slot(
+        &mut self,
+        slot: crate::update_channel::Slot,
+        cx: &mut Context<'_, Self>,
+    ) {
+        use crate::update_channel::UpdateSettings;
+        self.updates_row = slot.index();
+        if let Err(error) = crate::updater::set_selection(
+            UpdateSettings::picked(slot),
+            self.updates_dir.as_deref(),
+        ) {
+            self.notice = Some((
+                format!("Updates follow {slot} until PwrDisk quits: {error}"),
+                Status::Warning,
+            ));
+        }
+        cx.notify();
+    }
+
+    /// Whether Restart to update may exit now: never while a removal runs,
+    /// which an exit would stop partway through the marked list.
+    pub const fn can_restart_to_update(&self) -> bool {
+        self.run.is_none()
+    }
+
+    /// Install the downloaded release and start again. Returns only when
+    /// that could not start, or a removal is running, which the notice then
+    /// says.
+    pub fn restart_to_update(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.can_restart_to_update() {
+            self.notice = Some((
+                "Restart to update once the removal has finished".into(),
+                Status::Warning,
+            ));
+            cx.notify();
+            return;
+        }
+        if let Err(error) = crate::updater::restart_to_update() {
+            self.notice =
+                Some((format!("Cannot update: {error}"), Status::Warning));
+            cx.notify();
+        }
+    }
+
+    /// Keys while the Updates panel is open. It owns the keyboard, as the
+    /// help overlay does: nothing behind it acts.
+    fn on_updates_key(
+        &mut self,
+        key: &str,
+        shift: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        use crate::update_channel::Slot;
+        let rows = Slot::ALL.len();
+        match key {
+            "escape" | "q" => self.updates_open = false,
+            "u" if shift => self.updates_open = false,
+            "down" | "j" => self.updates_row = (self.updates_row + 1) % rows,
+            "up" | "k" => {
+                self.updates_row = (self.updates_row + rows - 1) % rows;
+            }
+            "enter" | "space" => {
+                self.pick_update_slot(Slot::ALL[self.updates_row], cx);
+            }
+            "c" => {
+                crate::updater::check_in_background(
+                    crate::updater::Trigger::Manual,
+                );
+            }
+            "r" => self.restart_to_update(cx),
+            _ => return,
+        }
         cx.notify();
     }
 
@@ -3155,6 +3260,11 @@ impl Disktree {
             return;
         }
 
+        if self.updates_open {
+            self.on_updates_key(key, shift, cx);
+            return;
+        }
+
         if self.show_help {
             if matches!(key, "escape" | "?" | "/" | "q") {
                 self.show_help = false;
@@ -3262,6 +3372,8 @@ impl Disktree {
             "down" | "j" if !control => {
                 self.move_selection(Direction::Down, cx);
             }
+            // Shift-U, not `u`: plain `u` goes up a level, as backspace.
+            "u" if shift && !control => self.open_updates(false, cx),
             "backspace" | "u" if !control => self.ascend(cx),
             // A filter is the first thing Escape takes away.
             "escape" if self.matches.is_some() => self.clear_filter(),

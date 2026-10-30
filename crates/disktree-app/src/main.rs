@@ -17,6 +17,7 @@ mod chrome;
 #[cfg(target_os = "macos")]
 mod dock_icon;
 mod git;
+mod github_releases;
 mod marks;
 mod palette;
 mod power;
@@ -25,6 +26,8 @@ mod state;
 mod tests;
 mod treemap_view;
 mod ui;
+mod update_channel;
+mod updater;
 mod views;
 mod widgets;
 
@@ -100,6 +103,10 @@ options:
 ";
 
 fn main() -> Result<()> {
+    // First: Setup, updates and the uninstaller start pwrdisk.exe with a
+    // hook argument, which this runs and then exits, before a console or a
+    // window could appear.
+    updater::run_startup_hooks();
     #[cfg(windows)]
     console::attach();
     let outcome = run();
@@ -289,6 +296,12 @@ fn run() -> Result<()> {
                 let focus = this.focus.clone();
                 window.focus(&focus, cx);
             });
+            // A check that starts or finishes redraws the window, so the
+            // Updates panel shows it without waiting for input.
+            updater::install(cx, move |cx| {
+                let _ = window.update(cx, |_, _, cx| cx.notify());
+            });
+            updater::check_in_background(updater::Trigger::Startup);
             cx.activate(true);
         });
     Ok(())

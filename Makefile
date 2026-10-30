@@ -57,7 +57,7 @@ help:
 	@echo "  make install-scan  build/install the headless SSH helper only"
 	@echo "  make install     install to $(PREFIX): binary, desktop entry, icon"
 	@echo "                   (macOS: PwrDisk.app into $(APPS))"
-	@echo "  make bundle      macOS: build target/bundle/PwrDisk.app and its zip"
+	@echo "  make bundle      macOS: build target/bundle/PwrDisk.app, zip and DMG"
 	@echo "  make dock-icons  macOS 26: redraw the Dock icon of an unbundled run"
 	@echo "  make uninstall   remove what install put there"
 	@echo "  make lint        rustfmt --check and clippy -D warnings"
@@ -104,9 +104,10 @@ fmt:
 
 ifeq ($(UNAME),Darwin)
 # Replaced whole rather than copied over: a stale file left inside a signed
-# bundle breaks its signature.
+# bundle breaks its signature. Only the app: the zip and DMG are for
+# handing it to another Mac.
 install:
-	$(CARGO) xtask bundle
+	$(CARGO) xtask bundle --app-only
 	install -d "$(APPS)" "$(BINDIR)"
 	rm -rf "$(APPS)/PwrDisk.app"
 	ditto "$(BUNDLE)" "$(APPS)/PwrDisk.app"

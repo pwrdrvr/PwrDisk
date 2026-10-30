@@ -170,7 +170,8 @@ test('classifier job output fails open to full CI after script failures or missi
 test('every other job runs on classifier failure and skips only on explicit non-code success', () => {
   const jobs = workflow.split('\njobs:\n')[1];
   const ids = [...jobs.matchAll(/^  ([a-z][\w-]*):\n/gm)].map(m => m[1]);
-  assert.deepEqual(ids, ['changes', 'check', 'check-macos', 'windows', 'other-architectures'],
+  assert.deepEqual(ids, ['changes', 'check', 'check-macos', 'bundle-macos-26', 'windows',
+    'other-architectures'],
     'a new job needs a decision here: gate it on the classifier or not');
   for (const id of ids.slice(1)) {
     const job = workflow.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z].*:|$(?![\\s\\S]))`, 'm'))?.[1];
