@@ -577,9 +577,11 @@ system the server runs on. The files are in `skills/`.
 The window listens on an endpoint only you can reach: a Unix socket in
 `$XDG_RUNTIME_DIR` or `$TMPDIR`, or a local Windows named pipe,
 `\\.\pipe\pwrdisk-<user SID>`. The pipe grants access only to your Windows
-account and rejects remote clients. Set `PWRDISK_LINK` to choose another
-socket path or local pipe name. On macOS, Linux and Windows, the agent's
-marks appear in the open window and `pwrdisk_review` opens its review screen.
+account and rejects remote clients. The agent verifies the connected pipe
+is owned by your account before exchanging messages. Set `PWRDISK_LINK` to
+choose another socket path or local pipe name. On macOS, Linux and Windows,
+the agent's marks appear in the open window and `pwrdisk_review` opens its
+review screen.
 
 ## What it measures
 

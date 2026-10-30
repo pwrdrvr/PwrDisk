@@ -29,15 +29,16 @@ use tokio::runtime::{Builder, Runtime};
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, LocalFree,
+    ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, HANDLE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW,
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
+    SDDL_REVISION_1, SE_KERNEL_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    GetTokenInformation, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
-    TokenUser,
+    GetTokenInformation, OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
+    TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::System::IO::CancelIoEx;
 use windows_sys::Win32::System::Pipes::DisconnectNamedPipe;
@@ -352,12 +353,31 @@ impl Link {
 }
 
 async fn connect(path: &Path) -> io::Result<NamedPipeClient> {
+    connect_for_user(path, &current_sid()?).await
+}
+
+async fn connect_for_user(
+    path: &Path,
+    user: &str,
+) -> io::Result<NamedPipeClient> {
     timeout(WRITE_WAIT, async {
         loop {
             // Tokio uses SECURITY_IDENTIFICATION: a pipe server cannot
             // impersonate an elevated agent that connects to its name.
             match ClientOptions::new().open(path) {
-                Ok(pipe) => return Ok(pipe),
+                Ok(pipe) => {
+                    // The name and a server-supplied DACL prove nothing:
+                    // another account could have claimed this name first.
+                    // Query this connected handle, never the path, before
+                    // sending Hello, marks, or any other protocol data.
+                    if pipe_owner(pipe.as_raw_handle())? != user {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "the PwrDisk pipe belongs to another user",
+                        ));
+                    }
+                    return Ok(pipe);
+                }
                 Err(error)
                     if error.raw_os_error()
                         == Some(ERROR_PIPE_BUSY.cast_signed()) =>
@@ -369,6 +389,37 @@ async fn connect(path: &Path) -> io::Result<NamedPipeClient> {
         }
     })
     .await?
+}
+
+fn pipe_owner(handle: HANDLE) -> io::Result<String> {
+    let mut owner = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: Windows validates the handle; both outputs are valid pointers.
+    // The client's GENERIC_READ/WRITE rights include READ_CONTROL.
+    let status = unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_KERNEL_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &raw mut owner,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &raw mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status.cast_signed()));
+    }
+    let _allocation = LocalAllocation(descriptor);
+    if owner.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the PwrDisk pipe has no verifiable owner",
+        ));
+    }
+    // SAFETY: owner points into the live security descriptor above.
+    unsafe { sid_text(owner) }
 }
 
 /// Mio deliberately lets pending writes finish after dropping a pipe.
@@ -436,7 +487,7 @@ struct LocalAllocation(*mut c_void);
 
 impl Drop for LocalAllocation {
     fn drop(&mut self) {
-        // SAFETY: this pointer came from a successful converting Win32 API.
+        // SAFETY: this pointer came from a successful allocating Win32 API.
         unsafe {
             LocalFree(self.0);
         }
@@ -515,11 +566,17 @@ impl Security {
     fn current_user() -> io::Result<Self> {
         // A protected DACL grants only this SID access. No Everyone,
         // authenticated-users or administrators ACE is inherited.
-        let sddl: Vec<u16> =
-            std::ffi::OsStr::new(&format!("D:P(A;;GA;;;{})", current_sid()?))
-                .encode_wide()
-                .chain(Some(0))
-                .collect();
+        let sid = current_sid()?;
+        // An elevated token's default owner can be Administrators rather
+        // than TokenUser. Both sides identify the account by TokenUser.
+        Self::from_sddl(&format!("O:{sid}D:P(A;;GA;;;{sid})"))
+    }
+
+    fn from_sddl(sddl: &str) -> io::Result<Self> {
+        let sddl: Vec<u16> = std::ffi::OsStr::new(sddl)
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
         let mut descriptor = ptr::null_mut();
         // SAFETY: SDDL is terminated and descriptor is an out pointer.
         if unsafe {
@@ -572,9 +629,6 @@ impl Security {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows_sys::Win32::Security::Authorization::{
-        GetSecurityInfo, SE_KERNEL_OBJECT,
-    };
     use windows_sys::Win32::Security::{
         ACCESS_ALLOWED_ACE, DACL_SECURITY_INFORMATION, GetAce,
         GetSecurityDescriptorControl, SE_DACL_PROTECTED,
@@ -636,6 +690,10 @@ mod tests {
             .expect("security")
             .create(&path, true)
             .expect("pipe");
+        assert_eq!(
+            pipe_owner(pipe.as_raw_handle()).expect("pipe owner"),
+            current_sid().expect("user SID")
+        );
         let mut descriptor = ptr::null_mut();
         let mut acl = ptr::null_mut();
         // SAFETY: pipe is live, and the requested outputs are valid pointers.
@@ -681,6 +739,36 @@ mod tests {
             unsafe { sid_text((&raw const ace.SidStart).cast_mut().cast()) }
                 .expect("ACE SID");
         assert_eq!(sid, current_sid().expect("user SID"));
+    }
+
+    #[test]
+    fn a_permissive_pipe_owned_by_a_different_sid_is_rejected() {
+        let (_dir, path) = endpoint();
+        let runtime = runtime().expect("runtime");
+        let owner = current_sid().expect("server SID");
+        // Model the client as a different account without requiring a
+        // second Windows login or privileges on the CI runner. This pipe
+        // admits everyone, just like a squatter's pipe, but its real owner
+        // must still match the client's expected account.
+        let client = "S-1-5-21-0-0-0-1234";
+        assert_ne!(owner, client);
+        let _server = {
+            let _entered = runtime.enter();
+            Security::from_sddl(&format!("O:{owner}D:P(A;;GA;;;WD)"))
+                .expect("permissive security")
+                .create(&path, true)
+                .expect("squatter's pipe")
+        };
+        let error = runtime
+            .block_on(connect_for_user(&path, client))
+            .expect_err("a matching name and permissive ACL are not identity");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("belongs to another user"));
+    }
+
+    #[test]
+    fn an_unreadable_pipe_owner_is_not_trusted() {
+        assert!(pipe_owner(ptr::null_mut()).is_err());
     }
 
     #[test]

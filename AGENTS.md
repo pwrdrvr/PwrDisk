@@ -174,8 +174,10 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
 13. **The link is a same-user socket or pipe, nothing more.** `disktree-link`
     binds `0600` in a per-user directory on Unix. On Windows it uses a
     named pipe keyed by the user's SID, with a protected DACL granting only
-    that user access and `PIPE_REJECT_REMOTE_CLIENTS`. It has no token:
-    the agent already runs as the user and `pwrdisk mcp` scans on its own.
+    that user access and `PIPE_REJECT_REMOTE_CLIENTS`. Before exchanging
+    messages the client verifies the connected pipe's owner is that SID.
+    It has no token: the agent already runs as the user and `pwrdisk mcp`
+    scans on its own.
     Do not add a port.
     A window showing an SSH host answers only `hello` and `state`: an
     agent's paths are this computer's.
