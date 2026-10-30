@@ -1499,6 +1499,7 @@ fn side_panel(
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
+    let indexing = app.is_indexing();
     let rule = || div().h(px(1.)).bg(theme.divider());
     // A hairline to look at, a wider strip to grab; double-click resets.
     let handle = div()
@@ -1532,21 +1533,24 @@ fn side_panel(
         .border_color(theme.divider())
         .bg(theme.surface)
         .child(handle)
-        .child(if app.is_indexing() {
-            indexing_progress(app, theme, cx)
-        } else { selection_section(app, theme, cx) })
-        .child(rule())
-        // The lists scroll; the selection above and the disk below stay put,
-        // so the two numbers that matter never leave the screen.
+        .children((!indexing).then(|| selection_section(app, theme, cx)))
+        .children((!indexing).then(rule))
+        // Progress can exceed a short, zoomed window. Let it scroll with the
+        // lists while the volume's free space stays visible below them.
         .child(
             div()
                 .id("panel-lists")
+                .debug_selector(|| "side-panel-scroll".into())
                 .flex()
                 .flex_col()
                 .gap(space::LG)
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
+                .children(indexing.then(|| {
+                    indexing_progress(app, theme, cx).flex_shrink_0()
+                }))
+                .children(indexing.then(|| rule().flex_shrink_0()))
                 .child(worth_section(app, theme, cx))
                 .child(rule())
                 .child(marked_section(app, theme, cx))
@@ -1555,7 +1559,7 @@ fn side_panel(
         .children(notice_line(app, theme, cx))
         .children(privacy_line(app, theme, cx))
         .children(administrator_line(app, theme, cx))
-        .child(disk_section(app, theme, cx))
+        .child(disk_section(app, theme, cx).flex_shrink_0())
 }
 
 /// What the keys act on: its name and place, its size set large with its
@@ -2413,7 +2417,12 @@ fn disk_section(
                     this.apply_focus(window, cx);
                 })),
         );
-    let mut section = div().flex().flex_col().gap(space::SM).child(header);
+    let mut section = div()
+        .debug_selector(|| "disk-section".into())
+        .flex()
+        .flex_col()
+        .gap(space::SM)
+        .child(header);
     let Some(space_info) = app.space else {
         return section.child(
             div()

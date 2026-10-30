@@ -377,6 +377,69 @@ fn scan_percentage_is_bounded_and_rejects_incompatible_totals(
 }
 
 #[gpui_kit::test]
+fn indexing_keeps_free_space_visible_in_short_zoomed_windows(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, _| {
+        app.tree = None;
+        app.scan = Some(disktree_core::scan::ScanHandle::spawn(
+            temp.path().into(),
+            options(),
+        ));
+        app.options.apparent_size = false;
+        app.progress.volume_used = Some(1000);
+        app.progress.bytes = 650;
+        app.space = Some(SpaceInfo {
+            total: 1000,
+            free: 350,
+            available: 350,
+        });
+    });
+    for (width, height, rem) in
+        [(1200., 700., 20.), (1400., 600., 24.), (1440., 900., 16.)]
+    {
+        cx.simulate_resize(gpui_kit::size(px(width), px(height)));
+        cx.update(|window, _| window.set_rem_size(px(rem)));
+        draw(cx);
+        draw(cx);
+        let disk = cx.debug_bounds("disk-section").unwrap();
+        assert!(
+            disk.bottom() <= px(height),
+            "{width}×{height}, {rem}: {disk:?}"
+        );
+        assert!(disk.size.height >= px(rem * 4.0), "{disk:?}");
+        let scroll = cx.debug_bounds("side-panel-scroll").unwrap();
+        assert!(scroll.bottom() <= disk.origin.y, "{scroll:?}, {disk:?}");
+        let progress = cx.debug_bounds("indexing-progress").unwrap();
+        cx.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: scroll.center(),
+            delta: gpui_kit::ScrollDelta::Pixels(Point::new(
+                px(0.),
+                px(-1000.),
+            )),
+            modifiers: gpui_kit::Modifiers::none(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        draw(cx);
+        let scrolled = cx.debug_bounds("indexing-progress").unwrap();
+        if progress.bottom() > scroll.bottom() {
+            assert!(scrolled.origin.y < progress.origin.y);
+        }
+        // The stop button is the last progress row; it must be reachable.
+        assert!(scrolled.bottom() <= scroll.bottom(), "{scrolled:?}");
+        assert!(scrolled.bottom() > scroll.origin.y, "{scrolled:?}");
+        assert_eq!(disk, cx.debug_bounds("disk-section").unwrap());
+        update(&view, cx, |app, _| app.progress.finalizing = true);
+        draw(cx);
+        assert_eq!(disk, cx.debug_bounds("disk-section").unwrap());
+        update(&view, cx, |app, _| app.progress.finalizing = false);
+    }
+}
+
+#[gpui_kit::test]
 fn narrow_indexing_keeps_a_preview_and_compact_progress_in_bounds(
     cx: &mut TestAppContext,
 ) {
