@@ -1,0 +1,22 @@
+version = 1
+name = "PwrDisk"
+
+[[actions]]
+name = "Build"
+icon = "build"
+command = "cargo build --locked -p disktree-app"
+
+[[actions]]
+name = "Test"
+icon = "test"
+command = "cargo xtask test"
+
+[[actions]]
+name = "Lint"
+icon = "test"
+command = "cargo xtask lint"
+
+[[actions]]
+name = "Start"
+icon = "run"
+command = "cargo run --release --locked -p disktree-app"
