@@ -68,6 +68,14 @@ impl Slot {
         Self::BETA_PRERELEASE,
     ];
 
+    /// Where this slot sits in [`Slot::ALL`]: its row in the Updates panel.
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|&slot| slot == self)
+            .unwrap_or_default()
+    }
+
     pub const fn new(train: Train, track: Track) -> Self {
         Self { train, track }
     }

@@ -69,6 +69,9 @@ pub const CHECK_EVERY: Duration = Duration::from_hours(6);
 /// check is still downloading would only contend for Velopack's lock.
 static CHECKING: AtomicBool = AtomicBool::new(false);
 
+/// A check asked for while one was running, to run when it ends.
+static AGAIN: Mutex<Option<Trigger>> = Mutex::new(None);
+
 /// What [`run_startup_hooks`] tells Velopack, apart from the hooks. Kept
 /// as data so a test can hold the policy without a Velopack install.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -344,21 +347,36 @@ pub enum Installation {
 }
 
 /// Reads the manifest beside the executable. Local files only.
+/// Read once: an update replaces this process rather than changing its
+/// manifest under it, and the Updates panel asks on every frame it draws.
 pub fn installation() -> Installation {
-    match locator::auto_locate_app_manifest(LocationContext::FromCurrentExe) {
-        Ok(locator) => Installation::Velopack {
-            version: locator.get_manifest_version().to_string(),
-        },
-        Err(error) => Installation::NotInstalled {
-            why: error.to_string(),
-        },
-    }
+    static INSTALLATION: OnceLock<Installation> = OnceLock::new();
+    INSTALLATION
+        .get_or_init(|| {
+            match locator::auto_locate_app_manifest(
+                LocationContext::FromCurrentExe,
+            ) {
+                Ok(locator) => Installation::Velopack {
+                    version: locator.get_manifest_version().to_string(),
+                },
+                Err(error) => Installation::NotInstalled {
+                    why: error.to_string(),
+                },
+            }
+        })
+        .clone()
 }
 
 /// Check for an update, and download it, on a thread of its own: Velopack's
 /// client blocks, and a download can take a while.
 pub fn check_in_background(trigger: Trigger) {
     if CHECKING.swap(true, Ordering::AcqRel) {
+        // A new channel picked mid-check, or Check now: the running check
+        // read the slot before this, so check once more when it ends.
+        if matches!(trigger, Trigger::Selection | Trigger::Manual) {
+            *AGAIN.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some(trigger);
+        }
         log(trigger, &Outcome::AlreadyChecking);
         return;
     }
@@ -373,6 +391,11 @@ pub fn check_in_background(trigger: Trigger) {
                 state.checking = false;
                 state.last = Some((SystemTime::now(), outcome));
             });
+            let again =
+                AGAIN.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(again) = again {
+                check_in_background(again);
+            }
         });
     if let Err(error) = spawned {
         CHECKING.store(false, Ordering::Release);

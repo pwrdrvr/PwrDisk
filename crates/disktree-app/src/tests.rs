@@ -1176,6 +1176,22 @@ fn the_updates_panel_picks_a_channel_and_keeps_the_keys(
             .expect("the pick is saved");
     assert!(saved.contains("\"prerelease\""), "{saved}");
 
+    // A removal in progress is never cut short by a restart: `r` says so
+    // instead of exiting.
+    update(&view, cx, |app, _| {
+        app.run = Some(disktree_core::removal::spawn(
+            disktree_core::removal::Plan::default(),
+            RemovalMode::Trash,
+        ));
+    });
+    press(cx, "r");
+    let notice = read(&view, cx, |app| app.notice.clone());
+    assert!(
+        notice.is_some_and(|(text, _)| text.contains("removal")),
+        "restart refused while removing"
+    );
+    update(&view, cx, |app, _| app.run = None);
+
     press(cx, "escape");
     assert!(!read(&view, cx, |app| app.updates_open));
     assert!(cx.debug_bounds("updates-panel").is_none());

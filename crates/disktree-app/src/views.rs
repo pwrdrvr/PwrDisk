@@ -4270,13 +4270,12 @@ fn updates_panel(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     } else {
         match &state.last {
             Some((when, outcome)) => {
-                let now = std::time::SystemTime::now();
-                let ago = now.duration_since(*when).unwrap_or_default();
-                let ago = if ago.as_secs() < 60 {
-                    "just now".to_owned()
-                } else {
-                    format!("{} min ago", ago.as_secs() / 60)
-                };
+                let then = when
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| {
+                        i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+                    });
+                let ago = widgets::ago(crate::state::now_seconds(), then);
                 format!("Last check, {ago}: {outcome}")
             }
             None => "Not checked yet this session.".to_owned(),
@@ -4306,6 +4305,7 @@ fn updates_panel(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                 ButtonVariant::Primary,
                 cx,
             )
+            .disabled(!app.can_restart_to_update())
             .on_click(cx.listener(|this, _, _, cx| {
                 this.restart_to_update(cx);
             })),

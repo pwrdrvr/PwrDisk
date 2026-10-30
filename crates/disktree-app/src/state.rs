@@ -1219,13 +1219,9 @@ impl Disktree {
     /// now, as "Check for Updates…" does; a check already running is left
     /// to finish.
     pub fn open_updates(&mut self, check: bool, cx: &mut Context<'_, Self>) {
-        use crate::update_channel::Slot;
         let installed = crate::updater::installed_version();
-        let slot = crate::updater::selection().resolve(&installed);
-        self.updates_row = Slot::ALL
-            .iter()
-            .position(|&s| s == slot)
-            .unwrap_or_default();
+        self.updates_row =
+            crate::updater::selection().resolve(&installed).index();
         self.updates_open = true;
         self.show_help = false;
         if check && !crate::updater::state().checking {
@@ -1242,11 +1238,8 @@ impl Disktree {
         slot: crate::update_channel::Slot,
         cx: &mut Context<'_, Self>,
     ) {
-        use crate::update_channel::{Slot, UpdateSettings};
-        self.updates_row = Slot::ALL
-            .iter()
-            .position(|&s| s == slot)
-            .unwrap_or_default();
+        use crate::update_channel::UpdateSettings;
+        self.updates_row = slot.index();
         if let Err(error) = crate::updater::set_selection(
             UpdateSettings::picked(slot),
             self.updates_dir.as_deref(),
@@ -1259,9 +1252,24 @@ impl Disktree {
         cx.notify();
     }
 
+    /// Whether Restart to update may exit now: never while a removal runs,
+    /// which an exit would stop partway through the marked list.
+    pub const fn can_restart_to_update(&self) -> bool {
+        self.run.is_none()
+    }
+
     /// Install the downloaded release and start again. Returns only when
-    /// that could not start, which the notice then says.
+    /// that could not start, or a removal is running, which the notice then
+    /// says.
     pub fn restart_to_update(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.can_restart_to_update() {
+            self.notice = Some((
+                "Restart to update once the removal has finished".into(),
+                Status::Warning,
+            ));
+            cx.notify();
+            return;
+        }
         if let Err(error) = crate::updater::restart_to_update() {
             self.notice =
                 Some((format!("Cannot update: {error}"), Status::Warning));
