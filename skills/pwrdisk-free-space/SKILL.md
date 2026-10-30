@@ -107,7 +107,10 @@ Looking is free; acting is the user's call.
   are outside the window's root, the session keeps all of them and reports
   that the window is not followed. Call `pwrdisk_scan` on a directory
   containing all marked paths to move the window explicitly and hand them
-  over before review. Do not unmark agreed paths to force a link.
+  over before review. If the window accepted only part of a handover,
+  `pwrdisk_unmark` clears the requested marks there too. A newly opened
+  review window starts on a directory containing all marks. Do not unmark
+  agreed paths to force a link.
 
 ## Procedure
 
