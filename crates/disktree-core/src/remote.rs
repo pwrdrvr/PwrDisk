@@ -333,6 +333,12 @@ fn read_snapshot_with_progress(
     }
     let mut progress = Progress {
         stage: Stage::Indexing,
+        volume_used: crate::space::scan_volume_used(
+            &header.root,
+            header.disk_root.as_deref(),
+            header.space,
+            &header.platform,
+        ),
         directory: Some(header.root.clone()),
         updated: Some(Instant::now()),
         ..Progress::default()

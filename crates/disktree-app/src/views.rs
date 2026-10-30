@@ -1548,6 +1548,7 @@ fn side_panel(
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
+    let indexing = app.is_indexing();
     let rule = || div().h(px(1.)).bg(theme.divider());
     // A hairline to look at, a wider strip to grab; double-click resets.
     let handle = div()
@@ -1581,21 +1582,24 @@ fn side_panel(
         .border_color(theme.divider())
         .bg(theme.surface)
         .child(handle)
-        .child(if app.is_indexing() {
-            indexing_progress(app, theme, cx)
-        } else { selection_section(app, theme, cx) })
-        .child(rule())
-        // The lists scroll; the selection above and the disk below stay put,
-        // so the two numbers that matter never leave the screen.
+        .children((!indexing).then(|| selection_section(app, theme, cx)))
+        .children((!indexing).then(rule))
+        // Progress can exceed a short, zoomed window. Let it scroll with the
+        // lists while the volume's free space stays visible below them.
         .child(
             div()
                 .id("panel-lists")
+                .debug_selector(|| "side-panel-scroll".into())
                 .flex()
                 .flex_col()
                 .gap(space::LG)
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
+                .children(indexing.then(|| {
+                    indexing_progress(app, theme, cx).flex_shrink_0()
+                }))
+                .children(indexing.then(|| rule().flex_shrink_0()))
                 .child(worth_section(app, theme, cx))
                 .child(rule())
                 .child(marked_section(app, theme, cx))
@@ -1604,7 +1608,7 @@ fn side_panel(
         .children(notice_line(app, theme, cx))
         .children(privacy_line(app, theme, cx))
         .children(administrator_line(app, theme, cx))
-        .child(disk_section(app, theme, cx))
+        .child(disk_section(app, theme, cx).flex_shrink_0())
         .child(agent_line(app, theme, cx))
 }
 
@@ -2463,7 +2467,12 @@ fn disk_section(
                     this.apply_focus(window, cx);
                 })),
         );
-    let mut section = div().flex().flex_col().gap(space::SM).child(header);
+    let mut section = div()
+        .debug_selector(|| "disk-section".into())
+        .flex()
+        .flex_col()
+        .gap(space::SM)
+        .child(header);
     let Some(space_info) = app.space else {
         return section.child(
             div()
@@ -2688,7 +2697,16 @@ fn key_bar(app: &Disktree, theme: &Theme, cx: &App) -> Div {
         );
     }
     let scan = if app.scan.is_some() || app.remote_scan.is_some() {
-        "Indexing · incomplete".to_string()
+        app.scan_fraction().map_or_else(
+            || {
+                if app.scan_finalizing() {
+                    "Building the treemap…".into()
+                } else {
+                    "Indexing · incomplete".into()
+                }
+            },
+            |fraction| format!("Indexing · ≈{:.0}% scanned", fraction * 100.0),
+        )
     } else if app.progress.cancelled {
         format!(
             "scan cancelled \u{00b7} {} entries \u{00b7} r scans again",
@@ -2794,7 +2812,19 @@ fn indexing_compact(
                 .min_w_0()
                 .truncate()
                 .font_family(theme.mono_font.clone())
-                .child(format!("{} measured", human_bytes(app.progress.bytes))),
+                .child(app.scan_fraction().map_or_else(
+                    || {
+                        if app.scan_finalizing() {
+                            "Building treemap…".into()
+                        } else {
+                            format!(
+                                "{} measured",
+                                human_bytes(app.progress.bytes)
+                            )
+                        }
+                    },
+                    |fraction| format!("≈{:.0}% scanned", fraction * 100.0),
+                )),
         )
         .child(
             button("cancel-scan", "Stop", ButtonVariant::Outline, cx).on_click(
@@ -2814,6 +2844,7 @@ fn indexing_progress(
     cx: &Context<'_, Disktree>,
 ) -> Div {
     let elapsed = app.scan_started.map_or(0, |at| at.elapsed().as_secs());
+    let fraction = app.scan_fraction();
     let row = |label: &'static str, value: String, id: &'static str| {
         div()
             .flex()
@@ -2865,9 +2896,54 @@ fn indexing_progress(
         .text_size(text::BODY)
         .text_color(theme.foreground)
         .child(widgets::eyebrow("Indexing", cx))
+        .child(
+            div()
+                .debug_selector(|| "indexing-percent".into())
+                .h(size::SCAN_STATUS)
+                .min_w_0()
+                .truncate()
+                .font_family(theme.mono_font.clone())
+                .text_size(text::FIGURE)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(fraction.map_or_else(
+                    || {
+                        if app.scan_finalizing() {
+                            "Finalizing…".into()
+                        } else {
+                            "Scanning…".into()
+                        }
+                    },
+                    |fraction| format!("≈{:.0}% scanned", fraction * 100.0),
+                )),
+        )
+        .child(div().h(size::METER).child(widgets::bar(
+            fraction.unwrap_or(0.0),
+            theme.accent,
+            cx,
+        )))
+        .child(with_tooltip(
+            div()
+                .id("indexing-estimate")
+                .h(size::PROGRESS_ROW)
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(if fraction.is_some() {
+                    "Used-space estimate"
+                } else if app.scan_finalizing() {
+                    "Finishing totals and categories"
+                } else {
+                    "Total scan size is unknown"
+                }),
+            "Measured file bytes ÷ drive used space at scan start. \
+             Shared blocks, snapshots and unreadable paths affect this \
+             estimate; it does not predict time remaining. \
+             Folder and filtered scans have no known total.",
+        ))
         .child(div().h(size::PROGRESS_ROW).truncate().child(
             if app.remote.is_some() {
                 app.remote_progress.stage.label()
+            } else if app.scan_finalizing() {
+                "Building the treemap"
             } else {
                 "Reading this computer"
             },
@@ -2893,6 +2969,14 @@ fn indexing_progress(
             "indexing-errors",
         ))
         .child(row("Elapsed", format!("{elapsed} s"), "indexing-elapsed"))
+        .child(row(
+            "Average rate",
+            format!(
+                "{} files/s",
+                widgets::human_count(app.progress.files / elapsed.max(1))
+            ),
+            "indexing-rate",
+        ))
         .child(
             div()
                 .h(size::PROGRESS_ROW)

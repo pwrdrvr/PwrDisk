@@ -1604,6 +1604,38 @@ impl Disktree {
         self.scan.is_some() || self.remote_scan.is_some()
     }
 
+    /// Byte coverage is an estimate: clones, hardlinks, snapshots and access
+    /// errors prevent it from measuring how much enumeration time remains.
+    pub fn scan_fraction(&self) -> Option<f32> {
+        if !self.is_indexing()
+            || self.options.apparent_size
+            || !self.options.one_filesystem
+            || !self.options.include_hidden
+            || self.options.follow_links
+            || self.options.max_depth.is_some()
+            || self.scan_finalizing()
+        {
+            return None;
+        }
+        let used = if self.remote.is_some() {
+            self.remote_progress.volume_used
+        } else {
+            self.progress.volume_used
+        }?;
+        (used > 0).then(|| {
+            (self.progress.bytes as f64 / used as f64).clamp(0.0, 0.99) as f32
+        })
+    }
+
+    pub fn scan_finalizing(&self) -> bool {
+        if self.remote.is_some() {
+            self.remote_progress.stage
+                == disktree_core::remote_progress::Stage::Finalizing
+        } else {
+            self.progress.finalizing
+        }
+    }
+
     pub fn tree(&self) -> Option<&Node> {
         self.tree.as_deref()
     }

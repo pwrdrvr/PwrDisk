@@ -85,6 +85,7 @@ pub mod size {
     pub const METER: Rems = Rems(0.3125);
     /// Fixed progress rows keep paths and changing counters from reflowing.
     pub const PROGRESS_ROW: Rems = Rems(1.375);
+    pub const SCAN_STATUS: Rems = Rems(2.0);
     pub const PROGRESS_VALUE: Rems = Rems(9.0);
     /// The Size | Files | Age choice in the settings row.
     pub const RANKING_CHOICE: Rems = Rems(11.0);

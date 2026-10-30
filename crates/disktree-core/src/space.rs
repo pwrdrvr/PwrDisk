@@ -57,6 +57,25 @@ impl SpaceInfo {
     }
 }
 
+/// A volume's used bytes can estimate a whole-volume walk, but a folder's
+/// unknown size cannot use its containing disk as a completion denominator.
+pub(crate) fn scan_volume_used(
+    root: &Path,
+    disk_root: Option<&Path>,
+    space: Option<SpaceInfo>,
+    platform: &str,
+) -> Option<u64> {
+    let whole_volume = disk_root == Some(root)
+        // The Data mount is exposed as `/` by `volume_root_for` on macOS.
+        || (platform == "macos"
+            && disk_root == Some(Path::new("/"))
+            && root == Path::new("/System/Volumes/Data"));
+    space
+        .filter(|_| whole_volume)
+        .map(|space| space.used())
+        .filter(|&used| used > 0)
+}
+
 /// Read the space on the volume containing `path`.
 #[cfg(windows)]
 pub fn space_info(path: &Path) -> io::Result<SpaceInfo> {
@@ -955,6 +974,34 @@ pub fn volumes() -> Vec<Volume> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_estimates_require_a_whole_volume_and_known_used_space() {
+        let space = Some(SpaceInfo {
+            total: 1000,
+            free: 100,
+            available: 80,
+        });
+        let root = Path::new("/");
+        let estimate = |path, disk, space, platform| {
+            scan_volume_used(path, disk, space, platform)
+        };
+        assert_eq!(estimate(root, Some(root), space, "linux"), Some(900));
+        assert_eq!(estimate(root, None, space, "linux"), None);
+        assert_eq!(estimate(root, Some(root), None, "linux"), None);
+        assert_eq!(
+            estimate(root, Some(root), Some(SpaceInfo::default()), "linux"),
+            None
+        );
+        assert_eq!(
+            estimate(Path::new("/home"), Some(root), space, "linux"),
+            None
+        );
+        let data = Path::new("/System/Volumes/Data");
+        assert_eq!(estimate(data, Some(root), space, "macos"), Some(900));
+        assert_eq!(estimate(data, Some(root), space, "linux"), None);
+        assert_eq!(estimate(data, None, space, "macos"), None);
+    }
 
     const OMARCHY: &str = "\
 sys /sys sysfs rw 0 0
