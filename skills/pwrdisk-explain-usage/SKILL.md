@@ -24,8 +24,10 @@ it:
 ## Procedure
 
 1. **Status.** `pwrdisk_status`: the volumes, their size and free space,
-   and whether a PwrDisk window is open. With a window open, its tree is
-   what you read, and `show: true` lets the user follow along.
+   and whether a PwrDisk window is linked. With a window linked, its tree
+   is what you read, and `show: true` lets the user follow along. If earlier
+   marks are outside its root, the session keeps them and leaves the
+   window where it is; status explains why it is not followed.
 2. **Scan the right thing.** The home directory answers "what of mine is
    big" in seconds. `disk: true` answers "why is the disk full"; say first
    that it walks the whole volume and can take minutes.

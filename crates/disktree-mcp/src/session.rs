@@ -1,7 +1,7 @@
 //! What one connected agent knows: the window it is driving, or failing
 //! that its own scans, and the marks.
 //!
-//! When a PwrDisk window is open it is the source of truth: `ls`, `find`
+//! When a PwrDisk window is linked it is the source of truth: `ls`, `find`
 //! and `scan` read the tree the person is looking at, and the marks live
 //! there. Without a window this process scans for itself, so an agent in a
 //! terminal needs nothing else. Either way the words an agent reads come
@@ -432,9 +432,6 @@ impl Session {
             max_depth: params.max_depth,
             ..ScanOptions::default()
         };
-        if !self.try_connect() {
-            return Ok(ScanPlan::Local { root, options });
-        }
         let request = Request::Scan {
             root: root.clone(),
             options: ScanOptionsRequest {
@@ -444,9 +441,10 @@ impl Session {
                 max_depth: Some(options.max_depth),
             },
         };
-        match self.call(&request)? {
-            Response::Error { message } => Err(message),
-            _ => Ok(ScanPlan::Window { root }),
+        if self.try_connect_for_request(Some(&request))? {
+            Ok(ScanPlan::Window { root })
+        } else {
+            Ok(ScanPlan::Local { root, options })
         }
     }
 
@@ -826,31 +824,63 @@ impl Session {
 
     // ── the window ──────────────────────────────────────────────────────
 
-    /// Whether the window link could be opened without launching anything.
+    /// Whether the window link could be opened without launching anything
+    /// or changing its root.
     /// A new link learns the window's state and is handed the marks made
     /// here before it existed; from then on the window's marks are the
     /// marks.
     fn try_connect(&mut self) -> bool {
+        self.try_connect_for_request(None).unwrap_or(false)
+    }
+
+    /// Only an explicit scan may move a newly linked window to cover the
+    /// marks made here. Check every mark before sending any of them. An
+    /// explicit unmark reaches the window even if the handover still fails.
+    fn try_connect_for_request(
+        &mut self,
+        request: Option<&Request>,
+    ) -> Result<bool, String> {
         if self.link.is_some() {
-            return true;
+            if let Some(request) = request {
+                self.send_state_request(request)?;
+            }
+            return Ok(true);
         }
         let Ok(link) = Link::connect_at(&self.socket) else {
             self.unlinked = None;
-            return false;
+            return Ok(false);
         };
         self.link = Some(link);
         // `hello` adopts the window's marks, which would lose these.
         let mine = std::mem::take(&mut self.marks);
-        let request = Request::Hello {
+        let hello = Request::Hello {
             client: self.client.clone(),
             version: VERSION,
         };
-        let refused = match self.call(&request) {
+        let mut unmarked = false;
+        let refused = match self.call(&hello) {
             // A window on an SSH host answers, and `adopt` noted why it is
             // not followed.
             Ok(Response::State(_)) if self.unlinked.is_some() => None,
-            Ok(Response::State(_)) => match self.push_marks(&mine) {
-                Ok(()) => return true,
+            Ok(Response::State(state)) => match (|| {
+                // A failed handover can leave accepted marks in the
+                // window. Clear them before retrying the remaining marks,
+                // so a refusal cannot resurrect an explicitly unmarked path.
+                if let Some(request @ Request::Unmark { .. }) = request {
+                    self.send_state_request(request)?;
+                    unmarked = true;
+                }
+                let root = match request {
+                    Some(Request::Scan { root, .. }) => root,
+                    _ => &state.root,
+                };
+                Self::check_handover_root(&mine, root)?;
+                if let Some(request @ Request::Scan { .. }) = request {
+                    self.send_state_request(request)?;
+                }
+                self.push_marks(&mine)
+            })() {
+                Ok(()) => return Ok(true),
                 Err(error) => Some(format!(
                     "The open PwrDisk window did not take the marks made \
                      before it was linked ({error}); they are kept here."
@@ -864,13 +894,43 @@ impl Session {
                 None
             }
         };
+        let request_refused =
+            request.is_some() && refused.is_some() && !unmarked;
         if refused.is_some() {
             self.unlinked = refused;
         }
         self.link = None;
         self.window = None;
         self.marks = mine;
-        false
+        if request_refused && let Some(reason) = &self.unlinked {
+            return Err(reason.clone());
+        }
+        Ok(false)
+    }
+
+    fn send_state_request(&mut self, request: &Request) -> Result<(), String> {
+        match self.call(request)? {
+            Response::State(_) => Ok(()),
+            Response::Error { message } => Err(message),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    fn check_handover_root(mine: &[Target], root: &Path) -> Result<(), String> {
+        if !mine.is_empty()
+            && (root.as_os_str().is_empty()
+                || mine.iter().any(|mark| {
+                    mark.path == root || !mark.path.starts_with(root)
+                }))
+        {
+            return Err(
+                "the window's root does not contain all the marks. Call \
+                 pwrdisk_scan on a directory containing all marked paths \
+                 to move the window explicitly and hand them over"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     /// Open the link, launching a window on `root` when none answers.
@@ -974,21 +1034,39 @@ impl Session {
     /// Hand marks made before the window linked over to it. Each answer
     /// carries the window's marks, which replace ours.
     fn push_marks(&mut self, mine: &[Target]) -> Result<(), String> {
-        for root in self.roots_of(mine) {
+        if !mine.is_empty() {
+            let root = self
+                .window
+                .as_ref()
+                .ok_or("the window has not said where it is")?
+                .root
+                .clone();
+            Self::check_handover_root(mine, &root)?;
             let targets: Vec<MarkRequest> = mine
                 .iter()
-                .filter(|target| target.path.starts_with(&root))
                 .map(|target| MarkRequest {
                     path: target.path.clone(),
                     bytes: target.bytes,
                     is_dir: target.is_dir,
                 })
                 .collect();
-            if let Response::Error { message } = self.call(&Request::Mark {
-                root: root.clone(),
-                targets,
-            })? {
-                return Err(message);
+            match self.call(&Request::Mark { root, targets })? {
+                Response::Marked { refused, .. } if !refused.is_empty() => {
+                    return Err(refused
+                        .iter()
+                        .map(|item| {
+                            format!(
+                                "{}: {}",
+                                self.show(&item.path),
+                                item.reason
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; "));
+                }
+                Response::Marked { .. } | Response::State(_) => {}
+                Response::Error { message } => return Err(message),
+                other => return Err(unexpected(&other)),
             }
         }
         Ok(())
@@ -1208,12 +1286,17 @@ impl Session {
         for path in &params.paths {
             paths.push(self.absolute(path)?);
         }
-        if self.try_connect() {
-            self.call(&Request::Unmark { paths })?;
-        } else if paths.is_empty() {
+        let previous = self.marks.clone();
+        if paths.is_empty() {
             self.marks.clear();
         } else {
             self.marks.retain(|target| !paths.contains(&target.path));
+        }
+        if let Err(reason) =
+            self.try_connect_for_request(Some(&Request::Unmark { paths }))
+        {
+            self.marks = previous;
+            return Err(reason);
         }
         Ok(self.plan_report())
     }
@@ -1249,10 +1332,13 @@ impl Session {
 
     /// What is marked, what the guards keep back, and what it frees.
     pub fn plan_report(&mut self) -> String {
+        // Linking can replace our marks; describe the same state as the
+        // window line, including after an explicit unmark.
+        let window = self.window_line();
         let mut out = String::new();
         if self.marks.is_empty() {
             out.push_str("Nothing is marked.\n");
-            out.push_str(&self.window_line());
+            out.push_str(&window);
             return out;
         }
         let total: u64 = self.marks.iter().map(|mark| mark.bytes).sum();
@@ -1271,7 +1357,7 @@ impl Session {
                 .collect();
             out.push_str(&self.plan_for(&mine, &root));
         }
-        out.push_str(&self.window_line());
+        out.push_str(&window);
         out
     }
 
@@ -1358,11 +1444,22 @@ impl Session {
             );
         }
         let marks = self.marks.clone();
-        let root = self
-            .roots_of(&marks)
-            .into_iter()
-            .next()
-            .ok_or("no root for the marks")?;
+        let roots = self.roots_of(&marks);
+        let mut roots = roots.iter();
+        let mut root = roots.next().cloned().ok_or("no root for the marks")?;
+        // A new window must cover every offline scan root, rather than
+        // starting on one and immediately refusing the other marks.
+        for other in roots {
+            while !other.starts_with(&root) {
+                if !root.pop() {
+                    return Err(
+                        "The marked paths have no common scan root. Review \
+                         marks on one drive at a time."
+                            .to_string(),
+                    );
+                }
+            }
+        }
         self.ensure_link(&root)?;
         if let Response::Error { message } = self.call(&Request::Review)? {
             return Err(message);
@@ -1966,7 +2063,11 @@ mod tests {
                     Response::State(self.state("explore"))
                 }
                 Request::Scan { root, .. } => {
-                    assert_eq!(*root, self.root, "the fake has one tree");
+                    self.tree = Arc::new(
+                        disktree_core::scan::scan(root, apparent())
+                            .expect("scan"),
+                    );
+                    self.root.clone_from(root);
                     Response::State(self.state("explore"))
                 }
                 Request::Ls { path, limit } => {
@@ -2288,6 +2389,261 @@ mod tests {
             handed.map(|targets| targets[0].path.clone()),
             Some(temp.path().join("Downloads"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn covered_marks_use_the_windows_root_for_handover() {
+        let temp = fixture();
+        let socket = temp.path().join("window.sock");
+        let mut session = Session::detached(socket.clone(), None);
+        scanned(&mut session, temp.path());
+        session
+            .mark(&PathsParams {
+                paths: vec![temp.path().join("src/app/target")],
+            })
+            .expect("mark offline");
+
+        let root = temp.path().join("src");
+        let window = FakeWindow::open(&socket, &root);
+        session.status();
+        assert_eq!(session.marks().len(), 1);
+        assert_eq!(window.marks().len(), 1);
+        assert!(window.asked().iter().all(|request| match request {
+            Request::Mark { root: sent, .. } => *sent == root,
+            Request::Hello { .. } | Request::State => true,
+            _ => false,
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linking_never_moves_the_window_to_cover_earlier_marks() {
+        let temp = fixture();
+        let socket = temp.path().join("window.sock");
+        let mut session = Session::detached(socket.clone(), None);
+        // Separate scan roots used to cause a Mark request for each root,
+        // leaving the user's window on the last one.
+        scanned(&mut session, &temp.path().join(".cache"));
+        scanned(&mut session, &temp.path().join("src"));
+        let paths = vec![
+            temp.path().join(".cache/pip"),
+            temp.path().join("src/app/target"),
+        ];
+        session
+            .mark(&PathsParams {
+                paths: paths.clone(),
+            })
+            .expect("mark offline");
+
+        // One mark is covered, but none should be sent until all fit.
+        let window = FakeWindow::open(&socket, &temp.path().join(".cache"));
+        let status = session.status();
+        assert!(status.contains("not followed"), "{status}");
+        assert!(status.contains("pwrdisk_scan"), "{status}");
+        let report = session.plan_report();
+        for path in &paths {
+            assert!(report.contains(&path.display().to_string()), "{report}");
+        }
+        assert_eq!(session.marks().len(), 2);
+        assert!(session.link.is_none());
+        assert!(window.marks().is_empty());
+        session.review().expect_err("keep the window where it is");
+        assert!(window.asked().iter().all(|request| matches!(
+            request,
+            Request::Hello { .. } | Request::State
+        )));
+
+        let scan = session
+            .prepare_scan(&ScanParams {
+                path: Some(temp.path().to_path_buf()),
+                ..ScanParams::default()
+            })
+            .expect("explicit scan covers both marks");
+        assert!(matches!(scan, ScanPlan::Window { .. }));
+        assert_eq!(session.marks().len(), 2);
+        assert_eq!(window.marks().len(), 2);
+        let asked = window.asked();
+        let scan_at = asked
+            .iter()
+            .position(|request| matches!(request, Request::Scan { .. }))
+            .expect("explicit scan");
+        let mark_at = asked
+            .iter()
+            .position(|request| matches!(request, Request::Mark { .. }))
+            .expect("handover");
+        assert!(scan_at < mark_at, "{asked:?}");
+        assert!(matches!(
+            &asked[mark_at],
+            Request::Mark { root, targets }
+                if root == temp.path() && targets.len() == 2
+        ));
+        session.review().expect("review the handed-over marks");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_scan_that_does_not_cover_earlier_marks_keeps_them_here() {
+        let temp = fixture();
+        let socket = temp.path().join("window.sock");
+        let mut session = Session::detached(socket.clone(), None);
+        scanned(&mut session, temp.path());
+        let path = temp.path().join("Downloads");
+        session
+            .mark(&PathsParams {
+                paths: vec![path.clone()],
+            })
+            .expect("mark offline");
+
+        let window = FakeWindow::open(&socket, &temp.path().join("notes"));
+        for root in [temp.path().join("src"), path.clone()] {
+            let error = session
+                .prepare_scan(&ScanParams {
+                    path: Some(root),
+                    ..ScanParams::default()
+                })
+                .expect_err("the mark must be inside the requested root");
+            assert!(error.contains("containing all marked paths"), "{error}");
+            assert_eq!(session.marks()[0].path, path);
+            assert!(session.link.is_none());
+        }
+        assert!(window.asked().iter().all(|request| matches!(
+            request,
+            Request::Hello { .. } | Request::State
+        )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_mark_missing_from_the_windows_tree_is_kept_and_explained() {
+        let temp = fixture();
+        let socket = temp.path().join("window.sock");
+        let mut session = Session::detached(socket.clone(), None);
+        scanned(&mut session, temp.path());
+        let path = temp.path().join("notes/todo.txt");
+        session
+            .mark(&PathsParams {
+                paths: vec![path.clone(), temp.path().join("Downloads")],
+            })
+            .expect("mark offline");
+        std::fs::remove_file(&path).expect("remove fixture file");
+
+        let window = FakeWindow::open(&socket, temp.path());
+        let status = session.status();
+        assert!(status.contains("not in the window's tree"), "{status}");
+        assert!(status.contains("they are kept here"), "{status}");
+        assert_eq!(session.marks().len(), 2);
+        assert_eq!(window.marks().len(), 1, "partial handover is reported");
+        assert!(session.link.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unmark_after_a_partial_handover_clears_both_copies() {
+        for clear_all in [false, true] {
+            let temp = fixture();
+            let socket = temp.path().join("window.sock");
+            let mut session = Session::detached(socket.clone(), None);
+            scanned(&mut session, temp.path());
+            let missing = temp.path().join("notes/todo.txt");
+            let accepted = temp.path().join("Downloads");
+            session
+                .mark(&PathsParams {
+                    paths: vec![missing.clone(), accepted.clone()],
+                })
+                .expect("mark offline");
+            std::fs::remove_file(&missing).expect("remove fixture file");
+
+            let window = FakeWindow::open(&socket, temp.path());
+            let unrelated = temp.path().join(".cache");
+            Session::detached(socket, None)
+                .mark(&PathsParams {
+                    paths: vec![unrelated.clone()],
+                })
+                .expect("mark in the window separately");
+            session.status();
+            assert_eq!(window.marks().len(), 2, "partial handover");
+            assert_eq!(session.marks().len(), 2);
+
+            let report = session
+                .unmark(&PathsParams {
+                    paths: if clear_all { vec![] } else { vec![accepted] },
+                })
+                .expect("unmark accepted paths in both places");
+            if clear_all {
+                assert!(window.marks().is_empty());
+                assert!(report.starts_with("Nothing is marked."), "{report}");
+                assert!(session.marks().is_empty());
+            } else {
+                assert_eq!(window.marks().len(), 1);
+                assert_eq!(window.marks()[0].path, unrelated);
+                assert!(report.starts_with("Marked 1"), "{report}");
+                assert_eq!(session.marks()[0].path, missing);
+                // The other mark still cannot be handed over. Clearing it
+                // later must not bring the accepted path back on reconnect.
+                session
+                    .unmark(&PathsParams::default())
+                    .expect("clear remaining mark");
+            }
+            session.status();
+            assert!(session.marks().is_empty());
+            assert!(window.marks().is_empty());
+            assert!(window.asked().iter().any(|request| {
+                matches!(request, Request::Unmark { paths } if paths.is_empty())
+            }));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn review_launches_one_window_covering_every_offline_scan_root() {
+        let temp = fixture();
+        let socket = temp.path().join("window.sock");
+        let windows = Arc::new(Mutex::new(Vec::new()));
+        let launched = Arc::clone(&windows);
+        let expected = temp.path().to_path_buf();
+        let launch_socket = socket.clone();
+        let launcher = Box::new(move |root: &Path| {
+            assert_eq!(root, expected, "launch on the common ancestor");
+            launched
+                .lock()
+                .expect("windows")
+                .push(FakeWindow::open(&launch_socket, root));
+            Ok(())
+        });
+        let mut session = Session::detached(socket, Some(launcher));
+        scanned(&mut session, &temp.path().join(".cache"));
+        scanned(&mut session, &temp.path().join("src"));
+        session
+            .mark(&PathsParams {
+                paths: vec![
+                    temp.path().join(".cache/pip"),
+                    temp.path().join("src/app/target"),
+                ],
+            })
+            .expect("mark offline");
+
+        let review = session.review().expect("launch and review both marks");
+        assert!(review.contains("2 marked"), "{review}");
+        assert!(session.link.is_some());
+        let (marks, asked) = {
+            let windows = windows.lock().expect("windows");
+            assert_eq!(windows.len(), 1);
+            (windows[0].marks(), windows[0].asked())
+        };
+        assert_eq!(marks.len(), 2);
+        assert!(
+            asked
+                .iter()
+                .any(|request| matches!(request, Request::Review))
+        );
+        assert!(asked.iter().all(|request| match request {
+            Request::Mark { root, targets } => {
+                root == temp.path() && targets.len() == 2
+            }
+            Request::Scan { .. } | Request::Show { .. } => false,
+            _ => true,
+        }));
     }
 
     /// A window that will not take the marks made before it linked is not

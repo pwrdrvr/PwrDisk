@@ -55,11 +55,14 @@ shell command, and not with a tool's own clean command the user has not \
 approved. pwrdisk_review opens PwrDisk's review screen, where the user \
 presses Enter; marks go to the Trash or Recycle Bin, whose space returns \
 once it is emptied. pwrdisk_status afterwards says what was freed. \
-When a PwrDisk window is open its tree is what you read, and a path \
+When a PwrDisk window is linked its tree is what you read, and a path \
 outside its root needs a pwrdisk_scan from higher up, which the window \
 follows; pass show: true to pwrdisk_ls or call pwrdisk_show to move the \
-view. The tools work on this computer only: a window showing an SSH host \
-is not followed. On Windows there is no window link yet, so give the user \
+view. Linking never changes its root: if earlier marks are outside it, \
+they stay in this session until pwrdisk_scan explicitly names a directory \
+containing them all. The tools work on this computer only: a window \
+showing an SSH host is not followed. On Windows there is no window link \
+yet, so give the user \
 the list to mark in PwrDisk themselves. \
 Skills, as resources, through skills/list, and as the prompts \
 explain-usage and free-space: skill://pwrdisk-explain-usage/SKILL.md \
