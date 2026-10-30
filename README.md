@@ -1,32 +1,197 @@
-# PwrDisk
+<div align="center">
 
-> PwrDisk is a maintained fork of [disktree](https://github.com/pwrdrvr/PwrDisk)
-> by Tobi Lütke, with signed installers for macOS and Windows that keep
-> themselves up to date. All credit for the
-> design and most of the code goes to Tobi and disktree's contributors.
+<img src="packaging/macos/DockIcon.png" alt="" width="96" height="96">
 
-![PwrDisk: a home directory as a treemap, coloured by kind of data, with reclaimable space hatched and the selection, findings and free space in the side panel](assets/screenshot.png)
+<h1>PwrDisk</h1>
 
-Find what is filling a disk, mark what should go, and remove it — with the
-volume's free space in view the whole time.
+<strong>See what is filling your disk. Get the space back safely.</strong>
 
-pwrdisk is a treemap for Omarchy. Choose a local or SSH source, then a
-mounted volume or directory; no scan starts until you explicitly accept.
-It draws every directory as a nested mosaic sized by its real disk cost,
-and lets you walk into it with the keyboard or the mouse. Mark as much as you
-like; nothing happens until you review the list and commit, and the permanent
-path always asks first.
+<p>Your whole drive as one map, every folder drawn to its real size.<br>
+Mark what should go, review the list, and watch the free space come back.<br>
+macOS, Windows and Linux.</p>
 
-Built with [GPUI](https://gpui-kit.com/) through
-[gpui-omarchy](https://github.com/huacnlee/gpui-omarchy), so it follows your
-Omarchy theme and behaves like the rest of the desktop.
+<p>
+  <a href="https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk.dmg"><img src="docs/assets/buttons/download-mac.png" alt="Download for Mac — Universal, Intel and Apple Silicon" width="250"></a>
+  <a href="https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-Setup.exe"><img src="docs/assets/buttons/download-windows-x64.png" alt="Download for Windows — x64 installer" width="250"></a>
+  <a href="https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-arm64-Setup.exe"><img src="docs/assets/buttons/download-windows-arm64.png" alt="Download for Windows — ARM64 installer" width="250"></a>
+</p>
+
+<p>
+  <a href="https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-x86_64-linux.tar.gz"><img src="docs/assets/buttons/download-linux-x64.png" alt="Download for Linux — x86-64 tarball" width="250"></a>
+  <a href="https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-aarch64-linux.tar.gz"><img src="docs/assets/buttons/download-linux-arm64.png" alt="Download for Linux — ARM64 tarball" width="250"></a>
+</p>
+
+<sub>macOS 11 Big Sur or newer · Windows 10 or newer, x64 and ARM64 · Linux x86-64 and ARM64 · MIT</sub><br>
+<sub>Signed and notarized for macOS, signed for Windows, and both keep themselves up to date. No account, no telemetry.</sub>
+
+<br><br>
+
+<img src="assets/screenshot.png" width="100%" alt="A home directory as a treemap. Each folder is a tile sized by the disk space it uses and coloured by the kind of data in it: code, agent scratch, toolchains, synced files, git, media, documents and caches. Space that can be reclaimed is hatched. The side panel shows the selection's size, a Worth a look list of the largest things that could go, and the disk's free space.">
+
+</div>
+
+## Why PwrDisk
+
+Disks fill up slowly and then all at once. PwrDisk shows you where the space
+went in one picture, and gets it back without the "wait, what did I just
+delete?" moment.
+
+- **The whole drive at a glance.** Every folder is a tile sized by what it
+  really costs on disk, coloured by what it holds: code, caches, toolchains,
+  synced files, media, documents. Space you can safely get back — caches,
+  build output, package stores — is hatched.
+- **Worth a look.** The side panel lists the biggest things that could
+  plausibly go, so you don't have to go hunting.
+- **Free space, live.** The meter shows the drive's free space now and after
+  what you have marked, and only counts what would actually come back to
+  that drive.
+- **Marking is never deleting.** Mark as much as you like and change your
+  mind as often as you like. Nothing happens until you open the review list
+  and confirm. The default is the Trash or Recycle Bin; deleting permanently
+  always asks first.
+- **Guard rails you don't have to think about.** PwrDisk refuses to remove
+  system folders, your home folder, mount points or anything outside what you
+  scanned. Select a git checkout and it tells you about uncommitted changes,
+  stashes and unpushed commits before you mark it.
+- **Fast.** A home directory takes seconds. On Windows, run it as
+  administrator and it reads a whole NTFS drive straight from the file
+  table — about 3.4 seconds for 4 million files.
+- **Servers too.** Scan a Linux server over SSH, read-only. PwrDisk never
+  deletes over SSH; it hands you the list, or a delete script that checks it
+  is on the right machine first.
+- **Let an AI agent do the digging.** Claude Code, Codex or any MCP client
+  can scan, explain and mark for you. The agent marks; you press Enter.
 
 ## Install
 
-Download `pwrdisk-*-x86_64-linux.tar.gz` (`aarch64-linux` on ARM) from the
-[latest release](https://github.com/pwrdrvr/PwrDisk/releases/latest), unpack
-it, and run `./install.sh` inside (or just copy `pwrdisk` onto your
-`PATH`). Or build it:
+| Platform | Download | Notes |
+| --- | --- | --- |
+| macOS 11 or newer | [PwrDisk.dmg](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk.dmg) | Universal: Apple Silicon and Intel. Open it and drag PwrDisk to Applications. |
+| Windows 10 / 11, x64 | [PwrDisk-win-Setup.exe](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-Setup.exe) | Installs for you alone, no administrator prompt. |
+| Windows 10 / 11, ARM64 | [PwrDisk-win-arm64-Setup.exe](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-arm64-Setup.exe) | The same, for ARM PCs. |
+| Windows, for deployment tools | [x64 .msi](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win.msi) · [ARM64 .msi](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-arm64.msi) | Installs the same way as Setup.exe. |
+| Windows, portable | [x64 .zip](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-Portable.zip) · [ARM64 .zip](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-arm64-Portable.zip) | Runs from wherever you unpack it. |
+| Linux, x86-64 | [pwrdisk-x86_64-linux.tar.gz](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-x86_64-linux.tar.gz) | Unpack and run `./install.sh`. |
+| Linux, ARM64 | [pwrdisk-aarch64-linux.tar.gz](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-aarch64-linux.tar.gz) | The same, for ARM. |
+
+Every release, with checksums, is on the
+[releases page](https://github.com/pwrdrvr/PwrDisk/releases).
+
+**macOS.** The app is signed with a Developer ID and notarized by Apple, so it
+opens like any other download. To measure everything, give PwrDisk **Full
+Disk Access** in System Settings › Privacy & Security (the side panel offers
+a button when it is missing), then reopen it. Without it macOS hides Mail,
+Messages, Safari, other apps' data and the Trash, and PwrDisk shows them as
+unreadable rather than guessing.
+
+**Windows.** Installers are signed by PwrDrvr LLC and land in the Start menu;
+uninstall from Settings › Apps. When PwrDisk would be faster or see more as
+administrator, the side panel offers **Restart as Administrator**.
+
+**Linux.** No root needed; this installs into `~/.local` with a launcher
+entry and an icon. Use `aarch64` in place of `x86_64` on ARM:
+
+```sh
+curl -fL https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-x86_64-linux.tar.gz | tar xz
+cd pwrdisk-*-x86_64-linux && ./install.sh
+```
+
+You need a Wayland or X11 session with a GPU that does Vulkan. On Omarchy
+PwrDisk follows your theme; on Hyprland, see
+[the window rules](docs/guide.md#on-hyprland).
+
+**Updates.** The Mac app and Windows installs check for a new release when
+they start and every six hours, download it in the background, and install
+it when you quit (or right away from **Restart to update**). **Shift-U**
+shows the version and lets you pick a release channel. The Linux tarball
+does not update itself; download the next release.
+
+## Using it
+
+1. **Pick what to scan.** Choose **This computer** or an SSH host, then a
+   drive or folder. Nothing is scanned until you choose.
+2. **Look around.** Click a tile, or use the arrow keys. Scroll to zoom into
+   a folder and keep scrolling to go inside; scroll back to come out.
+   **Enter** opens the selected folder, **Backspace** goes up.
+3. **Mark what should go.** **Space** marks the tile under the pointer; press
+   it again to unmark. The side panel shows how much free space you would
+   have afterwards.
+4. **Review.** Press **c** to see the list. Unmark anything you are unsure
+   of, then **Enter** moves the rest to the Trash or Recycle Bin. **p**
+   deletes permanently instead, after asking.
+5. **See the result.** PwrDisk scans again and shows how much space you
+   actually got back.
+
+| key | does |
+| --- | --- |
+| `space` | mark or unmark |
+| `enter` / `⌫` | open the folder / go up |
+| scroll | zoom in, then go inside |
+| `/` | filter by name |
+| `c` | review what is marked |
+| `t` | colour by size, file count or age |
+| `g` | scan the whole disk |
+| `o` | show in Finder, File Explorer or the file manager |
+| `?` | every key |
+
+From a terminal:
+
+```sh
+pwrdisk            # choose a source and a folder
+pwrdisk ~/src      # scan a folder straight away
+pwrdisk --disk     # the whole disk
+pwrdisk ssh myserver /var   # a server over SSH, read-only
+```
+
+The [user guide](docs/guide.md) covers every screen and key, how sizes are
+measured, SSH, and what differs on macOS and Windows.
+
+## With an AI agent
+
+PwrDisk is also an [MCP](https://modelcontextprotocol.io) server. Connect it
+once and ask your agent what is eating your disk:
+
+```sh
+claude mcp add --scope user pwrdisk -- pwrdisk mcp   # Claude Code
+codex mcp add pwrdisk -- pwrdisk mcp                 # Codex
+```
+
+On macOS the command lives inside the app. The window's **Work with an AI
+agent** line, under the disk, shows each command with the full path and a
+Copy button.
+
+The agent walks the tree, lists every cache and build directory, and
+proposes what can go. It can mark things, and that is all: there is no tool
+that deletes. When you are happy with the list, it opens PwrDisk's review
+screen and you press Enter. If a PwrDisk window is open, you both look at the
+same map and its marks show up as the agent makes them. More in
+[the guide](docs/guide.md#with-an-ai-agent).
+
+## What PwrDisk will not delete
+
+Only things inside the folder you scanned can be removed, and never:
+
+- the scanned folder itself, your home folder, or a folder that holds it;
+- system folders (`/usr`, `/etc`, `C:\Windows`, Program Files, Homebrew's
+  prefix and the like), even where permissions would allow it;
+- a mount point, or anything with another disk mounted inside it;
+- what a symlink points to (the link is removed, not its target).
+
+Each rule is [tested](crates/disktree-core/src/removal.rs). The full list is
+in [the guide](docs/guide.md#what-it-refuses-to-do).
+
+## Thanks, Tobi
+
+PwrDisk began as [disktree](https://github.com/tobi/disktree), written by
+[Tobi Lütke](https://github.com/tobi). The idea, the design and most of the
+code are his and disktree's contributors', and they deserve the credit.
+
+Tobi also has a day job running Shopify, which we hear keeps him fairly
+busy. So we picked disktree up to keep it fed: signed installers that update
+themselves, macOS and Windows builds, and the AI agent link. Fixes that make
+sense upstream go back to disktree as pull requests.
+
+## Build it yourself
 
 ```sh
 git clone https://github.com/pwrdrvr/PwrDisk
@@ -34,746 +199,10 @@ cd PwrDisk
 make install
 ```
 
-`make install` builds a release binary and puts three things under `~/.local`
-(no root needed):
-
-- `~/.local/bin/pwrdisk`
-- a desktop entry, so PwrDisk is in the launcher and in a file manager's
-  **Open with** for a directory (it adds a handler; it never becomes the
-  default)
-- an icon
-
-`sudo make install PREFIX=/usr/local` installs system-wide; `make uninstall`
-removes exactly what was installed.
-
-If another installed version wins on `PATH`, the installer warns which one.
-Run `export PATH="$HOME/.local/bin:$PATH"` and add that setting to your shell
-configuration so the locally installed build takes precedence.
-
-For Linux builds with embedded SSH helpers, also install the two Rust
-standard-library targets (no external C cross-compiler is needed):
-
-```sh
-rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
-```
-
-You need Rust 1.97 or newer and a Wayland or X11 session with a GPU that GPUI
-can drive (Vulkan). Distributions often package an older Rust;
-[rustup](https://rustup.rs) installs a current one. The repo pins 1.97 in
-`rust-toolchain.toml`, so with rustup the right toolchain is fetched on the
-first build even if `rustup default` points at something older.
-
-### macOS
-
-Download `PwrDisk-*-universal.dmg` from the
-[latest release](https://github.com/pwrdrvr/PwrDisk/releases/latest), open
-it, and drag PwrDisk into Applications. One app for Apple silicon and Intel;
-macOS 11 or newer.
-
-Releases are signed with a Developer ID and notarized, so they open like
-any other downloaded app. A copy installed from the DMG keeps itself up to
-date: see [Updates](#updates). A build that was not (one you made yourself and
-copied to another Mac, say) is stopped by Gatekeeper: macOS says it "is
-damaged and can't be opened" or "cannot be verified". Clear the mark once:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/PwrDisk.app
-```
-
-(Or open it once, then choose **Open Anyway** in System Settings › Privacy &
-Security.)
-
-Or build it, with Rust 1.97 or newer and Xcode or its Command Line Tools.
-macOS does not come with Rust; install it with [rustup](https://rustup.rs).
-
-```sh
-make install     # ~/Applications/PwrDisk.app, and ~/.local/bin/pwrdisk
-make uninstall
-```
-
-To see privacy-protected files, give PwrDisk **Full Disk Access** in System
-Settings › Privacy & Security (the panel offers a button when it is missing), then
-reopen it. Without it macOS hides Mail, Messages, Safari, other apps' data
-and the Trash, and PwrDisk counts them as unreadable. Started from a
-terminal, it is the terminal that needs the access. macOS also asks once
-each for Desktop, Documents and Downloads.
-
-Full Disk Access does not override filesystem ownership and permissions.
-Administrator-owned service stores can still be unreadable. Unknown contents
-are never reported as zero bytes or as absent software. To inspect a store
-explicitly, include hidden entries, remove any scan depth limit, and use the
-directory chooser to scan it directly. Read access must be arranged outside
-PwrDisk; the app does not request elevation or install a privileged helper.
-
-What is different from Linux:
-
-- **Free space** is what `df` reports. Finder's figure is larger: it counts
-  purgeable space (caches and local snapshots macOS will clear on its own).
-- **Cloned files** (copies APFS shares blocks between, as Finder's Duplicate
-  makes) remain counted in full in the treemap. The scan line separately
-  reports bytes in cloned files and estimated repeated data-fork allocation.
-  The selection, review and permanent-delete confirmation estimate savings
-  from the accepted set of marks together. Complete clone groups credit
-  shared data once; a remaining hardlink retains its file data. Unknown or
-  modified sharing and allocation outside the data fork supply a range,
-  with only its lower bound used by the volume meter. Unknown private sizes
-  contribute zero to that bound. Snapshots and open files can retain blocks,
-  and changing files can stale the estimate; rescan to refresh it. The final
-  result still measures the volume's actual free-space change.
-  Clone hints come from bulk directory reads; only potentially shared files
-  need a private-size query. A bounded, sharded cache reuses confirmed full
-  clones within their observed reference count, separately on each real
-  APFS volume and each scan. Modified clones are measured individually.
-  Unsupported filesystems or kernels fall back to
-  the ordinary listing without clone detection. Apparent-size scans do not
-  collect clone metadata.
-- **Time Machine's local snapshots** are not files and do not appear; they
-  are part of the gap between the scan and the disk's used space.
-- **Cloud-only folders** (iCloud Drive, Dropbox and the like, evicted to the
-  server) are not opened, so a scan never downloads them.
-
-#### FSEvents history and Spotlight indexes
-
-Local macOS scans categorize **FSEvents history** (`.fseventsd`) and
-**Spotlight index** (`.Spotlight-V100`) when their files are readable. The
-**macOS service stores** panel appears only when the scan measures at least
-one store. If both are unreadable or outside the scan, it stays hidden and
-adds no permission request or Full Disk Access hint. Other unreadable files
-can still produce the existing privacy hint.
-
-When one store is measurable, the other retains an honest **Unavailable** or
-**Outside scan** label; partial results say **measured · incomplete**. Select
-a service tile for Apple's guidance. Access is determined from the scan,
-rather than assuming Full Disk Access overrides ownership permissions.
-On a startup disk the stores live in `/System/Volumes/Data`; external volumes
-have their own stores. Home-directory and SSH scans do not show this panel.
-
-The figures are allocated file bytes (`st_blocks × 512`), unless apparent size
-is selected, and are already part of the scan total. They are not additional
-APFS volume, container or snapshot figures. Hardlinks are counted once across
-the tree; shared APFS clone blocks and snapshots mean measured bytes are not
-a promise of space freed. The rest of the second Data mount stays excluded,
-so firmlinked user files are not counted again.
-
-FSEvents stores persistent filesystem change history that backup and sync
-apps can use. At an administrator's explicit discretion, Apple's supported,
-root-only [`FSEventsPurgeEventsForDeviceUpToEventId` API](https://developer.apple.com/documentation/coreservices/1447985-fseventspurgeeventsfordeviceupto)
-can shorten old history. It destroys history for **every consumer on that
-volume**, and those consumers may need a full rescan. Apple's
-[FSEvents guide](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html)
-advises against routine purging and requires an explicit administrator request
-and confirmation. PwrDisk only explains this option; it does not call it or
-suggest raw deletion of `.fseventsd`.
-
-An administrator implementing a chosen retention cutoff would resolve the
-volume's current `st_dev`, obtain an event ID with
-`FSEventsGetLastEventIdForDeviceBeforeTime`, and only then use the purge API.
-The installed macOS SDK's `FSEvents.h` documents this function's time argument
-as **seconds since January 1, 1970**, despite its `CFAbsoluteTime` type. The
-archived guide describes the usual 2001 epoch instead; check the target SDK
-contract rather than applying that conversion. No retention cutoff or space
-saving is guaranteed by PwrDisk.
-
-Spotlight's index supports file and content search. Keep indexing for that
-functionality, exclude selected folders through
-[Spotlight Search Privacy](https://support.apple.com/guide/mac-help/prevent-spotlight-searches-in-files-mchlp2811/mac),
-or have an administrator choose whether a volume should be indexed. The
-installed `mdutil(1)` manual describes `-s` as a read-only status query,
-`-i on|off` as the indexing choice, and `-X` as removing the index directory:
-**`-X` does not itself disable indexing**. An erased index may be rebuilt when
-indexing is enabled, consuming space and work again; disabling indexing reduces
-search coverage. A failed status query is unknown, not evidence of disabled
-indexing. PwrDisk does not run these commands or alter indexing settings.
-
-`make bundle` (or `cargo xtask bundle`) builds `target/bundle/PwrDisk.app`,
-a zip of it and a DMG laid out like the release's, signed ad hoc; add
-`--universal` for both architectures. To sign and notarize a build for
-others, with a Developer ID certificate in the keychain and credentials
-saved by `xcrun notarytool store-credentials`:
-
-```sh
-NOTARY_PROFILE=<profile> cargo xtask bundle \
-  --sign "Developer ID Application: Name (TEAMID)" --notarize
-```
-
-### Windows
-
-On Windows 10 or 11, download `PwrDisk-win-Setup.exe`
-(`PwrDisk-win-arm64-Setup.exe` on ARM) from the
-[latest release](https://github.com/pwrdrvr/PwrDisk/releases/latest) and run
-it. It installs PwrDisk for you alone, under `%LocalAppData%\PwrDisk`,
-without asking for administrator rights, adds it to the Start menu, and
-keeps it up to date (see [Updates](#updates)); uninstall it from Settings ›
-Apps. `PwrDisk-win.msi` (`PwrDisk-win-arm64.msi`) installs the same way for
-deployment tools, and `PwrDisk-win-Portable.zip`
-(`PwrDisk-win-arm64-Portable.zip`) runs from wherever it is unpacked. All of
-them are signed by PwrDrvr LLC.
-
-Or build it with Rust 1.97 or newer, from
-[rustup](https://rustup.rs), and the MSVC toolchain (Visual Studio Build
-Tools, C++ workload):
-
-```powershell
-git clone https://github.com/pwrdrvr/PwrDisk
-cd PwrDisk
-cargo build --release    # target\release\pwrdisk.exe
-```
-
-See [On Windows](#on-windows) for what differs there.
-
-### Updates
-
-A copy installed from the DMG, Setup.exe or the MSI checks the project's
-GitHub releases when it starts and every six hours, and downloads a newer
-release in the background. The download installs when PwrDisk quits, or at
-once from **Restart to update**. Nothing is sent but the request for the
-release list.
-
-**Shift-U** opens the Updates panel (on macOS also **PwrDisk › Check for
-Updates…**): the version, what the last check found, **Check now**, and the
-release channel:
-
-| Channel | Gets |
-| --- | --- |
-| Stable · Latest | Releases promoted after a check. The default. |
-| Stable · Prerelease | Candidates for the next stable release. |
-| Beta · Latest | Beta builds (`-beta` tags). |
-| Beta · Prerelease | The newest alpha (`-alpha` tags); may not work. |
-
-Until you pick one, a copy follows the channel its own version implies, so
-a beta keeps getting betas. Picking an older line downloads its release on
-**Check now**, and it installs only from **Restart to switch**.
-
-Copies that did not come from an installer — the Linux tarball, `make
-install`, `cargo build` — do not update themselves; download the next
-release.
-
-## Use
-
-```sh
-pwrdisk            # choose a local/SSH source and root
-pwrdisk ~          # explicitly scan home
-pwrdisk --disk     # the whole disk it lives on
-pwrdisk ~/src      # or any directory
-pwrdisk --help     # options: apparent size, follow links, skip hidden, …
-```
-
-### Servers over SSH (read-only)
-
-```sh
-pwrdisk ssh dev                 # connect and choose a remote root
-pwrdisk ssh user@server /var    # an explicit remote path
-pwrdisk ssh dev --disk          # the disk containing the remote home
-pwrdisk ssh dev -a /srv         # apparent size instead of allocated blocks
-```
-
-Linux builds made with `make build` / `cargo xtask portable` include static
-**x86-64 and ARM64 Linux scanners appended to the executable**. SSH detects
-the server's OS/CPU and uploads the matching scanner only when its checked
-cache is missing or damaged. The cache is private and content-addressed under
-`~/.cache/disktree/ssh/<sha256>/` (or the server's `XDG_CACHE_HOME`).
-Uploads are checksum-verified and atomically installed; there is no sudo,
-system-package change or dependency on the server's glibc version.
-
-This uses stable Rust's musl targets rather than Cosmopolitan: the existing
-Rust/rayon/rustix scanner has no supported stable Cosmopolitan target. These
-are Linux binaries, not a single executable for every OS; ARM64 is built and
-ELF-validated, while x86-64 was also executed against a real server.
-
-You can extract a helper without opening a window, or test the entire
-SSH/deployment/scan path headlessly:
-
-```sh
-pwrdisk extract-scanner x86_64 ./disktree-scan
-pwrdisk extract-scanner aarch64 ./disktree-scan-arm64
-pwrdisk ssh dev --check /var/log
-```
-
-The appended manifest stores architecture, byte ranges and SHA-256 hashes.
-Do not run `strip` after packaging: it discards the trailer. The Linux release
-pipeline strips first, embeds last, and ships that single file. Appending to
-signed macOS/Windows executables needs platform-specific signature handling;
-those builds do not yet embed helpers.
-
-For a development or non-Linux desktop build without the trailer, install
-the small **disktree-scan** helper on the server first:
-
-```sh
-# On the server, inside the checkout:
-make install-scan               # ~/.local/bin/disktree-scan; no GUI deps
-# Or:
-cargo install --path crates/disktree-scan --locked
-```
-
-The helper can be on the server's **non-interactive SSH PATH** or at
-`~/.local/bin/disktree-scan` (the default install location); PwrDisk tries
-both. A binary copied from another machine must match the server's OS,
-architecture and runtime. The manually built native helper may need the
-server's libc; the embedded Linux helpers are static. PwrDisk never runs
-sudo or changes the server's configuration.
-SSH keeps your normal authentication settings. When launched from a
-terminal, it can ask for a password or key passphrase there; GUI launches
-need key/agent access or a working SSH askpass helper. Connect once with
-`ssh dev` to verify access and accept its host key.
-
-The protocol also supports lightweight root discovery, separate from a scan:
-it reads the target's mount namespace without walking or probing the listed
-paths. Same-device mounts remain distinct choices; capacity is unknown
-until a root is explicitly selected. Discovery requests omit scan fields,
-so outdated helpers reject them instead of silently scanning their home.
-
-The Linux/macOS helper streams a depth-first walk directly to stdout. It
-never constructs a tree or retains a directory's children: memory scales
-with open ancestors, not file count. Deep directories are not rejected
-at an arbitrary depth; filesystem errors are reported as unreadable.
-Hardlink identities are sent to the desktop, which uses the local scanner's
-compact identity index to count each inode once. The helper keeps no
-per-file identity table in negotiated desktop-de-duplication mode; links
-outside the chosen root cannot fill one. Older clients retain bounded
-helper-side accounting for wire compatibility. A resource limit fails
-explicitly instead of returning a partial tree. Symlinks are not followed,
-and every nested mount is skipped, even a bind mount or same-device
-subvolume. Select those as separate roots.
-
-While indexing, the sidebar shows a progress bar and estimated percentage
-for whole-volume scans, using measured file bytes versus the drive's used
-space at scan start. Shared blocks, snapshots and unreadable paths affect
-this estimate; it stays below 100% while scanning and does not predict
-time remaining. Folder, filtered, apparent-size and cross-volume scans
-have no known total. Live file and directory counts, measured bytes, read
-errors, elapsed time and average files per second remain visible. After
-enumeration, the status changes to **Building treemap** while totals and
-categories finish. Counters and paths use monospace type in fixed lanes;
-changing values do not re-center or reflow the screen. Narrow windows use
-a compact progress footer instead.
-
-Ordinary local walks and current SSH helpers paint a **live top-level
-overview** before the full tree arrives. These are measured contributions,
-not complete directory sizes. Updates are limited to once a second, in
-arrival order, with at most 128 named buckets plus an overflow bucket. The
-preview is kept separate from the real tree: it cannot be navigated,
-marked or removed. On completion the full, actionable treemap replaces it;
-on error or cancellation the preview is discarded. The Windows file-table
-fast path still waits for its complete tree. Remote scans also show a
-sampled recent directory and connection / helper setup / indexing / treemap
-stages. Progress uses a single replaceable snapshot, not a growing event
-queue; path updates are throttled to five per second. There is no guessed
-percentage: the total is unknown until the walk finishes. Older helpers
-still provide counters from their streamed records, without path samples.
-
-One compressed SSH connection carries a bounded JSON request on stdin and
-compact postorder records on stdout. The client keeps stdin open so the
-helper exits on disconnect, including while scanning or blocked on output.
-Linux helpers also enforce a 1 GiB address-space ceiling, disable core dumps,
-and stop after five minutes. File contents never cross the connection and
-paths are never interpolated into remote shell commands. Only the desktop
-retains the complete tree for offline navigation; its memory still scales
-with entry count. The native Windows helper currently retains the original
-tree-building scan path.
-
-Remote mode is **export-only**. Mark with Space, open review with `c`, then:
-
-- **Copy as prompt** (`a`): includes the SSH host, remote OS, scan root,
-  selected paths, sizes and cleanup precautions. It requires verifying the
-  actual scanned hostname and machine ID before any destructive operation,
-  and stopping if either check fails or cannot be performed.
-- **Save list…** (`s`): remote paths, one per line, saved locally.
-- **Copy delete script** (`y`), or **Save delete script…** (`e`): a
-  GNU/Linux shell script, copied to the clipboard or saved locally.
-  Running it without arguments only previews the selection. After reviewing
-  it, `sh pwrdisk-delete.sh --delete` connects to the named SSH host and
-  runs the exported commands there, never against the local paths.
-
-There are no trash/delete buttons or removal-mode choices in remote review.
-Deletion shortcuts and removal entry points are disabled too. Git inspection,
-local folder selection and file-manager reveal are disabled so remote names
-cannot accidentally act on this computer. Free space is sampled when the
-scan starts, **not live**; press `r` to refresh.
-
-Before deleting, scripts compare the server's actual kernel hostname and
-machine ID against the identity captured in the scan—not the SSH alias.
-Missing identity or any mismatch aborts. The check runs on the SSH target,
-not the computer launching the wrapper. Pasting the script previews it by
-default and runs in a subshell, so its exit cannot close your terminal.
-
-Exports are not an automatic cleanup recommendation. Scripts refuse system
-paths, the scan root, home or its ancestors, symlinked/changed canonical paths,
-and paths containing mount points. Control-character names are omitted.
-These checks do not eliminate filesystem races or tell you whether git work
-is backed up; review the script and prefer a tool's own cleanup command for
-tool-owned data. The remote helper itself has no delete operation.
-
-### The screen
-
-- **Top:** the trail from `/`, then what is measured — **Size**, **Files** or
-  **Age**, **Hidden files**, **Apparent size**, and the depth drawn. In the
-  tree a crumb goes there, and its ▾ lists its siblings, largest first with
-  their share and size, to jump sideways (arrows and Enter work too). Above
-  the scanned root a crumb is dimmer, and clicking it widens the scan to
-  there (see below).
-- **Under it:** the scan totals, the filter when one is typed, and the legend.
-- **Mosaic:** colour is the *kind* of data — code, agent scratch,
-  toolchains, synced files, git, media, documents, caches — at one muted
-  level, lighter with depth. A diagonal hatch is space that can be had back
-  (caches, sync history, package stores, build output), independent of
-  colour. Top-level directories carry a strip of their colour and a name
-  band; deeper open directories a slim label row. In **Age** mode colour is
-  the last write instead, from this week to older.
-- **Panel:** the selection (its size set large, share of the scan, files,
-  last write, and for a checkout what git says — changes, stashes, unpushed
-  commits); *Worth a look*, the largest things that could plausibly go;
-  what is marked; and the disk, free now and after the marks, with the way
-  to the review screen. Drag its left edge to resize it; double-click the
-  edge to reset.
-
-One colour is kept apart: amber marks the selection, the main action, and
-what can be had back.
-
-The kinds come from directory names and a few shapes (a bare git repository,
-`target` beside a `Cargo.toml`). Some of the names are specific to one
-machine; see `crates/disktree-core/src/classify.rs`.
-
-### Marking
-
-Space, X, Enter and the arrows act on the tile under the mouse if the mouse
-moved last, and on the keyboard selection after you use an arrow or Tab.
-
-A marked tile takes the danger colour, and so does everything inside it:
-removing a directory takes its contents with it. Marking a directory absorbs
-any marks already inside it, and something inside a marked directory cannot be
-marked or kept on its own; its panel offers to unmark the directory instead.
-Marking is reversible — press it again — and the saving is never counted twice.
-
-### Zooming and going in
-
-Scroll to magnify toward the pointer. The wheel magnifies until the directory
-under the pointer fills the view, and the next notch goes into it — one
-continuous motion, with the directory's contents growing into place. Scroll the
-other way to come back out. Enter goes into the selected directory at any
-depth, and Backspace or Escape goes up one level. `<` and `>`, beside the
-Size / Files / Age switch, go back and forward through the directories visited,
-as do `alt ←` `alt →` (also `⌘[` `⌘]` on macOS) and the mouse's side
-buttons. `+` and `-` magnify without going in; `0` resets.
-
-### Removing
-
-`c` (or **Review…**) opens the list of everything marked. Unmark anything
-there, then choose:
-
-- **Move to trash** — the default when a trash is available. On macOS that is
-  the system Trash, the same move as Finder's (on another disk, that disk's
-  own Trash; network shares often have none). Elsewhere it is `trash-put`
-  from trash-cli, then `gio trash`, then a built-in XDG trash. Recoverable
-  until the trash is emptied, so it commits directly.
-- **Delete permanently** — `rm -rf` semantics. It always asks first, in a dialog
-  that names what goes and how much comes back.
-
-When it finishes, PwrDisk scans again so the numbers on screen match the disk,
-and shows how much free space was actually gained.
-
-## Keys
-
-| key | does |
-| --- | --- |
-| `space` / `x` | mark or unmark the tile you point at |
-| `ctrl`-click (`⌘`-click on macOS) | mark without moving the selection |
-| `enter` | open that directory, at any depth |
-| `⌫` / `esc` | go up one directory |
-| `alt ←` `alt →` | back and forward through where you have been |
-| `←` `↑` `↓` `→` | move between tiles at this level |
-| `tab` | next largest sibling |
-| scroll | zoom toward a directory, then go into it |
-| `shift`-scroll | pan the magnified view |
-| `[` `]` | draw fewer or more levels at once |
-| `-` `=` `0` | magnify, shrink, reset the view |
-| `ctrl =` `ctrl -` `ctrl 0` (`⌘` on macOS) | interface zoom |
-| `/` | filter by name: only matches keep their colour; `enter` shows only them, `esc` clears |
-| `c` | review the marked list |
-| `t` | size, files or age: what areas and colours say |
-| `d` | disk usage or apparent size |
-| `i` | include or skip hidden entries |
-| `r` | scan again |
-| `esc` while scanning | stop the scan |
-| `v` | choose a local/SSH source and root |
-| `ctrl o` (`⌘O` on macOS) | choose another directory to scan |
-| `g` | the whole disk |
-| `p` | show or hide the selection line |
-| `o` | show it in Finder, File Explorer or the file manager |
-| right-click | show that tile in Finder, File Explorer or the file manager |
-| `shift u` | updates: the version, the release channel, check now |
-| `?` | every key |
-| `q` | quit |
-
-On macOS the menu bar also has ⌘⇧R to show the selection in Finder, ⌘R to
-rescan, ⌘[ and ⌘] for back and forward, and ⌘Q, ⌘H and ⌘W (closing the
-window quits); other ⌘ chords are left to the system. On Linux and Windows
-the same work with ctrl, with F5 to rescan too.
-
-On the review screen: `m` trash, `p` permanent, `!` unmark all, `enter`
-commits, `esc` goes back. Or hand the list on instead of acting on it: `s`
-saves it as a text file, one path per line, and `a` copies a prompt for a
-coding agent: free the space by removing what you picked, checking each path
-first (git work that exists nowhere else, a tool's own clean command) and
-touching nothing else. A name holding a newline is left out of the list and
-escaped in the prompt, so it cannot pass for another path.
-
-## With an AI agent
-
-PwrDisk is also an [MCP](https://modelcontextprotocol.io) server, so an
-agent such as Claude Code or Codex can do the looking while you keep the
-deciding. One command connects it, and there is nothing to configure, sign
-in to or approve: the agent runs `pwrdisk mcp` as you, over stdio, and can
-do no more than your shell can.
-
-```sh
-claude mcp add --scope user pwrdisk -- pwrdisk mcp
-```
-
-(Codex: `codex mcp add pwrdisk -- pwrdisk mcp`. Any other client: a
-server named `pwrdisk` with the command `pwrdisk` and the argument `mcp`.
-On macOS the command lives inside the app, at
-`PwrDisk.app/Contents/MacOS/pwrdisk`. The window's **Work with an AI
-agent** line, under the disk, and **Help › Work with an AI Agent…** on
-macOS, show each command with the binary's full path and a Copy button.)
-
-Then ask it what is eating your disk. The agent walks the tree largest
-first, lists every cache, build directory and package store at once, and
-proposes what can go. It marks what you agree to, and marking is all it
-can do: `pwrdisk_review` opens PwrDisk's review screen, and you press Enter
-there. There is no tool that deletes.
-
-When a PwrDisk window is open, its tree is what the agent reads. `ls`,
-`find` and `scan` are answered from the mosaic on screen, a mark is
-measured from it, and the two of you see the same numbers. The agent's
-marks appear in the mosaic and in the free-space meter as it makes them,
-`show` moves the view to what it is looking at, a scan it asks for runs in
-the window, and the header names the agent and its last action while it is
-connected. With no window open the agent scans on its own, in seconds for a
-home directory, and can open a window for the review. Without a display it
-works headless and says so. A window showing an SSH server is not followed:
-the agent's tools measure this computer, and PwrDisk does not remove files
-over SSH.
-
-The tools: `pwrdisk_status`, `pwrdisk_scan`, `pwrdisk_ls`,
-`pwrdisk_find`, `pwrdisk_show`, `pwrdisk_mark`, `pwrdisk_unmark` and
-`pwrdisk_review`. Each `mark` answers with the real plan: what the guards
-below keep back and why, what another mark already covers, and the free
-space it gives back on the volume, counted the way the meter counts it.
-
-The server carries its own skills, so the agent knows how to use the tools
-and what to be careful of before it starts:
-
-| skill | for |
-| --- | --- |
-| `pwrdisk-explain-usage` | where the space went, read-only: never marks anything |
-| `pwrdisk-free-space` | freeing space: agree the list with you first, unless you gave a standing instruction, then mark and hand over the review |
-| `pwrdisk-free-space/references/` | macOS, Linux and Windows: what each hides from a scan (snapshots, clones, cloud placeholders), what PwrDisk refuses, and what never to propose |
-
-They are served as `skill://` resources, through the skills extension's
-`skills/list`, and as the prompts `free-space` and `explain-usage` (in
-Claude Code, `/mcp__pwrdisk__free-space`), which add the reference for the
-system the server runs on. The files are in `skills/`.
-
-The window listens on an endpoint only you can reach: a Unix socket in
-`$XDG_RUNTIME_DIR` or `$TMPDIR`, or a local Windows named pipe,
-`\\.\pipe\pwrdisk-<user SID>`. The pipe grants access only to your Windows
-account and rejects remote clients. The agent verifies the connected pipe
-is owned by your account before exchanging messages. Set `PWRDISK_LINK` to
-choose another socket path or local pipe name. On macOS, Linux and Windows,
-the agent's marks appear in the open window and `pwrdisk_review` opens its
-review screen.
-
-## What it measures
-
-- **Disk usage** by default: `st_blocks × 512`, the number `du` reports and the
-  space that actually comes back when a file is deleted. Apparent size (what
-  `ls -l` shows) is one toggle away.
-- **Hardlinks once.** Two names for one inode cost one file.
-- **Hidden entries included**, because `~/.cache` is often the biggest thing in
-  a home directory. Symlinks are not followed.
-- **The projection counts one volume.** The meter shows the scanned volume's
-  free space, so it adds up only the marks whose bytes come back to that
-  volume, by the same rule the scan bounds the volume with. With `-X`, a mark
-  on a disk mounted inside the tree, on a network share or in a snapshot
-  subvolume is left out of the projection — removing it gives its space back
-  somewhere else, or, in a snapshot, shares its blocks with the live files —
-  and the panel and the review screen say what was left out. A mark whose
-  volume cannot be told is not claimed either.
-
-The scan follows [dust](https://github.com/bootandy/dust)'s approach: one rayon
-scope per root, a completion counter per directory so no directory is built
-before its last subdirectory lands, and one bottom-up pass that aggregates sizes
-and removes duplicate hardlinks.
-
-## Choosing sources and roots
-
-Launch without a path to choose **This computer** or enter an SSH alias /
-`user@host` and press **Connect SSH**. Discovery reads that machine's mount
-namespace, not file contents. It never starts a scan or probes mounted
-network filesystems just to fill the list.
-
-Select a mount and choose **Scan selected root**, or enter an absolute
-directory path and choose **Scan directory**. Enter acts on the focused
-host/path field or the highlighted mount. Escape cancels discovery and
-returns to the current scan, or the idle welcome screen at startup.
-
-During exploration, press `v`, click **Source…** beside the disk name,
-or click the PwrDisk logo to reopen the same chooser. The source being
-browsed is shown explicitly, and connecting never retargets an existing
-scan. Changing machines on acceptance clears the old machine's marks,
-identity and navigation history; an absolute path is not an identity
-across hosts. A rescan that detects a changed or lost remote machine
-identity also clears marks, even if the SSH alias is unchanged.
-
-Pseudo-filesystems, snapshots and automount triggers are filtered out.
-Linux bind mounts and btrfs subvolumes remain individually selectable,
-even when they share a device. Free space is measured only after choosing
-a root. Explicit command-line paths and `--disk` still start directly;
-`ssh HOST --check [PATH]` remains the headless scan command.
-
-## The whole disk
-
-Click `/` (or any directory above the scanned root) in the trail, press
-`g`, run `pwrdisk --disk`, or use the launcher's *Scan the whole disk*
-action. `g` and `--disk` scan the disk your home directory lives on — `/`
-on Omarchy and on macOS. On macOS the Data volume's second mount,
-`/System/Volumes/Data`, exposes only its private `.fseventsd` and
-`.Spotlight-V100` stores: `/Users`, `/Applications` and the rest would be
-the same files again under other names.
-
-Widening is memoized: the tree already measured is handed to the wider walk
-and reused where it is reached, so going from `~` to `/` reads only what is
-outside `~` (on this machine, seconds instead of a full rescan). The current
-view stays on screen until the wider tree lands, which then opens with the
-directory you came from selected. Going back down is just navigation.
-
-By default a scan stops at **every nested mount point**, including bind
-mounts and same-device btrfs subvolumes. Boundaries are checked by path,
-before metadata or directory reads, so an automounted NAS is not activated
-just to measure its parent. Choose `/home`, `/var/log`, or another mount as
-its own root rather than implicitly traversing it from `/`.
-
-Local `-X` explicitly crosses mounts; remote streaming scans reject it.
-A local mark on another volume is still removed, but is not added to the
-metered volume's free-space projection.
-
-Without root, some system directories cannot be read; they are counted as
-unreadable in the top bar rather than guessed at.
-
-## On Windows
-
-The same program, with Windows' answers to the questions above:
-
-- **Disk usage** is the allocation NTFS reports for each file: whole
-  clusters, less for a compressed or sparse file, nothing for one small
-  enough to live in its file record. It arrives with the directory listing
-  itself (`FileIdExtdDirectoryInfo`), so it costs no more than the walk.
-  Hardlinks count once on NTFS.
-- **The whole disk** is the drive your profile is on, usually `C:\`. A
-  folder another volume is mounted on is a link, like a junction, and is
-  not entered, so a scan stays on one volume; `-l` follows links, and with
-  them mounted folders.
-- **Run as administrator** and the whole disk is read from NTFS's master
-  file table instead of walked, as WizTree does: one pass over the table in
-  large reads. On a 4-million-file `C:\` that took about 3.4 s against 11.2
-  s for WizTree and about 20 s for the walk. It also sees what the walk is
-  refused, such as System Volume Information. It is used only for a whole
-  NTFS drive, since a folder would still cost the whole table, and not with
-  `-l`, whose links the table does not follow. PwrDisk flushes the volume
-  after its own removals so the rescan shows them; changes other programs
-  made seconds before may not show yet.
-  Started without admin rights, PwrDisk walks as before. On a whole NTFS
-  drive without `-l`, or once Windows refuses the walk a folder, the side
-  panel offers **Restart as Administrator**, which reopens the same folder
-  and options through the UAC prompt; during a widening scan, the wider
-  folder being scanned.
-- **Move to trash** is the Recycle Bin, through the shell, which asks
-  before destroying anything it cannot recycle.
-- **Refused besides the rules below:** Windows, Program Files and
-  ProgramData, what Windows keeps at the top of its drive (System Volume
-  Information, Recovery, Boot, and the page and hibernation files, which
-  Settings turns off), any folder holding your profile, such as
-  `C:\Users`, and every profile in the folder Windows keeps them in
-  (`C:\Users\*`, `Public` and `Default` included), since an elevated
-  PwrDisk may run as another account and can reach them all. What is
-  inside a profile can still be removed, as under your own. Names compare
-  without regard to case, as Windows compares them.
-- **Hidden** means a name starting with a dot, or the hidden attribute, so
-  `-H` drops `AppData` as Explorer hides it.
-- **The theme** follows Windows' light or dark setting, since there is no
-  Omarchy theme to follow. It does on macOS too, and on GNOME and KDE.
-
-## What it refuses to do
-
-The removal rules live in `crates/disktree-core/src/removal.rs`, and each one is
-tested:
-
-- only paths under the scanned root can be removed;
-- the filesystem root, the scanned root and your home directory are refused;
-- a mount point is refused, and so is anything with a mount point inside it,
-  since removing it would reach into another filesystem; permanent deletion
-  also stops at a mount boundary rather than descending into one (a btrfs
-  subvolume that is not mounted goes with its directory, as the scan shows
-  it);
-- a directory holding your home directory or a system tree is refused (on
-  macOS `/Users` is on the same volume as `/`, and `/opt` holds
-  `/opt/homebrew`);
-- system trees (`/usr`, `/etc`, `/boot`, `/var/lib`, `/nix/store`,
-  `/gnu/store`, Homebrew's prefix on macOS and Linux, …) are
-  refused even where permissions would allow it: packages own them, and
-  pacman, paccache or `journalctl --vacuum` are the tools;
-- a symlink is unlinked, never followed;
-- nothing is passed through a shell — a file called `-rf` is just a file;
-- selecting a checkout never runs a program it names: git is asked with its
-  fsmonitor, hooks and pager off, and a checkout that defines its own filter
-  drivers is not asked for its status at all ("changes unknown").
-
-## On Hyprland
-
-Hyprland tiles new windows, so PwrDisk opens into whatever tile it is given.
-It is designed for a roomy window; float it, or give it a rule. The window
-class is `pwrdisk`.
-
-```
-windowrule = float, class:^(pwrdisk)$
-windowrule = size 1400 900, class:^(pwrdisk)$
-```
-
-## Develop
-
-```sh
-make run      # release build, opening the source/root chooser
-make lint     # rustfmt --check, then clippy with every warning an error
-make test     # scanner, layout and removal tests, plus window-harness tests
-make test-ssh # real localhost SSH scans/errors; Linux, bun + openssh required
-make ci       # lint, then test
-```
-
-The lint gate is strict on purpose: `clippy::all` and `clippy::pedantic` are
-errors, and every exception is written down with its reason in `Cargo.toml`.
-The window-harness tests draw real frames and press real keys — including one
-that marks a directory, confirms the deletion and checks that the files are
-gone while their neighbours are not.
-
-| path | what lives there |
-| --- | --- |
-| `crates/disktree-core` | scanning, the tree, the squarified layout, free space and removal — no UI |
-| `crates/disktree-mcp` | `pwrdisk mcp`: the agent's tools and skills over stdio, on `disktree-core` |
-| `crates/disktree-link` | the socket between a window and an agent, and its messages |
-| `skills/` | the skills `pwrdisk mcp` compiles in: explain usage, free space, and each system's cautions |
-| `crates/disktree-app/src/state.rs` | every action the interface can take, and the key map |
-| `crates/disktree-app/src/views.rs` | the screens |
-| `crates/disktree-app/src/treemap_view.rs` | painting the mosaic and its labels |
-| `crates/disktree-app/src/ui.rs` | the spacing, type and size scale, in `rem` |
-| `crates/disktree-app/src/tests.rs` | end-to-end tests through a real window |
-| `packaging/`, `assets/`, `Makefile` | the desktop entry, the icon, and install |
-
-The interface follows the
-[GPUI Kit design guides](https://gpui-kit.com/versions/main/docs/design-guides/):
-every size is on one `rem` scale so interface zoom keeps its proportions,
-primary is reserved for what Enter does, and the only question the app asks is
-the one it cannot take back.
+[docs/building.md](docs/building.md) has what each system needs, signing
+your own Mac build, and how to work on the code.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE) and
+[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).

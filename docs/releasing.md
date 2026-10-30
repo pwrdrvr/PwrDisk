@@ -35,15 +35,17 @@ release fails at the end, so delete that release first.
 
 | Platform | Assets |
 | --- | --- |
-| macOS | `PwrDisk-<v>-universal.dmg`, `PwrDisk-osx-Portable.zip`, `PwrDisk-<v>-osx-full.nupkg` (and `-delta`), `releases.osx.json`, `assets.osx.json`, `RELEASES-osx`, `PwrDisk-<v>-macos-SHA256SUMS` |
+| macOS | `PwrDisk-<v>-universal.dmg` and the same file as `PwrDisk.dmg`, `PwrDisk-osx-Portable.zip`, `PwrDisk-<v>-osx-full.nupkg` (and `-delta`), `releases.osx.json`, `assets.osx.json`, `RELEASES-osx`, `PwrDisk-<v>-macos-SHA256SUMS` |
 | Windows x64 | `PwrDisk-win-Setup.exe`, `PwrDisk-win.msi`, `PwrDisk-win-Portable.zip`, `PwrDisk-<v>-full.nupkg` (and `-delta`), `releases.win.json`, `assets.win.json`, `RELEASES` |
 | Windows ARM64 | the same with `win-arm64` in place of `win` |
 | Windows, both | `PwrDisk-<v>-windows-SHA256SUMS` |
-| Linux | `pwrdisk-<v>-<arch>-linux.tar.gz` and `.sha256`, for x86_64 and aarch64 |
+| Linux | `pwrdisk-<v>-<arch>-linux.tar.gz` and `.sha256`, for x86_64 and aarch64, and the same tarballs as `pwrdisk-<arch>-linux.tar.gz` |
 
-Velopack's installer and portable names carry no version, so
+Velopack's installer and portable names carry no version, and the DMG and
+tarballs get unversioned copies, so links such as
 `https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-Setup.exe`
-stays a good link once a release is promoted. The `releases.<channel>.json`
+and `.../latest/download/PwrDisk.dmg` stay good once a release is promoted.
+The README's download buttons rely on them; rename one and update it too. The `releases.<channel>.json`
 feeds are what installed copies read; never delete them from a release.
 
 ## Versions

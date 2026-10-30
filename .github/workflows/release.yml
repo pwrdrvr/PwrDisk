@@ -149,6 +149,9 @@ jobs:
           echo "$version" > "dist/$name/VERSION"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          # The same tarball under a name without the version, so the
+          # README's .../releases/latest/download/ link never goes stale.
+          cp "dist/$name.tar.gz" "dist/pwrdisk-$ARCH-linux.tar.gz"
 
       - name: Upload Linux release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -431,6 +434,9 @@ jobs:
           if [ -f "releases/PwrDisk-$version-osx-delta.nupkg" ]; then
             cp "releases/PwrDisk-$version-osx-delta.nupkg" dist/
           fi
+          # The README links .../releases/latest/download/PwrDisk.dmg; a
+          # versioned name alone would make that link go stale every release.
+          cp "dist/PwrDisk-$version-universal.dmg" dist/PwrDisk.dmg
           (cd dist && shasum -a 256 -- * > "PwrDisk-$version-macos-SHA256SUMS")
           ls -l dist
 
