@@ -268,8 +268,10 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
   authorship.
 * **Don't edit `CHANGELOG.md` in feature or fix PRs.** Every open PR that
   adds a line conflicts with every other one. Put the user-facing summary in
-  the PR body; the release-prep PR (`chore(release): vX.Y.Z`) writes the
-  version's section from the PRs merged since the last tag.
+  the PR body; one release commit (`chore(release): vX.Y.Z`) writes the
+  version's section from changes since the last tag and is pushed directly
+  to `main` as a fast-forward update, without a release-prep PR. Follow
+  `.agents/skills/release/SKILL.md` when cutting a release.
 * **PRs go to the fork, `pwrdrvr/PwrDisk`.** In a checkout with several
   remotes, push only to the one pointing there; `tobi/disktree` and personal
   forks are read-only from here.

@@ -3,7 +3,9 @@
 1. Bump `version` in `[workspace.package]` of the root `Cargo.toml`, and move
    `CHANGELOG.md`'s Unreleased entries under a matching `## vX.Y.Z` heading.
    `cargo xtask release-check --tag vX.Y.Z` checks the two agree.
-2. Merge, then push the `vX.Y.Z` tag from `main`.
+2. Verify all preparation, commit it as one `chore(release): vX.Y.Z`
+   commit, and push directly to `main` as a fast-forward update. Do not
+   open a release-prep PR. Push the `vX.Y.Z` tag on that exact commit.
 3. Approve the `apple-signing` and `windows-signing` deployments in the
    Actions tab when the run pauses for them.
 4. The run creates a GitHub **Pre-release** with every asset once all

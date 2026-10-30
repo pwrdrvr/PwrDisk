@@ -1,6 +1,6 @@
 ---
 name: release
-description: Prepare and verify a PwrDisk release, land its release-prep PR, tag the verified commit, monitor signed publication, and hand off promotion. Use for cutting PwrDisk releases or checking release status; ordinary feature and fix PRs do not use this workflow.
+description: Prepare and verify a PwrDisk release, push one release commit directly to main, tag the verified commit, monitor signed publication, and hand off promotion. Use for cutting PwrDisk releases or checking release status; ordinary feature and fix PRs do not use this workflow.
 ---
 
 # PwrDisk release
@@ -13,15 +13,16 @@ Read the applicable `AGENTS.md`, [release runbook](../../../docs/releasing.md),
 Those files are authoritative; PwrRoute and PwrAgent have different publishing
 and promotion behavior.
 
-Match the user's requested scope: preparation ends with a reviewable PR;
-a request to cut a release includes landing preparation and pushing its tag.
+Match the user's requested scope: preparation ends with a reviewable local
+commit; a request to cut a release authorizes pushing that one release commit
+directly to `main`, then pushing its tag. Do not open a release-prep PR.
 Signing-environment approvals and promotion to Latest belong to the operator.
 Resume an existing preparation or run at its current stage rather than
 duplicating it.
 
 ## Establish the version and changes
 
-Inspect the worktree, remotes, current release PRs and published releases.
+Inspect the worktree, remotes, existing release commits and published releases.
 Push only to the remote pointing at `pwrdrvr/PwrDisk`; upstream and personal
 forks are read-only. Examples below assume that remote is `origin`.
 Preserve unrelated work, using an isolated worktree when needed.
@@ -43,10 +44,12 @@ PwrDisk continues upstream's version sequence; its first fork release is
 and `-beta.N` or `-alpha.N` for builds off main. Every release is initially a
 GitHub Pre-release; only suffix-free tags may be promoted to Latest.
 
-## Prepare the release PR
+## Prepare one release commit
 
-Start a release branch from current `origin/main`, or reuse an existing
-release-prep branch after inspecting its diff. The normal preparation is:
+Use a clean checkout of current `origin/main`. An isolated worktree can keep
+unrelated edits safe; it does not require a preparation branch or PR. Reuse
+existing unpublished preparation after inspecting its diff. Keep all release
+preparation in one commit on top of main. The normal preparation is:
 
 | File | Change |
 | --- | --- |
@@ -74,9 +77,13 @@ include measured results only when supported. Avoid PR-number lists and
 internal implementation notes. This section supplies the GitHub release notes
 and the notes Velopack displays beside an update.
 
-## Verify and land preparation
+## Verify and push main
 
-Run the repository gates and inspect their actual results:
+Run the repository gates and inspect their actual results. Follow
+[remote verification](../../../docs/sandboxer.md) for Linux checks when
+Sandboxer is available. Commit preparation locally before transferring it;
+if corrections are needed, amend the unpublished release commit and verify
+its final tree.
 
 ```bash
 cargo xtask release-check --tag vX.Y.Z
@@ -89,21 +96,29 @@ inspect workspace package versions in `Cargo.lock`; the gate checks the root
 version, tag and nonempty changelog section. Report unavailable or failed
 checks; do not claim the release is verified while the lint gate is red.
 
-Commit the release files as `chore(release): vX.Y.Z` and open a release-prep
-PR against the fork's `main`, following the repository PR guidance and
-`~/.codex/pr-style.md`. Describe the included user-visible changes and actual
-validation. A metadata-only release has no window change to screenshot.
-Before opening or attaching the PR, ensure the thread workspace holds its
-head commit. Attach and watch it using the PwrAgent tools as required by
-`AGENTS.md`.
+Commit the release files together as `chore(release): vX.Y.Z`. For a
+preparation-only request, hand off the verified local commit here.
 
-For a preparation-only request, hand off the PR here. For a release request,
-wait for required checks and merge under the repository's configured policy.
-Fetch main again and identify the actual merged commit. Verify its release
-metadata (including `release-check`) and diff against the checked preparation;
-never tag the pre-merge
-branch SHA by assumption. If additional changes entered the release scope,
-reconcile notes and repeat affected checks before tagging.
+For a release request, fetch `origin/main` again before pushing. If main
+advanced, replay the unpublished release commit onto it without a merge
+commit, reconcile the added changes with the release notes, and repeat
+affected checks. Confirm the final tree was verified and the only commit
+being added is the release preparation:
+
+```bash
+git fetch origin main
+git merge-base --is-ancestor origin/main HEAD
+git rev-list --count origin/main..HEAD
+```
+
+The ancestor check must succeed and the count must be exactly `1`. Push that
+commit as a normal fast-forward update with `git push origin HEAD:main`.
+Do not force-push, add a merge commit, or fall back to a PR if repository
+policy rejects the push; report the rejection and stop. Verify remote main
+holds the exact release commit before tagging it.
+
+Report the commit and verification results. Stop the verification sandbox
+after checks; this workflow has no PR watch to clean it up automatically.
 
 ## Tag and monitor publication
 
