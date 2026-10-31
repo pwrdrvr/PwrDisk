@@ -79,7 +79,7 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
                                         disktree_link::SelectionEstimate {
                                             paths: vec![candidate.clone()],
                                             lower: 0,
-                                            upper: 7,
+                                            upper: None,
                                             on_volume: 0,
                                             partial: true,
                                         },

@@ -3023,7 +3023,7 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         let state = app.agent_state();
         let estimate = state.estimate.expect("linked estimate");
         assert_eq!(estimate.paths, vec![root.join("copies")]);
-        assert_eq!((estimate.lower, estimate.upper), (0, 0));
+        assert_eq!((estimate.lower, estimate.upper), (0, Some(0)));
         assert_eq!(estimate.on_volume, 0);
     });
     // Remote selections are exports: local clone metadata and mount
@@ -3065,7 +3065,7 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         assert_eq!(plan.possible_bytes(), 8 * 1024 * 1024);
         let estimate = app.agent_state().estimate.expect("linked union");
         assert_eq!(estimate.lower, 8 * 1024 * 1024);
-        assert_eq!(estimate.upper, estimate.lower);
+        assert_eq!(estimate.upper, Some(estimate.lower));
     });
     draw(cx);
     crate::marks::work::reset();
@@ -4283,7 +4283,7 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     };
     assert_eq!(preview.estimate.paths, preview.paths);
     assert_eq!(preview.estimate.lower, 0, "apparent fixture sizes");
-    assert_eq!(preview.estimate.upper, preview.bytes);
+    assert_eq!(preview.estimate.upper, None);
     assert!(preview.estimate.partial);
     let confirmed = |preview: &disktree_link::RemovalPreview| {
         disktree_link::ConfirmedRemoval {

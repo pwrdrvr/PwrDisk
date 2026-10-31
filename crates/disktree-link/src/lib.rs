@@ -412,7 +412,9 @@ pub struct Mark {
 pub struct SelectionEstimate {
     pub paths: Vec<PathBuf>,
     pub lower: u64,
-    pub upper: u64,
+    /// Unknown when no physical measurement supports a bound (for example,
+    /// apparent lengths can be smaller than allocated blocks).
+    pub upper: Option<u64>,
     /// Only this lower bound belongs on the scanned volume's meter.
     pub on_volume: u64,
     /// A limited scan, unmeasured allocation or incomplete sharing metadata.
@@ -424,7 +426,7 @@ impl SelectionEstimate {
         Self {
             paths: plan.targets.iter().map(|t| t.path.clone()).collect(),
             lower: plan.reclaimable_bytes(),
-            upper: plan.possible_bytes(),
+            upper: Some(plan.possible_bytes()),
             on_volume: plan.reclaim(),
             partial: plan.estimate_partial(),
         }
@@ -433,7 +435,7 @@ impl SelectionEstimate {
     pub fn unknown(plan: &disktree_core::removal::Plan) -> Self {
         Self {
             lower: 0,
-            upper: plan.bytes(),
+            upper: None,
             on_volume: 0,
             partial: true,
             ..Self::of(plan)

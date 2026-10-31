@@ -1609,6 +1609,7 @@ impl Session {
                 .cloned()
                 .unwrap_or_else(|| SelectionEstimate::unknown(plan));
         }
+        let mut unmeasured = false;
         plan.estimate_selection(|targets| {
             let mut nodes = Vec::with_capacity(targets.len());
             let mut unknown = Estimate::default();
@@ -1618,6 +1619,7 @@ impl Session {
                         || (cfg!(target_os = "macos")
                             && !found.scan.options.apfs_clone_metadata)
                     {
+                        unmeasured = true;
                         unknown.upper =
                             unknown.upper.saturating_add(target.bytes);
                         unknown.partial = true;
@@ -1638,7 +1640,11 @@ impl Session {
                 partial: measured.partial || unknown.partial,
             }
         });
-        SelectionEstimate::of(plan)
+        let mut estimate = SelectionEstimate::of(plan);
+        if unmeasured {
+            estimate.upper = None;
+        }
+        estimate
     }
 
     /// Accepted targets, covered marks, guard refusals and savings bounds.
@@ -1858,7 +1864,9 @@ fn estimate_report(estimate: &SelectionEstimate) -> String {
         "Selected-set reclaim estimate: {}–{}{}. Before snapshots, open files \
          and changes since the scan; actual freed space can be lower.\n",
         human_bytes(estimate.lower),
-        human_bytes(estimate.upper),
+        estimate
+            .upper
+            .map_or_else(|| "unknown upper bound".into(), human_bytes),
         if estimate.partial {
             " (incomplete scan or metadata)"
         } else {
@@ -2191,7 +2199,7 @@ mod tests {
         let estimate = session.selection_estimate(&mut unknown);
         assert_eq!(
             (estimate.lower, estimate.upper, estimate.on_volume),
-            (0, 123, 0)
+            (0, Some(123), 0)
         );
         assert!(estimate.partial);
         session.scans[0].options.apparent_size = true;
@@ -2199,7 +2207,7 @@ mod tests {
         let estimate = session.selection_estimate(&mut unmeasured);
         assert_eq!(estimate.lower, 0);
         assert_eq!(estimate.on_volume, 0);
-        assert_eq!(estimate.upper, 100 * 1024 * 1024 * 1024);
+        assert_eq!(estimate.upper, None);
         assert!(estimate.partial);
     }
 
@@ -2717,7 +2725,7 @@ mod tests {
                     window.estimate = Some(SelectionEstimate {
                         paths: vec![],
                         lower: u64::MAX,
-                        upper: u64::MAX,
+                        upper: Some(u64::MAX),
                         on_volume: u64::MAX,
                         partial: false,
                     });
