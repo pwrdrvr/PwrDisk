@@ -26,7 +26,7 @@ macOS, Windows and Linux.</p>
 
 <br><br>
 
-<img src="assets/screenshot.png" width="100%" alt="A home directory as a treemap. Each folder is a tile sized by the disk space it uses and coloured by the kind of data in it: code, agent scratch, toolchains, synced files, git, media, documents and caches. Space that can be reclaimed is hatched. The side panel shows the selection's size, a Worth a look list of the largest things that could go, and the disk's free space.">
+<img src="assets/screenshot.png" width="100%" alt="PwrDisk scanning a home folder on a 1 TiB disk with 21 GiB free. Each folder is a tile sized by its space and coloured by kind: Projects with its Rust target folders and node_modules, agent worktrees, movies, local AI models, photos, Dropbox, caches and toolchains. Reclaimable space is hatched. The side panel shows the selected Projects folder at 185 GiB, a Worth a look list led by .cache at 69 GiB, and the disk meter.">
 
 </div>
 
