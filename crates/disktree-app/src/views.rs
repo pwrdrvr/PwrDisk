@@ -169,6 +169,9 @@ pub fn root(
         ))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ShowKeyboardShortcuts, _, cx| {
+                // One overlay at a time: they share element ids, and Esc
+                // would close the one underneath first.
+                this.show_agent = false;
                 this.show_help = true;
                 cx.notify();
             },
@@ -183,6 +186,7 @@ pub fn root(
         ))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ConnectAgent, window, cx| {
+                this.show_help = false;
                 this.show_agent = true;
                 window.focus(&this.focus, cx);
                 cx.notify();
@@ -438,6 +442,9 @@ fn centred_popup(
         )
 }
 
+/// Clears an overlay's flag; one value serves its Done and its backdrop.
+type CloseOverlay = fn(&mut Disktree);
+
 /// The backdrop of an overlay that only shows something: it dims the
 /// window, takes every mouse event so nothing behind it hovers or clicks,
 /// and closes the overlay on a click outside the card. The card is never
@@ -445,7 +452,7 @@ fn centred_popup(
 fn overlay_backdrop(
     id: &'static str,
     card: impl IntoElement,
-    close: impl Fn(&mut Disktree) + 'static,
+    close: CloseOverlay,
     cx: &Context<'_, Disktree>,
 ) -> Stateful<Div> {
     let theme = cx.omarchy();
@@ -462,6 +469,8 @@ fn overlay_backdrop(
         // reads as a dialog instead of a page.
         .p(space::LG)
         .on_any_mouse_down(cx.listener(move |this, _, window, cx| {
+            // The click only dismisses; nothing behind or above sees it.
+            cx.stop_propagation();
             close(this);
             window.focus(&this.focus, cx);
             cx.notify();
@@ -486,7 +495,7 @@ fn overlay_backdrop(
 /// default button sits, on the right.
 fn overlay_footer(
     note: String,
-    close: impl Fn(&mut Disktree) + 'static,
+    close: CloseOverlay,
     cx: &Context<'_, Disktree>,
 ) -> Div {
     let theme = cx.omarchy();
@@ -4356,6 +4365,7 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
         );
     }
 
+    let close: CloseOverlay = |this| this.show_help = false;
     let note = format!(
         "? or esc closes \u{00b7} {} \u{00b7} {}",
         app.root_path.display(),
@@ -4394,8 +4404,8 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                     ),
             )
             .child(keys)
-            .child(overlay_footer(note, |this| this.show_help = false, cx)),
-        |this| this.show_help = false,
+            .child(overlay_footer(note, close, cx)),
+        close,
         cx,
     )
 }
@@ -4777,6 +4787,7 @@ fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                  and marks on its own."
             .to_string(),
     };
+    let close: CloseOverlay = |this| this.show_agent = false;
     overlay_backdrop(
         "agent-backdrop",
         div()
@@ -4801,10 +4812,10 @@ fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             .child(body)
             .child(overlay_footer(
                 format!("{status} \u{00b7} esc closes"),
-                |this| this.show_agent = false,
+                close,
                 cx,
             )),
-        |this| this.show_agent = false,
+        close,
         cx,
     )
 }

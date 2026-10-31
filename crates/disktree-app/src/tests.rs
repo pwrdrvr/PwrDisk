@@ -1302,6 +1302,57 @@ fn the_help_overlay_opens_and_closes(cx: &mut TestAppContext) {
     assert!(!read(&view, cx, |app| app.show_help));
 }
 
+/// No dialog draws the treemap's hover card behind it.
+#[gpui_kit::test]
+fn the_tooltip_hides_under_an_overlay(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let origin = read(&view, cx, |app| app.treemap_origin.get());
+    let at = origin + Point::new(px(40.), px(40.));
+    cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::default());
+    draw(cx);
+    assert!(cx.debug_bounds("cursor-tooltip").is_some(), "a tooltip");
+
+    // The overlays' backdrop takes the mouse, so the treemap drops its
+    // hover; the volumes and delete dialogs leave it, and rely on the rule.
+    let dialogs: [OpenOverlay; 2] =
+        [|app| app.show_help = true, |app| app.volumes_open = true];
+    for open in dialogs {
+        update(&view, cx, |app, cx| {
+            open(app);
+            cx.notify();
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("cursor-tooltip").is_none(), "hidden");
+        update(&view, cx, |app, cx| {
+            app.show_help = false;
+            app.volumes_open = false;
+            cx.notify();
+        });
+        cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("cursor-tooltip").is_some(), "back");
+    }
+}
+
+/// The menu opens one overlay at a time: the other one closes.
+#[gpui_kit::test]
+fn the_menu_shows_one_overlay_at_a_time(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    cx.dispatch_action(crate::app_menu::ConnectAgent);
+    cx.dispatch_action(crate::app_menu::ShowKeyboardShortcuts);
+    draw(cx);
+    assert!(read(&view, cx, |app| app.show_help && !app.show_agent));
+    cx.dispatch_action(crate::app_menu::ConnectAgent);
+    draw(cx);
+    assert!(read(&view, cx, |app| app.show_agent && !app.show_help));
+}
+
 /// Opens one overlay, for the cases of `overlays_fit_a_short_window`.
 type OpenOverlay = fn(&mut Disktree);
 
