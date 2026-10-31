@@ -5075,13 +5075,14 @@ fn accessible_list_review_sibling_navigation_tracks_page(
     let (view, cx) = view_over(temp.path(), cx);
     focus_file_list(&view, cx);
     update(&view, cx, |app, cx| app.select(Some(vec![99]), cx));
-    press(cx, "tab");
+    // Tab traverses controls; n retains the shared sibling-navigation path.
+    press(cx, "n");
     assert_eq!(read(&view, cx, |app| app.selected.clone()), Some(vec![100]));
     assert_eq!(read(&view, cx, |app| app.file_page), 1);
     assert!(cx.debug_bounds("file-row-100").is_some());
     assert!(cx.debug_bounds("file-row-99").is_none());
     let marked = read(&view, cx, |app| app.path_at(&[100]).unwrap());
-    press(cx, "space shift-tab");
+    press(cx, "space shift-n");
     assert_eq!(read(&view, cx, |app| app.selected.clone()), Some(vec![99]));
     assert_eq!(read(&view, cx, |app| app.file_page), 0);
     assert!(cx.debug_bounds("file-row-99").is_some());
