@@ -154,7 +154,7 @@ and shows how much free space was actually gained.
 | `shift`-scroll | pan the magnified view |
 | `[` `]` | draw fewer or more levels at once |
 | `-` `=` `0` | magnify, shrink, reset the view |
-| `ctrl =` `ctrl -` `ctrl 0` (`⌘` on macOS) | interface zoom |
+| `ctrl =` `ctrl -` `ctrl 0` (`⌘` on macOS) | interface zoom, 75–200%, shared by all windows |
 | `/` | filter by name: only matches keep their colour; `enter` shows only them, `esc` clears |
 | `c` | review the marked list |
 | `t` | size, files or age: what areas and colours say |
@@ -670,3 +670,10 @@ class is `pwrdisk`.
 windowrule = float, class:^(pwrdisk)$
 windowrule = size 1400 900, class:^(pwrdisk)$
 ```
+
+
+Help keeps its heading and Close button visible while the shortcut list
+scrolls. Use arrows, PageUp/PageDown and Home/End to read it. Settings panes
+scroll with PageUp/PageDown and Home/End; Ctrl+PageUp/PageDown still switches
+panes. Documents wrap to the window and scale. Logs uses PageUp/PageDown to
+scroll within long wrapped lines, while Up/Down selects lines for copying.

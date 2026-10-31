@@ -92,9 +92,9 @@ impl<'a> ReviewStatus<'a> {
     }
 }
 
-/// Keep room for the current crumb beside the shipped toolbar; below this
-/// budget the same controls wrap on a second row.
-const INLINE_SETTINGS_REMS: f32 = 80.0;
+/// When the panel gives way, wrap controls below the strip too. Keeping
+/// both changes at one width budget preserves the short panel's scroll lane.
+const INLINE_SETTINGS_REMS: f32 = PANEL_SHOWN_REMS;
 
 /// Below the list-plus-explanation width budget, review becomes one column.
 const REVIEW_COLUMNS_REMS: f32 = 65.0;
@@ -1631,8 +1631,16 @@ fn view_settings(
         .flex_row()
         .items_center()
         .gap(space::SM)
-        .flex_wrap()
-        .min_w_0()
+        .when(
+            window.viewport_size().width.as_f32() / app.rem
+                < INLINE_SETTINGS_REMS,
+            |row| row.flex_wrap().min_w_0(),
+        )
+        .when(
+            window.viewport_size().width.as_f32() / app.rem
+                >= INLINE_SETTINGS_REMS,
+            gpui_kit::Styled::flex_shrink_0,
+        )
         .child(history)
         .child(mode)
         .child(hidden)

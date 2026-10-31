@@ -58,14 +58,11 @@ const NOTE_FOR: Duration = Duration::from_secs(3);
 /// returns to), so what led to it shows.
 const REVEAL_ABOVE: usize = 2;
 
-/// How far Page Up and Page Down move the line selection.
-const PAGE_LINES: usize = crate::semantics::PAGE_STEP;
-
 /// What the reader is and which keys it takes, for assistive technology.
 const READER_LABEL: &str = "Logs; Tab moves through controls; Escape \
      leaves search; Up/Down selects lines, Shift extends selection, \
-     Home/End reaches either end; Command or Control C copies selected \
-     lines";
+     Home/End reaches either end, PageUp/PageDown scroll within wrapped \
+     lines; Command or Control C copies selected lines";
 /// Where the view's settings are kept, in the settings folder.
 const PREFS_FILE: &str = "logs-view.json";
 
@@ -587,6 +584,11 @@ impl LogsWindow {
 
     // ---- Search ----------------------------------------------------------
 
+    #[cfg(test)]
+    pub fn scroll_offset(&self) -> Pixels {
+        self.list.scroll_px_offset_for_scrollbar().y
+    }
+
     /// The search field, for the tests to type into.
     #[cfg(test)]
     pub fn search_state(&self) -> Entity<InputState> {
@@ -821,7 +823,20 @@ impl LogsWindow {
             }
             (true, "a") => self.select_all(cx),
             (true, "c") => self.copy_selection(cx),
-            (false, "up" | "down" | "pageup" | "pagedown" | "home" | "end") => {
+            (false, "pageup" | "pagedown") => {
+                // Four fifths of the view, so a line on the edge stays in
+                // sight across the page and a long wrapped line can be read
+                // a screen at a time.
+                let page = self.list.viewport_bounds().size.height * 0.8;
+                self.live = false;
+                self.list.scroll_by(if keystroke.key == "pageup" {
+                    -page
+                } else {
+                    page
+                });
+                cx.notify();
+            }
+            (false, "up" | "down" | "home" | "end") => {
                 let numbers: Vec<_> = self
                     .view
                     .rows()
@@ -841,17 +856,17 @@ impl LogsWindow {
                     // the first line and moving up at the last, rather
                     // than stepping past either.
                     let next = match (keystroke.key.as_str(), at) {
-                        ("end", _) | ("up" | "pageup", None) => last,
+                        ("end", _) | ("up", None) => last,
                         ("home", _) | (_, None) => 0,
                         ("up", Some(at)) => at.saturating_sub(1),
-                        ("pageup", Some(at)) => at.saturating_sub(PAGE_LINES),
-                        ("pagedown", Some(at)) => (at + PAGE_LINES).min(last),
                         (_, Some(at)) => (at + 1).min(last),
                     };
                     let number = numbers[next];
                     self.click_number(number, keystroke.modifiers.shift, cx);
                     self.live = false;
-                    if let Some(row) = self.view.row_of(number) {
+                    if keystroke.key == "end" {
+                        self.list.scroll_to_end();
+                    } else if let Some(row) = self.view.row_of(number) {
                         self.reveal_row(row);
                     }
                     cx.notify();

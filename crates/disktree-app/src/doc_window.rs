@@ -22,7 +22,6 @@ use gpui_omarchy::{ActiveTheme as _, ButtonVariant, Theme, button};
 
 use crate::aux_window::{self, Spec};
 use crate::chrome::Drags;
-use crate::semantics::PAGE_STEP;
 use crate::ui::{size, space, text};
 
 pub const CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
@@ -102,7 +101,7 @@ pub struct DocWindow {
     pub focus: FocusHandle,
     pub position: usize,
     block_scroll: ScrollHandle,
-    wrap_key: Option<(u32, u32)>,
+    wrap_key: Option<(u32, u32, SharedString)>,
 }
 
 enum Body {
@@ -164,8 +163,12 @@ impl DocWindow {
         let width = (window.viewport_size().width - rem * 5.0)
             .max(advance * 8.0)
             .min(advance * WRAP_COLUMNS as f32);
-        let key = (width.as_f32().to_bits(), rem.as_f32().to_bits());
-        if self.wrap_key == Some(key) {
+        let key = (
+            width.as_f32().to_bits(),
+            rem.as_f32().to_bits(),
+            theme.mono_font.clone(),
+        );
+        if self.wrap_key.as_ref() == Some(&key) {
             return;
         }
         self.wrap_key = Some(key);
@@ -200,7 +203,7 @@ impl DocWindow {
     fn key(
         &mut self,
         event: &KeyDownEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         let key = &event.keystroke.key;
@@ -210,6 +213,32 @@ impl DocWindow {
         {
             self.copy(cx);
         } else {
+            if matches!(&self.body, Body::Changelog(_))
+                && matches!(key.as_str(), "pageup" | "pagedown")
+            {
+                crate::ui::scroll_key(
+                    key,
+                    &self.block_scroll,
+                    window.rem_size(),
+                );
+                self.position = self.block_scroll.top_item();
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
+            let page = match &self.body {
+                Body::Changelog(_) => 1,
+                Body::Lines(_, scroll) => {
+                    let measured = scroll.0.borrow();
+                    measured.last_item_size.map_or(1, |size| {
+                        ((measured.base_handle.bounds().size.height.as_f32()
+                            / size.item.height.as_f32())
+                        .floor() as usize)
+                            .saturating_sub(1)
+                            .max(1)
+                    })
+                }
+            };
             let count = match &self.body {
                 Body::Changelog(blocks) => blocks.len(),
                 Body::Lines(lines, _) => lines.len(),
@@ -221,16 +250,24 @@ impl DocWindow {
                 "down" => {
                     self.position.saturating_add(1).min(count.saturating_sub(1))
                 }
-                "pageup" => self.position.saturating_sub(PAGE_STEP),
+                "pageup" => self.position.saturating_sub(page),
                 "pagedown" => self
                     .position
-                    .saturating_add(PAGE_STEP)
+                    .saturating_add(page)
                     .min(count.saturating_sub(1)),
                 _ => return,
             };
             match &self.body {
                 Body::Changelog(_) => {
-                    self.block_scroll.scroll_to_item(self.position);
+                    if matches!(key.as_str(), "home" | "end") {
+                        crate::ui::scroll_key(
+                            key,
+                            &self.block_scroll,
+                            window.rem_size(),
+                        );
+                    } else {
+                        self.block_scroll.scroll_to_item(self.position);
+                    }
                 }
                 Body::Lines(_, scroll) => {
                     scroll.scroll_to_item(self.position, ScrollStrategy::Top);
@@ -369,12 +406,12 @@ impl Render for DocWindow {
 }
 
 /// The keys a document reader takes, for assistive technology.
-const LINES_KEYS: &str = "Up/Down reads a line, PageUp/PageDown moves \
-     twenty lines, Home/End reaches either end, Command or Control C \
+const LINES_KEYS: &str = "Up/Down reads a line, PageUp/PageDown reads \
+     a page, Home/End reaches either end, Command or Control C \
      copies all";
 
 const CHANGELOG_LABEL: &str = "Changelog; Up/Down reads a block, \
-     PageUp/PageDown moves twenty blocks, Home/End reaches either end, \
+     PageUp/PageDown scrolls a page, Home/End reaches either end, \
      Command or Control C copies all";
 
 /// One line of a plain document, named with its number; the current line

@@ -456,7 +456,10 @@ fn indexing_keeps_free_space_visible_in_short_zoomed_windows(
             assert!(scrolled.origin.y < progress.origin.y);
         }
         // The stop button is the last progress row; it must be reachable.
-        assert!(scrolled.bottom() <= scroll.bottom(), "{scrolled:?}");
+        assert!(
+            scrolled.bottom() <= scroll.bottom(),
+            "{width}×{height}, rem {rem}: {scrolled:?}, viewport {scroll:?}"
+        );
         assert!(scrolled.bottom() > scroll.origin.y, "{scrolled:?}");
         assert_eq!(disk, cx.debug_bounds("disk-section").unwrap());
         update(&view, cx, |app, _| app.progress.finalizing = true);
@@ -6916,4 +6919,33 @@ fn logs_wrap_at_minimum_size_and_double_scale(cx: &mut TestAppContext) {
     let row = cx.debug_bounds("log-row-1").expect("wrapped line");
     assert!(row.right() <= px(640.), "{row:?}");
     assert!(view.read_with(cx, |view, _| view.wrap));
+}
+
+/// A single wrapped log line can be taller than the entire window. Paging
+/// must expose its lower text instead of repeatedly selecting its start.
+#[gpui_kit::test]
+fn page_scrolls_inside_an_oversized_log_line(cx: &mut TestAppContext) {
+    let text = format!(
+        "2026-10-31T12:00:00.000-04:00 INFO  fixture: {}\n",
+        "invented 日本語 ".repeat(300)
+    );
+    let (_dir, _path, view, cx) = logs_over(cx, &text);
+    cx.simulate_resize(gpui_kit::size(px(640.), px(480.)));
+    cx.update(|window, cx| {
+        window.set_rem_size(px(32.));
+        view.read(cx)
+            .search_state()
+            .update(cx, |search, cx| search.focus(window, cx));
+    });
+    draw(cx);
+    press(cx, "escape");
+    press(cx, "home");
+    let before = view.read_with(cx, |view, _| view.scroll_offset());
+    press(cx, "pagedown");
+    let after = view.read_with(cx, |view, _| view.scroll_offset());
+    assert!(
+        after < before,
+        "paging progresses inside one log line: {before:?} -> {after:?}"
+    );
+    assert_eq!(view.read_with(cx, |view, _| view.selection), Some((1, 1)));
 }
