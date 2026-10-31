@@ -883,3 +883,140 @@ Writing it with `defaults` reached new processes but not the running app,
 which re-reads only when the system announces the change, so those clips
 show nothing about live following and are not counted. Live toggling rests on
 the earlier native trace above and the harness's mid-flight cancel.
+
+### PWR-36 remediation: native evidence and remaining acceptance
+
+The baseline above remains a historical result for `4d68f6cb`. The
+following matrix records the remediation stack separately from that
+baseline. A passing harness assertion does not establish a native API or
+screen-reader result. All eight remediation issues remain In Progress and
+the PRs remain drafts while native acceptance is incomplete.
+
+| Issue / focused PR | Source and harness | Native evidence | Remaining acceptance |
+| --- | --- | --- | --- |
+| PWR-29 / [#38](https://github.com/pwrdrvr/PwrDisk/pull/38) | Paged file reader, raw path IDs, full metadata, selection, marks, review summaries; large-list and guard checks | macOS AX file/page/Unicode/selected/review subset observed. Linux X11 AT-SPI file names, roles, metadata, selection and advertised actions observed in this pass | Actual AT reading/action/focus, review on Windows/Linux; removal approval remains human/harness only |
+| PWR-30 / [#40](https://github.com/pwrdrvr/PwrDisk/pull/40) | Source inputs, validation, polite sampled progress, cancellation, volume/mark status | macOS AX host/root value, error/completion/volume subset; Linux final status and volume names observed | Native live announcements/throttling, SSH success/failure and cancellation across readers |
+| PWR-31 / [#42](https://github.com/pwrdrvr/PwrDisk/pull/42) | Tab order, modal containment/restoration, disabled controls, menu keys | macOS AX modal boundaries and keyboard subset; Linux advertised menu/button actions read without invoking them | AT focus/activation; Windows/Linux custom menus; Linux disabled-state mapping discrepancy below |
+| PWR-32 / [#43](https://github.com/pwrdrvr/PwrDisk/pull/43) | Settings/Help/document text, original-source Copy, log navigation/search/selection | macOS AX readable auxiliary subset; native Logs End/search/selection at 200% in this pass | AT reading order/actions and native platforms; final native search value `299` observed after controller recovery |
+| PWR-33 / [#45](https://github.com/pwrdrvr/PwrDisk/pull/45) | Production tile-state contrast thresholds across 8,910 combinations; text backing and non-color cues | Contrived default dark rendering and later explicit light preset inspected | OS high contrast, real custom themes, remaining control/caption contexts and Windows/Linux appearance; no whole-window contrast certification |
+| PWR-34 / [#46](https://github.com/pwrdrvr/PwrDisk/pull/46) | Shared 75–200% UI scale; minimum reading lanes, reflow and target checks | macOS Help/Settings/License/file reader subset; native Logs check found the additional search collapse fixed here | OS display/text scaling, all supported desktop/AT combinations and scroll-to-focus |
+| PWR-35 / [#47](https://github.com/pwrdrvr/PwrDisk/pull/47) | Immediate navigation and active-transition cancellation regressions | macOS OS preference off/on/off in one running fixture; initial value restored | Native Windows/Linux motion policy and perceptual/AT evaluation |
+| PWR-36 / native validation PR | Read-only AT-SPI diagnostic, direct file-reader fixture, native-discovered Logs/label corrections | Results below; unavailable cases stay explicit | Windows UIA/Narrator/NVDA; VoiceOver; Orca, real X11/Wayland desktop, OS scaling/high contrast |
+
+#### Native-discovered corrections
+
+At 200% in a 1120×720 requested Logs window, the search field collapsed
+to its icon and overlapped the Filter control. The search wrapper used a
+zero flex basis, letting neighboring controls consume its width. It now
+retains the existing `LOG_FILTER` minimum and lets the controls wrap. The
+footer truncates the visual path while retaining its complete accessible
+text. The strengthened regression fails before (275 px input at the
+640×480 stress size) and passes after at widths 640, 880 and 1120, 32 px
+rem. The wrapped line remains present.
+
+The matched native images use only the invented 300-line Unicode log,
+macOS 27.0.1 arm64, 200% application zoom, 2240×1442 window captures at 2×
+backing scale. Before: source `24cc28a`, fixture SHA-256
+`cb19f7a034b46df12cb95f4299dd56fa80f86426bd533464d625c728617d9899`.
+After: source `4364396`, SHA-256
+`d6facbbecb1923e2185b8c45066cfe9aefb31f5c0f7d205b03f05a9b96066fd4`.
+The final semantic-only corrections do not alter this layout. End selects
+line 300 with its complete Unicode accessible name; clearing selection
+removes the copy overlay. Typing `299` leaves one matching line. The search
+control initially omitted its typed value in AX; production now supplies
+`aria_value`. The native recheck initially timed out repeatedly. After controller
+recovery at `2cef5c5`, AX exposes the typed value `299` and one matching
+line (300), establishing the corrected value export. An owned fixture
+sample during the timeout showed AppKit event-loop/AX Raise work without
+establishing a cause. No reader speech is inferred.
+
+Linux also exposed an empty static-label name despite an application
+`aria_label`. The pinned AT-SPI adapter derives a static label's name from
+its value (`label_comes_from_value`); the shared text helper now supplies
+both on Linux. The file and review summaries use that shared helper.
+A macOS comparison showed that supplying static values there made the
+controller report static text as settable even with the read-only flag;
+this workaround is therefore scoped to Linux, preserving the original
+macOS/Windows label metadata. This is a focused export correction with
+the native result below.
+
+#### Native platform/AT matrix
+
+| Layer | Result and conditions |
+| --- | --- |
+| macOS AX | PASS subsets documented per issue, under macOS 27.0.1 build 26A434 arm64. The controller continues to identify the window as focused; this does not establish VoiceOver focus. Final Logs value `299` and one matching line observed at `2cef5c5` after controller recovery; static-label values are scoped to Linux to preserve macOS metadata |
+| VoiceOver | BLOCKED: baseline launch failed; current System Settings reports off. Automatic approval review rejected enabling VoiceOver without explicit setting-change authorization. Permission requested; it was left off. No spoken output claimed |
+| Windows native build/UIA | BLOCKED: Windows 11 build 26200 x64 peer remains disconnected on recheck |
+| Narrator/NVDA | BLOCKED with the Windows peer; neither version nor speech was observed |
+| Linux native AT-SPI | Native GPUI X11 fixture under Xvfb and an isolated session/AT-SPI bus; Mesa llvmpipe software Vulkan. File-list/status observations and remaining state issue below. This is not the window harness |
+| Orca | BLOCKED: not installed and no usable real desktop/audio reader session supplied. No speech or reader navigation claimed from the AT-SPI query |
+| Linux real X11 / Wayland | NOT RUN: Xvfb has no desktop window manager/compositor. Real Omarchy/GNOME/KDE focus, menus, Wayland and rendering remain unverified |
+| UI zoom | macOS native 200% subsets observed; 75–200% harness checks. UI zoom is distinct from OS scaling |
+| OS display/text scaling and high contrast | NOT RUN across platforms; 2× backing scale, explicit light preset and synthetic low-contrast theme are not substitutes |
+| Destructive confirmation | Never invoked through computer use, AX, UIA or AT-SPI. Destructive behavior is tested only by the temporary-tree harness or left to a human |
+
+The Linux probe is `scripts/a11y-atspi-read.py --pid PID`, executed inside
+the fixture's own desktop/session bus. It reads roles, names, descriptions,
+states, relations, values/text where supported, and available action names;
+it never invokes an action or starts a reader. `a11y-fixture --tree ROOT
+--files` opens the production reader directly without simulated input.
+The isolated bus enables `org.a11y.Status.IsEnabled` at `/org/a11y/bus`;
+that flag is test setup, not proof of a running screen reader. Initial
+wrong-path setup attempts did not find an application and are superseded
+by the successful bus configuration.
+
+Ubuntu 24.04.5 x86_64 versions: at-spi2-core 2.52.0-1build1, pyatspi
+2.46.1-1, Xvfb 21.1.12-1ubuntu1.9, Mesa 25.2.8. Preliminary native reads
+at `2956ca4`/`4364396` established list box/list item names, raw complete
+Unicode/long paths, sizes, categories, ages, selected state, checked radio
+and checkbox states, final scan/volume status, and advertised click actions.
+The settled root snapshot at `0e7b57a` contained 35 nodes, seven file items,
+one selected item and no focused node. No action was invoked; no
+relationships were reported for the sampled entries. These reads use only
+`a11y-fixture` PIDs, never another application's tree.
+
+One remaining native FAIL is concrete: disabled Back/Previous/Next
+controls advertise no action or focus stop but AT-SPI still reports
+Enabled/Sensitive. Source/harness and macOS AX expose disabled correctly.
+The pinned `accesskit_atspi_common` 0.19.1 state mapping adds
+Enabled/Sensitive for controls without read-only support. An application
+claim of a correct native disabled state would be false; a platform fix
+and reader verification are tracked as follow-up work.
+
+At `89c6a26`, native AT-SPI now reports the full static file-summary name
+(`/tmp/pwrdisk-atspi-volume/Projects · 7 entries · showing 1–7`), rather
+than an empty label. The native fixture SHA-256 is
+`4eb8a9690668736b8194187e635b1540e8a51c499466c230a904f2e7ed8f5258`.
+The final fixtures are on a dedicated 512 MiB tmpfs with 135 invented files;
+status reports 508 MiB available of 512 MiB. Unicode and the complete
+long-name file were observed separately under its documents root. The
+initial root-capacity values from the disposable VM are superseded by
+this bounded contrived-volume check.
+
+Final macOS static-text check at production `6af7f1a` PASS subset: the
+file-summary text and mark/volume summaries remain readable in AX and are
+no longer reported as settable after scoping static values to Linux. The
+fixture SHA-256 is
+`fa205a03eddec466e3f3335d1a39d4a88fa8ba8bd836499d5dd6f49b3c3a032b`.
+The successful native Logs query-value check used `2cef5c5`, SHA-256
+`30e8b2b8c0fdd93dd4b05c5da0b8103909011dcdeaa504eb75899e594d4393a1`;
+its input-value code is retained at the final production head. Earlier
+controller timeouts are superseded for these specific export checks, not
+for actual VoiceOver or OS scaling.
+
+Final production source `6af7f1a8282f0e8b1e94be75a72de436f0d1ace2`:
+macOS lint, full workspace tests (245 app tests; 232 core tests), and fixture
+build PASS. Main/portable builds and embedded SSH helpers were also
+verified throughout the stack. Ubuntu 24.04.5 x86_64 Sandboxer: setup 0
+(0s), lint 0 (5s), tests 0 (14s), portable build 0 (57s), isolated SSH 0
+(3s), all 0; final native fixture build 0 (53.65s). Final Linux fixture
+SHA-256 `41ee44b27489f61d7b127e827e104822e1641f95638139d623a6923fa32301b8`.
+The final AT-SPI query exits 0 with 35 nodes, seven file items, one selected
+item, the complete static summary name and final contrived-volume status.
+The disabled-state discrepancy remains observed.
+
+The task-owned native windows were closed and the APFS fixture detached.
+Reduce Motion was restored to its initial off value; VoiceOver was left
+off. Remaining native acceptance is on the PwrAgent to-do card
+“Complete native accessibility acceptance before merging the PR stack.”
+No PR was merged and no removal confirmation was automated.
