@@ -212,48 +212,39 @@ MIT. See [LICENSE](LICENSE) and
 
 ## In the terminal
 
-![disktree-tui at 120 columns: a nested mosaic, selection details, findings, and free space](assets/tui/120.png)
-
-At 120 columns the terminal view shows the mosaic, selection details, WORTH A
-LOOK, and the volume's free space together. The same fixture also has an
-[80-column map](assets/tui/80.png) and a [45-column list](assets/tui/45.png).
-
-`disktree-tui` uses `disktree-core` for the same scan, treemap layout, disk
-accounting, findings, removal guards, and agent prompt as the window. The
-terminal interface handles its own layout and keys. It scans the filesystem
-of the machine where it runs, including in an SSH terminal, and needs no GUI
-libraries. Omarchy colours are followed when available;
-otherwise it uses the terminal or system appearance.
+Run the terminal interface from the same installed executable:
 
 ```sh
-disktree-tui              # scan your home directory
-disktree-tui ~/src        # scan a chosen directory
-disktree-tui --disk       # scan the whole volume
+pwrdisk tui ~/src                  # inspect an explicit directory
+pwrdisk tui --disk ~/src           # inspect that directory's volume
+pwrdisk tui --apparent-size ~/src   # measure file lengths
 ```
 
-**h/j/k/l** or the arrow keys move among tiles, **Enter** opens a directory,
-**Backspace** goes up, **Space** marks a path, and **c** reviews the marks.
-**t** rotates Size, Files, and Age; **i** includes hidden entries; **d**
-switches disk and apparent size. **[** and **]** change the drawn depth,
-while **-** and **+** work too. **w** opens WORTH A LOOK at narrower widths,
-**v** switches to a ranked list, **V** chooses a volume, and **r** rescans.
-Press **?** for the full key list. Changing the display controls uses the
-loaded scan, except when hidden entries were excluded from the initial scan.
+At 120 columns it shows the mosaic, inspector, findings and free-space bar;
+around 80 it keeps the map, and at 45 it becomes a scrolling list. The list
+also exposes empty directories that have no treemap area. Omarchy colours
+are followed when available, with dark/light fallbacks.
 
-In review, **a** writes the accepted marked paths as an agent prompt after
-restoring the terminal; **s** saves the prompt to a file. **m** chooses the
-trash, **p** permanent removal, and **Enter** proceeds. Permanent removal
-requires confirmation.
+**h/j/k/l** or the arrows select, **Enter** opens a directory,
+**Backspace** goes up, **Space** marks, and **c** reviews. **t** rotates
+Size/Files/Age, **i** toggles hidden entries, **d** toggles allocated/apparent
+sizes, **[** and **]** change depth, **v** selects the list, **V** chooses a
+volume, and **?** lists all keys. Hidden and measurement changes rescan;
+metric and colour changes reuse the tree and retain paths.
 
-Builds use the same Rust toolchain on Linux, macOS, and Windows. For a static
-Linux binary:
+Review can export an agent prompt (**a**) or save it (**s**). Local removal
+uses the same guards and configured per-operation capacity limit as the
+window, including fresh measurement before any path is removed. **m** selects
+Trash, **p** permanent deletion; permanent deletion requires confirmation.
+SSH terminal sessions permit inspection, marking and export only.
 
-```sh
-rustup target add x86_64-unknown-linux-musl
-cargo build --release --locked -p disktree-tui \
-  --target x86_64-unknown-linux-musl
-```
+This is an independent interactive session with its own tree and marks.
+It does not host or connect to desktop MCP. Normal `pwrdisk mcp` ownership
+and its desktop connection follow the MCP interface's own configuration.
+On macOS, a TUI started by Terminal uses that terminal's filesystem access;
+it does not borrow the running desktop's permissions.
 
-On Windows, `disktree-tui.exe R:\` starts on drive R; **V** lists accessible
-drives. On macOS, the terminal needs Full Disk Access for protected folders.
-Interactive macOS rendering has not yet been checked.
+The terminal code does not start GPUI, but the combined executable retains
+its platform libraries. On Linux the packaged executable still needs its
+GPUI runtime libraries installed even without a graphical session. It is
+not the upstream standalone static-musl terminal binary.

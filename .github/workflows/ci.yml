@@ -215,12 +215,10 @@ jobs:
       - name: Test
         run: cargo xtask test
 
-      - name: Portable Linux TUI
+      - name: Terminal command without a graphical session
         run: |
-          rustup target add x86_64-unknown-linux-musl
-          cargo build --release --locked -p disktree-tui \
-            --target x86_64-unknown-linux-musl
-          target/x86_64-unknown-linux-musl/release/disktree-tui --help
+          cargo build --release --locked -p disktree-app
+          env -u DISPLAY -u WAYLAND_DISPLAY target/release/pwrdisk tui --help
 
   check-macos:
     name: Lint and test (macOS)
@@ -248,11 +246,6 @@ jobs:
 
       - name: Test
         run: cargo xtask test
-
-      - name: Terminal release build
-        run: |
-          cargo build --release --locked -p disktree-tui
-          target/release/disktree-tui --help
 
       # The app bundle, signed ad hoc, and the DMG release.yml cuts the same
       # way: catches a broken Info.plist, icon, signature or DMG layout
@@ -319,12 +312,6 @@ jobs:
       - name: Test
         run: cargo xtask test
 
-      - name: Terminal release build
-        shell: pwsh
-        run: |
-          cargo build --release --locked -p disktree-tui
-          .\target\release\disktree-tui.exe --help
-
       - name: Check embedded executable icon
         shell: pwsh
         run: |
@@ -383,14 +370,3 @@ jobs:
 
       - name: Test
         run: cargo xtask test
-
-      - name: Terminal release build
-        run: cargo build --release --locked -p disktree-tui
-
-      - name: Portable ARM Linux TUI
-        if: runner.os == 'Linux'
-        run: |
-          rustup target add aarch64-unknown-linux-musl
-          cargo build --release --locked -p disktree-tui \
-            --target aarch64-unknown-linux-musl
-          target/aarch64-unknown-linux-musl/release/disktree-tui --help
