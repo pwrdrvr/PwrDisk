@@ -2855,19 +2855,19 @@ impl Disktree {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let list_visible = self.file_list
-            && self.screen == Screen::Explore
+        let navigation_visible = self.screen == Screen::Explore
             && !self.awaiting_root
             && self.tree.is_some();
-        // The list leaves the focus tree during a rescan. Its persistent
-        // parent must own Escape until a complete list can take focus again.
-        if !list_visible && self.file_focus.is_focused(window) {
+        let list_visible = self.file_list && navigation_visible;
+        // Both navigation views leave the focus tree during a rescan. Their
+        // persistent parent must own Escape until navigation is available.
+        if !navigation_visible && self.file_focus.is_focused(window) {
             self.restore_file_focus = true;
             window.focus(&self.focus, cx);
         }
-        if !self.file_list || self.screen != Screen::Explore {
+        if self.screen != Screen::Explore {
             self.restore_file_focus = false;
-        } else if list_visible
+        } else if navigation_visible
             && std::mem::take(&mut self.restore_file_focus)
             && self.focus.is_focused(window)
             && self.focus_request.is_none()
