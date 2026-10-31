@@ -16,6 +16,7 @@ pub fn text(
         .role(Role::Label)
         .aria_label(label.clone())
         .aria_value(label)
+        .a11y_synthetic_children(|b| b.parent_node().set_read_only())
 }
 
 pub fn status(id: &'static str, label: String) -> Stateful<Div> {
