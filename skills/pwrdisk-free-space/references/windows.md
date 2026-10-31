@@ -14,6 +14,12 @@ Without a window the agent scans and marks in its own session and can
 launch a window for the handover. Agree the list before marking unless the
 user gave a standing instruction. Never remove files yourself.
 
+When the window shows an SSH source, its paths belong to a Unix host and
+use `/` on every client; backslashes and colons in names stay literal.
+SSH windows answer only link identity and state requests. Switch to a local
+source before using local scan, listing, marking or review tools. Windows
+SSH servers are not supported.
+
 ## Reading the numbers
 
 - **Sizes are allocation.** PwrDisk counts what each file occupies on disk,

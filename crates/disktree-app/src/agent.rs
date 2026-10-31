@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use disktree_core::path_style::PathStyle;
 use disktree_core::query;
 use disktree_core::removal::{Plan, RemovalMode, Target};
 use disktree_core::space::space_info;
@@ -308,7 +309,10 @@ impl Disktree {
         }
         self.note_agent(
             None,
-            format!("scanning {}", display_path(root, self.home.as_deref())),
+            format!(
+                "scanning {}",
+                display_path(root, self.home.as_deref(), PathStyle::Native)
+            ),
         );
         if root == self.root_path {
             self.screen = Screen::Explore;
@@ -345,15 +349,19 @@ impl Disktree {
         let relative = path.strip_prefix(&self.root_path).map_err(|_| {
             format!(
                 "{} is outside the window's tree, rooted at {}",
-                display_path(path, self.home.as_deref()),
-                display_path(&self.root_path, self.home.as_deref())
+                display_path(path, self.home.as_deref(), PathStyle::Native),
+                display_path(
+                    &self.root_path,
+                    self.home.as_deref(),
+                    PathStyle::Native
+                )
             )
         })?;
         tree.descend(relative).map(|(_, node)| node).ok_or_else(|| {
             format!(
                 "{} is not in the window's tree: it may be new, hidden, \
                  below the depth limit, or on another filesystem",
-                display_path(path, self.home.as_deref())
+                display_path(path, self.home.as_deref(), PathStyle::Native)
             )
         })
     }
@@ -372,7 +380,10 @@ impl Disktree {
         };
         self.note_agent(
             None,
-            format!("reading {}", display_path(path, self.home.as_deref())),
+            format!(
+                "reading {}",
+                display_path(path, self.home.as_deref(), PathStyle::Native)
+            ),
         );
         Response::Listing(listing)
     }
@@ -431,7 +442,7 @@ impl Disktree {
                 (target.bytes, target.is_dir)
             };
             if self.agent_mark(Target {
-                hidden: is_hidden(&target.path),
+                hidden: is_hidden(&target.path, PathStyle::Native),
                 path: target.path.clone(),
                 bytes: measured.0,
                 is_dir: measured.1,
@@ -470,7 +481,7 @@ impl Disktree {
     /// unmarks, and a path inside a marked directory is left alone rather
     /// than toggled. Returns whether the path is marked afterwards.
     fn agent_mark(&mut self, target: Target) -> bool {
-        if self.marks.contains(&target.path) {
+        if self.marks.contains(&target.path, PathStyle::Native) {
             return true;
         }
         if !target.path.starts_with(&self.root_path)
@@ -483,7 +494,7 @@ impl Disktree {
         }
         self.space_baseline = self.space_baseline.or(self.space);
         let path = target.path.clone();
-        self.marks.toggle(target);
+        self.marks.toggle(target, PathStyle::Native);
         // A directory's mark absorbs the marks inside it, as Space does.
         let inside: Vec<PathBuf> = self
             .marks
@@ -493,7 +504,7 @@ impl Disktree {
             .map(|item| item.path.clone())
             .collect();
         for inner in &inside {
-            self.marks.remove(inner);
+            self.marks.remove(inner, PathStyle::Native);
         }
         true
     }
@@ -511,7 +522,10 @@ impl Disktree {
         }
         self.note_agent(
             None,
-            format!("looking at {}", display_path(path, self.home.as_deref())),
+            format!(
+                "looking at {}",
+                display_path(path, self.home.as_deref(), PathStyle::Native)
+            ),
         );
         if root != self.root_path {
             self.agent_set_root(root, cx);
@@ -528,7 +542,7 @@ impl Disktree {
         } else {
             Response::error(format!(
                 "{} is not in the window's tree",
-                display_path(path, self.home.as_deref())
+                display_path(path, self.home.as_deref(), PathStyle::Native)
             ))
         }
     }
@@ -642,6 +656,7 @@ impl Disktree {
                                 &self.root_path,
                                 tree,
                                 &candidate.crumbs,
+                                PathStyle::Native,
                             ),
                             bytes: candidate.bytes,
                             what: candidate.finding.describe(),

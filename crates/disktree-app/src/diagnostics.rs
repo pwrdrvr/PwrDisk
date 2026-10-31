@@ -9,6 +9,7 @@
 //! is described by its kind and its counts only. PwrDisk's own folders are
 //! shown with `~` for home.
 
+use disktree_core::path_style::PathStyle;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -106,7 +107,10 @@ fn fact(label: &'static str, value: impl Into<String>) -> Fact {
 pub fn build(facts: &Facts) -> Diagnostics {
     let home = facts.home.as_deref();
     let shown = |path: Option<&Path>, none: &str| {
-        path.map_or_else(|| none.to_owned(), |path| display_path(path, home))
+        path.map_or_else(
+            || none.to_owned(),
+            |path| display_path(path, home, PathStyle::Native),
+        )
     };
     let mut sections = vec![
         Section {
@@ -406,13 +410,14 @@ mod tests {
             ),
             "{report}"
         );
-        // `~` is joined with this system's separator, so on Windows the
-        // fixture's Unix paths come back as `~\Library/...`.
+        // Diagnostics describes this client, even for an SSH session, so
+        // every separator in its own paths follows the client.
         let sep = std::path::MAIN_SEPARATOR;
         let settings = format!(
-            "Settings folder: ~{sep}Library/Application Support/pwrdisk\n"
+            "Settings folder: ~{sep}Library{sep}Application Support{sep}pwrdisk\n"
         );
-        let log = format!("Log: ~{sep}Library/Logs/PwrDisk/main.log\n");
+        let log =
+            format!("Log: ~{sep}Library{sep}Logs{sep}PwrDisk{sep}main.log\n");
         for line in [
             "\n[Platform]\nOperating system: macOS 26.1 (aarch64)\n",
             "\n[Updates]\nInstalled: Velopack 0.5.0\n",

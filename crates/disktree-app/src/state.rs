@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use disktree_core::access::file_table_readable;
 use disktree_core::filter::{Keep, Matches, filter};
 use disktree_core::insights::{Candidate, worth_a_look};
+use disktree_core::path_style::PathStyle;
 use disktree_core::removal::{
     Plan, RemovalEvent, RemovalHandle, RemovalMode, Target, TrashBackend,
     detect_trash_backend, plan,
@@ -36,7 +37,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::git::GitState;
 
-use crate::marks::{Marks, display_path, is_hidden};
+use crate::marks::{Marks, is_hidden};
 use crate::treemap_view::{Mosaic, TileDeco};
 
 /// What a tile's colour says.
@@ -702,7 +703,12 @@ impl Disktree {
             scan.cancel();
         }
         app.scan_epoch += 1;
-        app.marks.refresh(&app.root_path, &tree, app.options.metric);
+        app.marks.refresh(
+            &app.root_path,
+            &tree,
+            app.options.metric,
+            app.path_style(),
+        );
         app.tree = Some(Arc::new(tree));
         app.cache = None;
         app.refresh_insights();
@@ -1088,7 +1094,7 @@ impl Disktree {
         let Some(disk) = self.disk_root.clone() else {
             return;
         };
-        if disk == self.root_path {
+        if self.path_style().same(&disk, &self.root_path) {
             self.go_to(Vec::new(), cx);
         } else {
             self.widen_to(disk, cx);
@@ -1467,6 +1473,7 @@ impl Disktree {
                         &self.root_path,
                         &node,
                         self.options.metric,
+                        self.path_style(),
                     );
                     self.tree = Some(Arc::new(node));
                     self.refresh_insights();
@@ -1516,7 +1523,12 @@ impl Disktree {
                     self.file_table = file_table_readable(&self.root_path);
                 }
                 let metric = self.options.metric;
-                self.marks.refresh(&self.root_path, &node, metric);
+                self.marks.refresh(
+                    &self.root_path,
+                    &node,
+                    metric,
+                    self.path_style(),
+                );
                 discard(self.tree.replace(Arc::new(node)));
                 self.cache = None;
                 self.refresh_insights();
@@ -1655,7 +1667,22 @@ impl Disktree {
 
     pub fn path_at(&self, crumbs: &[usize]) -> Option<PathBuf> {
         let tree = self.tree.as_ref()?;
-        Some(path_of(&self.root_path, tree, crumbs))
+        Some(path_of(&self.root_path, tree, crumbs, self.path_style()))
+    }
+
+    /// The path rules of the machine on screen: an SSH host is Unix, so its
+    /// paths are POSIX on every client.
+    pub const fn path_style(&self) -> PathStyle {
+        PathStyle::of(self.remote.is_some())
+    }
+
+    /// `path` shortened under the scanned machine's home, in its separators.
+    pub fn display_path(&self, path: &Path) -> String {
+        crate::marks::display_path(
+            path,
+            self.home.as_deref(),
+            self.path_style(),
+        )
     }
 
     /// Path of the directory currently drawn.
@@ -1668,16 +1695,21 @@ impl Disktree {
     /// The trail, from `/`: the directories above the scanned root, which
     /// widen the scan, then the root and the path into the tree.
     pub fn breadcrumbs(&self) -> Vec<(String, Crumb)> {
-        let mut trail: Vec<(String, Crumb)> = self
-            .root_path
-            .ancestors()
+        let style = self.path_style();
+        let mut trail: Vec<(String, Crumb)> = style
+            .ancestors(&self.root_path)
             .skip(1)
             .collect::<Vec<_>>()
             .into_iter()
             .rev()
-            .map(|path| (crumb_label(path), Crumb::Above(path.to_path_buf())))
+            .map(|path| {
+                (crumb_label(path, style), Crumb::Above(path.to_path_buf()))
+            })
             .collect();
-        trail.push((crumb_label(&self.root_path), Crumb::Tree(Vec::new())));
+        trail.push((
+            crumb_label(&self.root_path, style),
+            Crumb::Tree(Vec::new()),
+        ));
         let Some(tree) = &self.tree else {
             return trail;
         };
@@ -1966,7 +1998,12 @@ impl Disktree {
             return;
         }
         let here = self.current_path();
-        if self.history.back.last() != Some(&here) {
+        if self
+            .history
+            .back
+            .last()
+            .is_none_or(|last| !self.path_style().same(last, &here))
+        {
             self.history.back.push(here);
         }
         if self.history.back.len() > HISTORY_DEPTH {
@@ -2252,14 +2289,14 @@ impl Disktree {
             return;
         };
         self.notice = None;
-        if !self.marks.contains(&target.path)
+        if !self.marks.contains(&target.path, self.path_style())
             && let Some(ancestor) = self.marked_ancestor(&target.path)
         {
             self.notice = Some((
                 format!(
                     "{} goes with the marked {}; unmark that to keep it",
-                    display_path(&target.path, self.home.as_deref()),
-                    display_path(&ancestor, self.home.as_deref())
+                    self.display_path(&target.path),
+                    self.display_path(&ancestor)
                 ),
                 Status::Warning,
             ));
@@ -2267,14 +2304,15 @@ impl Disktree {
             return;
         }
         let path = target.path.clone();
-        if self.marks.toggle(target) {
+        let style = self.path_style();
+        if self.marks.toggle(target, self.path_style()) {
             self.space_baseline = self.space_baseline.or(self.space);
-            let inside = self.marks.absorb(&path);
+            let inside = self.marks.absorb(&path, style);
             if inside > 0 {
                 self.notice = Some((
                     format!(
                         "{} now covers {} mark{} inside it",
-                        display_path(&path, self.home.as_deref()),
+                        self.display_path(&path),
                         inside,
                         if inside == 1 { "" } else { "s" }
                     ),
@@ -2287,14 +2325,16 @@ impl Disktree {
 
     /// The marked directory `path` is inside, if any; never `path` itself.
     pub fn marked_ancestor(&self, path: &Path) -> Option<PathBuf> {
-        self.marks.ancestor(path).map(Path::to_path_buf)
+        self.marks
+            .ancestor(path, self.path_style())
+            .map(Path::to_path_buf)
     }
 
     pub fn target_at(&self, crumbs: &[usize]) -> Option<Target> {
         let node = self.node_at(crumbs)?;
         let path = self.path_at(crumbs)?;
         Some(Target {
-            hidden: is_hidden(&path),
+            hidden: is_hidden(&path, self.path_style()),
             path,
             bytes: node.bytes,
             is_dir: node.is_dir(),
@@ -2302,7 +2342,7 @@ impl Disktree {
     }
 
     pub fn unmark(&mut self, path: &Path, cx: &mut Context<'_, Self>) {
-        self.marks.remove(path);
+        self.marks.remove(path, self.path_style());
         cx.notify();
     }
 
@@ -2325,8 +2365,7 @@ impl Disktree {
                 .items()
                 .iter()
                 .filter(|target| {
-                    target.path != self.root_path
-                        && target.path.starts_with(&self.root_path)
+                    self.path_style().is_below(&target.path, &self.root_path)
                 })
                 .cloned()
                 .collect();
@@ -2347,8 +2386,11 @@ impl Disktree {
                     estimates: Vec::new(),
                 };
             }
-            let mut resolver =
-                crate::marks::Resolver::new(&self.root_path, tree);
+            let mut resolver = crate::marks::Resolver::new(
+                &self.root_path,
+                tree,
+                PathStyle::Native,
+            );
             let mut next = Vec::new();
             plan.estimate_selection(|targets| {
                 let paths: Vec<_> =
@@ -2404,9 +2446,10 @@ impl Disktree {
         let hovered = self.hovered.clone();
         let selected = self.selected.clone();
 
+        let style = self.path_style();
         let marked = self.tree.as_ref().map_or_else(
             || Arc::new(FxHashSet::default()),
-            |tree| self.marks.crumbs(&self.root_path, tree, metric),
+            |tree| self.marks.crumbs(&self.root_path, tree, metric, style),
         );
 
         let Some(tiles) = self.layout().map(<[Tile]>::to_vec) else {
@@ -2526,12 +2569,13 @@ impl Disktree {
     pub fn crumbs_for_path(&self, path: &Path) -> Option<Vec<usize>> {
         // The path is relative to the scanned root, so the walk starts there,
         // not at the directory currently drawn.
-        let relative = path.strip_prefix(&self.root_path).ok()?;
+        // Names are split by the scanned machine's rules, so a Unix host's
+        // `a\b` stays one name on a Windows client.
+        let relative = self.path_style().relative(&self.root_path, path)?;
         let tree = self.tree.clone()?;
         let mut node: &Node = &tree;
         let mut crumbs = Vec::new();
-        for component in relative.components() {
-            let name = component.as_os_str().to_string_lossy();
+        for name in relative {
             let index = node.children.iter().position(|child| {
                 #[cfg(test)]
                 crate::marks::work::step();
@@ -2685,10 +2729,12 @@ impl Disktree {
             disktree_core::tree::aggregate(&mut tree, self.options.metric);
             discard(self.tree.replace(Arc::new(tree)));
             let metric = self.options.metric;
+            let style = self.path_style();
             self.marks.refresh(
                 &self.root_path,
                 self.tree.as_ref().unwrap(),
                 metric,
+                style,
             );
         }
         self.crumbs = self.crumbs_for_path(&directory).unwrap_or_default();
@@ -3222,10 +3268,7 @@ impl Disktree {
         // GPUI's reveal cannot report failure, so check what it can't.
         if std::fs::symlink_metadata(&path).is_err() {
             self.notice = Some((
-                format!(
-                    "{} is no longer on disk",
-                    crate::marks::display_path(&path, self.home.as_deref())
-                ),
+                format!("{} is no longer on disk", self.display_path(&path)),
                 Status::Warning,
             ));
             cx.notify();
@@ -3772,8 +3815,8 @@ const HEADER_REMS: f32 = 1.375;
 const HEADER_INNER_REMS: f32 = 1.0;
 
 /// A trail step's label: the directory's own name, or `/` for the root.
-fn crumb_label(path: &Path) -> String {
-    path.file_name().map_or_else(
+fn crumb_label(path: &Path, style: PathStyle) -> String {
+    style.file_name(path).map_or_else(
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
     )
@@ -3938,10 +3981,7 @@ impl Render for Disktree {
                 self.remote.as_ref().map_or_else(String::new, |host| {
                     format!(" · {host} · read-only")
                 }),
-                crate::marks::display_path(
-                    &self.current_path(),
-                    self.home.as_deref()
-                )
+                self.display_path(&self.current_path())
             )
         };
         if title != self.window_title {
