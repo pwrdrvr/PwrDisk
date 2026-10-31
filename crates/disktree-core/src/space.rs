@@ -124,10 +124,9 @@ pub fn device_in(table: &str, path: &Path) -> Option<String> {
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
-            let device = fields.next()?;
+            let device = unescape_octal(fields.next()?);
             let mount = unescape_octal(fields.next()?);
-            path.starts_with(&mount)
-                .then(|| (mount.len(), device.to_string()))
+            path.starts_with(&mount).then_some((mount.len(), device))
         })
         .max_by_key(|(length, _)| *length)
         .map(|(_, device)| device)
@@ -149,7 +148,8 @@ pub fn parse_mounts(table: &str) -> Vec<Mount> {
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
-            let source = fields.next()?.to_string();
+            // Escaped as in mountinfo: space, tab, newline and backslash.
+            let source = unescape_octal(fields.next()?);
             let point = PathBuf::from(unescape_octal(fields.next()?));
             let fstype = fields.next()?.to_string();
             let options = fields.next().unwrap_or_default().to_string();
@@ -1139,6 +1139,40 @@ portal /run/user/1000/doc fuse.portal rw 0 0
         assert_eq!(mounts[0].point, Path::new("/media/My Disk\\040"));
         assert_eq!(mounts[0].source, "/dev/sda1");
         assert_eq!(mounts[0].fstype, "ext4");
+    }
+
+    #[test]
+    fn mounts_escapes_are_decoded_once() {
+        let table = "/dev/sda1 /media/My\\040Disk\\134040 ext4 rw 0 0\n\
+                     //nas/My\\040Share /mnt/tab\\011name cifs rw 0 0\n";
+        let mounts = parse_mounts(table);
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[0].point, Path::new("/media/My Disk\\040"));
+        assert_eq!(mounts[1].point, Path::new("/mnt/tab\tname"));
+        assert_eq!(mounts[1].source, "//nas/My Share");
+        assert_eq!(
+            device_in(table, Path::new("/media/My Disk\\040/a")).as_deref(),
+            Some("/dev/sda1")
+        );
+        assert_eq!(
+            device_in(table, Path::new("/mnt/tab\tname/a")).as_deref(),
+            Some("//nas/My Share")
+        );
+    }
+
+    #[test]
+    fn mount_sources_decode_tabs_newlines_and_literal_escape_text_once() {
+        let source = "//nas/My Share\ttab\nline\\040";
+        let table = "//nas/My\\040Share\\011tab\\012line\\134040 /mnt/share cifs rw 0 0\n";
+        let mounts = parse_mounts(table);
+        assert_eq!(mounts[0].source, source);
+        assert_eq!(
+            device_in(table, Path::new("/mnt/share/child")).as_deref(),
+            Some(source)
+        );
+        assert_eq!(device_in(table, Path::new("/mnt/share-other")), None);
+        let info = "1 0 0:1 / /mnt/share rw - cifs //nas/My\\040Share\\011tab\\012line\\134040 rw\n";
+        assert_eq!(parse_mountinfo(info)[0].source, mounts[0].source);
     }
 
     #[test]
