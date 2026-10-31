@@ -4090,6 +4090,9 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     assert!(message.contains("Incompatible PwrDisk link protocols"));
     assert!(message.contains("restart/reconnect"));
     assert!(message.contains("updated installation"));
+    assert!(
+        message.contains(concat!("PwrDisk GUI ", env!("CARGO_PKG_VERSION")))
+    );
     let hello = ask(
         cx,
         Request::Hello {

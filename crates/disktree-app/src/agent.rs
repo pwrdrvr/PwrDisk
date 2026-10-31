@@ -195,8 +195,10 @@ impl Disktree {
         match request {
             Request::Hello { client, version } => {
                 if *version != VERSION {
-                    return Response::error(disktree_link::protocol_mismatch(
-                        VERSION, *version,
+                    return Response::error(format!(
+                        "PwrDisk GUI {}: {}",
+                        env!("CARGO_PKG_VERSION"),
+                        disktree_link::protocol_mismatch(VERSION, *version),
                     ));
                 }
                 if let Some(agent) = &mut self.agent {
