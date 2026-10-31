@@ -93,7 +93,12 @@ pub async fn relay(
         read_preamble(&mut reader).await
     })
     .await??;
-    check_transport(ready.transport_version)?;
+    check_transport(ready.transport_version).map_err(|error| {
+        io::Error::other(format!(
+            "MCP relay {relay_version}; desktop {}: {error}",
+            ready.desktop_version,
+        ))
+    })?;
     let mut input = input;
     let down = async {
         tokio::io::copy(&mut reader, &mut output).await?;

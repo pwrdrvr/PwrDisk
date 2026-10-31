@@ -162,19 +162,14 @@ mod tests {
                 0o600
             );
         }
-        assert!(Listener::bind(&path).is_err(), "live ownership");
+        let other_path = path.clone();
         let peer =
             tokio::spawn(async move { connect(&path).await.expect("client") });
-        // The Unix live-endpoint probe above can itself be accepted.
-        // Both peers are this user; skip its already closed stream.
         let mut server = listener.accept().await.expect("accept");
-        #[cfg(unix)]
-        {
-            let mut probe = [0; 1];
-            assert_eq!(server.read(&mut probe).await.expect("probe EOF"), 0);
-            server = listener.accept().await.expect("accept client");
-        }
         let mut client = peer.await.expect("connect");
+        // Probe after the real client: macOS refuses peer-credential lookup
+        // on an already closed probe, as it should.
+        assert!(Listener::bind(&other_path).is_err(), "live ownership");
         client.write_all(b"request\n").await.expect("write");
         let mut request = [0; 8];
         server.read_exact(&mut request).await.expect("read");

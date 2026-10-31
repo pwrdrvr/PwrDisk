@@ -4650,7 +4650,7 @@ fn desktop_mcp_reconnect_keeps_the_tree_and_marks(cx: &mut TestAppContext) {
                 let status = rpc(&mut io, json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
                     "name":"pwrdisk_status","arguments":{}
                 }})).await;
-                assert!(status["result"]["content"].to_string().contains("junk"), "{status}");
+                assert!(status["result"]["content"].to_string().contains("Marked: 1"), "{status}");
             }
         });
     });
