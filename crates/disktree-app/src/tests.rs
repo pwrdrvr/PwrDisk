@@ -1613,7 +1613,7 @@ fn help_documents_draw_and_copy(cx: &mut TestAppContext) {
 
     cx.update(init);
     for doc in [Doc::Changelog, Doc::License, Doc::ThirdPartyNotices] {
-        let (_, cx) = cx.add_window_view(move |_, _| DocWindow::new(doc));
+        let (_, cx) = cx.add_window_view(move |_, cx| DocWindow::new(doc, cx));
         draw(cx);
         assert!(cx.debug_bounds("title-strip").is_some(), "{doc:?}");
         let copy = cx
@@ -6387,4 +6387,68 @@ fn main_integration_help_dismisses_the_export_menu(cx: &mut TestAppContext) {
     press(cx, "escape");
     assert!(read(&view, cx, |app| !app.show_help && app.marks.len() == 1));
     assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// Offscreen document text becomes a real row before its active semantic
+/// descendant changes. Copy remains complete, independent of virtualization.
+#[gpui_kit::test]
+fn documents_reach_the_end_and_copy_by_keyboard(cx: &mut TestAppContext) {
+    use crate::doc_window::{Doc, DocWindow};
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let view = DocWindow::new(Doc::ThirdPartyNotices, cx);
+        window.focus(&view.focus, cx);
+        view
+    });
+    draw(cx);
+    press(cx, "end");
+    let last = view.read_with(cx, |view, _| view.position);
+    assert!(last > 1_000, "a long document, beyond its first viewport");
+    assert!(cx.debug_bounds("document-current").is_some());
+    press(cx, "home");
+    assert_eq!(view.read_with(cx, |view, _| view.position), 0);
+    assert!(cx.debug_bounds("document-current").is_some());
+    press(cx, "ctrl-c");
+    assert_eq!(
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some(Doc::ThirdPartyNotices.source())
+    );
+}
+
+/// Keyboard selection reaches virtual log rows and copying retains the full
+/// Unicode line. No append is a live announcement.
+#[gpui_kit::test]
+fn logs_read_and_copy_offscreen_lines_by_keyboard(cx: &mut TestAppContext) {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    for n in 0..300 {
+        writeln!(text, "2026-10-31T12:00:00.000-04:00 INFO  fixture: invented line {n} 日本語")
+            .expect("string");
+    }
+    let (_dir, _path, view, cx) = logs_over(cx, &text);
+    cx.update(|window, cx| {
+        view.read(cx)
+            .search_state()
+            .update(cx, |search, cx| search.focus(window, cx));
+    });
+    draw(cx);
+    press(cx, "escape");
+    press(cx, "end");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.selection),
+        Some((300, 300))
+    );
+    assert!(cx.debug_bounds("log-row-300").is_some());
+    press(cx, "ctrl-c");
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert!(copied.contains("invented line 299 日本語"));
+    assert!(!copied.contains("invented line 298"));
+    press(cx, "home");
+    assert_eq!(view.read_with(cx, |view, _| view.selection), Some((1, 1)));
+    assert!(cx.debug_bounds("log-row-1").is_some());
 }

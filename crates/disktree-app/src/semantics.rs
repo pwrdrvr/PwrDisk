@@ -6,7 +6,7 @@ use gpui_kit::{
 };
 
 pub fn text(
-    id: &'static str,
+    id: impl Into<gpui_kit::ElementId>,
     label: impl Into<gpui_kit::SharedString>,
 ) -> Stateful<Div> {
     div().id(id).role(Role::Label).aria_label(label)
