@@ -71,9 +71,12 @@ impl Limit {
                 format!("Cannot inspect removal target: {error}")
             })?;
             // Removal unlinks the entry itself, even when its destination
-            // is missing or lies on another volume.
-            let path = if meta.is_symlink() {
-                path.parent().ok_or("A link must have a parent directory")?
+            // is missing or lies on another volume. Windows also requires
+            // a directory for GetDiskFreeSpaceExW when checking a file.
+            let path = if meta.is_symlink() || (cfg!(windows) && meta.is_file())
+            {
+                path.parent()
+                    .ok_or("A removal target must have a parent directory")?
             } else {
                 path
             };
@@ -211,6 +214,35 @@ mod tests {
         );
         assert!(Limit::new(0).is_err());
         assert!(Limit::new(101).is_err());
+    }
+
+    #[test]
+    fn individual_files_use_the_containing_volume_capacity() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("selected");
+        std::fs::write(&path, b"keep").expect("fixture file");
+        let targets = [Target {
+            path: path.clone(),
+            bytes: 4,
+            is_dir: false,
+            hidden: false,
+        }];
+        let limit = Limit::default();
+        let budget = limit.check(&targets).expect("file preview");
+        assert_eq!(budget.len(), 1);
+        assert_eq!(
+            budget[0].volume,
+            crate::space::device_for(temp.path()).expect("parent volume")
+        );
+        assert_eq!(
+            budget[0].capacity,
+            crate::space::space_info(temp.path())
+                .expect("capacity")
+                .total
+        );
+        let fresh = measured(&targets).expect("file measurement");
+        limit.check(&fresh).expect("file worker preflight");
+        assert_eq!(std::fs::read(path).expect("file untouched"), b"keep");
     }
 
     #[test]

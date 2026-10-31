@@ -1629,7 +1629,11 @@ mod tests {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            tempfile::tempdir().expect("tempdir")
+            // Match CLI roots: Windows may spell TEMP with an 8.3 alias,
+            // while navigating to another root expands that alias.
+            let base = canonicalize_path(&std::env::temp_dir())
+                .expect("canonical temporary directory");
+            tempfile::tempdir_in(base).expect("tempdir")
         }
     }
 
@@ -1800,14 +1804,14 @@ mod tests {
         let temp = fixture_dir();
         let root = temp.path().join("scan");
         std::fs::create_dir(&root).expect("mkdir");
-        std::fs::write(root.join("keep?"), b"data").expect("write");
+        std::fs::write(root.join("keep!"), b"data").expect("write");
         let mut app = App::new(root.clone(), ScanOptions::default());
         if let Some(scan) = app.scan.take() {
             scan.cancel();
         }
         app.marks = vec![
             Target {
-                path: root.join("keep?"),
+                path: root.join("keep!"),
                 bytes: 4,
                 is_dir: false,
                 hidden: false,
@@ -1823,7 +1827,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert!(app.quit);
         let prompt = app.stdout_prompt.expect("agent prompt");
-        assert!(prompt.contains("keep?"));
+        assert!(prompt.contains("keep!"));
         assert!(!prompt.contains("outside"));
     }
 
@@ -2260,7 +2264,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.screen, Screen::Confirm);
         app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
-        assert_eq!(app.screen, Screen::Running);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice);
         let deadline = Instant::now() + Duration::from_secs(5);
         while app.screen == Screen::Running && Instant::now() < deadline {
             app.tick();
@@ -2353,6 +2357,7 @@ mod tests {
         });
         app.removal_mode = RemovalMode::Permanent;
         app.begin_removal();
+        assert!(app.run.is_some(), "{:?}", app.notice);
         app.handle_key(KeyEvent::new(
             KeyCode::Char('c'),
             KeyModifiers::CONTROL,
