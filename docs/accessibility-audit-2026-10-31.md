@@ -1005,8 +1005,8 @@ controller timeouts are superseded for these specific export checks, not
 for actual VoiceOver or OS scaling.
 
 Final production source `6af7f1a8282f0e8b1e94be75a72de436f0d1ace2`:
-macOS lint, full workspace tests (245 app tests; 232 core tests), and fixture
-build PASS. Main/portable builds and embedded SSH helpers were also
+macOS lint, full workspace tests (245 app tests; 232 core tests), normal
+app and fixture builds PASS. Main/portable builds and embedded SSH helpers were also
 verified throughout the stack. Ubuntu 24.04.5 x86_64 Sandboxer: setup 0
 (0s), lint 0 (5s), tests 0 (14s), portable build 0 (57s), isolated SSH 0
 (3s), all 0; final native fixture build 0 (53.65s). Final Linux fixture
