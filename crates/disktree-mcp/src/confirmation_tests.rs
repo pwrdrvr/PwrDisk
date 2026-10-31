@@ -139,7 +139,7 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
                 assert!(message.contains(&file.display().to_string()));
                 assert!(message.contains("permanently deletes"));
                 assert!(message.contains("cannot be undone"));
-                assert!(message.contains("limit_percent"));
+                assert!(message.contains("5% of each volume"));
                 // This simulates the client's user response, never model input.
                 send(
                     &mut output,

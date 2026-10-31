@@ -1314,12 +1314,41 @@ impl Session {
         {
             return Err("The removal request differs from the preview; obtain a new preview and user confirmation".into());
         }
-        let details = serde_json::to_string_pretty(&preview)
-            .map_err(|error| error.to_string())?;
-        Ok(format!(
-            "{}\nConfirm this exact removal operation?\n{details}\nApproval to mark does not authorize removal. No other paths will be removed.",
-            mode.warning()
-        ))
+        let mut message = format!(
+            "{}\n\nConfirm removal of {} listed path(s), measured {}.\nCapacity limit: {}% of each volume.\n\nPaths:\n",
+            mode.warning(),
+            preview.paths.len(),
+            human_bytes(preview.bytes),
+            preview.limit_percent,
+        );
+        for path in &preview.paths {
+            // Keep Windows separators readable while exposing control
+            // characters that could otherwise disguise the path list.
+            let shown: String = path
+                .to_string_lossy()
+                .chars()
+                .map(|character| {
+                    if character.is_control() {
+                        character.escape_default().to_string()
+                    } else {
+                        character.to_string()
+                    }
+                })
+                .collect();
+            let _ = writeln!(message, "  {shown}");
+        }
+        for volume in &preview.volumes {
+            let _ = writeln!(
+                message,
+                "Volume {}: {} selected; limit {} of {} capacity.",
+                volume.volume,
+                human_bytes(volume.bytes),
+                human_bytes(volume.limit),
+                human_bytes(volume.capacity)
+            );
+        }
+        message.push_str("\nApproval to mark does not authorize removal. Only these listed paths are included; directory removal includes their contents. Listed bytes are not guaranteed freed space.");
+        Ok(message)
     }
 
     /// A destructive write. The app consumes and validates the preview again.
