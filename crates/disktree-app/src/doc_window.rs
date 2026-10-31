@@ -102,6 +102,7 @@ pub struct DocWindow {
     pub focus: FocusHandle,
     pub position: usize,
     block_scroll: ScrollHandle,
+    wrap_key: Option<(u32, u32)>,
 }
 
 enum Body {
@@ -140,7 +141,60 @@ impl DocWindow {
             focus: cx.focus_handle().tab_stop(true),
             position: 0,
             block_scroll: ScrollHandle::new(),
+            wrap_key: None,
         }
+    }
+
+    /// Wrap against measured glyph widths after a resize or shared scale
+    /// change. Keep the relative reading position; Copy always uses source.
+    fn reflow(&mut self, window: &Window, theme: &Theme) {
+        let Body::Lines(lines, scroll) = &mut self.body else {
+            return;
+        };
+        let rem = window.rem_size();
+        let font = gpui_kit::font(theme.mono_font.clone());
+        let font_size = rem * text::BODY.0;
+        let font_id = window.text_system().resolve_font(&font);
+        let advance = window
+            .text_system()
+            .advance(font_id, font_size, 'm')
+            .map_or(font_size * 0.6, |size| size.width);
+        // Body and row padding plus border clearance. A 100-column ceiling
+        // keeps wide windows readable without imposing it on narrow ones.
+        let width = (window.viewport_size().width - rem * 5.0)
+            .max(advance * 8.0)
+            .min(advance * WRAP_COLUMNS as f32);
+        let key = (width.as_f32().to_bits(), rem.as_f32().to_bits());
+        if self.wrap_key == Some(key) {
+            return;
+        }
+        self.wrap_key = Some(key);
+        let mut wrapper = window.text_system().line_wrapper(font, font_size);
+        let mut rows = Vec::new();
+        for raw in self.doc.source().lines() {
+            let expanded = raw.replace('\t', "    ");
+            if expanded.is_empty() {
+                rows.push(SharedString::from(""));
+                continue;
+            }
+            let fragments = [gpui_kit::LineFragment::text(&expanded)];
+            let mut starts = vec![0];
+            starts.extend(
+                wrapper
+                    .wrap_line(&fragments, width)
+                    .map(|boundary| boundary.ix),
+            );
+            starts.push(expanded.len());
+            starts.dedup();
+            rows.extend(starts.windows(2).map(|range| {
+                SharedString::from(expanded[range[0]..range[1]].to_owned())
+            }));
+        }
+        self.position =
+            self.position.saturating_mul(rows.len()) / lines.len().max(1);
+        self.position = self.position.min(rows.len().saturating_sub(1));
+        *lines = Rc::new(rows);
+        scroll.scroll_to_item(self.position, ScrollStrategy::Top);
     }
 
     fn key(
@@ -202,7 +256,9 @@ impl Render for DocWindow {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        crate::ui::sync_scale(window, cx);
         let theme = cx.omarchy().clone();
+        self.reflow(window, &theme);
         let label = if self.copied { "Copied" } else { "Copy" };
         let copy = button(COPY_ID, label, ButtonVariant::Secondary, cx)
             .accessibility_label(format!(

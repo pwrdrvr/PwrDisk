@@ -92,6 +92,13 @@ impl<'a> ReviewStatus<'a> {
     }
 }
 
+/// Keep room for the current crumb beside the shipped toolbar; below this
+/// budget the same controls wrap on a second row.
+const INLINE_SETTINGS_REMS: f32 = 80.0;
+
+/// Below the list-plus-explanation width budget, review becomes one column.
+const REVIEW_COLUMNS_REMS: f32 = 65.0;
+
 /// The whole window.
 pub fn root(
     app: &mut Disktree,
@@ -117,7 +124,9 @@ pub fn root(
         .role(gpui_kit::Role::Group).aria_label("Application content")
         .a11y_synthetic_children(move |b| { if modal { b.parent_node().set_hidden(); } })
         .flex().flex_col().flex_1().min_h_0().w_full()
-        .child(strip).child(body)
+        .child(strip)
+        .children((app.screen == Screen::Explore && window.viewport_size().width.as_f32() / app.rem < INLINE_SETTINGS_REMS).then(|| div().px(space::LG).py(space::XS).child(view_settings(app, window, cx))))
+        .child(body)
         .children(app.is_indexing().then(|| div().id("scan-progress")
             .role(gpui_kit::Role::ProgressIndicator)
             .aria_label(if app.screen == Screen::Explore { "Scan in progress; indeterminate; overview is incomplete; Escape cancels" } else { "Background scan in progress; indeterminate; overview is incomplete" })
@@ -211,10 +220,12 @@ pub fn root(
             },
         ))
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-            if this.zoom_interface(event, window) {
+            if this.zoom_interface(event, window, cx) {
                 cx.notify();
                 return;
             }
+            if !this.has_modal() && this.screen == Screen::Review && crate::ui::scroll_key(&event.keystroke.key, &this.review_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
+            if this.show_help && crate::ui::scroll_key(&event.keystroke.key, &this.help_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
             if this.app_menu_open && app_menu_key(this, event, window, cx) { return; }
             if event.keystroke.key == "tab" && !event.keystroke.modifiers.control && !event.keystroke.modifiers.platform {
                 if !this.has_modal() { this.find_open = false; }
@@ -763,6 +774,7 @@ fn overlay_backdrop(
                 .occlude()
                 .flex()
                 .flex_col()
+                .max_w_full()
                 .max_h_full()
                 .on_any_mouse_down(
                     |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
@@ -925,6 +937,17 @@ fn explore(
                 )),
             );
     }
+    let compact_space = app.space.map_or_else(
+        || "Volume space unavailable".to_owned(),
+        |space| {
+            format!(
+                "{} available of {}; {} marked",
+                human_bytes(space.available),
+                human_bytes(space.total),
+                app.marks.len()
+            )
+        },
+    );
     let mosaic: Mosaic = app.prepare();
     let width_rems = window.viewport_size().width.as_f32() / app.rem;
     // The panel is where the selection, the marks and the disk live; it
@@ -1022,6 +1045,9 @@ fn explore(
                 .py(space::SM)
                 .child(indexing_compact(app, &theme, cx))
         }))
+        .children((!panel).then(|| div().flex().flex_row().flex_wrap().items_center().gap(space::SM).px(space::LG).py(space::XS)
+            .child(crate::semantics::text("compact-space", compact_space.clone()).child(compact_space.clone()))
+            .child(button("compact-source", "Source…", ButtonVariant::Secondary, cx).on_click(cx.listener(|this, _, window, cx| { this.open_volumes(cx); this.apply_focus(window, cx); })))))
         .child(key_bar(app, &theme, cx))
 }
 
@@ -1100,7 +1126,7 @@ fn title_strip(
                     .self_stretch(),
             )
             .children(agent_pill(app, &theme, cx))
-            .child(view_settings(app, window, cx))
+            .when(width_rems >= INLINE_SETTINGS_REMS, |row| row.child(view_settings(app, window, cx)))
     } else {
         div()
             .flex()
@@ -1565,6 +1591,9 @@ fn view_settings(
                    step: i32,
                    cx: &mut Context<'_, Disktree>| {
         button(id, label, ButtonVariant::Secondary, cx)
+            .debug_selector(move || format!("{id}-target"))
+            .min_w(size::POINTER_TARGET)
+            .min_h(size::POINTER_TARGET)
             .accessibility_label(if step < 0 {
                 "Decrease treemap depth"
             } else {
@@ -1602,7 +1631,8 @@ fn view_settings(
         .flex_row()
         .items_center()
         .gap(space::SM)
-        .flex_shrink_0()
+        .flex_wrap()
+        .min_w_0()
         .child(history)
         .child(mode)
         .child(hidden)
@@ -3527,6 +3557,9 @@ fn review(
     cx: &mut Context<'_, Disktree>,
 ) -> Div {
     let theme = cx.omarchy().clone();
+    let compact = window.viewport_size().width.as_f32()
+        / window.rem_size().as_f32()
+        < 65.0;
     let plan = app.plan();
     let items = app.marks.items();
     let status = ReviewStatus::new(&plan);
@@ -3549,7 +3582,8 @@ fn review(
         .overflow_y_scroll()
         .border_1()
         .border_color(theme.border)
-        .bg(theme.inset);
+        .bg(theme.inset)
+        .when(compact, |list| list.flex_none());
 
     if items.is_empty() {
         list = list.child(
@@ -3658,9 +3692,10 @@ fn review(
                 if app.removal_mode == RemovalMode::Trash { "Move to trash; recoverable until emptied" } else { "Permanent deletion; not recoverable" },
                 savings(plan.reclaimable_bytes(), plan.possible_bytes()))))
         .child(
-            div()
+            div().id("review-scroll").debug_selector(|| "review-scroll".into())
+                .overflow_y_scroll().track_scroll(&app.review_scroll)
                 .flex()
-                .flex_row()
+                .flex_row().when(compact, gpui_kit::Styled::flex_col)
                 .gap(space::LG)
                 .p(space::LG)
                 .flex_1()
@@ -3711,6 +3746,7 @@ fn mark_row(
         ))
         .flex()
         .flex_row()
+        .flex_wrap()
         .items_center()
         .gap(space::MD)
         .px(space::MD)
@@ -3732,7 +3768,7 @@ fn mark_row(
                 .flex()
                 .flex_col()
                 .gap(space::XXS)
-                .min_w_0()
+                .min_w(relative(0.5))
                 .flex_1()
                 .child(
                     div()
@@ -3853,6 +3889,11 @@ fn review_summary(
         .flex_col()
         .gap(space::XL)
         .w(size::REVIEW_SUMMARY)
+        .when(
+            window.viewport_size().width.as_f32() / window.rem_size().as_f32()
+                < 65.0,
+            |panel| panel.w_full().max_w_full(),
+        )
         .flex_shrink_0()
         .min_h_0()
         .overflow_y_scroll()
@@ -4811,13 +4852,17 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     // The list scrolls inside the card when the window is too short for
     // it; the title and Done stay in view.
     let mut keys = div()
-        .id("help-keys")
-        .debug_selector(|| "help-keys".into())
+        .id("help-scroll")
+        .debug_selector(|| "help-scroll".into())
+        .role(gpui_kit::Role::Document)
+        .aria_label("Shortcut list; arrows scroll, PageUp/PageDown scroll a page, Home/End reaches either end")
         .flex()
         .flex_col()
         .gap(space::SM)
+        .flex_1()
         .min_h_0()
-        .overflow_y_scroll();
+        .overflow_y_scroll()
+        .track_scroll(&app.help_scroll);
     for (index, (key, label)) in rows.into_iter().enumerate() {
         if key.is_empty() && label.is_empty() {
             continue;
@@ -4829,11 +4874,13 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             )
             .flex()
             .flex_row()
+            .flex_shrink_0()
             .gap(space::MD)
-            .items_center()
+            .items_start()
             .child(
                 div()
                     .w(size::KEY_LANE)
+                    .max_w(relative(0.35))
                     .flex_shrink_0()
                     .text_size(text::CAPTION)
                     .text_color(theme.accent)
@@ -4864,6 +4911,8 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             .flex_col()
             .gap(space::MD)
             .w(size::HELP)
+            .max_w_full()
+            .max_h_full()
             .min_h_0()
             .p(space::XL)
             .border_1()
@@ -4871,6 +4920,7 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             .bg(theme.surface)
             .child(
                 div()
+                    .flex_shrink_0()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -4893,7 +4943,7 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                     ),
             )
             .child(keys)
-            .child(overlay_footer(note, close, cx)),
+            .child(overlay_footer(note, close, cx).flex_shrink_0()),
         close,
         cx,
     )

@@ -1007,6 +1007,7 @@ impl Render for LogsWindow {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        crate::ui::sync_scale(window, cx);
         // A test may change the view directly.
         self.sync_list(window);
         match std::mem::replace(&mut self.pending_reveal, Reveal::None) {
@@ -1234,7 +1235,14 @@ impl LogsWindow {
             .gap(space::SM)
             .px(space::LG)
             .py(space::SM)
-            .child(div().flex_1().min_w(size::LOG_FILTER).child(search))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .w(size::LOG_FILTER)
+                    .max_w_full()
+                    .child(search),
+            )
             .child(mode)
             .when(show_context, |bar| {
                 bar.child(self.context_select(theme, cx))
@@ -1929,6 +1937,7 @@ impl LogsWindow {
         div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .flex_none()
             .items_center()
             .gap(space::MD)

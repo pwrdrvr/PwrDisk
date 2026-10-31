@@ -639,7 +639,7 @@ fn chooser_fits_a_small_window_at_large_interface_zoom(
         cx.add_window_view(|_, cx| Disktree::choose(options(), 3, None, cx));
     cx.run_until_parked();
     cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
-    for rem in [16., 28.] {
+    for rem in [16., 28., 32.] {
         cx.update(|window, _| window.set_rem_size(px(rem)));
         draw(cx);
         let bounds = cx
@@ -6752,4 +6752,168 @@ fn marking_a_worktree_trio_one_by_one_frees_one_copy_at_the_end(
             (10_440 * MIB, 10_440 * MIB, 10_440 * MIB),
         ]
     );
+}
+
+/// Help keeps its heading/Done on screen and scrolls its reading lane at
+/// minimum dimensions; neither zoom nor keys act on the marked background.
+#[gpui_kit::test]
+fn help_reflows_and_scrolls_at_minimum_size_and_double_scale(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    for rem in [16., 32.] {
+        cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+        cx.update(|window, _| window.set_rem_size(px(rem)));
+        update(&view, cx, |app, cx| app.open_help(cx));
+        draw(cx);
+        let popup = cx.debug_bounds("help-overlay").expect("Help popup");
+        let close = cx.debug_bounds("overlay-done").expect("Done");
+        assert!(
+            popup.left() >= px(0.) && popup.right() <= px(900.),
+            "{popup:?}"
+        );
+        assert!(
+            popup.top() >= px(0.) && popup.bottom() <= px(600.),
+            "{popup:?}"
+        );
+        assert!(
+            close.top() >= px(0.) && close.bottom() <= px(600.),
+            "{close:?}"
+        );
+        press(cx, "end");
+        assert!(read(&view, cx, |app| app.help_scroll.offset().y) < px(0.));
+        press(cx, "home");
+        assert!(
+            read(&view, cx, |app| app.help_scroll.offset().y).abs() < px(1.)
+        );
+        press(cx, "escape");
+        assert!(!read(&view, cx, |app| app.show_help));
+        assert!(temp.path().join("junk/blob.bin").exists());
+    }
+}
+
+/// Controls stay reachable when the toolbar wraps; tiny tiles have the
+/// same larger file-list target alternative at every zoom step.
+#[gpui_kit::test]
+fn double_scale_wraps_controls_and_keeps_pointer_targets(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (_view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+    for _ in 0..5 {
+        press(cx, "ctrl-=");
+    }
+    assert!(
+        (cx.update(|window, _| window.rem_size().as_f32()) - 32.).abs() < 0.01
+    );
+    for selector in ["depth-less-target", "depth-more-target"] {
+        let bounds = cx.debug_bounds(selector).expect("depth target");
+        assert!(
+            bounds.right() <= px(900.) && bounds.bottom() <= px(600.),
+            "{bounds:?}"
+        );
+        assert!(
+            bounds.size.width >= px(24.) && bounds.size.height >= px(24.),
+            "{bounds:?}"
+        );
+    }
+    press(cx, "ctrl-0");
+    for _ in 0..2 {
+        press(cx, "ctrl--");
+    }
+    let bounds = cx.debug_bounds("depth-more-target").expect("depth target");
+    assert!(bounds.size.width >= px(24.) && bounds.size.height >= px(24.));
+}
+
+#[gpui_kit::test]
+fn settings_panes_scroll_at_minimum_size_and_double_scale(
+    cx: &mut TestAppContext,
+) {
+    use crate::settings::{Pane, SettingsWindow};
+    cx.update(init);
+    let (view, cx) =
+        cx.add_window_view(|_, cx| SettingsWindow::new(Pane::About, cx));
+    cx.simulate_resize(gpui_kit::size(px(640.), px(480.)));
+    cx.update(|window, _| window.set_rem_size(px(32.)));
+    draw(cx);
+    let scroll = cx.debug_bounds("settings-scroll").expect("pane scroll");
+    assert!(
+        scroll.size.width > px(300.),
+        "navigation reflows above the pane: {scroll:?}"
+    );
+    let nav = cx.debug_bounds("settings-nav-about").expect("About tab");
+    cx.simulate_click(nav.center(), gpui_kit::Modifiers::none());
+    press(cx, "end");
+    assert!(view.read_with(cx, |view, _| view.pane_scroll.offset().y) < px(0.));
+}
+
+/// Reflow is measured in glyph widths rather than a fixed 100 characters.
+/// Complete copy and end navigation remain available at the document minimum.
+#[gpui_kit::test]
+fn documents_reflow_at_minimum_size_and_double_scale(cx: &mut TestAppContext) {
+    use crate::doc_window::{Doc, DocWindow};
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let view = DocWindow::new(Doc::ThirdPartyNotices, cx);
+        window.focus(&view.focus, cx);
+        view
+    });
+    cx.simulate_resize(gpui_kit::size(px(640.), px(480.)));
+    cx.update(|window, _| window.set_rem_size(px(32.)));
+    draw(cx);
+    press(cx, "end");
+    assert!(view.read_with(cx, |view, _| view.position) > 1_000);
+    let row = cx.debug_bounds("document-current").expect("last row");
+    assert!(row.left() >= px(0.) && row.right() <= px(640.), "{row:?}");
+    press(cx, "ctrl--");
+    assert!(
+        (cx.update(|window, _| window.rem_size().as_f32()) - 28.).abs() < 0.01
+    );
+    press(cx, "ctrl-c");
+    assert_eq!(clipboard(cx), Doc::ThirdPartyNotices.source());
+}
+
+/// The review's list and explanation stack in a narrow text viewport.
+/// Scrolling never commits a removal.
+#[gpui_kit::test]
+fn review_scrolls_at_minimum_size_and_double_scale(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+        app.open_review(cx);
+    });
+    cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+    cx.update(|window, _| window.set_rem_size(px(32.)));
+    draw(cx);
+    press(cx, "end");
+    assert!(read(&view, cx, |app| app.review_scroll.offset().y) < px(0.));
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    assert!(temp.path().join("junk/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+#[gpui_kit::test]
+fn logs_wrap_at_minimum_size_and_double_scale(cx: &mut TestAppContext) {
+    let text = format!(
+        "2026-10-31T12:00:00.000-04:00 INFO  fixture: {}\n",
+        "invented 日本語 ".repeat(50)
+    );
+    let (_dir, _path, view, cx) = logs_over(cx, &text);
+    cx.simulate_resize(gpui_kit::size(px(640.), px(480.)));
+    cx.update(|window, _| window.set_rem_size(px(32.)));
+    draw(cx);
+    let search = cx
+        .debug_bounds(crate::logs_window::SEARCH_ID)
+        .expect("named search");
+    assert!(search.right() <= px(640.), "{search:?}");
+    let row = cx.debug_bounds("log-row-1").expect("wrapped line");
+    assert!(row.right() <= px(640.), "{row:?}");
+    assert!(view.read_with(cx, |view, _| view.wrap));
 }

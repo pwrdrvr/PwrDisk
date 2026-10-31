@@ -66,6 +66,8 @@ pub mod icon {
 /// Region and lane widths. Each is the comfortable default for its content at
 /// the default rem; they scale with zoom like everything else.
 pub mod size {
+    /// Minimum physical pointer target, also at the smallest UI zoom.
+    pub const POINTER_TARGET: gpui_kit::Pixels = gpui_kit::px(24.0);
     use super::Rems;
 
     /// A crumb's sibling menu.
@@ -192,7 +194,77 @@ pub mod chrome {
 }
 
 /// Interface zoom steps, as a factor of the 16 px default rem.
-pub const ZOOM_STEPS: [f32; 7] = [0.75, 0.875, 1.0, 1.125, 1.25, 1.5, 1.75];
+pub const ZOOM_STEPS: [f32; 8] =
+    [0.75, 0.875, 1.0, 1.125, 1.25, 1.5, 1.75, 2.0];
 
 /// The default rem, in pixels.
 pub const BASE_REM: f32 = 16.0;
+
+/// A session-wide scale: existing and newly opened auxiliary windows agree.
+/// It is not persisted and never changes an operating-system preference.
+struct InterfaceScale(f32);
+impl gpui_kit::Global for InterfaceScale {}
+
+pub fn sync_scale(window: &mut gpui_kit::Window, cx: &gpui_kit::App) -> bool {
+    let Some(scale) = cx.try_global::<InterfaceScale>() else {
+        return false;
+    };
+    let rem = BASE_REM * scale.0;
+    if (window.rem_size().as_f32() - rem).abs() < 0.01 {
+        return false;
+    }
+    window.set_rem_size(gpui_kit::px(rem));
+    true
+}
+
+pub fn zoom_interface(
+    event: &gpui_kit::KeyDownEvent,
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+) -> bool {
+    let key = &event.keystroke;
+    if !(key.modifiers.control || key.modifiers.platform) {
+        return false;
+    }
+    let current = window.rem_size().as_f32() / BASE_REM;
+    let index = ZOOM_STEPS
+        .iter()
+        .position(|step| (step - current).abs() < 0.01)
+        .unwrap_or(2);
+    let next = match key.key.as_str() {
+        "=" | "+" => (index + 1).min(ZOOM_STEPS.len() - 1),
+        "-" => index.saturating_sub(1),
+        "0" => 2,
+        _ => return false,
+    };
+    cx.set_global(InterfaceScale(ZOOM_STEPS[next]));
+    sync_scale(window, cx);
+    cx.refresh_windows();
+    true
+}
+
+/// Keyboard scrolling is explicit, so a virtual/overflow region needs no
+/// pointer wheel. Offsets are clamped to the measured content's bounds.
+pub fn scroll_key(
+    key: &str,
+    scroll: &gpui_kit::ScrollHandle,
+    rem: gpui_kit::Pixels,
+) -> bool {
+    let mut offset = scroll.offset();
+    let page = scroll.bounds().size.height * 0.8;
+    offset.y = match key {
+        "up" => offset.y + rem * 2.0,
+        "down" => offset.y - rem * 2.0,
+        "pageup" => offset.y + page,
+        "pagedown" => offset.y - page,
+        "home" => gpui_kit::px(0.0),
+        "end" => -scroll.max_offset().y,
+        _ => return false,
+    }
+    .clamp(
+        -scroll.max_offset().y.max(gpui_kit::px(0.0)),
+        gpui_kit::px(0.0),
+    );
+    scroll.set_offset(offset);
+    true
+}
