@@ -415,6 +415,7 @@ pub struct SelectionEstimate {
     pub upper: u64,
     /// Only this lower bound belongs on the scanned volume's meter.
     pub on_volume: u64,
+    /// A limited scan, unmeasured allocation or incomplete sharing metadata.
     pub partial: bool,
 }
 
@@ -481,6 +482,7 @@ pub struct State {
     /// A tree is on screen.
     pub scanned: bool,
     pub marks: Vec<Mark>,
+    /// Absent until a complete local tree can supply the selected union.
     pub estimate: Option<SelectionEstimate>,
     pub space: Option<Space>,
     pub removal: Option<Removal>,

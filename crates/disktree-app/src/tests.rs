@@ -4282,10 +4282,9 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         panic!("preview");
     };
     assert_eq!(preview.estimate.paths, preview.paths);
-    assert_eq!(
-        preview.estimate.lower,
-        read(&view, cx, |app| app.plan().reclaimable_bytes())
-    );
+    assert_eq!(preview.estimate.lower, 0, "apparent fixture sizes");
+    assert_eq!(preview.estimate.upper, preview.bytes);
+    assert!(preview.estimate.partial);
     let confirmed = |preview: &disktree_link::RemovalPreview| {
         disktree_link::ConfirmedRemoval {
             preview_id: preview.preview_id.clone(),

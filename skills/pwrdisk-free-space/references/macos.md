@@ -17,7 +17,10 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
   alive. All hardlink names must be selected before their allocation can
   be reclaimed. Clone groups are scoped to their physical APFS volume.
   Missing metadata widens the bounds; it does not justify projecting all
-  listed bytes. Bounds are scan-derived, before snapshots, open files and
+  listed bytes. Apparent-size scans and disabled clone measurements cannot
+  establish physical reclaim estimates. Linked reports use the window's
+  measurement context; an ongoing scan has no final estimate.
+  Bounds are scan-derived, before snapshots, open files and
   later changes; even the lower estimate is not a guaranteed saving.
 - **One container, several volumes.** The System, Data, Preboot, Recovery
   and VM volumes share one APFS container's space. A whole-disk scan of

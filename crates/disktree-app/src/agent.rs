@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use disktree_core::query;
-use disktree_core::removal::{RemovalMode, Target};
+use disktree_core::removal::{Plan, RemovalMode, Target};
 use disktree_core::space::space_info;
 use disktree_core::tree::{Node, path_of};
 use disktree_link::{
@@ -577,7 +577,7 @@ impl Disktree {
             estimate: (self.tree.is_some()
                 && self.scan.is_none()
                 && self.remote.is_none())
-            .then(|| SelectionEstimate::of(&self.plan())),
+            .then(|| self.agent_selection_estimate(&self.plan())),
             space: self.space.map(|space| Space {
                 total: space.total,
                 free: space.free,
@@ -619,6 +619,23 @@ impl Disktree {
                 .unwrap_or_default(),
             remote: self.remote.clone(),
         }
+    }
+
+    pub(crate) fn agent_selection_estimate(
+        &self,
+        plan: &Plan,
+    ) -> SelectionEstimate {
+        // Apparent lengths cannot project physical savings, and disabling
+        // APFS metadata cannot establish that all listed blocks are private.
+        if self.options.apparent_size
+            || (cfg!(target_os = "macos") && !self.options.apfs_clone_metadata)
+        {
+            return SelectionEstimate::unknown(plan);
+        }
+        let mut estimate = SelectionEstimate::of(plan);
+        estimate.partial |=
+            self.progress.errors > 0 || self.options.max_depth.is_some();
+        estimate
     }
 
     /// Copy a connect command, and say so.

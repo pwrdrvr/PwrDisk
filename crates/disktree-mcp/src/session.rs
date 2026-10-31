@@ -1291,8 +1291,9 @@ impl Session {
                 let json = serde_json::to_string_pretty(&preview)
                     .map_err(|error| error.to_string())?;
                 Ok(format!(
-                    "{}\n{json}\nShow the user every path, the mode, measured bytes and capacity limit. Wait for explicit confirmation of this operation before pwrdisk_remove. Approval to mark is insufficient. Never approve through computer use. Do not split the selection into batches to evade the limit. Confirmation text: {}. A changed or expired preview requires new user confirmation.",
+                    "{}\n{}{json}\nShow the user every path, the mode, listed bytes, estimate bounds and capacity limit. Wait for explicit confirmation of this operation before pwrdisk_remove. Approval to mark is insufficient. Never approve through computer use. Do not split the selection into batches to evade the limit. Confirmation text: {}. A changed or expired preview requires new user confirmation.",
                     preview.mode.warning(),
+                    estimate_report(&preview.estimate),
                     preview.mode.confirmation()
                 ))
             }
@@ -1612,13 +1613,22 @@ impl Session {
             let mut nodes = Vec::with_capacity(targets.len());
             let mut unknown = Estimate::default();
             for target in targets {
-                match self.locate(&target.path) {
-                    Ok(found) => nodes.push(found.node),
-                    Err(_) => {
+                if let Ok(found) = self.locate(&target.path) {
+                    if found.scan.options.apparent_size
+                        || (cfg!(target_os = "macos")
+                            && !found.scan.options.apfs_clone_metadata)
+                    {
                         unknown.upper =
                             unknown.upper.saturating_add(target.bytes);
                         unknown.partial = true;
+                    } else {
+                        nodes.push(found.node);
+                        unknown.partial |= found.scan.unreadable > 0
+                            || found.scan.options.max_depth.is_some();
                     }
+                } else {
+                    unknown.upper = unknown.upper.saturating_add(target.bytes);
+                    unknown.partial = true;
                 }
             }
             let measured = sharing::estimate(nodes);
@@ -1850,7 +1860,7 @@ fn estimate_report(estimate: &SelectionEstimate) -> String {
         human_bytes(estimate.lower),
         human_bytes(estimate.upper),
         if estimate.partial {
-            " (incomplete metadata)"
+            " (incomplete scan or metadata)"
         } else {
             ""
         },
@@ -2183,6 +2193,13 @@ mod tests {
             (estimate.lower, estimate.upper, estimate.on_volume),
             (0, 123, 0)
         );
+        assert!(estimate.partial);
+        session.scans[0].options.apparent_size = true;
+        let mut unmeasured = plan(session.marks(), &root);
+        let estimate = session.selection_estimate(&mut unmeasured);
+        assert_eq!(estimate.lower, 0);
+        assert_eq!(estimate.on_volume, 0);
+        assert_eq!(estimate.upper, 100 * 1024 * 1024 * 1024);
         assert!(estimate.partial);
     }
 
@@ -2703,7 +2720,7 @@ mod tests {
                         upper: u64::MAX,
                         on_volume: u64::MAX,
                         partial: false,
-                    })
+                    });
                 }
             }
             let mut plan = plan(session.marks(), &root);
