@@ -6,6 +6,96 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use crate::confirmation_tests::{receive, send};
 
 #[tokio::test]
+async fn an_older_relay_without_a_path_base_rejects_relative_tool_paths() {
+    let temp = tempfile::tempdir().expect("fixture");
+    let (client, desktop_io) = tokio::io::duplex(65_536);
+    let task = tokio::spawn(crate::desktop::serve_connection(
+        Box::new(desktop_io),
+        temp.path().join("absent.sock"),
+    ));
+    let (input, mut output) = tokio::io::split(client);
+    let mut input = BufReader::new(input);
+    send(
+        &mut output,
+        json!({"transport_version":1,"relay_version":"old"}),
+    )
+    .await;
+    assert_eq!(receive(&mut input).await["transport_version"], 1);
+    send(
+        &mut output,
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "protocolVersion":"2025-06-18","capabilities":{},
+            "clientInfo":{"name":"legacy","version":"1"}
+        }}),
+    )
+    .await;
+    let info = receive(&mut input).await;
+    assert!(
+        info["result"]["_meta"]["com.pwrdrvr.pwrdisk/interface"]["pathBase"]
+            .is_null()
+    );
+    assert!(
+        info["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("relative paths are rejected")
+    );
+    send(
+        &mut output,
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+    for (id, name, arguments) in [
+        (2, "pwrdisk_scan", json!({"path":"."})),
+        (3, "pwrdisk_ls", json!({"path":"."})),
+        (4, "pwrdisk_find", json!({"path":"."})),
+        (5, "pwrdisk_mark", json!({"paths":["junk"]})),
+        (6, "pwrdisk_unmark", json!({"paths":["junk"]})),
+        (7, "pwrdisk_show", json!({"path":"."})),
+    ] {
+        send(
+            &mut output,
+            json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{
+                "name":name,"arguments":arguments
+            }}),
+        )
+        .await;
+        let result = receive(&mut input).await;
+        assert_eq!(result["result"]["isError"], true, "{name}: {result}");
+        assert!(
+            result["result"]["content"]
+                .to_string()
+                .contains("Use an absolute path"),
+            "{name}: {result}"
+        );
+    }
+    task.abort();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn a_relative_transport_path_base_is_refused_before_initialization() {
+    let (client, desktop_io) = tokio::io::duplex(4096);
+    let task = tokio::spawn(crate::desktop::serve_connection(
+        Box::new(desktop_io),
+        "unused.sock".into(),
+    ));
+    let (input, mut output) = tokio::io::split(client);
+    let mut input = BufReader::new(input);
+    send(&mut output, json!({"transport_version":1,"relay_version":"new","working_directory":"."})).await;
+    assert_eq!(receive(&mut input).await["transport_version"], 1);
+    assert!(
+        task.await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("must be absolute")
+    );
+    let mut line = String::new();
+    assert_eq!(input.read_line(&mut line).await.expect("EOF"), 0);
+}
+
+#[tokio::test]
 async fn a_mixed_release_relay_exposes_desktop_identity_schemas_and_skills() {
     let temp = tempfile::tempdir().expect("fixture");
     let command_path = temp.path().join("no-window.sock");
@@ -36,6 +126,10 @@ async fn a_mixed_release_relay_exposes_desktop_identity_schemas_and_skills() {
     assert_eq!(ownership["owner"], "desktop");
     assert_eq!(ownership["relayVersion"], "0.12.0");
     assert_eq!(ownership["desktopVersion"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        ownership["pathBase"],
+        json!(std::env::current_dir().expect("relay cwd"))
+    );
     assert!(
         info["instructions"]
             .as_str()
@@ -54,6 +148,28 @@ async fn a_mixed_release_relay_exposes_desktop_identity_schemas_and_skills() {
     .await;
     let listed = receive(&mut input).await;
     let tools = listed["result"]["tools"].as_array().expect("tools");
+    for name in [
+        "pwrdisk_scan",
+        "pwrdisk_ls",
+        "pwrdisk_find",
+        "pwrdisk_mark",
+        "pwrdisk_unmark",
+        "pwrdisk_show",
+    ] {
+        let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+        let field = if name == "pwrdisk_mark" || name == "pwrdisk_unmark" {
+            "paths"
+        } else {
+            "path"
+        };
+        assert!(
+            tool["inputSchema"]["properties"][field]["description"]
+                .as_str()
+                .unwrap()
+                .contains("session path base"),
+            "{name}"
+        );
+    }
     let remove = tools
         .iter()
         .find(|tool| tool["name"] == "pwrdisk_remove")

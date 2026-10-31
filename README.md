@@ -163,6 +163,13 @@ start it yourself and reconnect MCP in the client. For an independent
 scanner, explicitly use `pwrdisk mcp --standalone`; that process owns its
 own interface, scans and marks, and cannot remove files or drive a window.
 
+Relative tool paths resolve against the relay's working directory captured
+when MCP connects, independently of the desktop's launch directory or scan
+root. Initialization metadata (`pathBase`) and status report that fixed
+base. `~` refers to the server's home directory. Older relays that supply
+no base require absolute paths or `~/…`; reconnect with an updated relay
+to enable relative paths. Standalone captures its own working directory.
+
 On macOS the command lives inside the app. The window's **Work with an AI
 agent** line, under the disk, shows each command with the full path and a
 Copy button.

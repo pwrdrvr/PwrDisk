@@ -35,6 +35,13 @@ have the user reconnect MCP and rediscover tools and reread skills;
 previously loaded instructions or text may be cached. Never replay removal
 or reuse its approval after reconnecting.
 
+Relative tool paths resolve against the relay's working directory captured
+when MCP connects, independently of the desktop's launch directory or scan
+root. Initialization metadata (`pathBase`) and status report that fixed
+base. `~` refers to the server's home directory. Older relays that supply
+no base require absolute paths or `~/…`; reconnect with an updated relay
+to enable relative paths. Standalone captures its own working directory.
+
 ## Procedure
 
 1. **Status.** `pwrdisk_status`: the volumes, their size and free space,

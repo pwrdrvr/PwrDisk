@@ -108,7 +108,7 @@ impl Server {
 
     fn ownership(&self) -> String {
         let version = env!("CARGO_PKG_VERSION");
-        match &self.relay_version {
+        let owner = match &self.relay_version {
             Some(relay) => format!(
                 "MCP authority: PwrDisk desktop {version}. Stdio relay {relay} \
                  handles transport only. The desktop owns tools, schemas, \
@@ -120,7 +120,24 @@ impl Server {
                  connected. This process owns the interface, scans and marks. \
                  Showing, review and removal require a desktop connection."
             ),
-        }
+        };
+        let base =
+            self.with(|s| s.path_base().map(std::path::Path::to_path_buf));
+        let paths = base.map_or_else(
+            || {
+                "Session path base: unavailable; relative paths are \
+                    rejected. Use absolute paths or ~/…."
+                    .to_string()
+            },
+            |base| {
+                format!(
+                    "Session path base: {}. Relative paths resolve here \
+                     for this connection, independently of the scan root.",
+                    base.display(),
+                )
+            },
+        );
+        format!("{owner}\n{paths} ~ expands to this server's home directory.")
     }
 
     /// Run `f` with the session. A poisoned lock means a tool panicked; the
@@ -456,6 +473,7 @@ impl ServerHandler for Server {
                 "desktopVersion": self.relay_version.as_ref().map(|_| env!("CARGO_PKG_VERSION")),
                 "relayVersion": self.relay_version,
                 "streamProtocol": self.relay_version.as_ref().map(|_| crate::desktop::TRANSPORT_VERSION),
+                "pathBase": self.with(|session| session.path_base().map(std::path::Path::to_path_buf)),
             }
         })).expect("interface metadata object"));
         config

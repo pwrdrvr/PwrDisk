@@ -31,6 +31,9 @@ Do not retry an uncertain removal; obtain a new preview and confirmation.";
 struct Hello {
     transport_version: u32,
     relay_version: String,
+    /// Optional for older relays; absence disables relative tool paths.
+    #[serde(default)]
+    working_directory: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -87,6 +90,7 @@ pub async fn relay(
             &Hello {
                 transport_version: TRANSPORT_VERSION,
                 relay_version: relay_version.into(),
+                working_directory: std::env::current_dir().ok(),
             },
         )
         .await?;
@@ -159,8 +163,9 @@ pub async fn serve_connection(
     )
     .await?;
     check_transport(hello.transport_version)?;
-    let server =
-        Server::desktop(Session::desktop(command_path), hello.relay_version);
+    let session = Session::desktop(command_path)
+        .with_path_base(hello.working_directory)?;
+    let server = Server::desktop(session, hello.relay_version);
     let running = server.serve((reader, writer)).await?;
     running.waiting().await?;
     Ok(())

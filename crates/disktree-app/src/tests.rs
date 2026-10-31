@@ -4906,7 +4906,7 @@ fn desktop_mcp_reconnect_keeps_the_tree_and_marks(cx: &mut TestAppContext) {
                 let mut io = BufReader::new(mcp_stream::connect(
                     &mcp_stream::endpoint(&command_path),
                 ).await.expect("MCP endpoint"));
-                let ready = rpc(&mut io, json!({"transport_version":1,"relay_version":relay_version})).await;
+                let ready = rpc(&mut io, json!({"transport_version":1,"relay_version":relay_version,"working_directory":client_root})).await;
                 assert_eq!(ready["transport_version"], 1);
                 let initialized = rpc(&mut io, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
                     "protocolVersion":"2025-06-18","capabilities":{},
@@ -4916,12 +4916,13 @@ fn desktop_mcp_reconnect_keeps_the_tree_and_marks(cx: &mut TestAppContext) {
                 assert_eq!(meta["owner"], "desktop");
                 assert_eq!(meta["relayVersion"], relay_version);
                 assert_eq!(meta["desktopVersion"], env!("CARGO_PKG_VERSION"));
+                assert_eq!(meta["pathBase"], json!(client_root));
                 io.get_mut().write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n").await.expect("initialized");
                 let tools = rpc(&mut io, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).await;
                 assert!(tools["result"]["tools"].as_array().expect("tools").iter().any(|tool| tool["name"] == "pwrdisk_mark"));
                 if generation == 0 {
                     let marked = rpc(&mut io, json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
-                        "name":"pwrdisk_mark","arguments":{"paths":[client_root.join("junk")]}
+                        "name":"pwrdisk_mark","arguments":{"paths":["junk"]}
                     }})).await;
                     assert_ne!(marked["result"]["isError"], true, "{marked}");
                 }
