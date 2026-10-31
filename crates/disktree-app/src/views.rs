@@ -111,6 +111,8 @@ pub fn root(
 
     let mut root = div()
         .id("disktree-root")
+        .role(gpui_kit::Role::Group)
+        .aria_label("Disk usage explorer")
         .debug_selector(|| "disktree-root".into())
         .track_focus(&app.focus)
         .key_context("Disktree")
@@ -578,7 +580,11 @@ fn explore(
             scanning_panel(app, &theme, cx).into_any_element()
         }
     } else {
-        treemap_view::mosaic(mosaic, app, window, cx).into_any_element()
+        if app.file_list {
+            crate::file_list::list(app, cx).into_any_element()
+        } else {
+            treemap_view::mosaic(mosaic, app, window, cx).into_any_element()
+        }
     };
 
     div()
@@ -620,6 +626,13 @@ fn explore(
                         .min_w_0()
                         .min_h_0()
                         .child(trail_and_legend(app, &theme, cx))
+                        .child(button("file-view", if app.file_list { "Show treemap" } else { "Show accessible file list" }, ButtonVariant::Outline, cx)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.file_list = !this.file_list;
+                                this.pointer_active = false;
+                                window.focus(if this.file_list { &this.file_focus } else { &this.focus }, cx);
+                                cx.notify();
+                            })))
                         .child(
                             div()
                                 .flex()
@@ -3127,6 +3140,15 @@ fn review(
 
     let mut list = div()
         .id("marked-list")
+        .role(gpui_kit::Role::List)
+        .aria_label(format!(
+            "{} marked paths; page {} of {}",
+            items.len(),
+            app.review_page
+                .min(items.len().saturating_sub(1) / LIST_LIMIT)
+                + 1,
+            items.len().div_ceil(LIST_LIMIT).max(1)
+        ))
         .flex()
         .flex_col()
         .flex_1()
@@ -3145,7 +3167,15 @@ fn review(
         );
     }
 
-    for (index, item) in items.iter().take(LIST_LIMIT).enumerate() {
+    let page = app
+        .review_page
+        .min(items.len().saturating_sub(1) / LIST_LIMIT);
+    for (index, item) in items
+        .iter()
+        .enumerate()
+        .skip(page * LIST_LIMIT)
+        .take(LIST_LIMIT)
+    {
         let is_covered = status.covered(&item.path);
         let blocked_reason = status.blocked(&item.path).map(str::to_owned);
         #[cfg(test)]
@@ -3176,10 +3206,37 @@ fn review(
                 .py(space::SM)
                 .text_size(text::CAPTION)
                 .text_color(theme.secondary)
-                .child(format!(
-                    "{} more are marked and will be removed too. Unmark them in the treemap.",
-                    items.len() - LIST_LIMIT
-                )),
+                .child(
+                    button(
+                        "review-previous",
+                        "Previous marked paths",
+                        ButtonVariant::Outline,
+                        cx,
+                    )
+                    .disabled(page == 0)
+                    .on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.review_page =
+                                this.review_page.saturating_sub(1);
+                            cx.notify();
+                        },
+                    )),
+                )
+                .child(
+                    button(
+                        "review-next",
+                        "Next marked paths",
+                        ButtonVariant::Outline,
+                        cx,
+                    )
+                    .disabled((page + 1) * LIST_LIMIT >= items.len())
+                    .on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.review_page += 1;
+                            cx.notify();
+                        },
+                    )),
+                ),
         );
     }
 
@@ -3199,6 +3256,11 @@ fn review(
             &theme,
             cx,
         ))
+        .child(div().id("review-readable-summary").role(gpui_kit::Role::Label)
+            .aria_label(format!("Review: {} marked paths; {} included; {} blocked; {} covered by another mark. Mode: {}. Estimated reclaimable: {}. Marking does not authorize removal.",
+                items.len(), plan.targets.len(), plan.blocked.len(), plan.covered.len(),
+                if app.removal_mode == RemovalMode::Trash { "Move to trash; recoverable until emptied" } else { "Permanent deletion; not recoverable" },
+                savings(plan.reclaimable_bytes(), plan.possible_bytes()))))
         .child(
             div()
                 .flex()
@@ -3223,7 +3285,7 @@ fn mark_row(
     app: &Disktree,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
-) -> Div {
+) -> Stateful<Div> {
     let root_value = app.tree().map_or(0, |tree| tree.bytes);
     let path_text = crate::marks::display_path(&item.path, app.home.as_deref());
     let color = if blocked.is_some() || covered {
@@ -3231,7 +3293,19 @@ fn mark_row(
     } else {
         theme.foreground
     };
+    let explanation = blocked.as_deref().unwrap_or(if covered {
+        "inside a marked directory"
+    } else {
+        "included in removal plan"
+    });
     div()
+        .id(crate::file_list::path_id(&item.path))
+        .role(gpui_kit::Role::ListItem)
+        .aria_label(format!(
+            "{}; {} bytes; marked; {explanation}",
+            item.path.display(),
+            item.bytes
+        ))
         .flex()
         .flex_row()
         .items_center()
@@ -3302,6 +3376,7 @@ fn mark_row(
                 ButtonVariant::Outline,
                 cx,
             )
+            .accessibility_label(format!("Unmark {}", item.path.display()))
             .on_click(cx.listener({
                 let path = item.path.clone();
                 move |this, _, _, cx| this.unmark(&path.clone(), cx)
