@@ -2730,7 +2730,21 @@ impl Disktree {
                         continue;
                     };
                     labels.push(Label {
-                        text: node.name.to_string(),
+                        text: format!(
+                            "{}{}{}{}",
+                            if is_marked || is_covered {
+                                "[marked] "
+                            } else {
+                                ""
+                            },
+                            if node.read_error { "! " } else { "" },
+                            if filtered == Filtered::Out {
+                                "[filtered] "
+                            } else {
+                                ""
+                            },
+                            node.name
+                        ),
                         rect: self.animated_rect(tile.rect),
                         header: tile
                             .header
@@ -2739,6 +2753,10 @@ impl Disktree {
                         dim: filtered == Filtered::Out,
                         marked: is_marked || is_covered,
                         size_text: crate::widgets::short_value(node, metric),
+                        decoration: decorations
+                            .last()
+                            .expect("label follows its tile")
+                            .clone(),
                     });
                 }
                 TileKind::Others { count, .. } => labels.push(Label {
@@ -2749,6 +2767,10 @@ impl Disktree {
                     dim: self.matches.is_some(),
                     marked: false,
                     size_text: String::new(),
+                    decoration: decorations
+                        .last()
+                        .expect("label follows its tile")
+                        .clone(),
                 }),
             }
         }
@@ -4127,6 +4149,8 @@ pub struct Label {
     pub dim: bool,
     pub marked: bool,
     pub size_text: String,
+    /// The exact fill state is needed for contrast after filtering/marking.
+    pub decoration: TileDeco,
 }
 
 /// How many labels one frame will shape.

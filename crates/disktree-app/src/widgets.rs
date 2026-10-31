@@ -42,7 +42,11 @@ pub fn stat(
         .child(
             div()
                 .text_size(text::CAPTION)
-                .text_color(theme.secondary.opacity(0.75))
+                .text_color(crate::palette::ink_on(
+                    theme.secondary,
+                    theme.background,
+                    4.5,
+                ))
                 .child(label.into()),
         )
         .child(
@@ -69,7 +73,11 @@ pub fn stat_colored(
         .child(
             div()
                 .text_size(text::CAPTION)
-                .text_color(theme.secondary.opacity(0.75))
+                .text_color(crate::palette::ink_on(
+                    theme.secondary,
+                    theme.background,
+                    4.5,
+                ))
                 .child(label.into()),
         )
         .child(
