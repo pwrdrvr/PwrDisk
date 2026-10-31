@@ -52,7 +52,7 @@ pub fn describe(entry: &Entry, now: i64) -> String {
         parts.push(entry.category.clone());
     }
     if let Some(reclaim) = &entry.reclaim {
-        parts.push(format!("reclaimable: {reclaim}"));
+        parts.push(format!("cleanup candidate: {reclaim}"));
     }
     if entry.read_error {
         parts.push("unreadable".to_string());

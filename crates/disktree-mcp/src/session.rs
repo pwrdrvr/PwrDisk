@@ -34,6 +34,35 @@ use serde::Deserialize;
 
 use crate::report::{age, children, describe, display, matches};
 
+/// The measurement context survives a window scan being reused by an agent.
+fn scan_context(tree: &TreeSummary) -> String {
+    format!(
+        "{} sizes \u{00b7} hidden entries {} \u{00b7} {} unreadable",
+        if tree.apparent_size {
+            "apparent"
+        } else {
+            "allocated"
+        },
+        if tree.include_hidden {
+            "included"
+        } else {
+            "skipped"
+        },
+        tree.unreadable,
+    )
+}
+
+/// Listed allocation is additive; APFS physical usage is not.
+const fn allocation_caveat() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macOS: summed allocation can exceed volume usage because APFS clones \
+         share blocks. Listed bytes are not guaranteed freed space; snapshots \
+         can retain deleted blocks.\n"
+    } else {
+        ""
+    }
+}
+
 /// How many findings a scan report lists.
 const INSIGHTS: usize = 8;
 /// Top-level rows a scan report shows.
@@ -220,8 +249,9 @@ pub struct FindParams {
     pub min_bytes: Option<u64>,
     /// Only this kind of data.
     pub category: Option<CategoryName>,
-    /// Only space that can be had back: caches, build output, package
-    /// stores, installed dependencies, sync history, trash, scratch.
+    /// Cleanup candidates: caches, build output, package stores, installed
+    /// dependencies, sync history, trash, scratch. This classification is
+    /// not removal eligibility; results report removal guard refusals.
     #[serde(default)]
     pub reclaimable: bool,
     /// Only names containing this text, case-insensitively.
@@ -521,16 +551,7 @@ impl Session {
             human_count(tree.files),
             human_count(tree.dirs),
         );
-        if tree.unreadable > 0 {
-            let _ = write!(out, " \u{00b7} {} unreadable", tree.unreadable);
-        }
-        if tree.apparent_size {
-            out.push_str(" \u{00b7} apparent sizes");
-        }
-        if !tree.include_hidden {
-            out.push_str(" \u{00b7} hidden entries skipped");
-        }
-        out.push('\n');
+        let _ = writeln!(out, " \u{00b7} {}", scan_context(tree));
         if let Some(space) = facts.space {
             let used = space.total.saturating_sub(space.free);
             let _ = writeln!(
@@ -553,6 +574,7 @@ impl Session {
                 self.show(&facts.root),
             );
         }
+        out.push_str(allocation_caveat());
         out.push_str("Top level, largest first:\n");
         out.push_str(&children(&facts.top, now));
         if !facts.insights.is_empty() {
@@ -819,7 +841,58 @@ impl Session {
             now,
             self.home.as_deref(),
         ));
+        if params.reclaimable
+            || found
+                .matches
+                .iter()
+                .any(|item| item.entry.reclaim.is_some())
+        {
+            out.push_str(
+                "Cleanup candidates are classifications, not permission to \
+                 remove. Totals are measured bytes, not guaranteed freed \
+                 space. Prefer the owning tool's cleanup command for \
+                 tool-owned data.\n",
+            );
+            out.push_str(&self.candidate_guards(&found));
+        }
         Ok(out)
+    }
+
+    /// Preview the same guards as review, without adding any marks. Keep
+    /// system caches visible, but explain why they cannot be removed.
+    fn candidate_guards(&self, found: &FoundList) -> String {
+        let targets: Vec<Target> = found
+            .matches
+            .iter()
+            .filter(|item| item.entry.reclaim.is_some())
+            .map(|item| Target {
+                path: item.path.clone(),
+                bytes: item.entry.bytes,
+                is_dir: item.entry.is_dir,
+                hidden: is_hidden(&item.path),
+            })
+            .collect();
+        let mut out = String::new();
+        for root in self.roots_of(&targets) {
+            let mine: Vec<Target> = targets
+                .iter()
+                .filter(|target| target.path.starts_with(&root))
+                .cloned()
+                .collect();
+            for blocked in plan(&mine, &root).blocked {
+                let _ = writeln!(
+                    out,
+                    "Removal blocked: {} — {}",
+                    self.show(&blocked.path),
+                    blocked.reason
+                );
+            }
+        }
+        out.push_str(
+            "Removal guards were checked for listed candidates only; \
+             marking and review recheck eligibility.\n",
+        );
+        out
     }
 
     // ── the window ──────────────────────────────────────────────────────
@@ -1120,16 +1193,17 @@ impl Session {
             Some(state) => {
                 let tree = match &state.tree {
                     Some(tree) => format!(
-                        " ({} \u{00b7} {} files \u{00b7} scanned {})",
+                        " ({} \u{00b7} {} files \u{00b7} scanned {} \u{00b7} {})",
                         human_bytes(tree.bytes),
                         human_count(tree.files),
-                        age(now(), tree.scanned_at)
+                        age(now(), tree.scanned_at),
+                        scan_context(tree),
                     ),
                     None => String::new(),
                 };
                 format!(
                     "Window: open on {}{tree}, {} screen{}{}. Its tree is \
-                     what pwrdisk_ls and pwrdisk_find read.",
+                     what pwrdisk_ls and pwrdisk_find read.\n{}",
                     self.show(&state.root),
                     state.screen,
                     if state.scanning { ", scanning" } else { "" },
@@ -1137,6 +1211,11 @@ impl Session {
                         0 => String::new(),
                         1 => ", 1 mark".to_string(),
                         n => format!(", {n} marks"),
+                    },
+                    if state.tree.is_some() {
+                        allocation_caveat()
+                    } else {
+                        ""
                     },
                 )
             }
@@ -2022,6 +2101,8 @@ mod tests {
         remote: Option<String>,
         /// A removal is running: marks are refused, as the app does.
         busy: bool,
+        options: ScanOptions,
+        unreadable: u64,
     }
 
     #[cfg(any(unix, windows))]
@@ -2050,9 +2131,9 @@ mod tests {
                     dirs: u64::from(self.tree.dirs),
                     scanned_at: now() - 30,
                     elapsed_ms: 1_500,
-                    unreadable: 0,
-                    apparent_size: true,
-                    include_hidden: true,
+                    unreadable: self.unreadable,
+                    apparent_size: self.options.apparent_size,
+                    include_hidden: self.options.include_hidden,
                 }),
                 insights: vec![Insight {
                     path: self.root.join(".cache"),
@@ -2176,6 +2257,21 @@ mod tests {
             remote: Option<&str>,
             busy: bool,
         ) -> Self {
+            let fake = FakeTree {
+                root: root.to_path_buf(),
+                tree: Arc::new(
+                    disktree_core::scan::scan(root, apparent()).expect("scan"),
+                ),
+                marks: Vec::new(),
+                remote: remote.map(str::to_owned),
+                busy,
+                options: apparent(),
+                unreadable: 0,
+            };
+            Self::with_tree(socket, fake)
+        }
+
+        fn with_tree(socket: &Path, mut fake: FakeTree) -> Self {
             let listener = Arc::new(Listener::bind_at(socket).expect("bind"));
             let asked = Arc::new(Mutex::new(Vec::new()));
             let marks: Arc<Mutex<Vec<Mark>>> = Arc::new(Mutex::new(Vec::new()));
@@ -2186,15 +2282,6 @@ mod tests {
                 Arc::clone(&marks),
                 Arc::clone(&stop),
             );
-            let mut fake = FakeTree {
-                root: root.to_path_buf(),
-                tree: Arc::new(
-                    disktree_core::scan::scan(root, apparent()).expect("scan"),
-                ),
-                marks: Vec::new(),
-                remote: remote.map(str::to_owned),
-                busy,
-            };
             thread::spawn(move || {
                 while !s.load(Ordering::Relaxed) {
                     for incoming in l.drain() {
@@ -2233,6 +2320,173 @@ mod tests {
             self.stop.store(true, Ordering::Relaxed);
             let _ = &self.listener;
         }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn status_reuses_window_measurement_context_without_scanning() {
+        let temp = fixture();
+        let tree = Arc::new(
+            disktree_core::scan::scan(temp.path(), apparent())
+                .expect("fixture scan"),
+        );
+        for (apparent_size, include_hidden, unreadable) in
+            [(true, false, 7), (false, true, 0)]
+        {
+            let socket_dir = tempfile::TempDir::new().expect("socket dir");
+            let socket = endpoint(socket_dir.path());
+            let window = FakeWindow::with_tree(
+                &socket,
+                FakeTree {
+                    root: temp.path().to_path_buf(),
+                    tree: Arc::clone(&tree),
+                    marks: Vec::new(),
+                    remote: None,
+                    busy: false,
+                    options: ScanOptions {
+                        apparent_size,
+                        include_hidden,
+                        ..ScanOptions::default()
+                    },
+                    unreadable,
+                },
+            );
+            let mut session = Session::detached(socket, None);
+            let status = session.status();
+            assert!(
+                status.contains(if apparent_size {
+                    "apparent sizes"
+                } else {
+                    "allocated sizes"
+                }),
+                "{status}"
+            );
+            assert!(
+                status.contains(if include_hidden {
+                    "hidden entries included"
+                } else {
+                    "hidden entries skipped"
+                }),
+                "{status}"
+            );
+            assert!(
+                status.contains(&format!("{unreadable} unreadable")),
+                "{status}"
+            );
+            if cfg!(target_os = "macos") {
+                assert!(
+                    status.contains("APFS clones share blocks"),
+                    "{status}"
+                );
+                assert!(
+                    status.contains("not guaranteed freed space"),
+                    "{status}"
+                );
+            }
+            assert!(session.scans().is_empty());
+            assert!(session.marks().is_empty());
+            assert!(window.asked().iter().all(|request| matches!(
+                request,
+                Request::Hello { .. } | Request::State
+            )));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn private_tmp_is_a_candidate_but_guards_refuse_it_locally_and_linked() {
+        use disktree_core::{
+            classify::classify,
+            tree::{Metric, NodeKind, aggregate},
+        };
+        // Only a synthetic tree represents /; no scan, write or mark of real data.
+        let mut root = Node::directory("/");
+        let mut private = Node::directory("private");
+        let mut tmp = Node::directory("tmp");
+        tmp.children
+            .push(Node::entry("fixture", NodeKind::File, 123));
+        private.children.push(tmp);
+        root.children.push(private);
+        aggregate(&mut root, Metric::Bytes);
+        classify(&mut root);
+        let tree = Arc::new(root);
+        for linked in [false, true] {
+            let temp = tempfile::TempDir::new().expect("endpoint");
+            let socket = endpoint(temp.path());
+            let window = linked.then(|| {
+                FakeWindow::with_tree(
+                    &socket,
+                    FakeTree {
+                        root: PathBuf::from("/"),
+                        tree: Arc::clone(&tree),
+                        marks: Vec::new(),
+                        remote: None,
+                        busy: false,
+                        options: apparent(),
+                        unreadable: 0,
+                    },
+                )
+            });
+            let mut session = Session::detached(socket, None);
+            if !linked {
+                session.scans.push(Scan {
+                    root: PathBuf::from("/"),
+                    tree: Arc::clone(&tree),
+                    options: apparent(),
+                    at: now(),
+                    elapsed: Duration::ZERO,
+                    unreadable: 0,
+                    space: None,
+                    device: None,
+                    insights: Vec::new(),
+                });
+            }
+            let report = session
+                .find(&FindParams {
+                    reclaimable: true,
+                    ..FindParams::default()
+                })
+                .expect("find");
+            assert!(report.starts_with("1 match "), "{report}");
+            assert!(
+                report.contains("cleanup candidate: temporary"),
+                "{report}"
+            );
+            assert!(report.contains("Removal blocked: /private/tmp — part of the system under /private"), "{report}");
+            assert!(report.contains("not guaranteed freed space"), "{report}");
+            assert!(session.marks().is_empty());
+            if let Some(window) = window {
+                assert!(window.marks().is_empty());
+                assert!(window.asked().iter().all(|request| matches!(
+                    request,
+                    Request::Hello { .. } | Request::Find(_)
+                )));
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apfs_allocation_is_reported_even_above_volume_usage() {
+        let temp = fixture();
+        let mut session = unlinked(temp.path());
+        scanned(&mut session, temp.path());
+        let mut facts = ScanFacts::of_local(&session.scans()[0]);
+        facts.tree.bytes = 2_000_000;
+        facts.tree.apparent_size = false;
+        facts.space = Some(Space {
+            total: 1_000_000,
+            free: 500_000,
+            available: 500_000,
+        });
+        let report = session.scan_report(&facts);
+        assert!(report.contains("1.9 MiB"), "{report}");
+        assert!(report.contains("400% of what is used"), "{report}");
+        assert!(
+            report.contains("summed allocation can exceed volume usage"),
+            "{report}"
+        );
+        assert!(report.contains("not guaranteed freed space"), "{report}");
     }
 
     #[cfg(any(unix, windows))]

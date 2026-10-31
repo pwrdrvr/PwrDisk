@@ -45,7 +45,7 @@ pub struct Filter {
     /// Only entries of at least this many bytes.
     pub min_bytes: u64,
     pub category: Option<Category>,
-    /// Only space that can be had back.
+    /// Cleanup candidates by classification, independent of removal guards.
     pub reclaimable: bool,
     /// Only names containing this, compared lowercased.
     pub name: Option<String>,

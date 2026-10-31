@@ -130,7 +130,12 @@ Looking is free; acting is the user's call.
    tool. Pass `show: true` so the window follows you; the user sees what you
    see.
 4. **Sweep.** `pwrdisk_find` with `reclaimable: true` lists every cache,
-   build directory and package store at once. `kind: "file"` with
+   build directory and verified package store at once. These are cleanup
+   candidates, not removal eligibility or guaranteed savings. Read reported
+   guard refusals; never bypass them. Confirm pnpm's store with `pnpm store
+   path` and prefer `pnpm store prune`; its installation also holds the
+   executable, global tools and `.tools`, which are not a disposable store.
+   `kind: "file"` with
    `min_bytes` finds huge files. `older_than_days` finds what nobody has
    touched. `name` matches part of a name.
 5. **Classify each candidate**, in one line each:

@@ -5,10 +5,9 @@
 //! and "can I delete it" — can be read off a tile at a glance.
 //!
 //! Both come from names. A short lookup of well-known directory names covers
-//! most of a home directory; anything unmatched takes its parent's kind, and a
-//! top-level directory with an unknown name takes the kind of its largest
-//! recognisable child (`~/world` is mostly `.git`, so it is git). Reclaimable
-//! space is the same idea, plus a sibling check where a name alone is too
+//! most of a home directory; anything unmatched takes its parent's kind,
+//! without guessing from unrelated descendants. Reclaimable space is the
+//! same idea, plus a sibling check where a name alone is too
 //! common to trust: `target` is only a build directory beside a `Cargo.toml`.
 
 use std::borrow::Cow;
@@ -166,7 +165,14 @@ pub fn category_of_name(name: &str) -> Option<Category> {
     let lower = lowered(name, &mut buffer);
     // Windows: a work or school account's folder carries the organisation,
     // `OneDrive - Contoso`, and Dropbox's does the same, `Dropbox (Contoso)`.
-    if lower.starts_with("onedrive - ") || lower.starts_with("dropbox (") {
+    if lower.starts_with("onedrive - ")
+        || lower.starts_with("dropbox (")
+        // Legacy Google Drive roots predate File Provider. Match the wrapper,
+        // never the account name inside it.
+        || ["my drive (", "google drive ("]
+            .iter()
+            .any(|prefix| lower.starts_with(prefix) && lower.ends_with(')'))
+    {
         return Some(Category::Synced);
     }
     let category = match &*lower {
@@ -187,7 +193,7 @@ pub fn category_of_name(name: &str) -> Option<Category> {
         // macOS: Xcode's and the simulators' state in ~/Library/Developer.
         // Not `Developer` itself: ~/Developer is where Apple puts projects.
         | "xcode" | "coresimulator" => Category::Toolchain,
-        "sync" | "dropbox" | "nextcloud" | "google drive" | "onedrive"
+        "sync" | "dropbox" | "nextcloud" | "google drive" | "my drive" | "onedrive"
         | "pclouddrive" | "mega" | ".stversions"
         // macOS: iCloud Drive, and the File Provider clients (Dropbox,
         // Google Drive, OneDrive) since macOS 12.
@@ -236,7 +242,6 @@ pub fn reclaim_of(
         // next time that device is plugged in.
         | "ios devicesupport" | "watchos devicesupport" => Reclaim::Regenerable,
         ".stversions" => Reclaim::SyncHistory,
-        ".pnpm-store" | "pnpm" => Reclaim::PackageStore,
         "__pycache__" | ".pytest_cache" | ".mypy_cache" | ".ruff_cache"
         | ".next" | ".turbo" | ".parcel-cache"
         // Xcode's build products and indexes, rebuilt on the next build.
@@ -269,6 +274,15 @@ pub fn classify(root: &mut Node) {
         classify_below(root, category, None, 0);
         return;
     }
+    if is_pnpm_store(root) {
+        classify_below(
+            root,
+            Category::Toolchain,
+            Some(Reclaim::PackageStore),
+            0,
+        );
+        return;
+    }
     root.category = Category::Other;
     root.reclaim = None;
     for index in 0..root.children.len() {
@@ -276,15 +290,18 @@ pub fn classify(root: &mut Node) {
         let has_sibling =
             |wanted: &str| siblings.iter().any(|name| &*name.name == wanted);
         let child = &siblings[index];
-        // A top-level directory with an unknown name takes the kind of its
-        // largest recognisable child: `~/world` is mostly `.git`.
+        // Only evidence about this directory may become an inherited kind.
+        // Guessing from a descendant can turn a whole home into scratch.
         let category = category_of_name(&child.name)
             .or_else(|| is_git_store(child).then_some(Category::Git))
-            .or_else(|| dominant_child_category(child))
             .unwrap_or(Category::Other);
         let reclaim = child
             .is_dir()
-            .then(|| reclaim_of(&child.name, Category::Other, has_sibling))
+            .then(|| {
+                reclaim_of(&child.name, Category::Other, has_sibling).or_else(
+                    || is_pnpm_store(child).then_some(Reclaim::PackageStore),
+                )
+            })
             .flatten();
         classify_below(&mut root.children[index], category, reclaim, 1);
     }
@@ -360,36 +377,30 @@ fn kind_of(
     ) {
         None
     } else {
-        reclaim.or_else(|| reclaim_of(&child.name, category, has_sibling))
+        reclaim
+            .or_else(|| reclaim_of(&child.name, category, has_sibling))
+            .or_else(|| is_pnpm_store(child).then_some(Reclaim::PackageStore))
     };
     (child_category, child_reclaim)
 }
 
-/// The kind of an unknown directory, from what fills it: the first
-/// recognisable name down the largest children, a few levels deep.
-fn dominant_child_category(node: &Node) -> Option<Category> {
-    let mut node = node;
-    for _ in 0..3 {
-        if let Some(category) = node
-            .children
-            .iter()
-            .filter(|child| child.is_dir())
-            .find_map(|child| {
-                category_of_name(&child.name)
-                    .filter(|category| {
-                        !matches!(
-                            category,
-                            Category::FilesystemEvents | Category::Spotlight
-                        )
-                    })
-                    .or_else(|| is_git_store(child).then_some(Category::Git))
-            })
-        {
-            return Some(category);
-        }
-        node = node.children.iter().find(|child| child.is_dir())?;
-    }
-    None
+/// pnpm's versioned content-addressable store, not its installation prefix.
+/// `pnpm` also holds its executable, global tools and `.tools`; only a
+/// store with a version directory containing `files` is a cleanup candidate.
+fn is_pnpm_store(node: &Node) -> bool {
+    node.is_dir()
+        && matches!(&*node.name, "store" | ".pnpm-store")
+        && node.children.iter().any(|version| {
+            version.is_dir()
+                && version.name.strip_prefix('v').is_some_and(|number| {
+                    !number.is_empty()
+                        && number.bytes().all(|c| c.is_ascii_digit())
+                })
+                && version
+                    .children
+                    .iter()
+                    .any(|child| child.is_dir() && &*child.name == "files")
+        })
 }
 
 /// A git object store by its shape, whatever it is called: a bare
@@ -541,13 +552,172 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_top_level_directory_takes_its_largest_known_child() {
+    fn unknown_aggregates_do_not_guess_from_descendants() {
         let home = home();
-        assert_eq!(named(&home, &["world"]).category, Category::Git);
+        assert_eq!(named(&home, &["world"]).category, Category::Other);
         assert_eq!(named(&home, &["mystery"]).category, Category::Other);
+        assert_eq!(
+            named(&home, &["world", "README"]).category,
+            Category::Other
+        );
         // A bare repository is git by its shape, whatever it is called.
-        assert_eq!(named(&home, &["monorepo"]).category, Category::Git);
+        assert_eq!(named(&home, &["monorepo"]).category, Category::Other);
         assert_eq!(named(&home, &["monorepo", "git"]).category, Category::Git);
+    }
+
+    #[test]
+    fn pnpm_installations_are_not_package_stores() {
+        let store = || {
+            dir(
+                "store",
+                vec![dir(
+                    "v10",
+                    vec![
+                        dir(
+                            "files",
+                            vec![dir("ab", vec![file("package", 10)])],
+                        ),
+                        dir("index", vec![]),
+                    ],
+                )],
+            )
+        };
+        let mut root = dir(
+            "Library",
+            vec![
+                dir(
+                    "pnpm",
+                    vec![
+                        file("pnpm", 1),
+                        dir("global", vec![file("tool", 2)]),
+                        dir(".tools", vec![file("pnpm", 3)]),
+                        store(),
+                    ],
+                ),
+                dir(".pnpm-store", vec![file("unverified", 4)]),
+            ],
+        );
+        classify(&mut root);
+        for path in [
+            vec!["pnpm"],
+            vec!["pnpm", "pnpm"],
+            vec!["pnpm", "global", "tool"],
+            vec!["pnpm", ".tools", "pnpm"],
+            vec![".pnpm-store", "unverified"],
+        ] {
+            assert_eq!(named(&root, &path).reclaim, None, "{path:?}");
+        }
+        assert_eq!(
+            named(&root, &["pnpm", "store", "v10", "files", "ab", "package"])
+                .reclaim,
+            Some(Reclaim::PackageStore)
+        );
+        let mut standalone = store();
+        standalone.name = ".pnpm-store".into();
+        classify(&mut standalone);
+        assert_eq!(standalone.reclaim, Some(Reclaim::PackageStore));
+        assert_eq!(reclaim_of("pnpm", Category::Toolchain, |_| false), None);
+        for contents in [
+            dir("version", vec![dir("files", vec![])]),
+            dir("v", vec![dir("files", vec![])]),
+            dir("v3-backup", vec![dir("files", vec![])]),
+            dir("v3", vec![file("files", 1)]),
+        ] {
+            let mut unverified = dir(".pnpm-store", vec![contents]);
+            classify(&mut unverified);
+            assert_eq!(unverified.reclaim, None);
+            assert_eq!(unverified.children[0].reclaim, None);
+        }
+    }
+
+    #[test]
+    fn a_whole_root_scan_keeps_categories_and_filters_local_to_evidence() {
+        use crate::query::{Filter, find};
+        use std::path::Path;
+        let mut root = dir(
+            "/",
+            vec![dir(
+                "Users",
+                vec![dir(
+                    "fixture",
+                    vec![
+                        dir(
+                            ".codex",
+                            vec![dir("scratch", vec![file("experiment", 100)])],
+                        ),
+                        dir(
+                            "Library",
+                            vec![
+                                dir("VM data", vec![file("disk", 30)]),
+                                dir("snapshots", vec![file("vm-snapshot", 20)]),
+                            ],
+                        ),
+                        dir(
+                            "My Drive (Fixture Account)",
+                            vec![dir(
+                                "client files",
+                                vec![file("document", 10)],
+                            )],
+                        ),
+                    ],
+                )],
+            )],
+        );
+        aggregate(&mut root, Metric::Bytes);
+        classify(&mut root);
+        for path in [
+            vec!["Users"],
+            vec!["Users", "fixture"],
+            vec!["Users", "fixture", "Library", "VM data", "disk"],
+            vec!["Users", "fixture", "Library", "snapshots"],
+        ] {
+            let node = named(&root, &path);
+            assert_eq!(node.category, Category::Other, "{path:?}");
+            assert_eq!(node.reclaim, None, "{path:?}");
+        }
+        for (category, expected) in [
+            (Category::AgentScratch, "/Users/fixture/.codex"),
+            (
+                Category::Synced,
+                "/Users/fixture/My Drive (Fixture Account)",
+            ),
+        ] {
+            let found = find(
+                Path::new("/"),
+                &root,
+                &Filter {
+                    category: Some(category),
+                    ..Filter::default()
+                },
+                20,
+            );
+            assert_eq!(found.count, 1);
+            assert_eq!(found.matches[0].0, Path::new(expected));
+        }
+        assert_eq!(
+            named(
+                &root,
+                &[
+                    "Users",
+                    "fixture",
+                    "My Drive (Fixture Account)",
+                    "client files",
+                    "document"
+                ]
+            )
+            .category,
+            Category::Synced
+        );
+        for name in [
+            "My Drive",
+            "My Drive (Another Account)",
+            "Google Drive (work)",
+        ] {
+            assert_eq!(category_of_name(name), Some(Category::Synced));
+        }
+        for name in ["My Driver", "My Drive (unfinished", "My Drive backups"] {
+            assert_eq!(category_of_name(name), None);
+        }
     }
 
     #[test]
