@@ -433,3 +433,27 @@ Upstream #51 was re-evaluated narrowly: its virtual row composition and
 shared selection/marks are useful patterns, but its row-index IDs, row cap
 and absence of accessibility roles do not satisfy this issue. No upstream
 commits or theme/list redesign were imported.
+
+### PWR-30: source fields and current status
+
+Source `9729798`, debug macOS binary SHA-256
+`40b43a26cea199b307cf0b8e543de628918da262acf634b2c43aadea6e821809`,
+same contrived Projects fixture, OS and scale as PWR-29 above.
+
+| Promise | Observed native macOS AX | Harness / source |
+| --- | --- | --- |
+| Persistent source names and values | PASS: `SSH destination` and `Root directory to scan` exposed; entered `-audit-invalid` observable as the host value | Field semantics include current values and descriptions |
+| Validation context | PASS: `invalid SSH destination` exposed and included in field descriptions after Return; no SSH connection attempted | Invalid flags distinguish connection and path errors; existing invalid-host/path and discovery regressions remain green |
+| Source instructions | PASS: explicit Scan acceptance, nested-mount/symlink cautions and remote read-only context exposed | Source list has selected-root metadata and stable mount-path IDs; native mount traversal remains unverified |
+| Current state and volume | PASS: completed scan, fixture root, marked count and 506 MiB available of 512 MiB exposed | Marked plan byte totals and estimates are independently readable; no extra per-frame mark scan |
+| Progress/cancel/errors | Live progress not exercised: small fixture completes before inspection | PASS: two-second progress cache, error bypass, immediate cancel and completion regression; indeterminate progress/busy metadata; sampled paths omitted |
+| Announcements | BLOCKED for speech/cadence; exposing a polite live region is not a spoken-output pass | Source live metadata and throttling only |
+
+macOS lint, full workspace tests (including 219 app tests) and debug build
+passed. Dedicated Linux VM `sb_uihqpdf98b` at `9729798`: setup 0 (2s), lint
+0 (5s), test 0 (14s), portable build 0 (44s), isolated SSH 0 (3s), all 0.
+These are build/harness/integration results, not AT-SPI or Orca evidence.
+Native focus/modal containment, Windows UIA/AT, speech, OS scaling and high
+contrast remain open under PWR-31/PWR-36. Changes add semantic metadata;
+the visible source/status presentation is unchanged, so screenshots do not
+show the repaired names/values. No real scan or live removal was performed.

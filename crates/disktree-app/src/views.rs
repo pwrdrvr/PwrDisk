@@ -101,6 +101,7 @@ pub fn root(
     }
     app.apply_focus(window, cx);
     let theme = cx.omarchy().clone();
+    let readable_status = app.accessibility_status();
     let strip = title_strip(app, frame, window, cx);
     let body = match app.screen {
         Screen::Explore => explore(app, window, cx),
@@ -211,7 +212,12 @@ pub fn root(
         .font_family(theme.font)
         .text_size(text::BODY)
         .child(strip)
-        .child(body);
+        .child(body)
+        .children(app.is_indexing().then(|| div().id("scan-progress")
+            .role(gpui_kit::Role::ProgressIndicator)
+            .aria_label("Scan in progress; indeterminate; overview is incomplete; Escape cancels")
+            .a11y_synthetic_children(|b| b.parent_node().set_busy())))
+        .child(crate::semantics::status(readable_status));
     if let Some(tip) = cursor_tooltip(app, window, cx) {
         root = root.child(tip);
     }
@@ -241,6 +247,9 @@ fn volumes_dialog(
 ) -> impl IntoElement {
     let theme = cx.omarchy().clone();
     let cancel = cx.entity().downgrade();
+    let source_error = app.picker_error.as_ref().or(app.volumes_error.as_ref());
+    let host_invalid = app.volumes_error.is_some();
+    let path_invalid = app.picker_error.is_some();
     let source_ready = app.picker_source_matches(cx);
     let source = app.volumes_source.as_ref().map_or_else(
         || "This computer".to_owned(),
@@ -248,6 +257,10 @@ fn volumes_dialog(
     );
     let mut rows = div()
         .id("volume-rows")
+        .role(gpui_kit::Role::ListBox)
+        .aria_label(
+            "Available roots in the selected machine; listing is not a scan",
+        )
         .debug_selector(|| "volume-rows".into())
         .flex()
         .flex_col()
@@ -260,7 +273,14 @@ fn volumes_dialog(
             cx,
         ));
     } else if let Some(error) = &app.volumes_error {
-        rows = rows.child(div().text_color(theme.danger).child(error.clone()));
+        rows = rows.child(
+            div()
+                .id("discovery-error")
+                .role(gpui_kit::Role::Alert)
+                .aria_label(error.clone())
+                .text_color(theme.danger)
+                .child(error.clone()),
+        );
     } else if app.volumes.is_empty() {
         rows = rows.child(dialog_description(
             "No mounts listed. Enter a directory below.",
@@ -276,7 +296,11 @@ fn volumes_dialog(
         );
         rows = rows.child(
             div()
-                .id(ElementId::Name(format!("volume-{index}").into()))
+                .id(crate::file_list::path_id(&volume.point))
+                .role(gpui_kit::Role::ListBoxOption)
+                .aria_label(label.clone())
+                .aria_selected(highlighted)
+                .when(highlighted, gpui_kit::StatefulInteractiveElement::aria_active_descendant)
                 .debug_selector(move || format!("volume-{index}"))
                 .px(space::MD)
                 .py(space::SM)
@@ -305,6 +329,7 @@ fn volumes_dialog(
         .as_ref()
         .expect("picker prepared before rendering");
     let popup = dialog_popup(cx).w_full()
+        .child(crate::semantics::text("source-cautions", "Connect, then select a mount or directory. No scan starts until Scan is accepted. Nested mounts and symlinks are not traversed; remote sources are read-only. Space is measured only after selection."))
         .child(dialog_title("Choose what to scan", cx))
         .child(dialog_description(
             "Connect, then select a mount or directory. No new scan starts until you choose Scan.",
@@ -313,20 +338,28 @@ fn volumes_dialog(
             .child(button("source-local", "This computer", ButtonVariant::Secondary, cx)
                 .on_click(cx.listener(|this, _, window, cx| this.choose_local_source(window, cx))))
             .child(gpui_omarchy::input("source-host", host, window, cx)
+                .aria_label("SSH destination")
+                .aria_value(host.read(cx).value())
+                .a11y_synthetic_children(move |b| { if host_invalid { b.parent_node().set_invalid(gpui_kit::accesskit::Invalid::True); } })
+                .aria_description(format!("SSH alias or user@host; blank uses this computer. {}", source_error.map_or("", String::as_str)))
                 .debug_selector(|| "source-host".into()).flex_1())
             .child(button("source-connect", "Connect SSH", ButtonVariant::Secondary, cx)
                 .on_click(cx.listener(|this, _, _, cx| this.connect_picker(cx)))))
-        .child(div().text_color(theme.bright).child(source))
+        .child(crate::semantics::text("selected-source", source.clone()).text_color(theme.bright).child(source))
         .child(rows)
         .child(dialog_description(
             "Nested mounts and symlinks are not traversed. Space is measured only after selection.", cx))
         .child(div().flex().flex_row().gap(space::SM)
             .child(gpui_omarchy::input("source-path", path, window, cx)
+                .aria_label("Root directory to scan")
+                .aria_value(path.read(cx).value())
+                .a11y_synthetic_children(move |b| { if path_invalid { b.parent_node().set_invalid(gpui_kit::accesskit::Invalid::True); } })
+                .aria_description(format!("Absolute path in the selected machine. Scan starts only after explicit acceptance. {}", source_error.map_or("", String::as_str)))
                 .debug_selector(|| "source-path".into()).flex_1())
             .child(button("source-scan-path", "Scan directory", ButtonVariant::Secondary, cx)
                 .disabled(!source_ready || app.volumes_loading || app.volumes_error.is_some())
                 .on_click(cx.listener(|this, _, _, cx| this.choose_picker_path(cx)))))
-        .children(app.picker_error.as_ref().map(|error| div().text_color(theme.danger).child(error.clone())))
+        .children(app.picker_error.as_ref().map(|error| div().id("source-error").role(gpui_kit::Role::Alert).aria_label(error.clone()).text_color(theme.danger).child(error.clone())))
         .child(div().flex().flex_row().justify_end().gap(space::SM)
             .child(dialog_button("source-cancel", "Cancel", ButtonVariant::Secondary, cx)
                 .on_click(cx.listener(|this, _, window, cx| {
@@ -1128,6 +1161,7 @@ fn view_settings(
             }))
             .child(
                 button(id, label, ButtonVariant::Secondary, cx)
+                    .accessibility_label(if back { "Go back in navigation history" } else { "Go forward in navigation history" })
                     .tab_stop(false)
                     .disabled(!enabled)
                     // Borderless: glyphs on the bar, not controls in a
@@ -1187,6 +1221,11 @@ fn view_settings(
                    step: i32,
                    cx: &mut Context<'_, Disktree>| {
         button(id, label, ButtonVariant::Secondary, cx)
+            .accessibility_label(if step < 0 {
+                "Decrease treemap depth"
+            } else {
+                "Increase treemap depth"
+            })
             .tab_stop(false)
             .disabled(if step < 0 { depth <= 1 } else { depth >= 6 })
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -2203,7 +2242,11 @@ fn marked_section(
                     .child(human_bytes(plan.bytes())),
             )
         });
-    let mut section = div().flex().flex_col().gap(space::XS).child(header);
+    let mut section = div().flex().flex_col().gap(space::XS)
+        .child(crate::semantics::text("marked-summary", format!("{} marked paths; {} listed bytes; {} included, {} blocked, {} covered. Estimated reclaimable: {}. Projections use only the measured volume.",
+            count, plan.bytes(), plan.targets.len(), plan.blocked.len(), plan.covered.len(), savings(plan.reclaimable_bytes(), plan.possible_bytes())))
+            .role(gpui_kit::Role::Status).a11y_synthetic_children(|b| { b.parent_node().set_live(gpui_kit::accesskit::Live::Polite); }))
+        .child(header);
     if count == 0 {
         return section.child(
             div()
@@ -3050,6 +3093,7 @@ fn find_field(app: &Disktree, theme: &Theme) -> Div {
     };
     let highlight = palette::highlight(theme);
     div()
+        .child(crate::semantics::text("filter-status", format!("Filter by name: {}. {summary}. {hint}. Slash starts editing; Escape clears.", app.find)))
         .flex()
         .flex_row()
         .items_center()
