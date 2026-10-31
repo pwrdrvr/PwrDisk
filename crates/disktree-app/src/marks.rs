@@ -950,4 +950,88 @@ mod tests {
         marks.remove(Path::new("/srv/b/c"), PathStyle::Posix);
         assert!(marks.contains(Path::new(r"/srv/b\c"), PathStyle::Posix));
     }
+
+    #[test]
+    fn posix_index_absorbs_only_whole_host_components() {
+        let style = PathStyle::Posix;
+        let mut marks = Marks::default();
+        for path in [
+            "/srv/a-b/keep",
+            "/srv/a/child",
+            r"/srv/a\b/keep",
+            "/srv/a:b/keep",
+            "/srv/a",
+        ] {
+            marks.toggle(target(path, 1), style);
+        }
+        assert_eq!(marks.absorb(Path::new("/srv/a"), style), 1);
+        let paths: Vec<_> = marks
+            .items()
+            .iter()
+            .map(|item| item.path.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            ["/srv/a-b/keep", r"/srv/a\b/keep", "/srv/a:b/keep", "/srv/a"]
+        );
+        assert_eq!(
+            marks
+                .ancestor(Path::new("/srv/a/next"), style)
+                .unwrap()
+                .to_str(),
+            Some("/srv/a")
+        );
+        assert!(marks.ancestor(Path::new(r"/srv/a\b/next"), style).is_none());
+        assert_eq!(marks.absorb(Path::new(r"/srv/a\b"), style), 1);
+        assert!(marks.contains(Path::new("/srv/a:b/keep"), style));
+        assert!(marks.contains(Path::new("/srv/a-b/keep"), style));
+    }
+
+    #[test]
+    fn posix_refresh_and_crumb_cache_keep_ambiguous_windows_names_distinct() {
+        let style = PathStyle::Posix;
+        let root_path = Path::new("/srv");
+        let mut root = Node::directory("srv");
+        let mut literal = Node::directory(r"logs\old");
+        literal.children.push(file("a:b", 7));
+        let mut nested = Node::directory("logs");
+        let mut old = Node::directory("old");
+        old.children.push(file("a:b", 9));
+        nested.children.push(old);
+        root.children.extend([literal, nested]);
+        aggregate(&mut root, Metric::Bytes);
+        let root = Arc::new(root);
+        let mut marks = Marks::default();
+        for path in [r"/srv/logs\old/a:b", "/srv/logs/old/a:b"] {
+            marks.toggle(target(path, 0), style);
+        }
+        marks.refresh(root_path, &root, Metric::Bytes, style);
+        assert_eq!(
+            marks
+                .items()
+                .iter()
+                .map(|item| item.bytes)
+                .collect::<Vec<_>>(),
+            [7, 9]
+        );
+        let crumbs = marks.crumbs(root_path, &root, Metric::Bytes, style);
+        assert_eq!(crumbs.len(), 2);
+        for item in marks.items() {
+            let (path, node) = Resolver::new(root_path, &root, style)
+                .resolve(&item.path)
+                .unwrap();
+            assert!(crumbs.contains(&path));
+            assert_eq!(node.bytes, item.bytes);
+        }
+        let native =
+            marks.crumbs(root_path, &root, Metric::Bytes, PathStyle::Native);
+        assert!(
+            !Arc::ptr_eq(&crumbs, &native),
+            "path rules invalidate the cache"
+        );
+        assert_eq!(
+            marks.crumbs(root_path, &root, Metric::Bytes, style).len(),
+            2
+        );
+    }
 }
