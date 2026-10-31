@@ -7,6 +7,17 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.13.0
+
+- Downloads - Add stable filenames for the universal macOS DMG and both
+  Linux tarballs so the README's download buttons keep working across
+  releases. Versioned downloads remain available.
+- Documentation - Put downloads, installation and a quick tour first in
+  the README, with detailed usage and build instructions in separate
+  guides.
+- Third-Party Notices - Include the socket2 attribution required by the
+  Windows agent-window link and refresh notices for this release.
+
 ## v0.12.0
 
 The first PwrDisk release, continuing from disktree 0.11.0 with local and
