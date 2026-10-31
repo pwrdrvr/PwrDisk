@@ -4643,3 +4643,76 @@ fn removal_capacity_limit_blocks_the_entire_ui_selection(
     assert!(temp.path().join("keep/notes.txt").exists());
     draw(cx);
 }
+
+#[gpui_kit::test]
+fn accessible_file_pages_reach_every_entry_and_share_safe_marks(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = tempfile::tempdir().expect("tempdir");
+    for i in 0..235 {
+        std::fs::write(
+            temp.path().join(format!("Résumé 日本語-{i:03}.txt")),
+            b"fixture",
+        )
+        .expect("file");
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        app.selected = None;
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("file-row-99").is_some());
+    assert!(cx.debug_bounds("file-row-100").is_none());
+    press(cx, "down pagedown pagedown");
+    assert!(cx.debug_bounds("file-row-200").is_some());
+    assert!(cx.debug_bounds("file-row-199").is_none());
+    read(&view, cx, |app| {
+        assert_eq!(app.file_entries().len(), 235);
+        assert_eq!(app.selected.as_deref(), Some([200].as_slice()));
+    });
+    press(cx, "space c");
+    read(&view, cx, |app| {
+        assert_eq!(app.screen, Screen::Review);
+        assert_eq!(app.marks.len(), 1);
+        assert!(
+            app.marks.items()[0]
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("200")
+        );
+    });
+    press(cx, "escape");
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 235);
+}
+
+#[gpui_kit::test]
+fn accessible_file_navigation_uses_absolute_paths_and_filter(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        app.selected = Some(child_crumbs(app, &[], "junk"));
+        cx.notify();
+    });
+    press(cx, "right down space");
+    read(&view, cx, |app| {
+        assert_eq!(app.current_path(), temp.path().join("junk"));
+        assert!(
+            app.marks.items()[0]
+                .path
+                .starts_with(temp.path().join("junk"))
+        );
+    });
+    press(cx, "left / k e e p enter");
+    read(&view, cx, |app| {
+        assert_eq!(app.file_entries().len(), 1);
+    });
+}

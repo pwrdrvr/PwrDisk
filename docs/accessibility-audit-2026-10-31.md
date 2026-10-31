@@ -386,3 +386,50 @@ commit SHA and platform result. Documentation/test-only changes do not
 have a before/after production window change. The audit publishes text
 and numeric evidence; future visible remediations require contrived
 before/after PR attachments under [the screenshot procedure](pr-screenshots.md).
+
+## Remediation observations (separate from the v0.14.0 baseline)
+
+### PWR-29: file navigation and review
+
+Source: `0568e97cff3c29beebd3a70556e8f3de0765f93d`, debug macOS build,
+2026-10-31. Binary SHA-256:
+`98dfba4cde4a3c79b79c71cb86e0a2f7ae9d3918280855fdbd32cc0074e09a22`.
+The original matrix above remains a record of the production baseline.
+
+The new **Show accessible file list** control opens a directory-at-a-time
+list over the completed scan. Right/Enter opens a directory, Left/Backspace
+returns to its parent, Up/Down selects, Space marks and c reviews. Explicit
+100-entry pages bound layout/AX work without silently dropping later entries.
+Rows use lossless absolute-path identifiers; category, size, age, unreadable,
+filter and mark context have text equivalents. Review pages expose all marks,
+row explanations and the selected removal mode/recoverability summary.
+This is a navigation alternative, not an expansion of the painted canvas.
+
+| Promise | Native macOS AX / keyboard observation | Harness / source evidence |
+| --- | --- | --- |
+| File data and hierarchy | PASS for inspected fixture: list, full paths, directory/file kind, byte and formatted sizes, category, age and selected state exposed; Right/Left changed the named directory | PASS: nested absolute paths and filtering regression |
+| Long / Unicode paths | PASS: full `Résumé 日本語.txt` and long-name path exposed under `documents` | PASS: 235 Unicode-named fixture files |
+| Offscreen entries and counts | PASS: `many-small-files` reports 128 entries; PageDown exposes 101–128, selects `item-000100.txt`, and includes `item-000127.txt` | PASS: page boundaries at 99/100/200; bounded row composition; source supplies set position/count |
+| Marks and review | PASS for inspected fixture: marked path, exact byte count, included/blocked/covered counts, mode and recoverability exposed; no live approval | PASS: existing removal guards and destructive harness tests; new safe-mark/navigation tests |
+| Accessible identity / state | Stable path author IDs and selection updates observed | PASS: role, name, selected flag, author ID and non-UTF-8 collision regressions |
+| Native focused item / speech | NOT VERIFIED: controller still reports the standard window as focused despite selected-state updates; no spoken-output result | Source provides a focusable list and active-descendant metadata; this is not native focus or speech evidence. PWR-31/PWR-36 remain open |
+| Windows UIA / Narrator / NVDA | BLOCKED: WindowsVM still disconnected | No Windows runtime result |
+| Linux AT-SPI / Orca | BLOCKED: dedicated VM has neither DISPLAY/WAYLAND_DISPLAY nor Orca | Linux checks are recorded separately in the PR |
+
+Fixture: `scripts/a11y-fixture.py`, 135 invented files on a disposable APFS
+disk image named **A11yFixtures**, root `/Volumes/A11yFixtures/Projects`.
+macOS 27.0.1 / 26A434, Apple Silicon, dark appearance, 1440×900 logical,
+100% UI zoom. The isolated Before/After launchers leave installed PwrDisk
+untouched. Before uses audit head `12d2bef` (unchanged production UI);
+contrived window-only before/after images are attached to the remediation PR.
+OS scaling, high contrast and spoken screen-reader output were not tested.
+
+macOS `cargo xtask lint`, `cargo xtask test` and debug build passed. Linux
+Sandboxer `sb_uihqpdf98b`, Ubuntu 24.04.5 x86_64, verified the implementation
+commit; final build/integration status is recorded in the PR. No native Linux
+result is inferred from those checks.
+
+Upstream #51 was re-evaluated narrowly: its virtual row composition and
+shared selection/marks are useful patterns, but its row-index IDs, row cap
+and absence of accessibility roles do not satisfy this issue. No upstream
+commits or theme/list redesign were imported.
