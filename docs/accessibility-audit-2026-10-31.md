@@ -597,3 +597,40 @@ The Settings outline was observed in the native macOS window only. Native
 AX/UIA/AT-SPI and VoiceOver/Narrator/NVDA/Orca were not rerun for the
 integration; Windows is verified by CI. The native acceptance gaps above
 remain open.
+
+### PWR-32: auxiliary text and keyboard reading
+
+Implementation `e47e994`, Copy-name correction `0cb8d3e`, rebased on main
+`cece3b9`. Final macOS debug binary SHA-256:
+`0495f8e49c8cea040fa9d67c8182137ec7f769b34f205449bf30b9b78313917d`.
+The native log example at `e47e994` reuses the production views with an
+explicitly supplied invented log and no preference file; it never opens the
+production log, scans, or removal UI.
+
+| Surface | Observed native macOS AX / keyboard | Harness / source |
+| --- | --- | --- |
+| Help | PASS inspected sheet: heading and all shortcut descriptions exposed; background absent | Existing modal/keyboard tests remain green |
+| Settings | PASS About: pane/card headings, descriptions, version/build/source values and project URLs exposed | Named groups scope repeated field/value IDs; channels expose radio state and retain keyboard activation |
+| Contextual Copy | Initial native run found that the base button overwrote `aria_label`; corrected through its supported `accessibility_label` API. PASS final native names: Copy checkout path, Copy branch or tag, Copy commit, Copy complete License | Copy actions retain their existing payloads; complete-document clipboard regression passes |
+| Documents | PASS: all 22 license lines; End reaches notices line 25,779 and exposes its final rows | PASS: long-notices Home/End brings virtual rows into view and keyboard Copy copies the complete source. Changelog contributes heading/paragraph semantics and block navigation |
+| Logs | PASS invented 300-line log: named search, level/mode states, Unicode rows, selected lines 1 and 300, paused/live summary. Search for invented line 299 exposes one match | PASS keyboard Home/End, selected-line copying and existing search/rotation/empty-log tests. Input Escape action is captured to return to the log reader |
+| Announcements / focus | No spoken-output result; native controller still reports the standard window as focused | Appending lines/counts deliberately have no live-region metadata; this does not prove AT announcement behavior |
+
+macOS 27.0.1 / 26A434 arm64, default dark, 100% UI zoom. Native fixture log:
+`/private/tmp/pwrdisk-a11y-invented.log`, 300 invented INFO lines with Unicode.
+No real logs, diagnostics, removal approval or deletion were used. Closing
+document and Settings windows returned to the fixture main window; useful
+AT focus restoration and speech still require an actual screen reader.
+
+Final `0cb8d3e`: macOS lint, full workspace tests (234 app tests) and debug
+main/example builds passed. Dedicated Ubuntu 24.04.5 x86_64 Sandboxer:
+setup 0 (1s), lint 0 (4s), tests 0 (11s), portable build 0 (44s), isolated
+SSH 0 (2s), all 0. The earlier integrated `e47e994` run also passed all
+five checks. These results cover the rebased PWR-29/30/31 implementation;
+their historical native observations above retain their original SHAs.
+
+Windows UIA/Narrator/NVDA, Linux AT-SPI/Orca, actual VoiceOver reading,
+OS scaling/high contrast and document reflow are not verified here.
+Semantic text/names do not produce a meaningful pixel comparison; operator
+review of the native evidence in lieu of before/after images is required
+before merging. Visible reflow/scaling changes belong to PWR-34.
