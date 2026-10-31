@@ -150,6 +150,8 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     let mut rows = div().id("file-rows").role(Role::ListBox)
         .track_focus(&app.file_focus)
         .tab_index(0).tab_stop(true)
+        .border_2().border_color(theme.background.opacity(0.))
+        .focus_visible(|style| style.border_color(theme.accent))
         .aria_label(summary.clone())
         .aria_description("Up/Down select; Enter opens a directory; Backspace returns to its parent; Space marks; c reviews. PageUp/PageDown change pages.")
         .flex().flex_col().flex_1().min_h_0().track_scroll(&app.file_scroll).overflow_y_scroll();

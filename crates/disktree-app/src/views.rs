@@ -292,6 +292,8 @@ fn volumes_dialog(
         .id("volume-rows")
         .role(gpui_kit::Role::ListBox)
         .track_focus(&app.source_roots_focus).tab_index(0).tab_stop(true)
+        .border_2().border_color(theme.background.opacity(0.))
+        .focus_visible(|style| style.border_color(theme.accent))
         .aria_description("Up and Down select a root. Enter explicitly accepts the selected root and starts its scan.")
         .aria_label(
             "Available roots in the selected machine; listing is not a scan",
