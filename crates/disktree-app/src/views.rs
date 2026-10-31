@@ -291,7 +291,7 @@ fn volumes_dialog(
     let mut rows = div()
         .id("volume-rows")
         .role(gpui_kit::Role::ListBox)
-        .track_focus(&app.source_roots_focus).tab_group().tab_stop(true)
+        .track_focus(&app.source_roots_focus).tab_index(0).tab_stop(true)
         .aria_description("Up and Down select a root. Enter explicitly accepts the selected root and starts its scan.")
         .aria_label(
             "Available roots in the selected machine; listing is not a scan",
@@ -807,7 +807,7 @@ fn explore(
                                 .id("file-navigation")
                                 .when(app.tree().is_some() && !app.file_list, |view| view
                                     .role(gpui_kit::Role::Group).aria_label("Treemap navigation; arrows move, Space marks, n selects the next sibling; use Show accessible file list for file details")
-                                    .track_focus(&app.file_focus).tab_group().tab_stop(true)
+                                    .track_focus(&app.file_focus).tab_index(0).tab_stop(true)
                                     .focus_visible(|style| style.border_2().border_color(theme.accent)))
                                 .flex()
                                 .flex_1()

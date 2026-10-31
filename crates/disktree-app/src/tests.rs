@@ -5335,6 +5335,8 @@ fn source_tab_traversal_stays_in_the_modal_and_escape_restores_origin(
             app.picker_path.as_ref().unwrap().read(cx).focus_handle(cx),
         )
     });
+    let roots = read(&view, cx, |app| app.source_roots_focus.clone());
+    let mut saw_roots = false;
     let mut saw_host = false;
     let mut saw_path = false;
     for key in [
@@ -5349,6 +5351,7 @@ fn source_tab_traversal_stays_in_the_modal_and_escape_restores_origin(
         "shift-tab",
     ] {
         press(cx, key);
+        saw_roots |= cx.update(|window, _| roots.is_focused(window));
         saw_host |= cx.update(|window, _| host.is_focused(window));
         saw_path |= cx.update(|window, _| path.is_focused(window));
         let modal = read(&view, cx, |app| app.confirm_focus.clone());
@@ -5357,7 +5360,10 @@ fn source_tab_traversal_stays_in_the_modal_and_escape_restores_origin(
             read(&view, cx, |app| app.marks.is_empty() && app.scan.is_none())
         );
     }
-    assert!(saw_host && saw_path, "Tab reaches both editing controls");
+    assert!(
+        saw_host && saw_path && saw_roots,
+        "Tab reaches source inputs and the root list"
+    );
     press(cx, "escape");
     assert!(cx.update(|window, _| origin.is_focused(window)));
 }
@@ -5462,4 +5468,26 @@ fn a_large_directory_keeps_zero_weight_files_reachable_in_bounded_pages(
         assert_eq!(app.selected.as_deref(), Some([49_999].as_slice()));
         assert!(app.marks.is_empty());
     });
+}
+
+#[gpui_kit::test]
+fn tab_reaches_file_navigation_without_changing_selection(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let navigation = read(&view, cx, |app| app.file_focus.clone());
+    let selected = read(&view, cx, |app| app.selected.clone());
+    let mut reached = false;
+    for _ in 0..20 {
+        press(cx, "tab");
+        if cx.update(|window, _| navigation.is_focused(window)) {
+            reached = true;
+            break;
+        }
+    }
+    assert!(reached, "file navigation participates in the tab order");
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), selected);
 }

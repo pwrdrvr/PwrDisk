@@ -605,7 +605,8 @@ impl Disktree {
             file_list: false,
             file_page: 0,
             file_scroll: gpui_kit::ScrollHandle::new(),
-            file_focus: cx.focus_handle(),
+            // Explicit handles own tab metadata; element styles do not override it.
+            file_focus: cx.focus_handle().tab_stop(true),
             restore_file_focus: false,
             review_page: 0,
             layout_options: LayoutOptions {
@@ -631,7 +632,7 @@ impl Disktree {
             overlay_return: None,
             app_menu_index: 0,
             menu_scroll: gpui_kit::ScrollHandle::new(),
-            source_roots_focus: cx.focus_handle(),
+            source_roots_focus: cx.focus_handle().tab_stop(true),
             focus_request: None,
             window_title: String::new(),
             strip_drag: false,
