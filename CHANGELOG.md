@@ -7,6 +7,32 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.14.0
+
+- Removal safety - Settings > Safety adds a per-operation limit, defaulting
+  to 5% of each volume's capacity, for both manual and MCP removal. The
+  complete selection is re-measured before removal; oversized, unreadable
+  or unknown-capacity selections are refused.
+- AI-assisted removal - Preview the marked paths, size and trash/permanent
+  mode before confirming removal through the MCP client's interactive
+  form. Confirmation is expiring and single-use; changed marks, mode or
+  safety settings require a new preview. Clients without form support
+  use human Review instead. Removal requires a linked local window, and
+  Trash never falls back to permanent deletion.
+- Agent browsing - Listing never moves the window, including requests
+  from older clients that pass `show`. Navigation uses an explicit
+  `pwrdisk_show` request when the user asks to follow or open a path.
+- Cleanup candidates - Recognize verified pnpm package stores without
+  classifying the executable, global tools or the whole installation as
+  disposable. Unknown aggregates retain their own category, and legacy
+  Google Drive folders are recognized as synced data.
+- Scan context - Linked MCP status reports allocated/apparent size,
+  hidden-entry inclusion and unreadable counts. macOS reports explain
+  APFS sharing and distinguish listed bytes from potential savings;
+  cleanup searches explain removal eligibility without adding marks.
+- Compatibility - The window link now uses protocol version 3. Update
+  and restart both the PwrDisk window and MCP process together.
+
 ## v0.13.0
 
 - Downloads - Add stable filenames for the universal macOS DMG and both
