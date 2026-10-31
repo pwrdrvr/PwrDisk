@@ -3698,8 +3698,7 @@ fn review(
             &theme,
             cx,
         ))
-        .child(div().id("review-readable-summary").role(gpui_kit::Role::Label)
-            .aria_label(format!("Review: {} marked paths; {} included; {} blocked; {} covered by another mark. Mode: {}. Estimated reclaimable: {}. Marking does not authorize removal.",
+        .child(crate::semantics::text("review-readable-summary", format!("Review: {} marked paths; {} included; {} blocked; {} covered by another mark. Mode: {}. Estimated reclaimable: {}. Marking does not authorize removal.",
                 items.len(), plan.targets.len(), plan.blocked.len(), plan.covered.len(),
                 if app.removal_mode == RemovalMode::Trash { "Move to trash; recoverable until emptied" } else { "Permanent deletion; not recoverable" },
                 savings(plan.reclaimable_bytes(), plan.possible_bytes()))))
