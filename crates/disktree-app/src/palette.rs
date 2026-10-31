@@ -189,6 +189,107 @@ pub fn label_color(theme: &Theme, depth: u32) -> Hsla {
 mod tests {
     use super::*;
 
+    fn contrast(ink: Hsla, surface: Hsla) -> f32 {
+        let luminance = |color: Hsla| {
+            let rgb = color.to_rgb();
+            let linear = |channel: f32| {
+                if channel <= 0.040_45 {
+                    channel / 12.92
+                } else {
+                    ((channel + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.0722_f32.mul_add(
+                linear(rgb.b),
+                0.7152_f32.mul_add(linear(rgb.g), 0.2126 * linear(rgb.r)),
+            )
+        };
+        let shown = mix(surface, ink.opacity(1.0), ink.a);
+        let (a, b) = (luminance(shown), luminance(surface));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn audit_contrast_composites_alpha_before_linearizing() {
+        let black = gpui_kit::rgb(0x0000_0000).into();
+        let white: Hsla = gpui_kit::rgb(0x00ff_ffff).into();
+        assert!((contrast(white, black) - 21.0).abs() < 0.001);
+        assert!((contrast(white.opacity(0.0), black) - 1.0).abs() < 0.001);
+        assert!((contrast(white.opacity(0.5), black) - 5.281).abs() < 0.01);
+    }
+
+    /// A diagnostic with known failures, separate from the regression gate.
+    /// These are flat fills; hatch intersections need additional inspection.
+    #[test]
+    #[ignore = "prints audit measurements; does not certify contrast"]
+    fn audit_contrast_report() {
+        let categories = [
+            Category::Code,
+            Category::AgentScratch,
+            Category::Toolchain,
+            Category::Synced,
+            Category::Git,
+            Category::Media,
+            Category::Documents,
+            Category::Cache,
+            Category::FilesystemEvents,
+            Category::Spotlight,
+            Category::Other,
+        ];
+        println!("theme,pair,minimum_ratio,required");
+        for (name, theme) in [
+            ("tokyo-night", Theme::tokyo_night()),
+            ("flexoki-light", Theme::flexoki_light()),
+        ] {
+            let mut names = f32::INFINITY;
+            let mut values = f32::INFINITY;
+            let mut selected = f32::INFINITY;
+            for depth in 0..=4 {
+                let fills = categories
+                    .iter()
+                    .map(|&category| category_fill(&theme, category, depth))
+                    .chain(
+                        (0..AGE_BUCKETS.len())
+                            .map(|bucket| age_fill(&theme, bucket, depth)),
+                    );
+                for fill in fills {
+                    names =
+                        names.min(contrast(label_color(&theme, depth), fill));
+                    values = values.min(contrast(
+                        label_color(&theme, 1).opacity(0.5),
+                        fill,
+                    ));
+                    selected = selected.min(contrast(highlight(&theme), fill));
+                }
+            }
+            for (pair, ratio, required) in [
+                ("tile-name", names, 4.5),
+                ("tile-size", values, 4.5),
+                ("selection-ring-vs-fill", selected, 3.0),
+                (
+                    "marked-name",
+                    contrast(
+                        theme.danger,
+                        mix(theme.inset, theme.danger, 0.16),
+                    ),
+                    4.5,
+                ),
+                (
+                    "secondary-caption",
+                    contrast(theme.secondary.opacity(0.75), theme.background),
+                    4.5,
+                ),
+                (
+                    "highlight-button",
+                    contrast(on_highlight(&theme), highlight(&theme)),
+                    4.5,
+                ),
+            ] {
+                println!("{name},{pair},{ratio:.3},{required:.1}");
+            }
+        }
+    }
+
     fn theme(appearance: ThemeAppearance) -> Theme {
         match appearance {
             ThemeAppearance::Dark => Theme::tokyo_night(),
