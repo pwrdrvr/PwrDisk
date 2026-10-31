@@ -8,8 +8,9 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
 - **APFS clones share blocks.** Finder duplicates, `cp -c` and some package
   managers make clones: two copies can cost one copy's space, and removing
   one frees little or nothing. PwrDisk counts each file's allocation, so a
-  cloned tree can look bigger than what removing it gives back. The free
-  space measured after the review is the real figure.
+  cloned tree can exceed the volume's used space. Listed allocation is not
+  guaranteed freed space; do not cap the scan total to volume usage. The
+  free space measured after the review is the real figure.
 - **One container, several volumes.** The System, Data, Preboot, Recovery
   and VM volumes share one APFS container's space. A whole-disk scan of
   `/` explains the Data volume; the rest shows as space the scan does not
@@ -41,6 +42,9 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
 `/private`, `/cores`, `/opt/homebrew` and the other system trees, the home
 directory and anything holding it, mount points, and the `.fseventsd` and
 `.Spotlight-V100` stores (use `mdutil` for Spotlight, never delete either).
+Classification is independent of removal eligibility: `pwrdisk_find` may
+list `/private/tmp` as a temporary cleanup candidate, but reports the
+`/private` system-tree guard refusal. Do not mark it or bypass the guard.
 
 ## Never propose
 
@@ -48,7 +52,8 @@ directory and anything holding it, mount points, and the `.fseventsd` and
   Final Cut and Logic libraries. Removing files inside breaks the library;
   the app manages its own media.
 - **`~/Library/Mobile Documents`, `~/Library/CloudStorage`**: iCloud Drive
-  and File Provider folders (Dropbox, Google Drive, OneDrive). Deleting a
+  and File Provider folders (Dropbox, Google Drive, OneDrive), and legacy
+  Google Drive roots named `My Drive` or `My Drive (<account>)`. Deleting a
   file there deletes it in the cloud and on every device. An evicted file
   takes no local space; to free space without deleting, the user chooses
   "Remove Download" in Finder or turns on Optimize Mac Storage.
@@ -72,6 +77,7 @@ directory and anything holding it, mount points, and the `.fseventsd` and
 | Xcode archives | `~/Library/Developer/Xcode/Archives` | ask: needed to symbolicate shipped builds |
 | Homebrew downloads | `~/Library/Caches/Homebrew` | `brew cleanup --dry-run`, then `brew cleanup` |
 | Docker Desktop | `~/Library/Containers/com.docker.docker/.../Docker.raw` | never mark the disk image; `docker system df`, then prune |
+| pnpm package store | `~/Library/pnpm/store/v*/files` (also older `.pnpm-store/v*/files`) | `pnpm store path` to confirm the location; `pnpm store prune` first; never treat the `pnpm` installation, executable, `global` or `.tools` as a disposable store |
 | language caches | `~/.npm`, `~/.cargo/registry`, `~/Library/Caches/pip`, `~/.gradle/caches` | the tool's clean command |
 
 ## Trash

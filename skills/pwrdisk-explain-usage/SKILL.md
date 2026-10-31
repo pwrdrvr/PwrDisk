@@ -25,7 +25,9 @@ it:
 
 1. **Status.** `pwrdisk_status`: the volumes, their size and free space,
    and whether a PwrDisk window is linked. With a window linked, its tree
-   is what you read, and `show: true` lets the user follow along. If earlier
+   is what you read. Status reports allocated versus apparent sizes, hidden
+   entry inclusion and unreadable count; retain that context without a
+   rescan. `show: true` lets the user follow along. If earlier
    marks are outside its root, the session keeps them and leaves the
    window where it is; status explains why it is not followed.
 2. **Scan the right thing.** The home directory answers "what of mine is
@@ -39,13 +41,17 @@ it:
 4. **Walk the big branches.** `pwrdisk_ls` largest first, a few levels
    down, until each big directory has an owner: a project, a tool, an app,
    the OS, or the user's own files. `pwrdisk_find` with
-   `reclaimable: true` totals the caches, build output and package stores;
+   `reclaimable: true` totals classified cleanup candidates such as caches,
+   build output and verified package stores, including guard refusals;
    `kind: "file"` with `min_bytes` finds the large single files.
 5. **Explain.** A short table: what, where, how big, who owns it, and
    whether it comes back by itself. Say plainly where PwrDisk's number
    differs from another tool's and why: PwrDisk counts allocated blocks,
-   counts a hardlinked file once, and includes hidden files; Finder,
-   Explorer and `du` may not.
+   counts a hardlinked file once, and includes hidden files unless skipped;
+   apparent-size scans measure file lengths instead. On macOS summed
+   allocation can exceed volume usage because APFS clones share blocks.
+   Never cap the total or call it guaranteed freed space. Finder, Explorer
+   and `du` may measure differently.
 6. **Offer, don't act.** If space can be had back, say roughly how much
    and from what, and ask whether the user wants to go through it. If they
    do, follow `skill://pwrdisk-free-space/SKILL.md`, which starts by agreeing
