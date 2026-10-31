@@ -1302,6 +1302,94 @@ fn the_help_overlay_opens_and_closes(cx: &mut TestAppContext) {
     assert!(!read(&view, cx, |app| app.show_help));
 }
 
+/// No dialog draws the treemap's hover card behind it.
+#[gpui_kit::test]
+fn the_tooltip_hides_under_an_overlay(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let origin = read(&view, cx, |app| app.treemap_origin.get());
+    let at = origin + Point::new(px(40.), px(40.));
+    cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::default());
+    draw(cx);
+    assert!(cx.debug_bounds("cursor-tooltip").is_some(), "a tooltip");
+
+    // The overlays' backdrop takes the mouse, so the treemap drops its
+    // hover; the volumes and delete dialogs leave it, and rely on the rule.
+    let dialogs: [OpenOverlay; 2] =
+        [|app| app.show_help = true, |app| app.volumes_open = true];
+    for open in dialogs {
+        update(&view, cx, |app, cx| {
+            open(app);
+            cx.notify();
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("cursor-tooltip").is_none(), "hidden");
+        update(&view, cx, |app, cx| {
+            app.show_help = false;
+            app.volumes_open = false;
+            cx.notify();
+        });
+        cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("cursor-tooltip").is_some(), "back");
+    }
+}
+
+/// The menu opens one overlay at a time: the other one closes.
+#[gpui_kit::test]
+fn the_menu_shows_one_overlay_at_a_time(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    cx.dispatch_action(crate::app_menu::ConnectAgent);
+    cx.dispatch_action(crate::app_menu::ShowKeyboardShortcuts);
+    draw(cx);
+    assert!(read(&view, cx, |app| app.show_help && !app.show_agent));
+    cx.dispatch_action(crate::app_menu::ConnectAgent);
+    draw(cx);
+    assert!(read(&view, cx, |app| app.show_agent && !app.show_help));
+}
+
+/// Opens one overlay, for the cases of `overlays_fit_a_short_window`.
+type OpenOverlay = fn(&mut Disktree);
+
+/// A window shorter than an overlay keeps the card, and its Done, inside
+/// the window: the list scrolls instead of spilling past the bottom.
+#[gpui_kit::test]
+fn overlays_fit_a_short_window(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(900.), px(420.)));
+    let cases: [(&str, OpenOverlay); 2] = [
+        ("help-overlay", |app| app.show_help = true),
+        ("agent-overlay", |app| app.show_agent = true),
+    ];
+    for (card, open) in cases {
+        update(&view, cx, |app, cx| {
+            app.show_help = false;
+            app.show_agent = false;
+            open(app);
+            cx.notify();
+        });
+        draw(cx);
+        draw(cx);
+        let window = cx.update(|window, _| window.viewport_size());
+        let bounds = cx.debug_bounds(card).expect("card drawn");
+        let done = cx.debug_bounds("overlay-done").expect("Done drawn");
+        assert!(
+            bounds.bottom() <= window.height,
+            "{card} ends at {:?}, past {:?}",
+            bounds.bottom(),
+            window.height
+        );
+        assert!(done.bottom() <= bounds.bottom(), "{card}: Done inside");
+    }
+}
+
 #[gpui_kit::test]
 fn audit_help_contains_navigation_and_restores_keyboard_operation(
     cx: &mut TestAppContext,
@@ -4691,6 +4779,31 @@ fn the_agent_overlay_opens_and_closes(cx: &mut TestAppContext) {
     press(cx, "escape");
     assert!(!read(&view, cx, |app| app.show_agent));
     assert!(cx.debug_bounds("agent-overlay").is_none());
+
+    // Done closes it, and so does a click outside the card; a click on the
+    // card itself does not.
+    update(&view, cx, |app, cx| {
+        app.show_agent = true;
+        cx.notify();
+    });
+    draw(cx);
+    click_on(cx, "overlay-done");
+    draw(cx);
+    assert!(!read(&view, cx, |app| app.show_agent), "Done closes");
+
+    update(&view, cx, |app, cx| {
+        app.show_agent = true;
+        cx.notify();
+    });
+    draw(cx);
+    click_on(cx, "agent-overlay");
+    draw(cx);
+    assert!(read(&view, cx, |app| app.show_agent), "card click stays");
+    let card = cx.debug_bounds("agent-overlay").expect("card");
+    let outside = card.origin - gpui_kit::point(px(8.), px(8.));
+    cx.simulate_click(outside, gpui_kit::Modifiers::none());
+    draw(cx);
+    assert!(!read(&view, cx, |app| app.show_agent), "outside closes");
 
     // The Help menu opens the same overlay.
     cx.dispatch_action(crate::app_menu::ConnectAgent);
