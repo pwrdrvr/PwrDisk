@@ -17,6 +17,7 @@ VERSION=$(cat "$here/VERSION")
 
 install -d "$BINDIR" "$APPDIR" "$ICONDIR"
 install -m755 "$here/pwrdisk" "$BINDIR/pwrdisk"
+install -m755 "$here/pwrdisk-tui" "$BINDIR/pwrdisk-tui"
 install -m644 "$here/disktree.svg" "$ICONDIR/pwrdisk.svg"
 sed -e "s|@BINDIR@|$BINDIR|" -e "s|@VERSION@|$VERSION|" \
     "$here/pwrdisk.desktop.in" > "$APPDIR/pwrdisk.desktop"
@@ -27,6 +28,7 @@ fi
 
 echo "installed PwrDisk $VERSION:"
 echo "  $BINDIR/pwrdisk"
+echo "  $BINDIR/pwrdisk-tui"
 echo "  $APPDIR/pwrdisk.desktop"
 echo "  $ICONDIR/pwrdisk.svg"
 resolved=$(command -v pwrdisk 2>/dev/null || true)

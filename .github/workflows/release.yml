@@ -144,6 +144,7 @@ jobs:
           mkdir -p "dist/$name"
           # portable strips before appending; stripping again loses helpers.
           cp target/portable/pwrdisk "dist/$name/"
+          cp target/portable/pwrdisk-tui "dist/$name/"
           cp packaging/install.sh packaging/pwrdisk.desktop.in \
              assets/disktree.svg README.md LICENSE "dist/$name/"
           echo "$version" > "dist/$name/VERSION"
@@ -152,6 +153,13 @@ jobs:
           # The same tarball under a name without the version, so the
           # README's .../releases/latest/download/ link never goes stale.
           cp "dist/$name.tar.gz" "dist/pwrdisk-$ARCH-linux.tar.gz"
+          # A terminal-only download for servers: no desktop or installer.
+          tui_name="pwrdisk-tui-$version-$ARCH-linux"
+          mkdir -p "dist/$tui_name"
+          cp target/portable/pwrdisk-tui LICENSE THIRD_PARTY_LICENSES "dist/$tui_name/"
+          tar -C dist -czf "dist/$tui_name.tar.gz" "$tui_name"
+          (cd dist && sha256sum "$tui_name.tar.gz" > "$tui_name.tar.gz.sha256")
+          cp "dist/$tui_name.tar.gz" "dist/pwrdisk-tui-$ARCH-linux.tar.gz"
 
       - name: Upload Linux release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -403,6 +411,8 @@ jobs:
             exit 1
           fi
           lipo "$app/Contents/MacOS/pwrdisk" -verify_arch arm64 x86_64
+          lipo "$app/Contents/MacOS/pwrdisk-tui" -verify_arch arm64 x86_64
+          "$app/Contents/MacOS/pwrdisk-tui" --help
           test -x "$app/Contents/MacOS/UpdateMac"
           xcrun stapler validate "$app"
           spctl --assess --type execute -vv "$app"
@@ -489,7 +499,9 @@ jobs:
         run: cargo xtask test
 
       - name: Build
-        run: cargo build --release --locked -p disktree-app
+        run: |
+          cargo build --release --locked -p disktree-app
+          cargo build --release --locked -p disktree-tui
 
       # `app/` becomes vpk's packDir: what installs under
       # %LocalAppData%\PwrDisk\current. Files are copied, never piped
@@ -500,7 +512,7 @@ jobs:
         run: |
           $stage = Join-Path $env:RUNNER_TEMP "windows-release-input"
           New-Item -ItemType Directory -Force "$stage/app" | Out-Null
-          Copy-Item target/release/pwrdisk.exe, README.md, LICENSE "$stage/app/"
+          Copy-Item target/release/pwrdisk.exe, target/release/pwrdisk-tui.exe, README.md, LICENSE "$stage/app/"
           Copy-Item licenses/velopack.txt "$stage/app/VELOPACK-NOTICES.txt"
           Copy-Item scripts/release/install-vpk.sh, scripts/release/vpk-pack-windows.ps1, assets/disktree.ico "$stage/"
           cargo xtask release-check --notes-file "$stage/RELEASE_NOTES.md"
@@ -672,7 +684,8 @@ jobs:
               "$out/PwrDisk-$channel.msi",
               (Join-Path $portable "Update.exe"),
               (Join-Path $portable "PwrDisk.exe"),
-              (Join-Path $portable "current/pwrdisk.exe")
+              (Join-Path $portable "current/pwrdisk.exe"),
+              (Join-Path $portable "current/pwrdisk-tui.exe")
             )
             foreach ($target in $targets) {
               if (-not (Test-Path -LiteralPath $target)) {

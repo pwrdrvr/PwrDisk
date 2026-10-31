@@ -1,7 +1,7 @@
 //! A per-operation capacity limit, independent of projected savings.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +18,22 @@ impl Default for Limit {
     fn default() -> Self {
         Self(DEFAULT_PERCENT)
     }
+}
+
+/// The shared desktop and terminal settings location, never the scan root.
+pub fn settings_dir() -> Option<PathBuf> {
+    let home = std::env::home_dir();
+    let base = if cfg!(target_os = "macos") {
+        home.map(|home| home.join("Library/Application Support"))
+    } else if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| home.map(|home| home.join(".config")))
+    };
+    base.map(|base| base.join("pwrdisk"))
 }
 
 /// Load the user's limit for each removal; invalid configuration fails closed.

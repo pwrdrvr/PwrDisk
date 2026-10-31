@@ -76,7 +76,6 @@ usage: pwrdisk [OPTIONS] [PATH]
        pwrdisk ssh HOST [OPTIONS] [PATH]
        pwrdisk extract-scanner ARCH OUTPUT
        pwrdisk mcp
-       pwrdisk tui [OPTIONS] PATH
 
 Linux packaged builds deploy an embedded static scanner over SSH on demand.
 Unbundled development builds need disktree-scan on the remote PATH or in
@@ -146,12 +145,6 @@ fn run() -> Result<()> {
     // the review screen.
     if std::env::args_os().nth(1).is_some_and(|arg| arg == "mcp") {
         return disktree_mcp::serve();
-    }
-    if std::env::args_os().nth(1).is_some_and(|arg| arg == "tui") {
-        return disktree_tui::run(
-            std::env::args_os().skip(2),
-            updater::settings_dir(),
-        );
     }
     if extract_scanner()? {
         return Ok(());

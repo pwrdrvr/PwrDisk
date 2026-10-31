@@ -212,13 +212,25 @@ MIT. See [LICENSE](LICENSE) and
 
 ## In the terminal
 
-Run the terminal interface from the same installed executable:
+The standalone terminal executable uses the shared scanning core without
+GPUI or desktop libraries:
 
 ```sh
-pwrdisk tui ~/src                  # inspect an explicit directory
-pwrdisk tui --disk ~/src           # inspect that directory's volume
-pwrdisk tui --apparent-size ~/src   # measure file lengths
+pwrdisk-tui ~/src                  # inspect an explicit directory
+pwrdisk-tui --disk ~/src           # inspect that directory's volume
+pwrdisk-tui --apparent-size ~/src   # measure file lengths
 ```
+
+`make install` installs both executables. To build and install only the
+terminal on a server with Rust installed, use `make install-tui`; this does
+not build the desktop. Linux release tarballs carry a static-musl
+`pwrdisk-tui`, also available in terminal-only
+[x64](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-tui-x86_64-linux.tar.gz)
+and [ARM64](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-tui-aarch64-linux.tar.gz)
+tarballs starting with the next release. macOS carries it in
+`PwrDisk.app/Contents/MacOS`, and Windows
+includes `pwrdisk-tui.exe` beside the desktop executable. For development,
+run `cargo run --release -p disktree-tui -- PATH`.
 
 At 120 columns it shows the mosaic, inspector, findings and free-space bar;
 around 80 it keeps the map, and at 45 it becomes a scrolling list. The list
@@ -244,7 +256,6 @@ and its desktop connection follow the MCP interface's own configuration.
 On macOS, a TUI started by Terminal uses that terminal's filesystem access;
 it does not borrow the running desktop's permissions.
 
-The terminal code does not start GPUI, but the combined executable retains
-its platform libraries. On Linux the packaged executable still needs its
-GPUI runtime libraries installed even without a graphical session. It is
-not the upstream standalone static-musl terminal binary.
+Scans stay in memory for the session. Neither interface currently saves
+or loads a complete scan; the exported agent prompt contains the reviewed
+paths. Opening the TUI starts its own scan.

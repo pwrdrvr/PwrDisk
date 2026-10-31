@@ -62,22 +62,20 @@ impl Drop for TerminalSession {
     }
 }
 
-/// Run an interactive terminal session without starting GPUI or MCP.
-pub fn run(
-    args: impl Iterator<Item = std::ffi::OsString>,
-    removal_settings_dir: Option<PathBuf>,
-) -> Result<()> {
-    let Some((root, options, theme_choice)) = arguments(args)? else {
+fn main() -> Result<()> {
+    let Some((root, options, theme_choice)) =
+        arguments(std::env::args_os().skip(1))?
+    else {
         return Ok(());
     };
     if !io::stdin().is_terminal() {
-        bail!("pwrdisk tui needs an interactive terminal for input");
+        bail!("pwrdisk-tui needs an interactive terminal for input");
     }
     #[cfg(windows)]
     let _code_pages = windows_console::Utf8Console::enter()
         .context("enable UTF-8 in the Windows console")?;
     let mut app = App::new(root, options);
-    app.removal_settings_dir = removal_settings_dir;
+    app.removal_settings_dir = disktree_core::removal_limit::settings_dir();
     app.read_only = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
         .iter()
         .any(|name| std::env::var_os(name).is_some());
@@ -147,7 +145,7 @@ fn arguments(
         match argument.to_str() {
             Some("--help" | "-h") => {
                 const HELP: &str = concat!(
-                    "pwrdisk tui [OPTIONS] PATH\n",
+                    "pwrdisk-tui [OPTIONS] PATH\n",
                     "\n",
                     "A terminal treemap explorer. PATH must be explicit.\n",
                     "\n",
@@ -188,7 +186,7 @@ fn arguments(
         }
     }
     let Some(root) = root else {
-        bail!("choose an explicit directory: pwrdisk tui [OPTIONS] PATH");
+        bail!("choose an explicit directory: pwrdisk-tui [OPTIONS] PATH");
     };
     let root = canonicalize_path(&root)
         .with_context(|| format!("cannot access {}", root.display()))?;

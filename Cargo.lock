@@ -1543,7 +1543,6 @@ dependencies = [
  "disktree-core",
  "disktree-link",
  "disktree-mcp",
- "disktree-tui",
  "dunce",
  "gpui-kit",
  "gpui-omarchy",

@@ -23,8 +23,10 @@ UNAME := $(shell uname -s)
 MANIFEST = Cargo.toml
 CARGO ?= cargo
 TARGET = target/release/pwrdisk
+TUI_TARGET = target/release/pwrdisk-tui
 ifeq ($(UNAME),Linux)
 TARGET = target/portable/pwrdisk
+TUI_TARGET = target/portable/pwrdisk-tui
 endif
 ICON = assets/disktree.svg
 DESKTOP = packaging/pwrdisk.desktop.in
@@ -47,14 +49,16 @@ define check_install_path
 	fi
 endef
 
-.PHONY: help build run install install-scan uninstall bundle dock-icons lint test test-ssh ci fmt clean
+.PHONY: help build build-tui run install install-tui install-scan uninstall bundle dock-icons lint test test-ssh ci fmt clean
 
 help:
 	@echo "PwrDisk"
 	@echo
 	@echo "  make build       release build"
+	@echo "  make build-tui   terminal executable only (no GPUI)"
 	@echo "  make run         build and open the source/root chooser"
 	@echo "  make install-scan  build/install the headless SSH helper only"
+	@echo "  make install-tui   build/install pwrdisk-tui only (no desktop)"
 	@echo "  make install     install to $(PREFIX): binary, desktop entry, icon"
 	@echo "                   (macOS: PwrDisk.app into $(APPS))"
 	@echo "  make bundle      macOS: build target/bundle/PwrDisk.app, zip and DMG"
@@ -76,6 +80,14 @@ ifeq ($(UNAME),Linux)
 else
 	$(CARGO) build --release
 endif
+
+build-tui:
+	$(CARGO) build --release --locked -p disktree-tui
+
+install-tui: build-tui
+	install -d "$(BINDIR)"
+	install -m755 target/release/pwrdisk-tui "$(BINDIR)/pwrdisk-tui"
+	$(call check_install_path,pwrdisk-tui)
 
 # For servers: no desktop, GPU, GPUI build, or elevated permissions needed.
 install-scan:
@@ -112,20 +124,25 @@ install:
 	rm -rf "$(APPS)/PwrDisk.app"
 	ditto "$(BUNDLE)" "$(APPS)/PwrDisk.app"
 	ln -sf "$(APPS)/PwrDisk.app/Contents/MacOS/pwrdisk" "$(BINDIR)/pwrdisk"
+	ln -sf "$(APPS)/PwrDisk.app/Contents/MacOS/pwrdisk-tui" "$(BINDIR)/pwrdisk-tui"
 	@echo
 	@echo "installed:"
 	@echo "  $(APPS)/PwrDisk.app"
 	@echo "  $(BINDIR)/pwrdisk -> the app's binary"
+	@echo "  $(BINDIR)/pwrdisk-tui -> the terminal binary"
 	$(call check_install_path,pwrdisk)
+	$(call check_install_path,pwrdisk-tui)
 
 uninstall:
 	rm -rf "$(APPS)/PwrDisk.app"
 	@if [ -L "$(BINDIR)/pwrdisk" ]; then rm -f "$(BINDIR)/pwrdisk"; fi
+	rm -f "$(BINDIR)/pwrdisk-tui"
 	@echo "removed"
 else
 install: build
 	install -d $(BINDIR) $(APPDIR) $(ICONDIR)
 	install -m755 $(TARGET) $(BINDIR)/pwrdisk
+	install -m755 $(TUI_TARGET) $(BINDIR)/pwrdisk-tui
 	install -m644 $(ICON) $(ICONDIR)/pwrdisk.svg
 	VERSION=$$(sed -n 's/^version = "\(.*\)"/\1/p' $(MANIFEST) | head -1) && \
 	sed -e 's|@BINDIR@|$(BINDIR)|' -e "s|@VERSION@|$$VERSION|" \
@@ -137,15 +154,17 @@ install: build
 	@echo
 	@echo "installed:"
 	@echo "  $(BINDIR)/pwrdisk"
+	@echo "  $(BINDIR)/pwrdisk-tui"
 	@echo "  $(APPDIR)/pwrdisk.desktop"
 	@echo "  $(ICONDIR)/pwrdisk.svg"
 	@if command -v desktop-file-validate >/dev/null 2>&1; then \
 	    desktop-file-validate $(APPDIR)/pwrdisk.desktop || true; \
 	fi
 	$(call check_install_path,pwrdisk)
+	$(call check_install_path,pwrdisk-tui)
 
 uninstall:
-	rm -f $(BINDIR)/pwrdisk $(APPDIR)/pwrdisk.desktop $(ICONDIR)/pwrdisk.svg
+	rm -f $(BINDIR)/pwrdisk $(BINDIR)/pwrdisk-tui $(APPDIR)/pwrdisk.desktop $(ICONDIR)/pwrdisk.svg
 	@if command -v update-desktop-database >/dev/null 2>&1; then \
 	    update-desktop-database $(APPDIR) 2>/dev/null || true; \
 	fi

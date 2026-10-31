@@ -31,7 +31,8 @@ limit (5% per volume by default), including a fresh measurement on the worker.
 
 ```sh
 make build                      # release build
-cargo run --release -p disktree-app -- tui PATH  # terminal interface
+cargo run --release -p disktree-tui -- PATH  # standalone terminal interface
+make install-tui                # terminal only, no GPUI or desktop install
 make run                        # build and open the source/root chooser
 make install                    # ~/.local: binary, desktop entry, icon
 make install PREFIX=/usr/local  # system-wide (needs root)
@@ -238,7 +239,7 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
 | terminal keys, marks and screen transitions | `crates/disktree-tui/src/app.rs` |
 | terminal mosaic and screen layout | `crates/disktree-tui/src/render.rs` |
 | terminal palette and optional Omarchy theme | `crates/disktree-tui/src/theme.rs` |
-| terminal lifetime and CLI arguments | `crates/disktree-tui/src/lib.rs` |
+| terminal lifetime and CLI arguments | `crates/disktree-tui/src/main.rs` |
 | terminal Windows console encoding | `crates/disktree-tui/src/windows_console.rs` |
 
 ## Verification expectations
