@@ -204,7 +204,7 @@ for (const field of ['code_impacting', 'licenses_impacting']) {
 test('every other job runs on classifier failure and skips only on explicit irrelevant success', () => {
   const jobs = workflow.split('\njobs:\n')[1];
   const ids = [...jobs.matchAll(/^  ([a-z][\w-]*):\n/gm)].map(m => m[1]);
-  assert.deepEqual(ids, ['changes', 'licenses', 'check', 'check-macos', 'bundle-macos-26', 'windows',
+  assert.deepEqual(ids, ['changes', 'licenses', 'terminal', 'check', 'check-macos', 'bundle-macos-26', 'windows',
     'other-architectures'],
     'a new job needs a decision here: gate it on the classifier or not');
   for (const id of ids.slice(1)) {
