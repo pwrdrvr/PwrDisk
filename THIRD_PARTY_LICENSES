@@ -8624,7 +8624,7 @@ for. Workspace crates (PwrDisk's own, MIT) are not listed.
 Dependency Summary
 ~~~~~~~~~~~~~~~~~~
 
-Apache License 2.0 (493)
+Apache License 2.0 (494)
 - xkeysym@0.2.1 | https://github.com/notgull/xkeysym
 - powerfmt@0.2.0 | https://github.com/jhpratt/powerfmt
 - deranged@0.5.8 | https://github.com/jhpratt/deranged
@@ -8885,6 +8885,7 @@ Apache License 2.0 (493)
 - smallvec@1.16.1 | https://github.com/servo/rust-smallvec
 - smol@2.0.2 | https://github.com/smol-rs/smol
 - smol_str@0.3.6 | https://github.com/rust-lang/rust-analyzer/tree/master/lib/smol_str
+- socket2@0.6.5 | https://github.com/rust-lang/socket2
 - stable_deref_trait@1.2.1 | https://github.com/storyyeller/stable_deref_trait
 - string_cache@0.8.9 | https://github.com/servo/string-cache
 - svgtypes@0.16.1 | https://github.com/linebender/svgtypes
@@ -15549,6 +15550,7 @@ Applies to:
 - smallvec@1.16.1
 - smol@2.0.2
 - smol_str@0.3.6
+- socket2@0.6.5
 - stable_deref_trait@1.2.1
 - string_cache@0.8.9
 - svgtypes@0.16.1
