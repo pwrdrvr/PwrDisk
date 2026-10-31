@@ -3208,11 +3208,11 @@ fn review(
                         ButtonVariant::Outline,
                         cx,
                     )
+                    .debug_selector(|| "review-previous".into())
                     .disabled(page == 0)
                     .on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.review_page =
-                                this.review_page.saturating_sub(1);
+                        move |this, _, _, cx| {
+                            this.review_page = page.saturating_sub(1);
                             cx.notify();
                         },
                     )),
@@ -3224,10 +3224,11 @@ fn review(
                         ButtonVariant::Outline,
                         cx,
                     )
+                    .debug_selector(|| "review-next".into())
                     .disabled((page + 1) * LIST_LIMIT >= items.len())
                     .on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.review_page += 1;
+                        move |this, _, _, cx| {
+                            this.review_page = page + 1;
                             cx.notify();
                         },
                     )),

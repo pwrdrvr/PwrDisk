@@ -371,6 +371,7 @@ pub struct Disktree {
     pub file_page: usize,
     pub file_scroll: gpui_kit::ScrollHandle,
     pub file_focus: FocusHandle,
+    restore_file_focus: bool,
     pub review_page: usize,
     pub hovered: Option<Vec<usize>>,
     pub history: History,
@@ -597,6 +598,7 @@ impl Disktree {
             file_page: 0,
             file_scroll: gpui_kit::ScrollHandle::new(),
             file_focus: cx.focus_handle(),
+            restore_file_focus: false,
             review_page: 0,
             layout_options: LayoutOptions {
                 max_depth: depth.clamp(1, 6),
@@ -1375,6 +1377,7 @@ impl Disktree {
             self.remember();
         }
         discard(self.tree.take());
+        self.file_page = 0;
         self.crumbs.clear();
         self.selected = None;
         self.hovered = None;
@@ -1845,7 +1848,6 @@ impl Disktree {
     /// Descend into the selected tile, or into the largest child of the
     /// current root when nothing is selected.
     pub fn descend(&mut self, cx: &mut Context<'_, Self>) {
-        self.file_page = 0;
         let target = match self.selected.clone() {
             // Enter what is selected, however deep: a directory opens itself,
             // a file opens the directory holding it.
@@ -1895,6 +1897,7 @@ impl Disktree {
             return;
         }
         self.remember();
+        self.file_page = 0;
         self.selected = Some(target.clone());
         self.crumbs = target;
         self.forget_hover();
@@ -1947,7 +1950,6 @@ impl Disktree {
     /// Ascend to the parent directory, keeping the directory we came from in
     /// view so the motion reads as zooming out.
     pub fn ascend(&mut self, cx: &mut Context<'_, Self>) {
-        self.file_page = 0;
         if let Some(parent_crumbs) = self.parent_crumbs() {
             self.ascend_to(parent_crumbs, cx);
         }
@@ -1960,6 +1962,7 @@ impl Disktree {
     /// the new level simply lands.
     fn ascend_to(&mut self, ancestor: Vec<usize>, cx: &mut Context<'_, Self>) {
         self.remember();
+        self.file_page = 0;
         // The region we are looking at now, and where it sits in the layout
         // we are going back to.
         let area = self.treemap_size.get();
@@ -1995,6 +1998,7 @@ impl Disktree {
         // A reveal in the directory on screen goes nowhere.
         if crumbs != self.crumbs {
             self.remember();
+            self.file_page = 0;
         }
         self.crumbs.clone_from(&crumbs);
         self.selected = Some(crumbs);
@@ -2227,6 +2231,10 @@ impl Disktree {
     /// Select the next sibling by rank, which is next-largest by the active
     /// metric. Scanning a directory for space is exactly this walk.
     pub fn cycle_sibling(&mut self, step: isize, cx: &mut Context<'_, Self>) {
+        if self.file_list {
+            self.file_step(step, cx);
+            return;
+        }
         self.pointer_active = false;
         let siblings = self.ranked_siblings();
         if siblings.is_empty() {
@@ -2825,9 +2833,28 @@ impl Disktree {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        let list_visible = self.file_list
+            && self.screen == Screen::Explore
+            && !self.awaiting_root
+            && self.tree.is_some();
+        // The list leaves the focus tree during a rescan. Its persistent
+        // parent must own Escape until a complete list can take focus again.
+        if !list_visible && self.file_focus.is_focused(window) {
+            self.restore_file_focus = true;
+            window.focus(&self.focus, cx);
+        }
+        if !self.file_list || self.screen != Screen::Explore {
+            self.restore_file_focus = false;
+        } else if list_visible
+            && std::mem::take(&mut self.restore_file_focus)
+            && self.focus.is_focused(window)
+            && self.focus_request.is_none()
+        {
+            window.focus(&self.file_focus, cx);
+        }
         match self.focus_request.take() {
             Some(FocusTarget::Root) => window.focus(
-                if self.file_list && self.screen == Screen::Explore {
+                if list_visible {
                     &self.file_focus
                 } else {
                     &self.focus
@@ -3444,14 +3471,8 @@ impl Disktree {
                 "down" | "j" => self.file_step(1, cx),
                 "pageup" => self.file_step(-100, cx),
                 "pagedown" => self.file_step(100, cx),
-                "right" | "l" => {
-                    self.file_page = 0;
-                    self.descend(cx);
-                }
-                "left" | "h" => {
-                    self.file_page = 0;
-                    self.ascend(cx);
-                }
+                "right" | "l" => self.descend(cx),
+                "left" | "h" => self.ascend(cx),
                 _ => self.on_file_shared_key(key, control, shift, cx),
             }
             return;

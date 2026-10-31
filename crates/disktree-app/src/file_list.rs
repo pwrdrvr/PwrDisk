@@ -251,10 +251,11 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                         ButtonVariant::Outline,
                         cx,
                     )
+                    .debug_selector(|| "file-previous".into())
                     .disabled(page == 0)
                     .on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.file_page = this.file_page.saturating_sub(1);
+                        move |this, _, _, cx| {
+                            this.file_page = page.saturating_sub(1);
                             cx.notify();
                         },
                     )),
@@ -266,10 +267,11 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                         ButtonVariant::Outline,
                         cx,
                     )
+                    .debug_selector(|| "file-next".into())
                     .disabled(end == count)
                     .on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.file_page += 1;
+                        move |this, _, _, cx| {
+                            this.file_page = page + 1;
                             cx.notify();
                         },
                     )),
