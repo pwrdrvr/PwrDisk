@@ -2078,7 +2078,12 @@ impl ScanFacts {
                 .insights
                 .iter()
                 .map(|candidate| Insight {
-                    path: path_of(&scan.root, &scan.tree, &candidate.crumbs),
+                    path: path_of(
+                        &scan.root,
+                        &scan.tree,
+                        &candidate.crumbs,
+                        disktree_core::path_style::PathStyle::Native,
+                    ),
                     bytes: candidate.bytes,
                     what: candidate.finding.describe(),
                 })

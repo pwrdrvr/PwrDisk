@@ -10,6 +10,7 @@
 //! restarts). Restart to update goes through the main window, which knows
 //! whether a removal is running and refuses to cut one short.
 
+use disktree_core::path_style::PathStyle;
 use std::path::PathBuf;
 
 use gpui_kit::prelude::FluentBuilder as _;
@@ -633,7 +634,13 @@ impl SettingsWindow {
         let shown = |path: &Option<PathBuf>| {
             path.as_deref().map_or_else(
                 || "None".to_owned(),
-                |path| crate::marks::display_path(path, home.as_deref()),
+                |path| {
+                    crate::marks::display_path(
+                        path,
+                        home.as_deref(),
+                        PathStyle::Native,
+                    )
+                },
             )
         };
         let settings_dir = model.settings_dir.clone();
