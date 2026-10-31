@@ -1978,10 +1978,10 @@ mod tests {
             };
             let dir = std::path::PathBuf::from(dir);
             std::fs::create_dir_all(&dir).expect("screenshot directory");
+            let pixel_width = width * 9;
+            let pixel_height = height * 18;
             let mut svg = format!(
-                "<svg xmlns='http://www.w3.org/2000/svg' width='{}' height='{}'><g font-family='Menlo,monospace' font-size='14' xml:space='preserve'>",
-                width * 9,
-                height * 18,
+                "<svg xmlns='http://www.w3.org/2000/svg' width='{pixel_width}' height='{pixel_height}' viewBox='0 0 {pixel_width} {pixel_height}'><g font-family='Menlo,monospace' font-size='14' xml:space='preserve'>"
             );
             for y in 0..height {
                 for x in 0..width {

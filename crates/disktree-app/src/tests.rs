@@ -4321,7 +4321,7 @@ fn the_tooltip_follows_the_pointer_inside_a_client_side_frame(
 fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     use disktree_link::{Link, MarkRequest, Request, Response};
 
-    cx.update(gpui_omarchy::init);
+    cx.update(init);
     let temp = fixture();
     let root = temp.path().to_path_buf();
     let (view, cx) = view_over(temp.path(), cx);
