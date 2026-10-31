@@ -197,7 +197,7 @@ pub fn contrast(ink: Hsla, surface: Hsla) -> f32 {
             0.7152_f32.mul_add(linear(rgb.g), 0.2126 * linear(rgb.r)),
         )
     };
-    let shown = mix(surface, ink.opacity(1.0), ink.a);
+    let shown = mix(surface, Hsla { a: 1.0, ..ink }, ink.a);
     let (a, b) = (luminance(shown), luminance(surface));
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
@@ -205,7 +205,10 @@ pub fn contrast(ink: Hsla, surface: Hsla) -> f32 {
 /// Keep the theme's ink when it passes; otherwise choose an opaque neutral.
 /// One of black/white always exceeds 4.5:1 on an opaque flat surface.
 pub fn ink_on(preferred: Hsla, surface: Hsla, minimum: f32) -> Hsla {
-    let preferred = preferred.opacity(1.0);
+    let preferred = Hsla {
+        a: 1.0,
+        ..preferred
+    };
     if contrast(preferred, surface) >= minimum {
         return preferred;
     }
