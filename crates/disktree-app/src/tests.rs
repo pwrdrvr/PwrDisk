@@ -3020,6 +3020,11 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
     read(&view, cx, |app| {
         assert_eq!(app.plan().bytes(), 8 * 1024 * 1024);
         assert_eq!(app.plan().reclaimable_bytes(), 0);
+        let state = app.agent_state();
+        let estimate = state.estimate.expect("linked estimate");
+        assert_eq!(estimate.paths, vec![root.join("copies")]);
+        assert_eq!((estimate.lower, estimate.upper), (0, 0));
+        assert_eq!(estimate.on_volume, 0);
     });
     // Remote selections are exports: local clone metadata and mount
     // attribution cannot authorize or project a remote saving.
@@ -3058,6 +3063,9 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         assert_eq!(plan.bytes(), 16 * 1024 * 1024);
         assert_eq!(plan.reclaimable_bytes(), 8 * 1024 * 1024);
         assert_eq!(plan.possible_bytes(), 8 * 1024 * 1024);
+        let estimate = app.agent_state().estimate.expect("linked union");
+        assert_eq!(estimate.lower, 8 * 1024 * 1024);
+        assert_eq!(estimate.upper, estimate.lower);
     });
     draw(cx);
     crate::marks::work::reset();
@@ -4273,6 +4281,11 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     else {
         panic!("preview");
     };
+    assert_eq!(preview.estimate.paths, preview.paths);
+    assert_eq!(
+        preview.estimate.lower,
+        read(&view, cx, |app| app.plan().reclaimable_bytes())
+    );
     let confirmed = |preview: &disktree_link::RemovalPreview| {
         disktree_link::ConfirmedRemoval {
             preview_id: preview.preview_id.clone(),

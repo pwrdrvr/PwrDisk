@@ -64,11 +64,13 @@ fn a_request_reaches_the_queue_and_its_reply_reaches_the_client() {
     });
     let state = State {
         version: VERSION,
+        app_version: "0.13.0".into(),
         root: "/r".into(),
         current: "/r".into(),
         screen: "explore".into(),
         scanning: false,
         scanned: true,
+        estimate: None,
         marks: vec![Mark {
             path: "/r/x".into(),
             bytes: 1,

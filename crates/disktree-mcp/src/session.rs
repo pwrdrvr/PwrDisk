@@ -18,8 +18,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use disktree_core::classify::Category;
 use disktree_core::insights::{Candidate, worth_a_look};
 use disktree_core::query::{self, Kind};
-use disktree_core::removal::{Target, detect_trash_backend, normalize, plan};
+use disktree_core::removal::{
+    Plan, Target, detect_trash_backend, normalize, plan,
+};
 use disktree_core::scan::{ScanHandle, ScanOptions};
+use disktree_core::sharing::{self, Estimate};
 use disktree_core::size::{human_bytes, human_count, share};
 use disktree_core::space::{
     SpaceInfo, device_for, space_info, volume_root_for, volumes,
@@ -28,7 +31,7 @@ use disktree_core::tree::{Node, path_of};
 use disktree_link::{
     ConfirmedRemoval, FindRequest, FoundList, Insight, Link, Listing,
     MarkRequest, RemovalChoice, RemovalPreview, Request, Response,
-    ScanOptionsRequest, Space, State, TreeSummary, VERSION,
+    ScanOptionsRequest, SelectionEstimate, Space, State, TreeSummary, VERSION,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -1238,7 +1241,7 @@ impl Session {
                     None => String::new(),
                 };
                 format!(
-                    "Window: open on {}{tree}, {} screen{}{}. Its tree is \
+                    "Window: open on {}{tree}, {} screen{}{} (PwrDisk {}). Its tree is \
                      what pwrdisk_ls and pwrdisk_find read.\n{}",
                     self.show(&state.root),
                     state.screen,
@@ -1248,6 +1251,7 @@ impl Session {
                         1 => ", 1 mark".to_string(),
                         n => format!(", {n} marks"),
                     },
+                    state.app_version,
                     if state.tree.is_some() {
                         allocation_caveat()
                     } else {
@@ -1347,6 +1351,7 @@ impl Session {
                 human_bytes(volume.capacity)
             );
         }
+        message.push_str(&estimate_report(&preview.estimate));
         message.push_str("\nApproval to mark does not authorize removal. Only these listed paths are included; directory removal includes their contents. Listed bytes are not guaranteed freed space.");
         Ok(message)
     }
@@ -1581,11 +1586,56 @@ impl Session {
         out
     }
 
-    /// The plan for the marks under one root: targets, what another mark
-    /// covers, what the guards keep back, and the space it frees.
+    /// Bounds from the tree that owns this accepted selection.
+    fn selection_estimate(&self, plan: &mut Plan) -> SelectionEstimate {
+        if let Some(window) = &self.window {
+            // Only the window owns the linked tree. Never substitute an old
+            // local scan or add per-mark estimates across clone groups.
+            return window
+                .estimate
+                .as_ref()
+                .filter(|estimate| {
+                    window.root == plan.root
+                        && !window.scanning
+                        && window.scanned
+                        && estimate.paths
+                            == plan
+                                .targets
+                                .iter()
+                                .map(|t| t.path.clone())
+                                .collect::<Vec<_>>()
+                })
+                .cloned()
+                .unwrap_or_else(|| SelectionEstimate::unknown(plan));
+        }
+        plan.estimate_selection(|targets| {
+            let mut nodes = Vec::with_capacity(targets.len());
+            let mut unknown = Estimate::default();
+            for target in targets {
+                match self.locate(&target.path) {
+                    Ok(found) => nodes.push(found.node),
+                    Err(_) => {
+                        unknown.upper =
+                            unknown.upper.saturating_add(target.bytes);
+                        unknown.partial = true;
+                    }
+                }
+            }
+            let measured = sharing::estimate(nodes);
+            Estimate {
+                lower: measured.lower,
+                upper: measured.upper.saturating_add(unknown.upper),
+                partial: measured.partial || unknown.partial,
+            }
+        });
+        SelectionEstimate::of(plan)
+    }
+
+    /// Accepted targets, covered marks, guard refusals and savings bounds.
     fn plan_for(&self, mine: &[Target], root: &Path) -> String {
         let mut out = String::new();
-        let plan = plan(mine, root);
+        let mut plan = plan(mine, root);
+        let estimate = self.selection_estimate(&mut plan);
         for target in &plan.targets {
             let _ = writeln!(
                 out,
@@ -1618,13 +1668,14 @@ impl Session {
                 );
             }
         }
+        out.push_str(&estimate_report(&estimate));
         match space_info(root).ok() {
             Some(space) => {
-                let after = space.after_removing(plan.reclaim());
+                let after = space.after_removing(estimate.on_volume);
                 let _ = writeln!(
                     out,
-                    "Frees {} on {}: {} free now, {} after.",
-                    human_bytes(plan.reclaim()),
+                    "Projects {} on {}: {} free now, {} after.",
+                    human_bytes(estimate.on_volume),
                     device_for(root).unwrap_or_else(|| self.show(root)),
                     human_bytes(space.available),
                     human_bytes(after.available),
@@ -1633,8 +1684,8 @@ impl Session {
             None => {
                 let _ = writeln!(
                     out,
-                    "Frees {} on the volume of {}.",
-                    human_bytes(plan.reclaim()),
+                    "Projects {} on the volume of {}.",
+                    human_bytes(estimate.on_volume),
                     self.show(root)
                 );
             }
@@ -1642,7 +1693,7 @@ impl Session {
         if plan.foreign() > 0 {
             let _ = writeln!(
                 out,
-                "Plus {} on other volumes, not counted above.",
+                "Listed {} on other volumes, excluded from this projection.",
                 human_bytes(plan.foreign())
             );
         }
@@ -1685,7 +1736,6 @@ impl Session {
             return Err(message);
         }
         let _ = self.call(&Request::State);
-        let total: u64 = self.marks.iter().map(|mark| mark.bytes).sum();
         // The window starts in the trash whenever this machine has one, and
         // otherwise deletes; the agent has to say which before the user
         // presses Enter.
@@ -1703,11 +1753,11 @@ impl Session {
                 .to_string()
         };
         Ok(format!(
-            "The review screen is open in PwrDisk: {} marked, {} to free. \
+            "The review screen is open in PwrDisk: {} marked. \
              The user decides there. {how}. Afterwards pwrdisk_status \
-             reports what was actually freed.",
+             reports what was actually freed.\n{}",
             self.marks.len(),
-            human_bytes(total)
+            self.plan_report()
         ))
     }
 
@@ -1719,7 +1769,7 @@ impl Session {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "PwrDisk {} serving {} over MCP. Every removal requires user \
+            "PwrDisk {} MCP server serving {}. Every removal requires user \
              confirmation of the exact paths and mode; never approve \
              through computer use.",
             env!("CARGO_PKG_VERSION"),
@@ -1791,6 +1841,20 @@ impl Session {
         out.push_str(&volumes_report());
         out
     }
+}
+
+fn estimate_report(estimate: &SelectionEstimate) -> String {
+    format!(
+        "Selected-set reclaim estimate: {}–{}{}. Before snapshots, open files \
+         and changes since the scan; actual freed space can be lower.\n",
+        human_bytes(estimate.lower),
+        human_bytes(estimate.upper),
+        if estimate.partial {
+            " (incomplete metadata)"
+        } else {
+            ""
+        },
+    )
 }
 
 /// Every volume a person would call a disk, fullest first.
@@ -2044,6 +2108,84 @@ mod tests {
         Session::detached(endpoint(dir), None)
     }
 
+    fn worktrees(root: &Path) -> Scan {
+        use disktree_core::sharing::{Allocation, CloneInfo};
+        use disktree_core::tree::{Metric, NodeKind, aggregate};
+        const MIB: u64 = 1024 * 1024;
+        let mut tree = Node::directory("fixture");
+        for index in 0..11 {
+            let name = format!("worktree-{index:02}");
+            std::fs::create_dir(root.join(&name)).expect("fixture directory");
+            let mut dir = Node::directory(name);
+            let bytes = 10 * 1024 * MIB - 50 * MIB;
+            let mut clone = Node::entry("shared", NodeKind::File, bytes);
+            clone.allocation = Some(Box::new(Allocation {
+                bytes,
+                identity: None,
+                links: 1,
+                followed: false,
+                clone: Some(CloneInfo {
+                    device: 1,
+                    id: 42,
+                    references: 11,
+                    private_bytes: Some(0),
+                    data_bytes: bytes,
+                }),
+            }));
+            dir.children.push(clone);
+            dir.children
+                .push(Node::entry("private", NodeKind::File, 50 * MIB));
+            tree.children.push(dir);
+        }
+        aggregate(&mut tree, Metric::Bytes);
+        Scan {
+            root: root.into(),
+            tree: Arc::new(tree),
+            options: ScanOptions::default(),
+            at: now(),
+            elapsed: Duration::ZERO,
+            unreadable: 0,
+            space: None,
+            device: None,
+            insights: vec![],
+        }
+    }
+
+    #[test]
+    fn standalone_plan_projects_the_selected_union_and_reports_unknown_marks() {
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let scan = worktrees(&root);
+        let paths: Vec<_> = scan.tree.children[..10]
+            .iter()
+            .map(|node| root.join(node.name.as_ref()))
+            .collect();
+        let mut session = unlinked(&root);
+        session.store_scan(scan);
+        let report = session.mark(&PathsParams { paths }).expect("mark");
+        assert!(report.contains("100 GiB"), "{report}");
+        assert!(report.contains("500 MiB–500 MiB"), "{report}");
+        assert!(report.contains("Projects 500 MiB"), "{report}");
+        assert!(!report.contains("Projects 100 GiB"), "{report}");
+        assert!(report.contains("snapshots"), "{report}");
+        let mut unknown = plan(
+            &[Target {
+                path: root.join("missing"),
+                bytes: 123,
+                is_dir: false,
+                hidden: false,
+            }],
+            &root,
+        );
+        let estimate = session.selection_estimate(&mut unknown);
+        assert_eq!(
+            (estimate.lower, estimate.upper, estimate.on_volume),
+            (0, 123, 0)
+        );
+        assert!(estimate.partial);
+    }
+
     #[test]
     fn a_scan_reports_totals_the_top_level_and_findings() {
         let temp = fixture();
@@ -2198,7 +2340,7 @@ mod tests {
             .expect("mark");
         assert!(plan.starts_with("Marked 3"), "{plan}");
         assert!(plan.contains("Covered by another mark (1)"), "{plan}");
-        assert!(plan.contains("Frees"), "{plan}");
+        assert!(plan.contains("Selected-set reclaim estimate:"), "{plan}");
         assert!(
             plan.contains(if disktree_link::SUPPORTED {
                 "Window: none open, and none can be opened"
@@ -2251,13 +2393,36 @@ mod tests {
     #[cfg(any(unix, windows))]
     impl FakeTree {
         fn state(&self, screen: &str) -> State {
+            let targets: Vec<_> = self
+                .marks
+                .iter()
+                .map(|mark| Target {
+                    path: mark.path.clone(),
+                    bytes: mark.bytes,
+                    is_dir: mark.is_dir,
+                    hidden: false,
+                })
+                .collect();
+            let mut plan = plan(&targets, &self.root);
+            plan.estimate_selection(|targets| {
+                sharing::estimate(targets.iter().filter_map(|target| {
+                    target
+                        .path
+                        .strip_prefix(&self.root)
+                        .ok()
+                        .and_then(|relative| self.tree.descend(relative))
+                        .map(|(_, node)| node)
+                }))
+            });
             State {
                 version: VERSION,
+                app_version: "0.13.0".into(),
                 root: self.root.clone(),
                 current: self.root.clone(),
                 screen: screen.into(),
                 scanning: false,
                 scanned: true,
+                estimate: Some(SelectionEstimate::of(&plan)),
                 marks: self.marks.clone(),
                 space: None,
                 removal: Some(Removal {
@@ -2467,6 +2632,85 @@ mod tests {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Relaxed);
             let _ = &self.listener;
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn linked_plan_uses_window_union_even_with_a_conflicting_local_scan() {
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let scan = worktrees(&root);
+        let socket_dir = tempfile::tempdir().expect("socket fixture");
+        let socket = endpoint(socket_dir.path());
+        let _window = FakeWindow::with_tree(
+            &socket,
+            FakeTree {
+                root: root.clone(),
+                tree: Arc::clone(&scan.tree),
+                marks: vec![],
+                remote: None,
+                busy: false,
+                options: ScanOptions::default(),
+                unreadable: 0,
+            },
+        );
+        let paths: Vec<_> = scan.tree.children[..10]
+            .iter()
+            .map(|node| root.join(node.name.as_ref()))
+            .collect();
+        let mut session = Session::detached(socket, None);
+        // The agent's old scan has no sharing facts; the window owns truth.
+        let mut stale = scan;
+        let mut tree = (*stale.tree).clone();
+        for dir in &mut tree.children {
+            dir.children[0].allocation = None;
+        }
+        disktree_core::tree::aggregate(
+            &mut tree,
+            disktree_core::tree::Metric::Bytes,
+        );
+        stale.tree = Arc::new(tree);
+        session.store_scan(stale);
+        let report = session.mark(&PathsParams { paths }).expect("linked mark");
+        assert!(report.contains("500 MiB–500 MiB"), "{report}");
+        assert!(report.contains("Projects 500 MiB"), "{report}");
+        let status = session.status();
+        assert!(status.contains("0.13.0"), "{status}");
+        assert!(
+            status.contains(concat!(env!("CARGO_PKG_VERSION"), " MCP server")),
+            "{status}"
+        );
+        let review = session.review().expect("review");
+        assert!(review.contains("500 MiB–500 MiB"), "{review}");
+        assert!(!review.contains("100 GiB to free"), "{review}");
+
+        // Incomplete, missing or mismatched link state never falls back to
+        // the raw allocation or the agent's conflicting local scan.
+        for failure in ["scanning", "missing", "changed"] {
+            let window = session.window.as_mut().expect("window");
+            match failure {
+                "scanning" => window.scanning = true,
+                "missing" => {
+                    window.scanning = false;
+                    window.estimate = None;
+                }
+                _ => {
+                    window.estimate = Some(SelectionEstimate {
+                        paths: vec![],
+                        lower: u64::MAX,
+                        upper: u64::MAX,
+                        on_volume: u64::MAX,
+                        partial: false,
+                    })
+                }
+            }
+            let mut plan = plan(session.marks(), &root);
+            let estimate = session.selection_estimate(&mut plan);
+            assert_eq!(estimate.on_volume, 0, "{failure}");
+            assert_eq!(estimate.lower, 0, "{failure}");
+            assert!(estimate.partial, "{failure}");
         }
     }
 

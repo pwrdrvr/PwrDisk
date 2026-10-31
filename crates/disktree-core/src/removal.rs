@@ -95,6 +95,7 @@ pub struct Plan {
     reclaimable_bytes: Option<u64>,
     reclaim_estimate: Option<u64>,
     possible_bytes: Option<u64>,
+    estimate_partial: bool,
 }
 
 impl Plan {
@@ -124,6 +125,10 @@ impl Plan {
     pub fn possible_bytes(&self) -> u64 {
         self.possible_bytes
             .unwrap_or_else(|| self.reclaimable_bytes())
+    }
+
+    pub const fn estimate_partial(&self) -> bool {
+        self.estimate_partial
     }
 
     /// Evaluate the accepted set together, preserving the guard's volume
@@ -157,6 +162,7 @@ impl Plan {
         self.reclaimable_bytes = Some(total.lower);
         self.possible_bytes = Some(total.upper);
         self.reclaim_estimate = Some(local.lower);
+        self.estimate_partial = total.partial || local.partial;
     }
 
     /// Bytes the targets free on other volumes, which the meter leaves out.

@@ -23,7 +23,7 @@ use disktree_core::tree::{Node, path_of};
 use disktree_link::{
     FindRequest, FoundList, Incoming, Insight, Listener, Listing, Mark,
     MarkRequest, Refused, Removal, Request, Response, ScanOptionsRequest,
-    Space, State, TreeSummary, VERSION,
+    SelectionEstimate, Space, State, TreeSummary, VERSION,
 };
 use gpui_kit::Context;
 use gpui_omarchy::Status;
@@ -558,6 +558,7 @@ impl Disktree {
     pub fn agent_state(&self) -> State {
         State {
             version: VERSION,
+            app_version: env!("CARGO_PKG_VERSION").into(),
             root: self.root_path.clone(),
             current: self.current_path(),
             screen: screen_name(self.screen).to_string(),
@@ -573,6 +574,10 @@ impl Disktree {
                     is_dir: target.is_dir,
                 })
                 .collect(),
+            estimate: (self.tree.is_some()
+                && self.scan.is_none()
+                && self.remote.is_none())
+            .then(|| SelectionEstimate::of(&self.plan())),
             space: self.space.map(|space| Space {
                 total: space.total,
                 free: space.free,

@@ -884,6 +884,41 @@ mod clone_tests {
     }
 
     #[test]
+    fn ten_apfs_worktrees_with_a_surviving_clone_only_credit_private_files() {
+        let temp = fixture();
+        for index in 0..10 {
+            let dir = temp.path().join(format!("worktree-{index}"));
+            fs::create_dir(&dir).expect("worktree");
+            assert!(
+                Command::new("cp")
+                    .arg("-c")
+                    .arg(temp.path().join("original"))
+                    .arg(dir.join("shared"))
+                    .status()
+                    .expect("cp -c")
+                    .success()
+            );
+            fs::write(dir.join("private"), vec![0x31; 64 * 1024])
+                .expect("private file");
+        }
+        let tree = scan(temp.path(), ScanOptions::default()).expect("scan");
+        let selected: Vec<_> = tree
+            .children
+            .iter()
+            .filter(|node| node.name.starts_with("worktree-"))
+            .collect();
+        assert_eq!(selected.len(), 10);
+        assert_eq!(
+            selected.iter().map(|node| node.bytes).sum::<u64>(),
+            10 * (8 * 1024 * 1024 + 64 * 1024)
+        );
+        let estimate = crate::sharing::estimate(selected);
+        assert_eq!(estimate.lower, 10 * 64 * 1024);
+        assert_eq!(estimate.upper, estimate.lower);
+        assert!(!estimate.partial);
+    }
+
+    #[test]
     fn real_clones_keep_listed_bytes_and_report_sharing() {
         let temp = fixture();
         let tree = scan(temp.path(), ScanOptions::default()).expect("scan");

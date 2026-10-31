@@ -106,8 +106,17 @@ impl Allocation {
             } else {
                 self.bytes
             },
-            partial: false,
+            partial: self.clone.is_some_and(CloneInfo::incomplete),
         }
+    }
+}
+
+impl CloneInfo {
+    const fn incomplete(self) -> bool {
+        self.device == 0
+            || self.id == 0
+            || self.references == 0
+            || self.private_bytes.is_none()
     }
 }
 

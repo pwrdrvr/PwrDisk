@@ -48,7 +48,7 @@ pub const SUPPORTED: bool = cfg!(any(unix, windows));
 
 /// Protocol version, bumped when a message changes shape. Both sides are
 /// built from one tree, so a mismatch means an old window is still open.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// Environment variable naming the endpoint, for tests and a second copy
 /// of PwrDisk that should not meet the first.
@@ -202,6 +202,7 @@ pub struct RemovalPreview {
     pub mode: RemovalChoice,
     pub paths: Vec<PathBuf>,
     pub bytes: u64,
+    pub estimate: SelectionEstimate,
     pub limit_percent: u8,
     pub volumes: Vec<disktree_core::removal_limit::Budget>,
     pub expires_in_seconds: u64,
@@ -405,6 +406,40 @@ pub struct Mark {
     pub is_dir: bool,
 }
 
+/// Bounds for the whole accepted union, before snapshots and later changes.
+/// Per-mark bounds cannot represent groups spanning several marks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectionEstimate {
+    pub paths: Vec<PathBuf>,
+    pub lower: u64,
+    pub upper: u64,
+    /// Only this lower bound belongs on the scanned volume's meter.
+    pub on_volume: u64,
+    pub partial: bool,
+}
+
+impl SelectionEstimate {
+    pub fn of(plan: &disktree_core::removal::Plan) -> Self {
+        Self {
+            paths: plan.targets.iter().map(|t| t.path.clone()).collect(),
+            lower: plan.reclaimable_bytes(),
+            upper: plan.possible_bytes(),
+            on_volume: plan.reclaim(),
+            partial: plan.estimate_partial(),
+        }
+    }
+
+    pub fn unknown(plan: &disktree_core::removal::Plan) -> Self {
+        Self {
+            lower: 0,
+            upper: plan.bytes(),
+            on_volume: 0,
+            partial: true,
+            ..Self::of(plan)
+        }
+    }
+}
+
 /// The volume the window measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Space {
@@ -433,6 +468,8 @@ pub struct Removal {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub version: u32,
+    /// GUI package version, independent of the MCP server and link protocol.
+    pub app_version: String,
     /// The scanned root.
     pub root: PathBuf,
     /// The directory on screen.
@@ -444,6 +481,7 @@ pub struct State {
     /// A tree is on screen.
     pub scanned: bool,
     pub marks: Vec<Mark>,
+    pub estimate: Option<SelectionEstimate>,
     pub space: Option<Space>,
     pub removal: Option<Removal>,
     /// The tree on screen, when there is one.

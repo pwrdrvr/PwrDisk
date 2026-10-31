@@ -8,6 +8,7 @@ use disktree_core::removal::{Target, detect_trash_backend};
 use disktree_core::tree::Node;
 use disktree_link::{
     ConfirmedRemoval, RemovalChoice, RemovalPreview, Response,
+    SelectionEstimate,
 };
 use gpui_kit::Context;
 
@@ -113,6 +114,7 @@ impl Disktree {
                     .map(|target| target.path.clone())
                     .collect(),
                 bytes: plan.bytes(),
+                estimate: SelectionEstimate::of(&plan),
                 limit_percent: limit.percent(),
                 volumes,
                 expires_in_seconds: LIFETIME.as_secs(),
@@ -190,6 +192,7 @@ mod tests {
                 mode: RemovalChoice::Permanent,
                 paths: vec!["/fixture/junk".into()],
                 bytes: 123,
+                estimate: SelectionEstimate::unknown(&Default::default()),
                 limit_percent: 5,
                 volumes: vec![],
                 expires_in_seconds: LIFETIME.as_secs(),
