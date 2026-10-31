@@ -282,8 +282,9 @@ mod tests {
     #[cfg(windows)]
     fn assert_file_preflight_uses_allocation(path: &Path) {
         let parent = path.parent().expect("fixture parent");
-        let tree = crate::scan::scan(parent, Default::default())
-            .expect("directory measurement");
+        let tree =
+            crate::scan::scan(parent, crate::scan::ScanOptions::default())
+                .expect("directory measurement");
         let length = std::fs::metadata(path).expect("metadata").len();
         let targets = [Target {
             path: path.into(),
