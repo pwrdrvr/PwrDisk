@@ -5180,3 +5180,33 @@ fn accessible_list_review_noop_navigation_preserves_page(
         temp.path().join("nested")
     );
 }
+
+#[gpui_kit::test]
+fn readable_progress_is_throttled_but_errors_and_completion_are_immediate(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.start_scan(cx);
+        app.progress.files = 100;
+        let first = app.accessibility_status();
+        assert!(first.contains("100 files") && first.contains("indeterminate"));
+        app.progress.files = 200;
+        assert_eq!(app.accessibility_status(), first);
+        app.accessible_progress.as_mut().unwrap().0 = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(3))
+            .expect("test clock");
+        assert!(app.accessibility_status().contains("200 files"));
+        app.scan_error = Some("contrived scan error".into());
+        assert!(app.accessibility_status().contains("contrived scan error"));
+        app.cancel_scan(cx);
+        assert!(app.scan.is_none() && app.progress.cancelled);
+        app.scan_error = None;
+        assert!(app.accessibility_status().contains("Scan cancelled"));
+        app.progress.cancelled = false;
+        app.progress.finished = true;
+        assert!(app.accessibility_status().contains("Scan complete"));
+    });
+}

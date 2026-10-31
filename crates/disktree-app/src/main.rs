@@ -33,6 +33,7 @@ mod marks;
 mod palette;
 mod power;
 mod safety;
+mod semantics;
 mod settings;
 mod state;
 #[cfg(test)]
