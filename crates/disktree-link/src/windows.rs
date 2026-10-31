@@ -470,7 +470,7 @@ impl<T: AsRawHandle + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite
 /// MCP shares the typed link's SID, protected DACL, remote rejection,
 /// connected-owner verification and cancellation on drop.
 #[derive(Debug)]
-pub(crate) struct McpListener {
+pub struct McpListener {
     path: PathBuf,
     server: NamedPipeServer,
 }
@@ -496,9 +496,7 @@ impl McpListener {
     }
 }
 
-pub(crate) async fn mcp_connect(
-    path: &Path,
-) -> io::Result<crate::mcp_stream::Stream> {
+pub async fn mcp_connect(path: &Path) -> io::Result<crate::mcp_stream::Stream> {
     validate_path(path)?;
     Ok(Box::new(PipeIo {
         pipe: connect(path).await?,

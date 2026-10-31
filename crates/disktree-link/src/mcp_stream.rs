@@ -181,7 +181,32 @@ mod tests {
         drop(server);
         drop(client);
         drop(listener);
+        #[cfg(unix)]
         let _replacement =
             Listener::bind(&endpoint(&command_path)).expect("rebind");
+        #[cfg(windows)]
+        let _replacement = {
+            use std::time::Duration;
+            // Mio retains overlapped I/O's handle until its cancellation
+            // completion reaches the reactor. Drop initiates cancellation;
+            // yield to that reactor instead of assuming synchronous close.
+            // Keep this runtime alive so a leaked handle still fails the
+            // deadline.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    match Listener::bind(&endpoint(&command_path)) {
+                        Ok(listener) => break listener,
+                        Err(error)
+                            if error.kind() == io::ErrorKind::AddrInUse =>
+                        {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                        Err(error) => panic!("rebind: {error}"),
+                    }
+                }
+            })
+            .await
+            .expect("cancelled pipe handles must be released")
+        };
     }
 }
