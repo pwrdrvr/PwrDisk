@@ -19,10 +19,11 @@ phases after choosing a local/SSH source and root: explore (treemap,
 breadcrumbs, selection and status) and review (the marked list,
 the removal mode, the confirmation). Marking is never destructive.
 
-`pwrdisk mcp` is the same thing for an AI agent: an MCP server over stdio
-that scans with `disktree-core`, marks, and opens the review screen in a
-window over a per-user socket or pipe (`disktree-link`). Removal uses either
-human review or an explicit destructive MCP write after a single-use preview
+`pwrdisk mcp` relays stdio to an already running desktop over a same-user
+socket or pipe. The desktop owns the complete MCP surface and execution;
+the relay must not parse MCP or launch the app. `mcp --standalone` explicitly
+owns its own scans and marks and never links or launches a window. Removal
+uses either human review or an explicit destructive MCP write after a single-use preview
 and user confirmation of the exact paths and mode. Computer use must never
 approve removal. Both routes enforce the configured per-operation capacity
 limit (5% per volume by default), including a fresh measurement on the worker.
@@ -182,14 +183,14 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
     named pipe keyed by the user's SID, with a protected DACL granting only
     that user access and `PIPE_REJECT_REMOTE_CLIENTS`. Before exchanging
     messages the client verifies the connected pipe's owner is that SID.
-    It has no token: the agent already runs as the user and `pwrdisk mcp`
-    scans on its own.
+    It has no token: the agent already runs as the user. The separate MCP
+    stream uses the same protections; Unix also verifies peer credentials.
     Do not add a port.
     A window showing an SSH host answers only `hello` and `state`: an
     agent's paths are this computer's.
 14. **The skills are the agent's safety brief.** `skills/` is compiled
-    into `pwrdisk mcp` (`disktree-mcp/src/skills.rs` lists every file;
-    a URI is looked up, never turned into a path). They tell the agent
+    into the desktop and standalone server (`disktree-mcp/src/skills.rs`
+    lists every file; a URI is looked up, never turned into a path). They tell the agent
     to agree the list before marking unless the user gave a standing
     instruction, and never to delete by other means. A change to what
     the guards refuse, what removal does, or what a system hides from a
@@ -229,6 +230,7 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
 | release packaging, the DMG, `vpk` | `scripts/release/`, `xtask/src/bundle.rs`, `.github/workflows/release.yml` |
 | what an agent can ask of the window, and the answer | `crates/disktree-link/src/lib.rs` (messages), `crates/disktree-app/src/agent.rs` (handling) |
 | a tool, its parameters or its wording | `crates/disktree-mcp/src/server.rs` (the MCP surface), `crates/disktree-mcp/src/session.rs` (what it does) |
+| desktop MCP hosting and the opaque stdio relay | `crates/disktree-mcp/src/desktop.rs`; `crates/disktree-link/src/mcp_stream.rs` and `windows.rs` own the protected stream |
 | how a listing or a plan reads to an agent | `crates/disktree-mcp/src/report.rs` |
 | what an agent is told to do, and to avoid | `skills/` (each system's cautions in `skills/pwrdisk-free-space/references/`), listed in `crates/disktree-mcp/src/skills.rs` |
 

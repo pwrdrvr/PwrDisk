@@ -1503,6 +1503,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "ureq",
  "velopack",
  "windows-sys 0.61.2",
@@ -1532,6 +1533,7 @@ name = "disktree-link"
 version = "0.14.0"
 dependencies = [
  "disktree-core",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

@@ -86,8 +86,8 @@ Use --check with ssh to deploy and scan without opening a window.
 
 arguments:
   PATH              explicit directory to scan; omitted opens root selection
-  mcp               serve an AI agent over stdio instead of opening a
-                    window: `claude mcp add pwrdisk -- pwrdisk mcp`
+  mcp               connect an AI agent to the running desktop over stdio
+                    (--standalone explicitly scans without a desktop)
 
 Without PATH, choose this computer or SSH, then a mount or directory.
 No scan starts before explicit acceptance. Nested mounts are excluded.
@@ -140,11 +140,17 @@ fn main() -> Result<()> {
 }
 
 fn run() -> Result<()> {
-    // `pwrdisk mcp` is the agent's disktree: it scans and marks over stdin
-    // and stdout and opens no window of its own, though it may open one for
-    // the review screen.
+    // Dispatch before window creation: neither MCP mode launches a desktop,
+    // keeping privileged work out of the host's child process tree.
     if std::env::args_os().nth(1).is_some_and(|arg| arg == "mcp") {
-        return disktree_mcp::serve();
+        return match std::env::args_os().skip(2).collect::<Vec<_>>().as_slice()
+        {
+            [] => disktree_mcp::serve(),
+            [flag] if flag == "--standalone" => {
+                disktree_mcp::serve_standalone()
+            }
+            _ => anyhow::bail!("usage: pwrdisk mcp [--standalone]"),
+        };
     }
     if extract_scanner()? {
         return Ok(());
@@ -336,7 +342,7 @@ fn run() -> Result<()> {
 
             // Listen for an agent. Another window already linked, or a
             // system without the socket, leaves this one on its own; the
-            // agent then works headless and says so.
+            // MCP client receives connection guidance.
             match disktree_link::Listener::bind() {
                 Ok(listener) => {
                     let _ = window.update(cx, |this, _, cx| {

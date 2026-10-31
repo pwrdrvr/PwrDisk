@@ -378,8 +378,9 @@ tool-owned data. The remote helper itself has no delete operation.
 PwrDisk is also an [MCP](https://modelcontextprotocol.io) server, so an
 agent such as Claude Code or Codex can do the looking while you keep the
 deciding. One command connects it, and there is nothing to configure, sign
-in to or approve: the agent runs `pwrdisk mcp` as you, over stdio, and can
-do no more than your shell can.
+in to or approve: the agent runs `pwrdisk mcp` as a stdio relay to an
+already running PwrDisk desktop. The desktop owns the MCP interface and performs the work.
+The relay never launches it.
 
 ```sh
 claude mcp add --scope user pwrdisk -- pwrdisk mcp
@@ -412,10 +413,16 @@ measured from it, and the two of you see the same numbers. The agent's
 marks appear in the mosaic and in the free-space meter as it makes them,
 `ls` and `find` never navigate; `show` moves the view only when you ask, a scan it asks for runs in
 the window, and the header names the agent and its last action while it is
-connected. With no window open the agent scans on its own, in seconds for a
-home directory, and can open a window for the review. Without a display it
-works headless and says so. A window showing an SSH server is not followed:
-the agent's tools measure this computer, and PwrDisk does not remove files
+connected. Start the desktop yourself before connecting. If it exits, the
+MCP connection ends; reconnect in the client after restarting PwrDisk.
+Calls and approvals are never replayed. Existing marks stay in a running
+window when a client disconnects.
+
+`pwrdisk mcp --standalone` is an explicit independent scanner. It never
+connects to or launches a desktop; its scans and marks belong to that MCP
+process and cannot be handed to the window through this connection.
+Removal, show and review require the desktop connection. A window showing
+an SSH server is not followed: the agent's tools measure this computer, and PwrDisk does not remove files
 over SSH.
 
 The tools: `pwrdisk_status`, `pwrdisk_scan`, `pwrdisk_ls`,
@@ -647,3 +654,23 @@ class is `pwrdisk`.
 windowrule = float, class:^(pwrdisk)$
 windowrule = size 1400 900, class:^(pwrdisk)$
 ```
+
+### MCP versions and reconnecting
+
+`pwrdisk_status` and MCP identity metadata name the interface owner. In a
+desktop connection, the desktop version is authoritative; the separate
+relay version describes transport. Unequal releases are allowed when the
+stream protocol is compatible. Standalone identifies its own server as
+owner and reports no connected desktop. A pre-relay MCP executable still
+owns its compiled interface: updating the app cannot retrofit forwarding
+into that process. Reconnect using `pwrdisk mcp` from the updated install.
+
+Definitions are fixed for a connection. After updating PwrDisk, finish
+active work, restart the desktop yourself, then restart/reconnect its MCP
+connection in the client. Rediscover tools, prompts and skills/resources;
+reread the skill text. Previously loaded instructions and resources can
+remain in the host's context. This release does not claim live definition
+updates or advertise list-change notifications. The relay carries future
+MCP notifications unchanged; the desktop and host must support the
+negotiated notification and discovery mechanisms. Restarting a connection
+requires a new removal preview and confirmation; never replay a removal.

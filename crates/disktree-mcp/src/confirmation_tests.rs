@@ -8,12 +8,8 @@ use disktree_link::{
     Incoming, Listener, Mark, RemovalChoice, RemovalPreview, Request, Response,
     State, VERSION,
 };
-use rmcp::ServiceExt as _;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
-
-use crate::server::Server;
-use crate::session::Session;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn only_interactive_user_confirmation_reaches_the_removal_request() {
@@ -90,11 +86,18 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
                 std::thread::sleep(Duration::from_millis(1));
             }
         });
-        let server = Server::new(Session::detached(socket, None));
-        let (client_io, server_io) = tokio::io::duplex(65_536);
+        let (client_io, relay_io) = tokio::io::duplex(65_536);
+        let (link_io, server_io) = tokio::io::duplex(65_536);
         let task = tokio::spawn(async move {
-            let service = server.serve(server_io).await.expect("server");
-            let _ = service.waiting().await;
+            let _ =
+                crate::desktop::serve_connection(Box::new(server_io), socket)
+                    .await;
+        });
+        let relay = tokio::spawn(async move {
+            let (input, output) = tokio::io::split(relay_io);
+            crate::desktop::relay(Box::new(link_io), input, output, "0.12.0")
+                .await
+                .expect("relay");
         });
         let (input, mut output) = tokio::io::split(client_io);
         let mut input = BufReader::new(input);
@@ -163,6 +166,8 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
             std::fs::read(&file).expect("fixture is untouched"),
             b"fixture"
         );
+        relay.abort();
+        let _ = relay.await;
         task.abort();
         let _ = task.await;
         stopped.store(true, Ordering::Relaxed);
@@ -170,13 +175,18 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
     }
 }
 
-async fn send(output: &mut (impl tokio::io::AsyncWrite + Unpin), value: Value) {
+pub async fn send(
+    output: &mut (impl tokio::io::AsyncWrite + Unpin),
+    value: Value,
+) {
     let line = format!("{value}\n");
     output.write_all(line.as_bytes()).await.expect("send");
     output.flush().await.expect("flush");
 }
 
-async fn receive(input: &mut (impl tokio::io::AsyncBufRead + Unpin)) -> Value {
+pub async fn receive(
+    input: &mut (impl tokio::io::AsyncBufRead + Unpin),
+) -> Value {
     let mut line = String::new();
     tokio::time::timeout(Duration::from_secs(10), input.read_line(&mut line))
         .await

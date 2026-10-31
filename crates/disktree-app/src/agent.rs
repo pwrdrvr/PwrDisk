@@ -13,6 +13,7 @@
 //! single-use intent matching an explicitly confirmed preview. UI and MCP
 //! removal share the same guards and configured capacity limit.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -46,6 +47,7 @@ pub struct Presence {
 /// The listener and what has come over it.
 #[derive(Debug)]
 pub struct AgentLink {
+    mcp_host: Option<disktree_mcp::DesktopHost>,
     listener: Listener,
     pub presence: Option<Presence>,
     /// A path to show once the scan an agent asked for lands.
@@ -53,16 +55,19 @@ pub struct AgentLink {
     /// The last removal, for an agent that asks what was freed.
     pub last_removal: Option<Removal>,
     pub(crate) removal_preview: Option<crate::agent_removal::PreparedRemoval>,
+    previews: HashMap<u64, crate::agent_removal::PreparedRemoval>,
 }
 
 impl AgentLink {
-    pub const fn new(listener: Listener) -> Self {
+    pub fn new(listener: Listener) -> Self {
         Self {
+            mcp_host: None,
             listener,
             presence: None,
             pending_show: None,
             last_removal: None,
             removal_preview: None,
+            previews: HashMap::new(),
         }
     }
 }
@@ -107,7 +112,13 @@ find out, and show me what could go before you mark anything.";
 impl Disktree {
     /// Start answering agents on `listener`.
     pub fn attach_agent(&mut self, listener: Listener, cx: &Context<'_, Self>) {
-        self.agent = Some(AgentLink::new(listener));
+        let host = disktree_mcp::DesktopHost::start(listener.path().into());
+        let mut agent = AgentLink::new(listener);
+        match host {
+            Ok(host) => agent.mcp_host = Some(host),
+            Err(error) => eprintln!("MCP listener not available: {error}"),
+        }
+        self.agent = Some(agent);
         Self::poll_agent(cx);
     }
 
@@ -141,11 +152,31 @@ impl Disktree {
         }
         for item in incoming {
             match item {
-                Incoming::Request { request, reply, .. } => {
+                Incoming::Request {
+                    connection,
+                    request,
+                    reply,
+                } => {
+                    // The existing guard code consumes one preview. Restore
+                    // only this connection's slot while it handles the call,
+                    // so a new client cannot clear another client's approval.
+                    if let Some(agent) = &mut self.agent {
+                        agent.removal_preview =
+                            agent.previews.remove(&connection);
+                    }
                     let response = self.answer_agent(&request, cx);
+                    if let Some(agent) = &mut self.agent
+                        && let Some(preview) = agent.removal_preview.take()
+                    {
+                        agent.previews.insert(connection, preview);
+                    }
                     reply.send(response);
                 }
-                Incoming::Closed { .. } => {}
+                Incoming::Closed { connection } => {
+                    if let Some(agent) = &mut self.agent {
+                        agent.previews.remove(&connection);
+                    }
+                }
             }
         }
         self.forget_departed_agent(cx);
