@@ -211,7 +211,12 @@ pub fn root(
         .text_size(text::BODY)
         .child(strip)
         .child(body);
-    if let Some(tip) = cursor_tooltip(app, window, cx) {
+    // A modal hides the mosaic's hover card: the pointer last seen on the
+    // treemap is stale while the backdrop takes the mouse, so the card would
+    // otherwise sit, or drift, behind the dialog.
+    let modal =
+        app.show_help || app.show_agent || app.volumes_open || app.confirm_open;
+    if !modal && let Some(tip) = cursor_tooltip(app, window, cx) {
         root = root.child(tip);
     }
     if app.show_help {
@@ -430,6 +435,90 @@ fn centred_popup(
                     },
                 )
                 .child(card),
+        )
+}
+
+/// The backdrop of an overlay that only shows something: it dims the
+/// window, takes every mouse event so nothing behind it hovers or clicks,
+/// and closes the overlay on a click outside the card. The card is never
+/// taller than the window: give it `min_h_0` and let its middle scroll.
+fn overlay_backdrop(
+    id: &'static str,
+    card: impl IntoElement,
+    close: impl Fn(&mut Disktree) + 'static,
+    cx: &Context<'_, Disktree>,
+) -> Stateful<Div> {
+    let theme = cx.omarchy();
+    div()
+        .id(id)
+        .absolute()
+        .inset_0()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme.background.opacity(0.86))
+        // Room on every side, so a card taller than a short window still
+        // reads as a dialog instead of a page.
+        .p(space::LG)
+        .on_any_mouse_down(cx.listener(move |this, _, window, cx| {
+            close(this);
+            window.focus(&this.focus, cx);
+            cx.notify();
+        }))
+        .child(
+            div()
+                .id("overlay-card")
+                .occlude()
+                .flex()
+                .flex_col()
+                .max_h_full()
+                .on_any_mouse_down(
+                    |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                        cx.stop_propagation();
+                    },
+                )
+                .child(card),
+        )
+}
+
+/// An overlay's footer: what it says on the left, Done where a dialog's
+/// default button sits, on the right.
+fn overlay_footer(
+    note: String,
+    close: impl Fn(&mut Disktree) + 'static,
+    cx: &Context<'_, Disktree>,
+) -> Div {
+    let theme = cx.omarchy();
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(space::MD)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(note),
+        )
+        .child(
+            div().debug_selector(|| "overlay-done".into()).child(
+                dialog_button(
+                    "overlay-done",
+                    "Done",
+                    ButtonVariant::Primary,
+                    cx,
+                )
+                .on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        close(this);
+                        window.focus(&this.focus, cx);
+                        cx.notify();
+                    },
+                )),
+            ),
         )
 }
 
@@ -4167,7 +4256,7 @@ const MODIFIER_OPEN: &str = if cfg!(target_os = "macos") {
     "ctrl-o"
 };
 
-fn help_overlay(app: &Disktree, cx: &gpui_kit::App) -> Div {
+fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     let theme = cx.omarchy();
     // Sentence case, and the tile a key acts on is always the one under the
     // pointer if the pointer moved last, else the keyboard selection.
@@ -4228,7 +4317,16 @@ fn help_overlay(app: &Disktree, cx: &gpui_kit::App) -> Div {
         ("", "A permanent deletion always asks first"),
     ];
 
-    let mut keys = div().flex().flex_col().gap(space::SM);
+    // The list scrolls inside the card when the window is too short for
+    // it; the title and Done stay in view.
+    let mut keys = div()
+        .id("help-keys")
+        .debug_selector(|| "help-keys".into())
+        .flex()
+        .flex_col()
+        .gap(space::SM)
+        .min_h_0()
+        .overflow_y_scroll();
     for (key, label) in rows {
         if key.is_empty() && label.is_empty() {
             continue;
@@ -4249,6 +4347,8 @@ fn help_overlay(app: &Disktree, cx: &gpui_kit::App) -> Div {
                 )
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
                         .text_size(text::BODY)
                         .text_color(theme.foreground)
                         .child(label.to_string()),
@@ -4256,56 +4356,48 @@ fn help_overlay(app: &Disktree, cx: &gpui_kit::App) -> Div {
         );
     }
 
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme.background.opacity(0.86))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(space::MD)
-                .w(size::HELP)
-                .p(space::XL)
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface)
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(space::SM)
-                        .child(
-                            gpui_omarchy::icon(
-                                gpui_omarchy::IconName::Keyboard,
-                            )
+    let note = format!(
+        "? or esc closes \u{00b7} {} \u{00b7} {}",
+        app.root_path.display(),
+        app.options.metric.label()
+    );
+    overlay_backdrop(
+        "help-backdrop",
+        div()
+            .debug_selector(|| "help-overlay".into())
+            .flex()
+            .flex_col()
+            .gap(space::MD)
+            .w(size::HELP)
+            .min_h_0()
+            .p(space::XL)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(space::SM)
+                    .child(
+                        gpui_omarchy::icon(gpui_omarchy::IconName::Keyboard)
                             .size(icon::MD)
                             .text_color(theme.accent),
-                        )
-                        .child(
-                            div()
-                                .text_size(text::TITLE)
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(theme.bright)
-                                .child("Keyboard and mouse"),
-                        ),
-                )
-                .child(keys)
-                .child(
-                    div()
-                        .text_size(text::CAPTION)
-                        .text_color(theme.secondary)
-                        .child(format!(
-                            "? or esc closes \u{00b7} {} \u{00b7} {}",
-                            app.root_path.display(),
-                            app.options.metric.label()
-                        )),
-                ),
-        )
+                    )
+                    .child(
+                        div()
+                            .text_size(text::TITLE)
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.bright)
+                            .child("Keyboard and mouse"),
+                    ),
+            )
+            .child(keys)
+            .child(overlay_footer(note, |this| this.show_help = false, cx)),
+        |this| this.show_help = false,
+        cx,
+    )
 }
 
 /// Both ends are scan-derived; the meter uses the lower bound only.
@@ -4565,11 +4657,18 @@ fn agent_line(
 
 /// How to connect an agent, and what it may do once it is: look, mark,
 /// and open the review screen. Removing stays with the person.
-fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Div {
+fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     let theme = cx.omarchy().clone();
     let exe = std::env::current_exe()
         .unwrap_or_else(|_| std::path::PathBuf::from("pwrdisk"));
-    let mut body = div().flex().flex_col().gap(space::MD);
+    // Scrolls inside the card when the window is too short for it.
+    let mut body = div()
+        .id("agent-body")
+        .flex()
+        .flex_col()
+        .gap(space::MD)
+        .min_h_0()
+        .overflow_y_scroll();
     body = body.child(
         div()
             .text_size(text::BODY)
@@ -4678,40 +4777,36 @@ fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Div {
                  and marks on its own."
             .to_string(),
     };
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme.background.opacity(0.86))
-        .child(
-            div()
-                .id("agent-overlay")
-                .debug_selector(|| "agent-overlay".into())
-                .flex()
-                .flex_col()
-                .gap(space::LG)
-                .w(size::HELP)
-                .p(space::XL)
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface)
-                .child(
-                    div()
-                        .text_size(text::TITLE)
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(theme.bright)
-                        .child("Work with an AI agent"),
-                )
-                .child(body)
-                .child(
-                    div()
-                        .text_size(text::CAPTION)
-                        .text_color(theme.secondary)
-                        .child(format!("{status} \u{00b7} esc closes")),
-                ),
-        )
+    overlay_backdrop(
+        "agent-backdrop",
+        div()
+            .id("agent-overlay")
+            .debug_selector(|| "agent-overlay".into())
+            .flex()
+            .flex_col()
+            .gap(space::LG)
+            .w(size::HELP)
+            .min_h_0()
+            .p(space::XL)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .child(
+                div()
+                    .text_size(text::TITLE)
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme.bright)
+                    .child("Work with an AI agent"),
+            )
+            .child(body)
+            .child(overlay_footer(
+                format!("{status} \u{00b7} esc closes"),
+                |this| this.show_agent = false,
+                cx,
+            )),
+        |this| this.show_agent = false,
+        cx,
+    )
 }
 
 #[cfg(test)]
