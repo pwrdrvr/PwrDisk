@@ -6977,6 +6977,11 @@ fn file_list_keeps_a_complete_entry_visible_at_double_scale(
     draw(cx);
     let viewport = read(&view, cx, |app| app.file_scroll.bounds());
     let row = cx.debug_bounds("file-row-0").expect("first file entry");
+    // 24 px type plus 32 px vertical padding at 200%, before a border.
+    assert!(
+        row.size.height >= px(56.),
+        "text must fit inside its row: {row:?}"
+    );
     assert!(
         viewport.size.height >= row.size.height,
         "{viewport:?}, row {row:?}"

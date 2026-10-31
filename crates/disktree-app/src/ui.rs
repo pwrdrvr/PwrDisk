@@ -71,6 +71,8 @@ pub mod size {
     /// Below this height budget, reserve a reading lane instead of repeating
     /// the color legend and long action captions in the semantic file list.
     pub const FILE_LIST_FULL_DETAILS: Rems = Rems(32.0);
+    /// One text line plus padding; still 24 logical pixels at 75% zoom.
+    pub const FILE_ENTRY: Rems = Rems(2.0);
     use super::Rems;
 
     /// A crumb's sibling menu.

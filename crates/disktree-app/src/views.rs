@@ -3755,6 +3755,7 @@ fn mark_row(
         .flex()
         .flex_row()
         .flex_wrap()
+        .flex_shrink_0()
         .items_center()
         .gap(space::MD)
         .px(space::MD)

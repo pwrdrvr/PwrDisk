@@ -232,7 +232,8 @@ pub fn list(
                 b.parent_node().set_size_of_set(count);
             })
             .debug_selector(move || format!("file-row-{position}"))
-            .min_h(crate::ui::size::POINTER_TARGET)
+            .flex_shrink_0()
+            .min_h(size::FILE_ENTRY)
             .p(space::SM)
             .border_b_1()
             .border_color(theme.divider())
