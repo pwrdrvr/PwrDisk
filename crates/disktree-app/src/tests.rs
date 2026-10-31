@@ -1269,6 +1269,99 @@ fn the_help_overlay_opens_and_closes(cx: &mut TestAppContext) {
     assert!(!read(&view, cx, |app| app.show_help));
 }
 
+#[gpui_kit::test]
+fn audit_help_contains_navigation_and_restores_keyboard_operation(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    press(cx, "tab");
+    let selected = read(&view, cx, |app| app.selected.clone());
+    let root = read(&view, cx, |app| app.crumbs.clone());
+    press(cx, "?");
+    for key in ["tab", "shift-tab", "right", "enter", "space", "c"] {
+        press(cx, key);
+    }
+    read(&view, cx, |app| {
+        assert!(app.show_help);
+        assert_eq!(app.selected, selected);
+        assert_eq!(app.crumbs, root);
+        assert!(app.marks.is_empty());
+        assert_eq!(app.screen, Screen::Explore);
+    });
+    press(cx, "escape");
+    let focus = read(&view, cx, |app| app.focus.clone());
+    assert!(cx.update(|window, _| focus.is_focused(window)));
+    press(cx, "space");
+    assert_eq!(read(&view, cx, |app| app.marks.len()), 1);
+}
+
+#[gpui_kit::test]
+fn audit_source_picker_contains_shortcuts_and_restores_focus(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let root = read(&view, cx, |app| app.root_path.clone());
+    let epoch = read(&view, cx, |app| app.scan_epoch);
+    press(cx, "v");
+    for key in ["space", "c", "/", "r", "tab", "shift-tab"] {
+        press(cx, key);
+    }
+    read(&view, cx, |app| {
+        assert!(app.volumes_open);
+        assert_eq!(app.screen, Screen::Explore);
+        assert_eq!(app.root_path, root);
+        assert_eq!(app.scan_epoch, epoch);
+        assert!(app.marks.is_empty());
+        assert!(!app.find_open);
+    });
+    press(cx, "escape");
+    let focus = read(&view, cx, |app| app.focus.clone());
+    assert!(cx.update(|window, _| focus.is_focused(window)));
+    press(cx, "tab");
+    assert!(read(&view, cx, |app| app.selected.is_some()));
+}
+
+#[gpui_kit::test]
+fn audit_confirmation_contains_shortcuts_and_cancel_restores_review(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.removal_mode = RemovalMode::Permanent;
+        let junk = app.tree().unwrap().find("junk").unwrap().0;
+        app.select(Some(junk.clone()), cx);
+        app.toggle_mark(&junk, cx);
+    });
+    press(cx, "c");
+    // Only the harness opens this dialog; no confirmation action is sent.
+    press(cx, "enter");
+    for key in ["c", "r", "p", "m", "!", "tab", "shift-tab"] {
+        press(cx, key);
+    }
+    read(&view, cx, |app| {
+        assert!(app.confirm_open);
+        assert_eq!(app.screen, Screen::Review);
+        assert_eq!(app.removal_mode, RemovalMode::Permanent);
+        assert_eq!(app.marks.len(), 1);
+        assert!(app.run.is_none());
+    });
+    let dialog = read(&view, cx, |app| app.confirm_focus.clone());
+    assert!(cx.update(|window, cx| dialog.contains_focused(window, cx)));
+    press(cx, "escape");
+    let focus = read(&view, cx, |app| app.focus.clone());
+    assert!(cx.update(|window, _| focus.is_focused(window)));
+    assert!(!read(&view, cx, |app| app.confirm_open));
+    assert!(temp.path().join("junk/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
 /// Settings › Updates draws, keeps the panel's keys and saves the channel
 /// picked. A test binary is no Velopack install, so it offers no restart;
 /// nothing reaches the network.
@@ -3020,6 +3113,11 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
     read(&view, cx, |app| {
         assert_eq!(app.plan().bytes(), 8 * 1024 * 1024);
         assert_eq!(app.plan().reclaimable_bytes(), 0);
+        let state = app.agent_state();
+        let estimate = state.estimate.expect("linked estimate");
+        assert_eq!(estimate.paths, vec![root.join("copies")]);
+        assert_eq!((estimate.lower, estimate.upper), (0, Some(0)));
+        assert_eq!(estimate.on_volume, 0);
     });
     // Remote selections are exports: local clone metadata and mount
     // attribution cannot authorize or project a remote saving.
@@ -3058,6 +3156,9 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         assert_eq!(plan.bytes(), 16 * 1024 * 1024);
         assert_eq!(plan.reclaimable_bytes(), 8 * 1024 * 1024);
         assert_eq!(plan.possible_bytes(), 8 * 1024 * 1024);
+        let estimate = app.agent_state().estimate.expect("linked union");
+        assert_eq!(estimate.lower, 8 * 1024 * 1024);
+        assert_eq!(estimate.upper, Some(estimate.lower));
     });
     draw(cx);
     crate::marks::work::reset();
@@ -4069,6 +4170,22 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         response
     };
 
+    let refused = ask(
+        cx,
+        Request::Hello {
+            client: "Old MCP fixture".into(),
+            version: disktree_link::VERSION - 1,
+        },
+    );
+    let Response::Error { message } = refused else {
+        panic!("incompatible Hello must be refused");
+    };
+    assert!(message.contains("Incompatible PwrDisk link protocols"));
+    assert!(message.contains("restart/reconnect"));
+    assert!(message.contains("updated installation"));
+    assert!(
+        message.contains(concat!("PwrDisk GUI ", env!("CARGO_PKG_VERSION")))
+    );
     let hello = ask(
         cx,
         Request::Hello {
@@ -4273,6 +4390,10 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     else {
         panic!("preview");
     };
+    assert_eq!(preview.estimate.paths, preview.paths);
+    assert_eq!(preview.estimate.lower, 0, "apparent fixture sizes");
+    assert_eq!(preview.estimate.upper, None);
+    assert!(preview.estimate.partial);
     let confirmed = |preview: &disktree_link::RemovalPreview| {
         disktree_link::ConfirmedRemoval {
             preview_id: preview.preview_id.clone(),

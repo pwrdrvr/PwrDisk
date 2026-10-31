@@ -18,13 +18,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use disktree_core::query;
-use disktree_core::removal::{RemovalMode, Target};
+use disktree_core::removal::{Plan, RemovalMode, Target};
 use disktree_core::space::space_info;
 use disktree_core::tree::{Node, path_of};
 use disktree_link::{
     FindRequest, FoundList, Incoming, Insight, Listener, Listing, Mark,
     MarkRequest, Refused, Removal, Request, Response, ScanOptionsRequest,
-    Space, State, TreeSummary, VERSION,
+    SelectionEstimate, Space, State, TreeSummary, VERSION,
 };
 use gpui_kit::Context;
 use gpui_omarchy::Status;
@@ -227,8 +227,9 @@ impl Disktree {
             Request::Hello { client, version } => {
                 if *version != VERSION {
                     return Response::error(format!(
-                        "this window speaks link version {VERSION}, the \
-                         agent version {version}; restart the older one"
+                        "PwrDisk GUI {}: {}",
+                        env!("CARGO_PKG_VERSION"),
+                        disktree_link::protocol_mismatch(VERSION, *version),
                     ));
                 }
                 if let Some(agent) = &mut self.agent {
@@ -589,6 +590,7 @@ impl Disktree {
     pub fn agent_state(&self) -> State {
         State {
             version: VERSION,
+            app_version: env!("CARGO_PKG_VERSION").into(),
             root: self.root_path.clone(),
             current: self.current_path(),
             screen: screen_name(self.screen).to_string(),
@@ -604,6 +606,10 @@ impl Disktree {
                     is_dir: target.is_dir,
                 })
                 .collect(),
+            estimate: (self.tree.is_some()
+                && self.scan.is_none()
+                && self.remote.is_none())
+            .then(|| self.agent_selection_estimate(&self.plan())),
             space: self.space.map(|space| Space {
                 total: space.total,
                 free: space.free,
@@ -645,6 +651,23 @@ impl Disktree {
                 .unwrap_or_default(),
             remote: self.remote.clone(),
         }
+    }
+
+    pub(crate) fn agent_selection_estimate(
+        &self,
+        plan: &Plan,
+    ) -> SelectionEstimate {
+        // Apparent lengths cannot project physical savings, and disabling
+        // APFS metadata cannot establish that all listed blocks are private.
+        if self.options.apparent_size
+            || (cfg!(target_os = "macos") && !self.options.apfs_clone_metadata)
+        {
+            return SelectionEstimate::unknown(plan);
+        }
+        let mut estimate = SelectionEstimate::of(plan);
+        estimate.partial |=
+            self.progress.errors > 0 || self.options.max_depth.is_some();
+        estimate
     }
 
     /// Copy a connect command, and say so.

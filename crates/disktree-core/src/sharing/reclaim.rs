@@ -56,6 +56,7 @@ pub(super) struct Accumulator {
     groups: FxHashMap<(u64, u64), Group>,
     links: FxHashMap<(u64, u64), Links>,
     limit: usize,
+    incomplete: bool,
 }
 
 impl Accumulator {
@@ -78,7 +79,7 @@ impl Accumulator {
                 self.credit.lower
             }),
             upper: self.base.upper.saturating_add(self.credit.upper),
-            partial: self.base.partial,
+            partial: self.base.partial || self.incomplete,
         }
     }
 
@@ -114,6 +115,9 @@ impl Accumulator {
 
     fn file(&mut self, allocation: &Allocation, add: bool) {
         let info = allocation.clone;
+        // Missing clone facts may widen the bounds but cannot prove group
+        // completeness. Keep that limitation when crossing the window link.
+        self.incomplete |= info.is_some_and(CloneInfo::incomplete);
         let private = info.map_or(allocation.bytes, |info| {
             info.private_bytes.unwrap_or(0).min(allocation.bytes)
         });
@@ -183,6 +187,7 @@ impl Accumulator {
         self.base.lower = self.base.lower.saturating_add(other.base.lower);
         self.base.upper = self.base.upper.saturating_add(other.base.upper);
         self.base.partial |= other.base.partial;
+        self.incomplete |= other.incomplete;
         for (key, group) in other.groups {
             work();
             if !self.groups.contains_key(&key)
@@ -345,6 +350,68 @@ mod tests {
     }
 
     #[test]
+    fn ten_worktrees_with_external_clones_free_only_their_private_files() {
+        const MIB: u64 = 1024 * 1024;
+        const LISTED: u64 = 10 * 1024 * MIB;
+        let mut root = Node::directory("root");
+        for inode in 1..=11 {
+            let mut dir = Node::directory(format!("worktree-{inode}"));
+            let mut shared = file(
+                "shared",
+                inode,
+                1,
+                Some(CloneInfo {
+                    references: 11,
+                    data_bytes: LISTED - 50 * MIB,
+                    ..clone_info()
+                }),
+            );
+            shared.bytes = LISTED - 50 * MIB;
+            shared.allocation.as_mut().expect("allocation").bytes =
+                shared.bytes;
+            dir.children.push(shared);
+            if inode <= 10 {
+                dir.children.push(Node::entry(
+                    "private",
+                    NodeKind::File,
+                    50 * MIB,
+                ));
+            }
+            root.children.push(dir);
+        }
+        aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
+        let selected = &root.children[..10];
+        assert_eq!(
+            selected.iter().map(|n| n.bytes).sum::<u64>(),
+            100 * 1024 * MIB
+        );
+        assert_eq!(
+            estimate(selected),
+            Estimate {
+                lower: 500 * MIB,
+                upper: 500 * MIB,
+                partial: false,
+            }
+        );
+        // Including the surviving member completes the union exactly once.
+        assert_eq!(estimate(&root.children).lower, LISTED + 450 * MIB);
+        assert_eq!(estimate(&root.children).upper, LISTED + 450 * MIB);
+    }
+
+    #[test]
+    fn clone_reference_counts_use_the_largest_observation_and_volume() {
+        let a = file("a", 1, 1, Some(clone_info()));
+        let mut info = clone_info();
+        info.references = 3;
+        let b = file("b", 2, 1, Some(info));
+        assert_eq!(estimate([&a, &b]).lower, 0);
+        info.device = 2;
+        info.references = 2;
+        let c = file("c", 3, 1, Some(info));
+        assert_eq!(estimate([&a, &c]).lower, 0);
+    }
+
+    #[test]
     fn selected_aliases_free_nothing_until_the_last_real_name_is_selected() {
         let mut root = Node::directory("root");
         for name in ["a", "b"] {
@@ -395,6 +462,7 @@ mod tests {
             let estimate = estimate([&a, &b]);
             assert_eq!(estimate.lower, 0, "{missing}");
             assert_eq!(estimate.upper, 8192, "{missing}");
+            assert!(estimate.partial, "{missing}");
         }
     }
 

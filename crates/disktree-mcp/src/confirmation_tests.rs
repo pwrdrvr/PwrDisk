@@ -39,11 +39,13 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
         let window = std::thread::spawn(move || {
             let state = State {
                 version: VERSION,
+                app_version: "0.13.0".into(),
                 root: root.clone(),
                 current: root.clone(),
                 screen: "explore".into(),
                 scanning: false,
                 scanned: true,
+                estimate: None,
                 marks: vec![Mark {
                     path: candidate.clone(),
                     bytes: 7,
@@ -69,6 +71,14 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
                                     mode,
                                     paths: vec![candidate.clone()],
                                     bytes: 7,
+                                    estimate:
+                                        disktree_link::SelectionEstimate {
+                                            paths: vec![candidate.clone()],
+                                            lower: 0,
+                                            upper: None,
+                                            on_volume: 0,
+                                            partial: true,
+                                        },
                                     limit_percent: 5,
                                     volumes: vec![],
                                     expires_in_seconds: 300,

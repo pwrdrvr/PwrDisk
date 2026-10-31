@@ -17,8 +17,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use disktree_core::classify::Category;
 use disktree_core::insights::{Candidate, worth_a_look};
 use disktree_core::query::{self, Kind};
-use disktree_core::removal::{Target, detect_trash_backend, normalize, plan};
+use disktree_core::removal::{
+    Plan, Target, detect_trash_backend, normalize, plan,
+};
 use disktree_core::scan::{ScanHandle, ScanOptions};
+use disktree_core::sharing::{self, Estimate};
 use disktree_core::size::{human_bytes, human_count, share};
 use disktree_core::space::{
     SpaceInfo, device_for, space_info, volume_root_for, volumes,
@@ -27,7 +30,7 @@ use disktree_core::tree::{Node, path_of};
 use disktree_link::{
     ConfirmedRemoval, FindRequest, FoundList, Insight, Link, Listing,
     MarkRequest, RemovalChoice, RemovalPreview, Request, Response,
-    ScanOptionsRequest, Space, State, TreeSummary, VERSION,
+    ScanOptionsRequest, SelectionEstimate, Space, State, TreeSummary, VERSION,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -996,11 +999,16 @@ impl Session {
                 )),
             },
             // A version mismatch, said in the window's words.
-            Ok(Response::Error { message }) => Some(message),
+            Ok(Response::Error { message }) => {
+                Some(if message.contains(disktree_link::RECONNECT_MCP) {
+                    message
+                } else {
+                    format!("{message} {}", disktree_link::RECONNECT_MCP)
+                })
+            }
             Ok(other) => Some(unexpected(&other)),
-            Err(_) => {
-                self.unlinked = None;
-                None
+            Err(reason) => {
+                Some(format!("{reason}. {}", disktree_link::RECONNECT_MCP))
             }
         };
         let request_refused =
@@ -1107,6 +1115,19 @@ impl Session {
                 if let Response::State(state) | Response::Marked { state, .. } =
                     &response
                 {
+                    // Validate both ends, even if a stale peer accepted Hello.
+                    // Never adopt its marks or interpret missing savings as
+                    // measured allocation before establishing compatibility.
+                    if state.version != VERSION {
+                        let reason = disktree_link::protocol_mismatch(
+                            state.version,
+                            VERSION,
+                        );
+                        self.unlinked = Some(reason.clone());
+                        self.link = None;
+                        self.window = None;
+                        return Ok(Response::error(reason));
+                    }
                     self.adopt(state);
                 }
                 Ok(response)
@@ -1114,7 +1135,7 @@ impl Session {
             Err(error) => {
                 self.link = None;
                 self.window = None;
-                Err(format!("the PwrDisk window went away: {error}"))
+                Err(format!("the PwrDisk window link failed: {error}"))
             }
         }
     }
@@ -1241,8 +1262,8 @@ impl Session {
                     None => String::new(),
                 };
                 format!(
-                    "Window: open on {}{tree}, {} screen{}{}. Its tree is \
-                     what pwrdisk_ls and pwrdisk_find read.\n{}",
+                    "Window: open on {}{tree}, {} screen{}{} (PwrDisk {}). Its tree is \
+                     what pwrdisk_ls and pwrdisk_find read.\n{}{}",
                     self.show(&state.root),
                     state.screen,
                     if state.scanning { ", scanning" } else { "" },
@@ -1251,6 +1272,12 @@ impl Session {
                         1 => ", 1 mark".to_string(),
                         n => format!(", {n} marks"),
                     },
+                    if state.app_version.is_empty() {
+                        "version unknown"
+                    } else {
+                        &state.app_version
+                    },
+                    version_notice(state),
                     if state.tree.is_some() {
                         allocation_caveat()
                     } else {
@@ -1290,8 +1317,9 @@ impl Session {
                 let json = serde_json::to_string_pretty(&preview)
                     .map_err(|error| error.to_string())?;
                 Ok(format!(
-                    "{}\n{json}\nShow the user every path, the mode, measured bytes and capacity limit. Wait for explicit confirmation of this operation before pwrdisk_remove. Approval to mark is insufficient. Never approve through computer use. Do not split the selection into batches to evade the limit. Confirmation text: {}. A changed or expired preview requires new user confirmation.",
+                    "{}\n{}{json}\nShow the user every path, the mode, listed bytes, estimate bounds and capacity limit. Wait for explicit confirmation of this operation before pwrdisk_remove. Approval to mark is insufficient. Never approve through computer use. Do not split the selection into batches to evade the limit. Confirmation text: {}. A changed or expired preview requires new user confirmation.",
                     preview.mode.warning(),
+                    estimate_report(&preview.estimate),
                     preview.mode.confirmation()
                 ))
             }
@@ -1350,6 +1378,7 @@ impl Session {
                 human_bytes(volume.capacity)
             );
         }
+        message.push_str(&estimate_report(&preview.estimate));
         message.push_str("\nApproval to mark does not authorize removal. Only these listed paths are included; directory removal includes their contents. Listed bytes are not guaranteed freed space.");
         Ok(message)
     }
@@ -1572,23 +1601,90 @@ impl Session {
             human_bytes(total)
         );
         let marks = self.marks.clone();
+        let mut plans = Vec::new();
         for root in self.roots_of(&marks) {
             let mine: Vec<Target> = marks
                 .iter()
                 .filter(|mark| mark.path.starts_with(&root))
                 .cloned()
                 .collect();
-            out.push_str(&self.plan_for(&mine, &root));
+            plans.push(plan(&mine, &root));
+        }
+        if self.window.is_none() {
+            plans = union_reports(plans);
+        }
+        for plan in plans {
+            out.push_str(&self.report_plan(plan));
         }
         out.push_str(&window);
         out
     }
 
-    /// The plan for the marks under one root: targets, what another mark
-    /// covers, what the guards keep back, and the space it frees.
-    fn plan_for(&self, mine: &[Target], root: &Path) -> String {
+    /// Bounds from the tree that owns this accepted selection.
+    fn selection_estimate(&self, plan: &mut Plan) -> SelectionEstimate {
+        if let Some(window) = &self.window {
+            // Only the window owns the linked tree. Never substitute an old
+            // local scan or add per-mark estimates across clone groups.
+            return window
+                .estimate
+                .as_ref()
+                .filter(|estimate| {
+                    window.root == plan.root
+                        && !window.scanning
+                        && window.scanned
+                        && estimate.paths
+                            == plan
+                                .targets
+                                .iter()
+                                .map(|t| t.path.clone())
+                                .collect::<Vec<_>>()
+                })
+                .cloned()
+                .unwrap_or_else(|| SelectionEstimate::unknown(plan));
+        }
+        let mut unmeasured = false;
+        plan.estimate_selection(|targets| {
+            let mut nodes = Vec::with_capacity(targets.len());
+            let mut unknown = Estimate::default();
+            for target in targets {
+                if let Ok(found) = self.locate(&target.path) {
+                    if found.scan.options.apparent_size
+                        || (cfg!(target_os = "macos")
+                            && !found.scan.options.apfs_clone_metadata)
+                    {
+                        unmeasured = true;
+                        unknown.upper =
+                            unknown.upper.saturating_add(target.bytes);
+                        unknown.partial = true;
+                    } else {
+                        nodes.push(found.node);
+                        unknown.partial |= found.scan.unreadable > 0
+                            || found.scan.options.max_depth.is_some();
+                    }
+                } else {
+                    unknown.upper = unknown.upper.saturating_add(target.bytes);
+                    unknown.partial = true;
+                }
+            }
+            let measured = sharing::estimate(nodes);
+            Estimate {
+                lower: measured.lower,
+                upper: measured.upper.saturating_add(unknown.upper),
+                partial: measured.partial || unknown.partial,
+            }
+        });
+        let mut estimate = SelectionEstimate::of(plan);
+        if unmeasured {
+            estimate.upper = None;
+        }
+        estimate
+    }
+
+    /// Accepted targets, covered marks, guard refusals and savings bounds.
+    fn report_plan(&self, mut plan: Plan) -> String {
         let mut out = String::new();
-        let plan = plan(mine, root);
+        let root = plan.root.clone();
+        let estimate = self.selection_estimate(&mut plan);
         for target in &plan.targets {
             let _ = writeln!(
                 out,
@@ -1621,14 +1717,15 @@ impl Session {
                 );
             }
         }
-        match space_info(root).ok() {
+        out.push_str(&estimate_report(&estimate));
+        match space_info(&root).ok() {
             Some(space) => {
-                let after = space.after_removing(plan.reclaim());
+                let after = space.after_removing(estimate.on_volume);
                 let _ = writeln!(
                     out,
-                    "Frees {} on {}: {} free now, {} after.",
-                    human_bytes(plan.reclaim()),
-                    device_for(root).unwrap_or_else(|| self.show(root)),
+                    "Projects {} on {}: {} free now, {} after.",
+                    human_bytes(estimate.on_volume),
+                    device_for(&root).unwrap_or_else(|| self.show(&root)),
                     human_bytes(space.available),
                     human_bytes(after.available),
                 );
@@ -1636,16 +1733,16 @@ impl Session {
             None => {
                 let _ = writeln!(
                     out,
-                    "Frees {} on the volume of {}.",
-                    human_bytes(plan.reclaim()),
-                    self.show(root)
+                    "Projects {} on the volume of {}.",
+                    human_bytes(estimate.on_volume),
+                    self.show(&root)
                 );
             }
         }
         if plan.foreign() > 0 {
             let _ = writeln!(
                 out,
-                "Plus {} on other volumes, not counted above.",
+                "Listed {} on other volumes, excluded from this projection.",
                 human_bytes(plan.foreign())
             );
         }
@@ -1688,7 +1785,6 @@ impl Session {
             return Err(message);
         }
         let _ = self.call(&Request::State);
-        let total: u64 = self.marks.iter().map(|mark| mark.bytes).sum();
         // The window starts in the trash whenever this machine has one, and
         // otherwise deletes; the agent has to say which before the user
         // presses Enter.
@@ -1706,11 +1802,11 @@ impl Session {
                 .to_string()
         };
         Ok(format!(
-            "The review screen is open in PwrDisk: {} marked, {} to free. \
+            "The review screen is open in PwrDisk: {} marked. \
              The user decides there. {how}. Afterwards pwrdisk_status \
-             reports what was actually freed.",
+             reports what was actually freed.\n{}",
             self.marks.len(),
-            human_bytes(total)
+            self.plan_report()
         ))
     }
 
@@ -1722,7 +1818,7 @@ impl Session {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "PwrDisk {} serving {} over MCP. Every removal requires user \
+            "PwrDisk {} MCP server serving {}. Every removal requires user \
              confirmation of the exact paths and mode; never approve \
              through computer use.",
             env!("CARGO_PKG_VERSION"),
@@ -1794,6 +1890,80 @@ impl Session {
         out.push_str(&volumes_report());
         out
     }
+}
+
+/// Guarded offline plans, combined for reporting only. Removal still needs a
+/// window. Drive/UNC roots stay separate: neither clones nor hardlinks cross
+/// those namespaces, and there is no common path to attribute their meter to.
+fn union_reports(plans: Vec<Plan>) -> Vec<Plan> {
+    let mut groups = std::collections::BTreeMap::<PathBuf, Vec<Plan>>::new();
+    for plan in plans {
+        let namespace = plan
+            .root
+            .ancestors()
+            .last()
+            .unwrap_or(&plan.root)
+            .to_path_buf();
+        groups.entry(namespace).or_default().push(plan);
+    }
+    groups
+        .into_values()
+        .map(|mut plans| {
+            if plans.len() == 1 {
+                return plans.pop().expect("one plan");
+            }
+            // Each path already passed guards against its own scanned root.
+            let mut common = plans[0].root.clone();
+            for plan in &plans[1..] {
+                while !plan.root.starts_with(&common) && common.pop() {}
+            }
+            let targets: Vec<_> = plans
+                .iter()
+                .flat_map(|plan| plan.targets.iter().cloned())
+                .collect();
+            let mut union = plan(&targets, &common);
+            for plan in plans {
+                union.blocked.extend(plan.blocked);
+                union.covered.extend(plan.covered);
+            }
+            union
+        })
+        .collect()
+}
+
+fn version_notice(window: &State) -> String {
+    if window.app_version.is_empty() {
+        format!(
+            "GUI application version unavailable. {}\n",
+            disktree_link::RECONNECT_MCP
+        )
+    } else if window.app_version != env!("CARGO_PKG_VERSION") {
+        format!(
+            "Release mismatch: MCP server {}; GUI {}. Link protocol {} is compatible, so the connection remains usable. {}\n",
+            env!("CARGO_PKG_VERSION"),
+            window.app_version,
+            VERSION,
+            disktree_link::RECONNECT_MCP,
+        )
+    } else {
+        String::new()
+    }
+}
+
+fn estimate_report(estimate: &SelectionEstimate) -> String {
+    format!(
+        "Selected-set reclaim estimate: {}–{}{}. Before snapshots, open files \
+         and changes since the scan; actual freed space can be lower.\n",
+        human_bytes(estimate.lower),
+        estimate
+            .upper
+            .map_or_else(|| "unknown upper bound".into(), human_bytes),
+        if estimate.partial {
+            " (incomplete scan or metadata)"
+        } else {
+            ""
+        },
+    )
 }
 
 /// Every volume a person would call a disk, fullest first.
@@ -1929,7 +2099,7 @@ fn is_hidden(path: &Path) -> bool {
 /// An answer of a shape the request does not take: an old window.
 fn unexpected(response: &Response) -> String {
     format!(
-        "the window answered with something unexpected ({}); restart it",
+        "the window answered with something unexpected ({}). {}",
         match response {
             Response::State(_) => "state",
             Response::Marked { .. } => "marked",
@@ -1938,7 +2108,8 @@ fn unexpected(response: &Response) -> String {
             Response::RemovalPreview(_) => "removal_preview",
             Response::Ok => "ok",
             Response::Error { .. } => "error",
-        }
+        },
+        disktree_link::RECONNECT_MCP,
     )
 }
 
@@ -2045,6 +2216,142 @@ mod tests {
 
     fn unlinked(dir: &Path) -> Session {
         Session::detached(endpoint(dir), None)
+    }
+
+    fn worktrees(root: &Path) -> Scan {
+        use disktree_core::sharing::{Allocation, CloneInfo};
+        use disktree_core::tree::{Metric, NodeKind, aggregate};
+        const MIB: u64 = 1024 * 1024;
+        let mut tree = Node::directory("fixture");
+        for index in 0..11 {
+            let name = format!("worktree-{index:02}");
+            std::fs::create_dir(root.join(&name)).expect("fixture directory");
+            let mut dir = Node::directory(name);
+            let bytes = 10 * 1024 * MIB - 50 * MIB;
+            let mut clone = Node::entry("shared", NodeKind::File, bytes);
+            clone.allocation = Some(Box::new(Allocation {
+                bytes,
+                identity: None,
+                links: 1,
+                followed: false,
+                clone: Some(CloneInfo {
+                    device: 1,
+                    id: 42,
+                    references: 11,
+                    private_bytes: Some(0),
+                    data_bytes: bytes,
+                }),
+            }));
+            dir.children.push(clone);
+            dir.children
+                .push(Node::entry("private", NodeKind::File, 50 * MIB));
+            tree.children.push(dir);
+        }
+        aggregate(&mut tree, Metric::Bytes);
+        Scan {
+            root: root.into(),
+            tree: Arc::new(tree),
+            options: ScanOptions::default(),
+            at: now(),
+            elapsed: Duration::ZERO,
+            unreadable: 0,
+            space: None,
+            device: None,
+            insights: vec![],
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn offline_reports_keep_distinct_windows_drives_separate() {
+        let mut first = Plan::default();
+        first.root = r"C:\fixture".into();
+        let mut second = Plan::default();
+        second.root = r"D:\fixture".into();
+        let reports = union_reports(vec![first, second]);
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0].root, Path::new(r"C:\fixture"));
+        assert_eq!(reports[1].root, Path::new(r"D:\fixture"));
+    }
+
+    #[test]
+    fn standalone_union_completes_groups_across_separate_scan_roots() {
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let scan = worktrees(&root);
+        let mut session = unlinked(&root);
+        let mut paths = Vec::new();
+        for node in &scan.tree.children {
+            let root = root.join(node.name.as_ref());
+            std::fs::write(root.join("shared"), b"synthetic allocation")
+                .expect("fixture volume identity");
+            paths.push(root.join("shared"));
+            session.store_scan(Scan {
+                root,
+                tree: Arc::new(node.clone()),
+                options: ScanOptions::default(),
+                at: now(),
+                elapsed: Duration::ZERO,
+                unreadable: 0,
+                space: None,
+                device: None,
+                insights: vec![],
+            });
+        }
+        let report = session
+            .mark(&PathsParams { paths })
+            .expect("mark across scans");
+        let bytes = 10 * 1024 * 1024 * 1024 - 50 * 1024 * 1024;
+        let range = format!("{}–{}", human_bytes(bytes), human_bytes(bytes));
+        assert!(report.contains(&range), "{report}");
+        assert_eq!(report.matches("Selected-set reclaim estimate:").count(), 1);
+        assert!(
+            report.contains(&format!("Projects {}", human_bytes(bytes))),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn standalone_plan_projects_the_selected_union_and_reports_unknown_marks() {
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let scan = worktrees(&root);
+        let paths: Vec<_> = scan.tree.children[..10]
+            .iter()
+            .map(|node| root.join(node.name.as_ref()))
+            .collect();
+        let mut session = unlinked(&root);
+        session.store_scan(scan);
+        let report = session.mark(&PathsParams { paths }).expect("mark");
+        assert!(report.contains("100 GiB"), "{report}");
+        assert!(report.contains("500 MiB–500 MiB"), "{report}");
+        assert!(report.contains("Projects 500 MiB"), "{report}");
+        assert!(!report.contains("Projects 100 GiB"), "{report}");
+        assert!(report.contains("snapshots"), "{report}");
+        let mut unknown = plan(
+            &[Target {
+                path: root.join("missing"),
+                bytes: 123,
+                is_dir: false,
+                hidden: false,
+            }],
+            &root,
+        );
+        let estimate = session.selection_estimate(&mut unknown);
+        assert_eq!(
+            (estimate.lower, estimate.upper, estimate.on_volume),
+            (0, Some(123), 0)
+        );
+        assert!(estimate.partial);
+        session.scans[0].options.apparent_size = true;
+        let mut unmeasured = plan(session.marks(), &root);
+        let estimate = session.selection_estimate(&mut unmeasured);
+        assert_eq!(estimate.lower, 0);
+        assert_eq!(estimate.on_volume, 0);
+        assert_eq!(estimate.upper, None);
+        assert!(estimate.partial);
     }
 
     #[test]
@@ -2201,7 +2508,7 @@ mod tests {
             .expect("mark");
         assert!(plan.starts_with("Marked 3"), "{plan}");
         assert!(plan.contains("Covered by another mark (1)"), "{plan}");
-        assert!(plan.contains("Frees"), "{plan}");
+        assert!(plan.contains("Selected-set reclaim estimate:"), "{plan}");
         assert!(
             plan.contains(if disktree_link::SUPPORTED {
                 "Window: none open, and none can be opened"
@@ -2240,6 +2547,7 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     struct FakeTree {
+        protocol: u32,
         root: PathBuf,
         tree: Arc<Node>,
         marks: Vec<Mark>,
@@ -2254,13 +2562,36 @@ mod tests {
     #[cfg(any(unix, windows))]
     impl FakeTree {
         fn state(&self, screen: &str) -> State {
+            let targets: Vec<_> = self
+                .marks
+                .iter()
+                .map(|mark| Target {
+                    path: mark.path.clone(),
+                    bytes: mark.bytes,
+                    is_dir: mark.is_dir,
+                    hidden: false,
+                })
+                .collect();
+            let mut plan = plan(&targets, &self.root);
+            plan.estimate_selection(|targets| {
+                sharing::estimate(targets.iter().filter_map(|target| {
+                    target
+                        .path
+                        .strip_prefix(&self.root)
+                        .ok()
+                        .and_then(|relative| self.tree.descend(relative))
+                        .map(|(_, node)| node)
+                }))
+            });
             State {
-                version: VERSION,
+                version: self.protocol,
+                app_version: "0.13.0".into(),
                 root: self.root.clone(),
                 current: self.root.clone(),
                 screen: screen.into(),
                 scanning: false,
                 scanned: true,
+                estimate: Some(SelectionEstimate::of(&plan)),
                 marks: self.marks.clone(),
                 space: None,
                 removal: Some(Removal {
@@ -2409,6 +2740,7 @@ mod tests {
             busy: bool,
         ) -> Self {
             let fake = FakeTree {
+                protocol: VERSION,
                 root: root.to_path_buf(),
                 tree: Arc::new(
                     disktree_core::scan::scan(root, apparent()).expect("scan"),
@@ -2475,6 +2807,156 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
+    fn linked_plan_uses_window_union_even_with_a_conflicting_local_scan() {
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let scan = worktrees(&root);
+        let socket_dir = tempfile::tempdir().expect("socket fixture");
+        let socket = endpoint(socket_dir.path());
+        let _window = FakeWindow::with_tree(
+            &socket,
+            FakeTree {
+                protocol: VERSION,
+                root: root.clone(),
+                tree: Arc::clone(&scan.tree),
+                marks: vec![],
+                remote: None,
+                busy: false,
+                options: ScanOptions::default(),
+                unreadable: 0,
+            },
+        );
+        let paths: Vec<_> = scan.tree.children[..10]
+            .iter()
+            .map(|node| root.join(node.name.as_ref()))
+            .collect();
+        let mut session = Session::detached(socket, None);
+        // The agent's old scan has no sharing facts; the window owns truth.
+        let mut stale = scan;
+        let mut tree = (*stale.tree).clone();
+        for dir in &mut tree.children {
+            dir.children[0].allocation = None;
+        }
+        disktree_core::tree::aggregate(
+            &mut tree,
+            disktree_core::tree::Metric::Bytes,
+        );
+        stale.tree = Arc::new(tree);
+        session.store_scan(stale);
+        let report = session.mark(&PathsParams { paths }).expect("linked mark");
+        assert!(report.contains("500 MiB–500 MiB"), "{report}");
+        assert!(report.contains("Projects 500 MiB"), "{report}");
+        let status = session.status();
+        assert!(status.contains("0.13.0"), "{status}");
+        assert!(status.contains("Release mismatch:"), "{status}");
+        assert!(status.contains("connection remains usable"), "{status}");
+        assert!(status.contains("restart/reconnect"), "{status}");
+        assert!(
+            status.contains(concat!(env!("CARGO_PKG_VERSION"), " MCP server")),
+            "{status}"
+        );
+        let review = session.review().expect("review");
+        assert!(review.contains("500 MiB–500 MiB"), "{review}");
+        assert!(!review.contains("100 GiB to free"), "{review}");
+
+        // Incomplete, missing or mismatched link state never falls back to
+        // the raw allocation or the agent's conflicting local scan.
+        for failure in ["scanning", "missing", "changed"] {
+            let window = session.window.as_mut().expect("window");
+            match failure {
+                "scanning" => window.scanning = true,
+                "missing" => {
+                    window.scanning = false;
+                    window.estimate = None;
+                }
+                _ => {
+                    window.estimate = Some(SelectionEstimate {
+                        paths: vec![],
+                        lower: u64::MAX,
+                        upper: Some(u64::MAX),
+                        on_volume: u64::MAX,
+                        partial: false,
+                    });
+                }
+            }
+            let mut plan = plan(session.marks(), &root);
+            let estimate = session.selection_estimate(&mut plan);
+            assert_eq!(estimate.on_volume, 0, "{failure}");
+            assert_eq!(estimate.lower, 0, "{failure}");
+            assert!(estimate.partial, "{failure}");
+        }
+        let mut wire =
+            serde_json::to_value(session.window.as_ref().expect("window"))
+                .expect("state JSON");
+        let fields = wire.as_object_mut().expect("object");
+        fields.remove("app_version");
+        fields.remove("estimate");
+        let mut state: State =
+            serde_json::from_value(wire).expect("optional metadata");
+        assert!(state.app_version.is_empty());
+        assert!(version_notice(&state).contains("version unavailable"));
+        state.app_version = env!("CARGO_PKG_VERSION").into();
+        assert!(version_notice(&state).is_empty());
+        session.window = Some(state);
+        let mut plan = plan(session.marks(), &root);
+        let estimate = session.selection_estimate(&mut plan);
+        assert_eq!(
+            (estimate.lower, estimate.upper, estimate.on_volume),
+            (0, None, 0)
+        );
+        assert!(estimate.partial);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn incompatible_state_is_refused_before_adopting_marks_or_handing_over() {
+        let temp = fixture();
+        let socket = endpoint(temp.path());
+        let window = FakeWindow::with_tree(
+            &socket,
+            FakeTree {
+                protocol: VERSION - 1,
+                root: temp.path().into(),
+                tree: Arc::new(
+                    disktree_core::scan::scan(temp.path(), apparent())
+                        .expect("scan"),
+                ),
+                marks: vec![],
+                remote: None,
+                busy: false,
+                options: apparent(),
+                unreadable: 0,
+            },
+        );
+        let mut session = Session::detached(socket, None);
+        let mark = Target {
+            path: temp.path().join("notes"),
+            bytes: 500,
+            is_dir: true,
+            hidden: false,
+        };
+        session.marks.push(mark.clone());
+        assert!(!session.try_connect());
+        assert!(session.link.is_none() && session.window.is_none());
+        assert_eq!(session.marks(), &[mark]);
+        let reason = session.unlinked.as_deref().expect("explicit refusal");
+        assert!(
+            reason.contains("Incompatible PwrDisk link protocols"),
+            "{reason}"
+        );
+        assert!(reason.contains("restart/reconnect"), "{reason}");
+        assert!(reason.contains("updated installation"), "{reason}");
+        assert!(
+            window
+                .asked()
+                .iter()
+                .all(|r| matches!(r, Request::Hello { .. }))
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
     fn status_reuses_window_measurement_context_without_scanning() {
         let temp = fixture();
         let tree = Arc::new(
@@ -2489,6 +2971,7 @@ mod tests {
             let window = FakeWindow::with_tree(
                 &socket,
                 FakeTree {
+                    protocol: VERSION,
                     root: temp.path().to_path_buf(),
                     tree: Arc::clone(&tree),
                     marks: Vec::new(),
@@ -2568,6 +3051,7 @@ mod tests {
                 FakeWindow::with_tree(
                     &socket,
                     FakeTree {
+                        protocol: VERSION,
                         root: PathBuf::from("/"),
                         tree: Arc::clone(&tree),
                         marks: Vec::new(),

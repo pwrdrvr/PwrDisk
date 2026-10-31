@@ -113,6 +113,7 @@ impl Disktree {
                     .map(|target| target.path.clone())
                     .collect(),
                 bytes: plan.bytes(),
+                estimate: self.agent_selection_estimate(&plan),
                 limit_percent: limit.percent(),
                 volumes,
                 expires_in_seconds: LIFETIME.as_secs(),
@@ -190,6 +191,9 @@ mod tests {
                 mode: RemovalChoice::Permanent,
                 paths: vec!["/fixture/junk".into()],
                 bytes: 123,
+                estimate: disktree_link::SelectionEstimate::unknown(
+                    &disktree_core::removal::Plan::default(),
+                ),
                 limit_percent: 5,
                 volumes: vec![],
                 expires_in_seconds: LIFETIME.as_secs(),
