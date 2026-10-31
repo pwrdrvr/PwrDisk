@@ -1575,13 +1575,20 @@ impl Session {
             human_bytes(total)
         );
         let marks = self.marks.clone();
+        let mut plans = Vec::new();
         for root in self.roots_of(&marks) {
             let mine: Vec<Target> = marks
                 .iter()
                 .filter(|mark| mark.path.starts_with(&root))
                 .cloned()
                 .collect();
-            out.push_str(&self.plan_for(&mine, &root));
+            plans.push(plan(&mine, &root));
+        }
+        if self.window.is_none() {
+            plans = union_reports(plans);
+        }
+        for plan in plans {
+            out.push_str(&self.report_plan(plan));
         }
         out.push_str(&window);
         out
@@ -1648,9 +1655,9 @@ impl Session {
     }
 
     /// Accepted targets, covered marks, guard refusals and savings bounds.
-    fn plan_for(&self, mine: &[Target], root: &Path) -> String {
+    fn report_plan(&self, mut plan: Plan) -> String {
         let mut out = String::new();
-        let mut plan = plan(mine, root);
+        let root = plan.root.clone();
         let estimate = self.selection_estimate(&mut plan);
         for target in &plan.targets {
             let _ = writeln!(
@@ -1685,14 +1692,14 @@ impl Session {
             }
         }
         out.push_str(&estimate_report(&estimate));
-        match space_info(root).ok() {
+        match space_info(&root).ok() {
             Some(space) => {
                 let after = space.after_removing(estimate.on_volume);
                 let _ = writeln!(
                     out,
                     "Projects {} on {}: {} free now, {} after.",
                     human_bytes(estimate.on_volume),
-                    device_for(root).unwrap_or_else(|| self.show(root)),
+                    device_for(&root).unwrap_or_else(|| self.show(&root)),
                     human_bytes(space.available),
                     human_bytes(after.available),
                 );
@@ -1702,7 +1709,7 @@ impl Session {
                     out,
                     "Projects {} on the volume of {}.",
                     human_bytes(estimate.on_volume),
-                    self.show(root)
+                    self.show(&root)
                 );
             }
         }
@@ -1857,6 +1864,45 @@ impl Session {
         out.push_str(&volumes_report());
         out
     }
+}
+
+/// Guarded offline plans, combined for reporting only. Removal still needs a
+/// window. Drive/UNC roots stay separate: neither clones nor hardlinks cross
+/// those namespaces, and there is no common path to attribute their meter to.
+fn union_reports(plans: Vec<Plan>) -> Vec<Plan> {
+    let mut groups = std::collections::BTreeMap::<PathBuf, Vec<Plan>>::new();
+    for plan in plans {
+        let namespace = plan
+            .root
+            .ancestors()
+            .last()
+            .unwrap_or(&plan.root)
+            .to_path_buf();
+        groups.entry(namespace).or_default().push(plan);
+    }
+    groups
+        .into_values()
+        .map(|mut plans| {
+            if plans.len() == 1 {
+                return plans.pop().expect("one plan");
+            }
+            // Each path already passed guards against its own scanned root.
+            let mut common = plans[0].root.clone();
+            for plan in &plans[1..] {
+                while !plan.root.starts_with(&common) && common.pop() {}
+            }
+            let targets: Vec<_> = plans
+                .iter()
+                .flat_map(|plan| plan.targets.iter().cloned())
+                .collect();
+            let mut union = plan(&targets, &common);
+            for plan in plans {
+                union.blocked.extend(plan.blocked);
+                union.covered.extend(plan.covered);
+            }
+            union
+        })
+        .collect()
 }
 
 fn estimate_report(estimate: &SelectionEstimate) -> String {
@@ -2167,6 +2213,57 @@ mod tests {
             device: None,
             insights: vec![],
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn offline_reports_keep_distinct_windows_drives_separate() {
+        let mut first = Plan::default();
+        first.root = r"C:\fixture".into();
+        let mut second = Plan::default();
+        second.root = r"D:\fixture".into();
+        let reports = union_reports(vec![first, second]);
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0].root, Path::new(r"C:\fixture"));
+        assert_eq!(reports[1].root, Path::new(r"D:\fixture"));
+    }
+
+    #[test]
+    fn standalone_union_completes_groups_across_separate_scan_roots() {
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let scan = worktrees(&root);
+        let mut session = unlinked(&root);
+        let mut paths = Vec::new();
+        for node in &scan.tree.children {
+            let root = root.join(node.name.as_ref());
+            std::fs::write(root.join("shared"), b"synthetic allocation")
+                .expect("fixture volume identity");
+            paths.push(root.join("shared"));
+            session.store_scan(Scan {
+                root,
+                tree: Arc::new(node.clone()),
+                options: ScanOptions::default(),
+                at: now(),
+                elapsed: Duration::ZERO,
+                unreadable: 0,
+                space: None,
+                device: None,
+                insights: vec![],
+            });
+        }
+        let report = session
+            .mark(&PathsParams { paths })
+            .expect("mark across scans");
+        let bytes = 10 * 1024 * 1024 * 1024 - 50 * 1024 * 1024;
+        let range = format!("{}–{}", human_bytes(bytes), human_bytes(bytes));
+        assert!(report.contains(&range), "{report}");
+        assert_eq!(report.matches("Selected-set reclaim estimate:").count(), 1);
+        assert!(
+            report.contains(&format!("Projects {}", human_bytes(bytes))),
+            "{report}"
+        );
     }
 
     #[test]
