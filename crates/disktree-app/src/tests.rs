@@ -4598,6 +4598,7 @@ fn desktop_mcp_reconnect_keeps_the_tree_and_marks(cx: &mut TestAppContext) {
         serde_json::from_str(&line).expect("JSON MCP answer")
     }
 
+    cx.update(init);
     let temp = fixture();
     let root = temp.path().to_path_buf();
     let (view, cx) = view_over(temp.path(), cx);

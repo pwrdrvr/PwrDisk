@@ -454,6 +454,27 @@ choose another socket path or local pipe name. On macOS, Linux and Windows,
 the agent's marks appear in the open window and `pwrdisk_review` opens its
 review screen.
 
+### MCP versions and reconnecting
+
+`pwrdisk_status` and MCP identity metadata name the interface owner. In a
+desktop connection, the desktop version is authoritative; the separate
+relay version describes transport. Unequal releases are allowed when the
+stream protocol is compatible. Standalone identifies its own server as
+owner and reports no connected desktop. A pre-relay MCP executable still
+owns its compiled interface: updating the app cannot retrofit forwarding
+into that process. Reconnect using `pwrdisk mcp` from the updated install.
+
+Definitions are fixed for a connection. After updating PwrDisk, finish
+active work, restart the desktop yourself, then restart/reconnect its MCP
+connection in the client. Rediscover tools, prompts and skills/resources;
+reread the skill text. Previously loaded instructions and resources can
+remain in the host's context. This release does not claim live definition
+updates or advertise list-change notifications. The relay carries future
+MCP notifications unchanged; the desktop and host must support the
+negotiated notification and discovery mechanisms. Restarting a connection
+requires a new removal preview and confirmation; never replay a removal.
+
+
 ## Updates
 
 A copy installed from the DMG, Setup.exe or the MSI checks the project's
@@ -654,23 +675,3 @@ class is `pwrdisk`.
 windowrule = float, class:^(pwrdisk)$
 windowrule = size 1400 900, class:^(pwrdisk)$
 ```
-
-### MCP versions and reconnecting
-
-`pwrdisk_status` and MCP identity metadata name the interface owner. In a
-desktop connection, the desktop version is authoritative; the separate
-relay version describes transport. Unequal releases are allowed when the
-stream protocol is compatible. Standalone identifies its own server as
-owner and reports no connected desktop. A pre-relay MCP executable still
-owns its compiled interface: updating the app cannot retrofit forwarding
-into that process. Reconnect using `pwrdisk mcp` from the updated install.
-
-Definitions are fixed for a connection. After updating PwrDisk, finish
-active work, restart the desktop yourself, then restart/reconnect its MCP
-connection in the client. Rediscover tools, prompts and skills/resources;
-reread the skill text. Previously loaded instructions and resources can
-remain in the host's context. This release does not claim live definition
-updates or advertise list-change notifications. The relay carries future
-MCP notifications unchanged; the desktop and host must support the
-negotiated notification and discovery mechanisms. Restarting a connection
-requires a new removal preview and confirmation; never replay a removal.
