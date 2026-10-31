@@ -1161,6 +1161,21 @@ portal /run/user/1000/doc fuse.portal rw 0 0
     }
 
     #[test]
+    fn mount_sources_decode_tabs_newlines_and_literal_escape_text_once() {
+        let source = "//nas/My Share\ttab\nline\\040";
+        let table = "//nas/My\\040Share\\011tab\\012line\\134040 /mnt/share cifs rw 0 0\n";
+        let mounts = parse_mounts(table);
+        assert_eq!(mounts[0].source, source);
+        assert_eq!(
+            device_in(table, Path::new("/mnt/share/child")).as_deref(),
+            Some(source)
+        );
+        assert_eq!(device_in(table, Path::new("/mnt/share-other")), None);
+        let info = "1 0 0:1 / /mnt/share rw - cifs //nas/My\\040Share\\011tab\\012line\\134040 rw\n";
+        assert_eq!(parse_mountinfo(info)[0].source, mounts[0].source);
+    }
+
+    #[test]
     fn volumes_with_least_space_come_first_and_unknowns_last() {
         let volume = |name: &str, available: Option<u64>| Volume {
             point: PathBuf::from(name),
