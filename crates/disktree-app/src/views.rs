@@ -40,8 +40,8 @@ use crate::treemap_view::{self, Mosaic};
 use crate::ui::{icon, size, space, text};
 use crate::widgets;
 
-/// How many marks the review screen lists. Everything above the cap is still
-/// removed; the list only stops being exhaustive, which it says out loud.
+/// Marks per review page: every mark stays reachable while bounding layout
+/// and semantic work independently of the full marked list.
 const LIST_LIMIT: usize = 1200;
 
 /// Row decoration borrows this render's freshly evaluated plan. It must
@@ -970,7 +970,7 @@ fn explore(
         }
     } else {
         if app.file_list {
-            crate::file_list::list(app, cx).into_any_element()
+            crate::file_list::list(app, window, cx).into_any_element()
         } else {
             treemap_view::mosaic(mosaic, app, window, cx).into_any_element()
         }
@@ -1014,7 +1014,7 @@ fn explore(
                         .flex_1()
                         .min_w_0()
                         .min_h_0()
-                        .child(trail_and_legend(app, &theme, cx))
+                        .when(!app.file_list || !crate::file_list::compact(window, app.rem), |view| view.child(trail_and_legend(app, &theme, cx)))
                         .child(button("file-view", if app.file_list { "Show treemap" } else { "Show accessible file list" }, ButtonVariant::Outline, cx)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.file_list = !this.file_list;

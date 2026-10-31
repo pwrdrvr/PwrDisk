@@ -4,9 +4,9 @@
 //! works offline on every platform, bundle or not.
 //!
 //! The changelog is drawn from its Markdown (headings, bullets, `code`,
-//! **bold**); the license and the notices are monospace text, wrapped at
-//! [`WRAP_COLUMNS`] once when the window opens so the notices' megabyte
-//! draws as a list of fixed-height rows.
+//! **bold**); license and notices use measured monospace wrapping at the
+//! current width/scale, capped by [`WRAP_COLUMNS`]. Only visible rows of the
+//! notices' megabyte are drawn; Copy always retains the original source.
 
 use std::rc::Rc;
 
@@ -29,7 +29,7 @@ pub const LICENSE: &str = include_str!("../../../LICENSE");
 pub const THIRD_PARTY_NOTICES: &str =
     include_str!("../../../THIRD_PARTY_LICENSES");
 
-/// Where the license and the notices wrap.
+/// Maximum columns when the document window has room.
 pub const WRAP_COLUMNS: usize = 100;
 
 /// The window's Copy button.

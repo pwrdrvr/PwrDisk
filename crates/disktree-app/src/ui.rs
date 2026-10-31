@@ -68,6 +68,9 @@ pub mod icon {
 pub mod size {
     /// Minimum physical pointer target, also at the smallest UI zoom.
     pub const POINTER_TARGET: gpui_kit::Pixels = gpui_kit::px(24.0);
+    /// Below this height budget, reserve a reading lane instead of repeating
+    /// the color legend and long action captions in the semantic file list.
+    pub const FILE_LIST_FULL_DETAILS: Rems = Rems(32.0);
     use super::Rems;
 
     /// A crumb's sibling menu.

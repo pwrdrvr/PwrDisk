@@ -6956,3 +6956,34 @@ fn page_scrolls_inside_an_oversized_log_line(cx: &mut TestAppContext) {
     );
     assert_eq!(view.read_with(cx, |view, _| view.selection), Some((1, 1)));
 }
+
+/// Low-vision readers need a complete file entry between the fixed heading
+/// and actions, including when a long root path would otherwise wrap.
+#[gpui_kit::test]
+fn file_list_keeps_a_complete_entry_visible_at_double_scale(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        app.selected = Some(vec![0]);
+        cx.notify();
+    });
+    cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+    cx.update(|window, _| window.set_rem_size(px(32.)));
+    draw(cx);
+    draw(cx);
+    let viewport = read(&view, cx, |app| app.file_scroll.bounds());
+    let row = cx.debug_bounds("file-row-0").expect("first file entry");
+    assert!(
+        viewport.size.height >= row.size.height,
+        "{viewport:?}, row {row:?}"
+    );
+    assert!(
+        row.bottom() <= viewport.bottom() + px(1.),
+        "{viewport:?}, row {row:?}"
+    );
+    assert!(row.size.height >= px(24.));
+}
