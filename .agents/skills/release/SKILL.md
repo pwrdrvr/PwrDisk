@@ -56,6 +56,7 @@ preparation in one commit on top of main. The normal preparation is:
 | `Cargo.toml` | Set `[workspace.package].version` to `X.Y.Z`. |
 | `Cargo.lock` | Refresh workspace versions without upgrading dependencies. |
 | `CHANGELOG.md` | Move Unreleased entries under `## vX.Y.Z`. |
+| `THIRD_PARTY_LICENSES` | Regenerate with `cargo xtask licenses` after the version bump. |
 
 All workspace crates inherit the root version. Refresh the lockfile with
 `cargo metadata --format-version 1`, redirecting its large JSON output to a
@@ -64,6 +65,28 @@ Inspect the diff: only workspace package versions should change in the
 lockfile. Investigate dependency drift rather than bundling it into the bump.
 Bundle and desktop-entry versions are generated from the crate version;
 do not replace unrelated version strings or change `com.pwrdrvr.pwrdisk`.
+
+`THIRD_PARTY_LICENSES` embeds all six workspace crate versions
+(`disktree-app`, `disktree-core`, `disktree-link`, `disktree-mcp`,
+`disktree-scan` and `xtask`), so ordinary version bumps require regeneration
+even when dependencies are unchanged. Use the `cargo-about` version pinned
+in [CI](../../../.github/workflows/ci.yml), currently `0.9.2`, for both
+generation and verification:
+
+```bash
+cargo install --locked cargo-about@0.9.2 --features cli
+cargo xtask licenses
+```
+
+Review the generated diff for the expected workspace-version changes.
+Investigate any other changes; do not upgrade dependencies or alter license
+policy to make an ordinary bump pass, and do not edit the notices by hand.
+Include the generated file in the same release commit as the version,
+lockfile and changelog.
+
+This differs from `licenses/velopack.txt`, the notices for Velopack's native
+binaries: regenerate that input only when the pinned Velopack tooling
+changes, not for an ordinary PwrDisk version bump.
 
 Preserve the changelog format, leave Unreleased empty, and reconcile its
 existing bullets with the merged changes. If the target section already
@@ -87,10 +110,13 @@ its final tree.
 
 ```bash
 cargo xtask release-check --tag vX.Y.Z
+cargo xtask licenses --check
 cargo xtask lint
 cargo xtask test
 ```
 
+The notices check must report `THIRD_PARTY_LICENSES is current`, using the
+same CI-pinned `cargo-about` version as regeneration.
 The metadata gate must report `release metadata agrees for vX.Y.Z`. Also
 inspect workspace package versions in `Cargo.lock`; the gate checks the root
 version, tag and nonempty changelog section. Report unavailable or failed
@@ -198,9 +224,10 @@ with the configured publisher, including installers and updater binaries.
 
 Do not manually create the release ahead of CI or replace its changelog notes
 with generated notes. There is no Winget or Homebrew distribution job to run.
-Keep the `velopack` crate pin, `VPK_VERSION`, package hash and generated
-notices aligned if a release includes a Velopack upgrade; an ordinary version
-bump does not require changing them.
+Keep the `velopack` crate pin, `VPK_VERSION`, package hash and
+`licenses/velopack.txt` aligned if a release includes a Velopack upgrade;
+an ordinary version bump leaves those unchanged but still regenerates
+`THIRD_PARTY_LICENSES` as described above.
 
 ## Hand off promotion
 
