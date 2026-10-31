@@ -294,10 +294,18 @@ mod tests {
         }];
         let fresh = measured(&targets).expect("individual file preflight");
         assert_eq!(fresh[0].bytes, tree.bytes);
-        assert!(fresh[0].bytes < length / 20, "fixture saves over 95%");
+        assert!(
+            fresh[0].bytes < length,
+            "fixture allocation {} must be below logical length {length}",
+            fresh[0].bytes
+        );
+        // Compression ratios depend on cluster and compression-unit sizes.
+        // Place the budget just below logical length so allocation fits
+        // without requiring a particular ratio from the fixture volume.
+        let capacity = (length - 1) * 100 / u64::from(DEFAULT_PERCENT);
         let limit = Limit::default();
         limit
-            .check_with(&fresh, |_| Ok(("fixture".into(), length)))
+            .check_with(&fresh, |_| Ok(("fixture".into(), capacity)))
             .expect("allocated size fits the budget");
         assert!(
             limit
@@ -306,7 +314,7 @@ mod tests {
                         bytes: length,
                         ..targets[0].clone()
                     }],
-                    |_| Ok(("fixture".into(), length))
+                    |_| Ok(("fixture".into(), capacity))
                 )
                 .is_err(),
             "logical length would incorrectly refuse the file"
