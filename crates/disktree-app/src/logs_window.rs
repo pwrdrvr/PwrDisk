@@ -18,8 +18,8 @@
 //! one to hide, and nothing here writes a line anywhere but the clipboard.
 //! The model, parsing and the file reads are `log_view.rs`.
 
-use disktree_core::path_style::PathStyle;
 use crate::semantics::AccessibleButton as _;
+use disktree_core::path_style::PathStyle;
 use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::{Path, PathBuf};

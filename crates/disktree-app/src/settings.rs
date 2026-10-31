@@ -10,8 +10,8 @@
 //! restarts). Restart to update goes through the main window, which knows
 //! whether a removal is running and refuses to cut one short.
 
-use disktree_core::path_style::PathStyle;
 use crate::semantics::AccessibleButton as _;
+use disktree_core::path_style::PathStyle;
 use std::path::PathBuf;
 
 use gpui_kit::prelude::FluentBuilder as _;
