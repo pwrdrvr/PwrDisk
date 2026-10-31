@@ -689,3 +689,35 @@ alone three times. In full runs on this Mac it now aborts when
 gpui-omarchy's theme-file watcher wakes inside it, and does so on the
 unreviewed `dd9f2f9` too, which passed earlier the same day. Native AX and
 screen readers were not rerun for these corrections.
+
+### PWR-33: contrast and non-color state cues
+
+Source `08402c3`, macOS binary SHA-256
+`5f963423d6a1d56f17f4d451f2906a4cecffa990f1faa3af65f43cf80fa3d782`.
+Production label colors now use the exact category/age/depth/filter/marked
+fill. A passing theme ink is retained; otherwise an opaque black or white
+ink is chosen. Name and value runs carry the same opaque tile background,
+so hatch cannot become a different text surface. Marked/covered, filtered
+and unreadable labels also have text cues; selection has a thicker ring.
+Age and category retain readable equivalents in the file list/sidebar.
+
+| Check | Observed result |
+| --- | --- |
+| Production tile-state regression | PASS: 8,910 combinations across all 11 categories, six age choices (category plus five buckets), depths 0–4, three filter states and three marked/covered states, using default dark/light and deliberately low-contrast synthetic custom colors. Names/values >=4.5:1; selection/hover/mark/unreadable boundary inks >=3:1 against the actual fill |
+| Captions / highlighted action | PASS numeric regression: opaque caption ink and highlighted-action text >=4.5:1; hover computes its own composited ground and ink |
+| Alpha behavior | Regression initially failed: GPUI `opacity(1)` multiplies the existing alpha. Final code explicitly resets alpha; the opacity/contrast regression passes |
+| Native default dark | PASS inspected rendering: matched contrived cache mark, explicit `[marked]` labels, brighter size values and thicker selected ring, fitted 2992×1878 captures at 100% UI zoom |
+| Native light / custom / high contrast | NOT VERIFIED here. The synthetic custom-color regression is not a native custom-theme or OS high-contrast result |
+| Hatch / filter / unreadable rendering | Production color and background paths covered by source/threshold checks; native intersections and all combined visual states still need the PWR-36 matrix |
+
+macOS lint, full workspace tests (235 app tests) and debug build passed.
+Ubuntu 24.04.5 x86_64 Sandboxer at this source: setup 0 (1s), lint 0 (4s),
+test 0 (11s), portable build 0 (43s), isolated SSH 0 (3s), all 0. An earlier
+run at `944d042` correctly failed the alpha regression; it is superseded.
+
+The ignored audit diagnostic retains the legacy formulas to reproduce the
+baseline. The production state regression is the threshold gate, not an AT
+or WCAG certification. Upstream #58 was used narrowly to compare the
+contrast calculation/test pattern; no commits, theme picker, persistence,
+font or independent layout redesign were imported. Windows/Linux native
+rendering, high contrast and actual AT results remain explicit gaps.
