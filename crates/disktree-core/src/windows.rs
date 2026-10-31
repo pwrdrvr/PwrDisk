@@ -252,6 +252,28 @@ pub fn read_dir(dir: &Path, volume: Option<u64>) -> io::Result<ReadDir> {
     Ok(ReadDir { source })
 }
 
+/// Measure a single entry with the same allocation source as a directory
+/// scan. Metadata length would overcharge sparse and compressed files;
+/// listing the parent also avoids opening or following the entry itself.
+pub(crate) fn allocated_size(path: &Path) -> io::Result<u64> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "Entry has no parent")
+    })?;
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "Entry has no file name")
+    })?;
+    for entry in read_dir(parent, None)? {
+        let entry = entry?;
+        if entry.file_name() == name {
+            return Ok(entry.allocated());
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "Entry disappeared while measuring allocation",
+    ))
+}
+
 impl Iterator for ReadDir {
     type Item = io::Result<Entry>;
 

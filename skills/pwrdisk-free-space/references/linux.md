@@ -89,3 +89,6 @@ MCP removal also requires interactive confirmation from the client (form
 elicitation). An agent-supplied confirmation value does not establish human
 consent. If the client cannot ask the user, use human review in PwrDisk;
 never approve its buttons or confirmation keys through computer use.
+
+Capacity checks charge a symbolic link to its containing volume, not its
+destination.

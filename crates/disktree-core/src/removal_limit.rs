@@ -45,6 +45,16 @@ impl Limit {
     /// Count every target against its own volume; unknown capacity fails closed.
     pub fn check(self, targets: &[Target]) -> Result<Vec<Budget>, String> {
         self.check_with(targets, |path| {
+            let meta = std::fs::symlink_metadata(path).map_err(|error| {
+                format!("Cannot inspect removal target: {error}")
+            })?;
+            // Removal unlinks the entry itself, even when its destination
+            // is missing or lies on another volume.
+            let path = if meta.is_symlink() {
+                path.parent().ok_or("A link must have a parent directory")?
+            } else {
+                path
+            };
             let volume = crate::space::device_for(path)
                 .ok_or("Cannot identify the removal target's volume")?;
             let space = crate::space::space_info(path).map_err(|error| {
@@ -111,7 +121,12 @@ pub(crate) fn measured(targets: &[Target]) -> Result<Vec<Target>, String> {
             }
             tree.bytes
         } else {
-            crate::scan::measure(&meta, false)
+            #[cfg(windows)]
+            let bytes = crate::windows::allocated_size(&target.path)
+                .map_err(|error| format!("Cannot re-measure {}: {error}", target.path.display()))?;
+            #[cfg(not(windows))]
+            let bytes = crate::scan::measure(&meta, false);
+            bytes
         };
         Ok(Target { bytes: bytes.max(target.bytes), ..target.clone() })
     }).collect()
@@ -196,5 +211,105 @@ mod tests {
                 .is_err()
         );
         assert!(temp.path().join("selected/.hidden").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_links_use_the_containing_volume() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let link = temp.path().join("dangling");
+        std::os::unix::fs::symlink("missing/destination", &link)
+            .expect("fixture link");
+        let targets = [Target {
+            path: link.clone(),
+            bytes: 0,
+            is_dir: false,
+            hidden: false,
+        }];
+        let limit = Limit::default();
+        let budget = limit.check(&targets).expect("link preview");
+        assert_eq!(
+            budget[0].volume,
+            crate::space::device_for(temp.path()).expect("parent volume")
+        );
+        assert_eq!(
+            budget[0].capacity,
+            crate::space::space_info(temp.path())
+                .expect("capacity")
+                .total
+        );
+        let fresh = measured(&targets).expect("link measurement");
+        limit.check(&fresh).expect("link worker preflight");
+        assert_eq!(
+            std::fs::read_link(link).expect("link untouched"),
+            Path::new("missing/destination")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sparse_file_preflight_uses_allocation() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("sparse.bin");
+        let file = std::fs::File::create(&path).expect("fixture file");
+        let output = std::process::Command::new("fsutil")
+            .args(["sparse", "setflag"])
+            .arg(&path)
+            .output()
+            .expect("set fixture sparse flag");
+        assert!(output.status.success(), "{output:?}");
+        file.set_len(64 * 1024 * 1024).expect("sparse length");
+        drop(file);
+        assert_file_preflight_uses_allocation(&path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn compressed_file_preflight_uses_allocation() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("compressed.bin");
+        std::fs::write(&path, vec![b'x'; 4 * 1024 * 1024])
+            .expect("fixture file");
+        let output = std::process::Command::new("compact")
+            .args(["/C", "/I", "/Q"])
+            .arg(&path)
+            .output()
+            .expect("compress fixture");
+        assert!(output.status.success(), "{output:?}");
+        assert_file_preflight_uses_allocation(&path);
+    }
+
+    #[cfg(windows)]
+    fn assert_file_preflight_uses_allocation(path: &Path) {
+        let parent = path.parent().expect("fixture parent");
+        let tree = crate::scan::scan(parent, Default::default())
+            .expect("directory measurement");
+        let length = std::fs::metadata(path).expect("metadata").len();
+        let targets = [Target {
+            path: path.into(),
+            bytes: tree.bytes,
+            is_dir: false,
+            hidden: false,
+        }];
+        let fresh = measured(&targets).expect("individual file preflight");
+        assert_eq!(fresh[0].bytes, tree.bytes);
+        assert!(fresh[0].bytes < length / 20, "fixture saves over 95%");
+        let limit = Limit::default();
+        limit
+            .check_with(&fresh, |_| Ok(("fixture".into(), length)))
+            .expect("allocated size fits the budget");
+        assert!(
+            limit
+                .check_with(
+                    &[Target {
+                        bytes: length,
+                        ..targets[0].clone()
+                    }],
+                    |_| Ok(("fixture".into(), length))
+                )
+                .is_err(),
+            "logical length would incorrectly refuse the file"
+        );
+        assert!(path.exists(), "measurement leaves the fixture intact");
     }
 }
