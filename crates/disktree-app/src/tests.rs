@@ -6766,7 +6766,7 @@ fn help_reflows_and_scrolls_at_minimum_size_and_double_scale(
     for rem in [16., 32.] {
         cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
         cx.update(|window, _| window.set_rem_size(px(rem)));
-        update(&view, cx, |app, cx| app.open_help(cx));
+        update(&view, cx, Disktree::open_help);
         draw(cx);
         let popup = cx.debug_bounds("help-overlay").expect("Help popup");
         let close = cx.debug_bounds("overlay-done").expect("Done");

@@ -3559,7 +3559,7 @@ fn review(
     let theme = cx.omarchy().clone();
     let compact = window.viewport_size().width.as_f32()
         / window.rem_size().as_f32()
-        < 65.0;
+        < REVIEW_COLUMNS_REMS;
     let plan = app.plan();
     let items = app.marks.items();
     let status = ReviewStatus::new(&plan);
@@ -3583,7 +3583,7 @@ fn review(
         .border_1()
         .border_color(theme.border)
         .bg(theme.inset)
-        .when(compact, |list| list.flex_none());
+        .when(compact, gpui_kit::Styled::flex_none);
 
     if items.is_empty() {
         list = list.child(
@@ -3891,7 +3891,7 @@ fn review_summary(
         .w(size::REVIEW_SUMMARY)
         .when(
             window.viewport_size().width.as_f32() / window.rem_size().as_f32()
-                < 65.0,
+                < REVIEW_COLUMNS_REMS,
             |panel| panel.w_full().max_w_full(),
         )
         .flex_shrink_0()
