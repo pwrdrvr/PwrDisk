@@ -54,9 +54,9 @@ Use a fresh worktree/destination, with no real data in the fixture. Python
 or overwrites an existing tree.
 
 ```sh
-git checkout --detach 4d68f6cb3ca6742529faf3f4436278da11d486d2
-# Use scripts/a11y-fixture.py from the audit PR with the baseline build.
+# Start on the audit PR's checkout to use its fixture generator.
 python3 scripts/a11y-fixture.py /tmp/pwrdisk-a11y-new
+git checkout --detach 4d68f6cb3ca6742529faf3f4436278da11d486d2
 cargo build --locked -p disktree-app
 target/debug/pwrdisk --apparent-size
 ```
@@ -254,6 +254,13 @@ age buckets and depths **0–4**. Numbers are minima per pair. Text uses a
 4.5:1 reference; selection ring versus adjacent fill uses 3:1. Exit 0 means
 the report ran, **not** that contrast passed. The output intentionally
 reports known failures outside the normal regression gate.
+
+References: W3C's [contrast minimum](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)
+and [non-text contrast](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html)
+explain these thresholds. [Reflow](https://www.w3.org/WAI/WCAG22/Understanding/reflow.html)
+and [target size](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html)
+inform the outstanding scaling/target checks. These are evaluation
+references, not a claim that this native-app audit determines conformance.
 
 | Pair | Tokyo Night | Flexoki Light | Required |
 | --- | ---: | ---: | ---: |
