@@ -11,6 +11,7 @@
 //! whether a removal is running and refuses to cut one short.
 
 use disktree_core::path_style::PathStyle;
+use crate::semantics::AccessibleButton as _;
 use std::path::PathBuf;
 
 use gpui_kit::prelude::FluentBuilder as _;
@@ -245,23 +246,26 @@ impl SettingsWindow {
 
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<'_, Self>) {
         let keystroke = &event.keystroke;
+        if keystroke.modifiers.control
+            && matches!(keystroke.key.as_str(), "pageup" | "pagedown")
+        {
+            let index = Pane::ALL
+                .iter()
+                .position(|pane| *pane == self.pane)
+                .unwrap_or(0);
+            let step = if keystroke.key == "pageup" {
+                Pane::ALL.len() - 1
+            } else {
+                1
+            };
+            self.show(Pane::ALL[(index + step) % Pane::ALL.len()], cx);
+            return;
+        }
         if keystroke.modifiers.platform || keystroke.modifiers.control {
             return;
         }
         let rows = Slot::ALL.len();
         match keystroke.key.as_str() {
-            "tab" => {
-                let index = Pane::ALL
-                    .iter()
-                    .position(|pane| *pane == self.pane)
-                    .unwrap_or(0);
-                let step = if keystroke.modifiers.shift {
-                    Pane::ALL.len() - 1
-                } else {
-                    1
-                };
-                self.show(Pane::ALL[(index + step) % Pane::ALL.len()], cx);
-            }
             _ if self.pane != Pane::Updates => {}
             "down" | "j" => {
                 self.updates_row = (self.updates_row + 1) % rows;
@@ -298,6 +302,9 @@ impl Render for SettingsWindow {
         let theme = cx.omarchy().clone();
         let nav = Pane::ALL.iter().fold(
             div()
+                .id("settings-panes")
+                .role(gpui_kit::Role::TabList)
+                .aria_label("Settings panes")
                 .flex()
                 .flex_col()
                 .gap(space::XXS)
@@ -312,6 +319,11 @@ impl Render for SettingsWindow {
                 nav.child(
                     div()
                         .id(pane.nav_id())
+                        .role(gpui_kit::Role::Tab)
+                        .aria_label(pane.label())
+                        .aria_selected(on)
+                        .focusable()
+                        .focus_visible(|style| style.border_color(theme.accent))
                         .debug_selector(move || pane.nav_id().into())
                         .px(space::MD)
                         .py(space::SM)
@@ -328,6 +340,17 @@ impl Render for SettingsWindow {
                         .hover(|item| item.bg(theme.hover_fill()))
                         .cursor_pointer()
                         .child(pane.label())
+                        .on_key_down(cx.listener(
+                            move |this, event: &KeyDownEvent, _, cx| {
+                                if matches!(
+                                    event.keystroke.key.as_str(),
+                                    "enter" | "space"
+                                ) {
+                                    this.show(pane, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.show(pane, cx);
                         })),
@@ -344,9 +367,23 @@ impl Render for SettingsWindow {
             .id(ROOT_ID)
             .debug_selector(|| ROOT_ID.into())
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                this.on_key(event, cx);
-            }))
+            .tab_group()
+            .tab_stop(false)
+            .on_key_down(cx.listener(
+                |this, event: &KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "tab" {
+                        crate::semantics::advance_focus(
+                            window,
+                            cx,
+                            event.keystroke.modifiers.shift,
+                            None,
+                        );
+                        cx.stop_propagation();
+                        return;
+                    }
+                    this.on_key(event, cx);
+                },
+            ))
             .flex()
             .flex_row()
             .flex_1()
@@ -545,14 +582,14 @@ impl SettingsWindow {
                 .debug_selector(|| RESTART_ID.into())
                 // As the panel had it: never while a removal runs, which an
                 // exit would stop partway through the marked list.
-                .disabled(!Self::can_restart(cx))
+                .semantic_disabled(!Self::can_restart(cx))
                 .on_click(|_, _, cx| cx.defer(Self::restart)),
             );
         }
         actions = actions.child(
             button(CHECK_ID, "Check now", ButtonVariant::Secondary, cx)
                 .debug_selector(|| CHECK_ID.into())
-                .disabled(state.checking)
+                .semantic_disabled(state.checking)
                 .on_click(cx.listener(|_, _, _, cx| {
                     updater::check_in_background(updater::Trigger::Manual);
                     cx.notify();
@@ -589,7 +626,7 @@ impl SettingsWindow {
         }
         pane.child(hint(
             "\u{2191}\u{2193} and enter pick a channel \u{b7} c checks \u{b7} \
-             r restarts into a download \u{b7} tab switches panes",
+             r restarts into a download \u{b7} Ctrl+PageUp/PageDown switches panes",
             theme,
         ))
     }
@@ -660,7 +697,7 @@ impl SettingsWindow {
                             cx,
                         )
                         .debug_selector(|| "diagnostics-open-settings".into())
-                        .disabled(
+                        .semantic_disabled(
                             !settings_dir
                                 .as_deref()
                                 .is_some_and(std::path::Path::exists),
@@ -689,7 +726,7 @@ impl SettingsWindow {
                             cx,
                         )
                         .debug_selector(|| "diagnostics-open-logs".into())
-                        .disabled(log.is_none())
+                        .semantic_disabled(log.is_none())
                         .on_click(|_, _, cx| {
                             cx.defer(crate::logs_window::open);
                         })

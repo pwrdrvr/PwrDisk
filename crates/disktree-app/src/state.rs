@@ -383,7 +383,7 @@ pub struct Disktree {
     pub history_hover: Option<bool>,
     /// The pointer moved more recently than the keyboard navigated. Then the
     /// tile under the pointer is what Space, X and Enter act on; after an
-    /// arrow or Tab it is the keyboard selection again.
+    /// arrow or n it is the keyboard selection again.
     pub pointer_active: bool,
     pub view: View,
     /// The in-flight layout transition, if a level was just entered or left.
@@ -406,6 +406,10 @@ pub struct Disktree {
     pub confirm_open: bool,
     /// Focus owner for the alert dialog while it is open.
     pub confirm_focus: FocusHandle,
+    pub overlay_return: Option<FocusHandle>,
+    pub app_menu_index: usize,
+    pub menu_scroll: gpui_kit::ScrollHandle,
+    pub source_roots_focus: FocusHandle,
     /// Focus to move on the next occasion a window is in hand. Key handling
     /// has no window, and opening or closing the dialog must move focus.
     pub focus_request: Option<FocusTarget>,
@@ -624,6 +628,10 @@ impl Disktree {
             trash_backend,
             confirm_open: false,
             confirm_focus: cx.focus_handle(),
+            overlay_return: None,
+            app_menu_index: 0,
+            menu_scroll: gpui_kit::ScrollHandle::new(),
+            source_roots_focus: cx.focus_handle(),
             focus_request: None,
             window_title: String::new(),
             strip_drag: false,
@@ -736,6 +744,8 @@ impl Disktree {
     /// Scan a different root from scratch. Marks are kept; a mark outside
     /// the new root is shown as kept back, never removed.
     pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<'_, Self>) {
+        // Accepting a new source removes its originating chooser control.
+        self.overlay_return = None;
         if self.remote.is_some() {
             self.root_path = root;
             self.remote_disk = false;
@@ -2824,6 +2834,7 @@ impl Disktree {
 
     /// The alert dialog's `Delete`.
     pub fn confirm_delete(&mut self, cx: &mut Context<'_, Self>) {
+        self.overlay_return = None;
         self.confirm_open = false;
         self.focus_request = Some(FocusTarget::Root);
         self.begin_removal(cx);
@@ -2863,15 +2874,22 @@ impl Disktree {
             window.focus(&self.file_focus, cx);
         }
         match self.focus_request.take() {
-            Some(FocusTarget::Root) => window.focus(
-                if list_visible {
-                    &self.file_focus
-                } else {
-                    &self.focus
-                },
-                cx,
-            ),
-            Some(FocusTarget::Dialog) => window.focus(&self.confirm_focus, cx),
+            Some(FocusTarget::Root) => {
+                let target = self.overlay_return.take().unwrap_or_else(|| {
+                    if list_visible {
+                        self.file_focus.clone()
+                    } else {
+                        self.focus.clone()
+                    }
+                });
+                window.focus(&target, cx);
+            }
+            Some(FocusTarget::Dialog) => {
+                if self.overlay_return.is_none() {
+                    self.overlay_return = window.focused(cx);
+                }
+                window.focus(&self.confirm_focus, cx);
+            }
             None => {}
         }
     }
@@ -3146,6 +3164,43 @@ impl Disktree {
         self.screen == Screen::Explore
             && !self.confirm_open
             && !self.volumes_open
+            && !self.show_help
+            && !self.show_agent
+    }
+
+    pub const fn has_modal(&self) -> bool {
+        self.confirm_open
+            || self.volumes_open
+            || self.show_help
+            || self.show_agent
+    }
+
+    pub fn open_help(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.has_modal() {
+            self.show_help = true;
+            self.focus_request = Some(FocusTarget::Dialog);
+            cx.notify();
+        }
+    }
+
+    pub fn close_help(&mut self, cx: &mut Context<'_, Self>) {
+        self.show_help = false;
+        self.focus_request = Some(FocusTarget::Root);
+        cx.notify();
+    }
+
+    pub fn toggle_app_menu(&mut self, cx: &mut Context<'_, Self>) {
+        if self.has_modal() {
+            return;
+        }
+        self.app_menu_open = !self.app_menu_open;
+        self.app_menu_index = 0;
+        self.focus_request = Some(if self.app_menu_open {
+            FocusTarget::Dialog
+        } else {
+            FocusTarget::Root
+        });
+        cx.notify();
     }
 
     /// Ask for a directory and scan it: an app opened from the Dock has no
@@ -3388,6 +3443,7 @@ impl Disktree {
         if self.app_menu_open {
             if key == "escape" {
                 self.app_menu_open = false;
+                self.focus_request = Some(FocusTarget::Root);
                 cx.notify();
             }
             return;
@@ -3395,14 +3451,14 @@ impl Disktree {
 
         if self.show_help {
             if matches!(key, "escape" | "?" | "/" | "q") {
-                self.show_help = false;
-                cx.notify();
+                self.close_help(cx);
             }
             return;
         }
         if self.show_agent {
             if matches!(key, "escape" | "q") {
                 self.show_agent = false;
+                self.focus_request = Some(FocusTarget::Root);
                 cx.notify();
             }
             return;
@@ -3477,6 +3533,7 @@ impl Disktree {
     ) {
         if self.file_list && !control {
             match key {
+                "n" => self.file_step(if shift { -1 } else { 1 }, cx),
                 "up" | "k" => self.file_step(-1, cx),
                 "down" | "j" => self.file_step(1, cx),
                 "pageup" => self.file_step(-100, cx),
@@ -3504,7 +3561,7 @@ impl Disktree {
             "space"
                 | "x"
                 | "enter"
-                | "tab"
+                | "n"
                 | "left"
                 | "right"
                 | "up"
@@ -3553,7 +3610,9 @@ impl Disktree {
             }
             "space" => self.toggle_mark_selected(cx),
             "x" if !control => self.toggle_mark_selected(cx),
-            "tab" => self.cycle_sibling(if shift { -1 } else { 1 }, cx),
+            "n" if !control => {
+                self.cycle_sibling(if shift { -1 } else { 1 }, cx);
+            }
             "c" if !control => self.open_review(cx),
             "[" => self.adjust_depth(-1, cx),
             "]" => self.adjust_depth(1, cx),
@@ -3596,8 +3655,7 @@ impl Disktree {
             }
             "o" if !control => self.reveal_target(cx),
             "?" => {
-                self.show_help = true;
-                cx.notify();
+                self.open_help(cx);
             }
             "q" if !control => cx.quit(),
             _ => {}
@@ -3632,8 +3690,7 @@ impl Disktree {
             "a" => self.copy_agent_prompt(cx),
             "y" => self.copy_delete_script(cx),
             "?" => {
-                self.show_help = true;
-                cx.notify();
+                self.open_help(cx);
             }
             _ => {}
         }

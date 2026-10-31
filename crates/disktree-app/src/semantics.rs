@@ -116,6 +116,59 @@ impl crate::state::Disktree {
     }
 }
 
+/// The pinned button removes Click when disabled but omits the native state.
+/// Synthetic parent metadata is a supported GPUI path to supply that state.
+pub trait AccessibleButton: Sized {
+    fn semantic_disabled(self, disabled: bool) -> Self;
+}
+
+impl AccessibleButton for gpui_omarchy::Button {
+    fn semantic_disabled(self, disabled: bool) -> Self {
+        self.disabled(disabled).a11y_synthetic_children(move |b| {
+            if disabled {
+                b.parent_node().set_disabled();
+            }
+        })
+    }
+}
+
+/// Cycle inside a modal even though GPUI's global tab order includes its
+/// painted background. A full cycle without an eligible stop leaves focus
+/// on the modal container, rather than looping or escaping it.
+pub fn advance_focus(
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+    reverse: bool,
+    scope: Option<&gpui_kit::FocusHandle>,
+) {
+    let mut first: Option<gpui_kit::FocusHandle> = None;
+    loop {
+        if reverse {
+            window.focus_prev(cx);
+        } else {
+            window.focus_next(cx);
+        }
+        let Some(scope) = scope else { return };
+        if scope.contains_focused(window, cx) {
+            return;
+        }
+        if first
+            .as_ref()
+            .is_some_and(|handle| handle.is_focused(window))
+        {
+            window.focus(scope, cx);
+            return;
+        }
+        if first.is_none() {
+            first = window.focused(cx);
+            if first.is_none() {
+                window.focus(scope, cx);
+                return;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

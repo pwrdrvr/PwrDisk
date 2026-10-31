@@ -1397,11 +1397,11 @@ fn audit_help_contains_navigation_and_restores_keyboard_operation(
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
-    press(cx, "tab");
+    press(cx, "n");
     let selected = read(&view, cx, |app| app.selected.clone());
     let root = read(&view, cx, |app| app.crumbs.clone());
     press(cx, "?");
-    for key in ["tab", "shift-tab", "right", "enter", "space", "c"] {
+    for key in ["right", "enter", "space", "c", "tab", "shift-tab"] {
         press(cx, key);
     }
     read(&view, cx, |app| {
@@ -1536,8 +1536,8 @@ fn settings_updates_picks_a_channel_and_keeps_the_keys(
             .expect("the pick is saved");
     assert!(saved.contains("\"prerelease\""), "{saved}");
 
-    // Tab walks the panes; every one draws. Safety saves only in the fixture.
-    press(cx, "tab");
+    // Ctrl+PageDown walks the panes; every one draws. Safety saves only in the fixture.
+    press(cx, "ctrl-pagedown");
     assert!(cx.debug_bounds("safety-limit-5").is_some());
     click_on(cx, "safety-limit-10");
     assert_eq!(
@@ -1546,12 +1546,12 @@ fn settings_updates_picks_a_channel_and_keeps_the_keys(
             .percent(),
         10
     );
-    press(cx, "tab");
+    press(cx, "ctrl-pagedown");
     assert!(
         cx.debug_bounds(crate::settings::COPY_DIAGNOSTICS_ID)
             .is_some()
     );
-    press(cx, "tab");
+    press(cx, "ctrl-pagedown");
     assert_eq!(view.read_with(cx, |settings, _| settings.pane), Pane::About);
     assert!(cx.debug_bounds(crate::settings::COPY_BUILD_ID).is_some());
     assert!(cx.debug_bounds("about-notices").is_some());
@@ -4964,7 +4964,9 @@ fn accessible_file_pages_reach_every_entry_and_share_safe_marks(
     draw(cx);
     assert!(cx.debug_bounds("file-row-99").is_some());
     assert!(cx.debug_bounds("file-row-100").is_none());
-    press(cx, "down pagedown pagedown");
+    click_on(cx, "file-next");
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), Some(vec![100]));
+    press(cx, "pagedown");
     assert!(cx.debug_bounds("file-row-200").is_some());
     assert!(cx.debug_bounds("file-row-199").is_none());
     read(&view, cx, |app| {
@@ -5308,4 +5310,156 @@ fn status_review_widening_announces_each_in_flight_root_immediately(
     });
     draw(cx);
     assert!(inner.join("more.bin").exists());
+}
+
+#[gpui_kit::test]
+fn source_tab_traversal_stays_in_the_modal_and_escape_restores_origin(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    press(cx, "tab");
+    let origin = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("control focus");
+    let root_focus = read(&view, cx, |app| app.focus.clone());
+    assert!(!cx.update(|window, _| root_focus.is_focused(window)));
+    update(&view, cx, Disktree::open_volumes);
+    draw(cx);
+    let (host, path) = view.read_with(cx, |app, cx| {
+        use gpui_kit::Focusable as _;
+        (
+            app.picker_host.as_ref().unwrap().read(cx).focus_handle(cx),
+            app.picker_path.as_ref().unwrap().read(cx).focus_handle(cx),
+        )
+    });
+    let mut saw_host = false;
+    let mut saw_path = false;
+    for key in [
+        "tab",
+        "tab",
+        "shift-tab",
+        "tab",
+        "tab",
+        "tab",
+        "tab",
+        "tab",
+        "shift-tab",
+    ] {
+        press(cx, key);
+        saw_host |= cx.update(|window, _| host.is_focused(window));
+        saw_path |= cx.update(|window, _| path.is_focused(window));
+        let modal = read(&view, cx, |app| app.confirm_focus.clone());
+        assert!(cx.update(|window, cx| modal.contains_focused(window, cx)));
+        assert!(
+            read(&view, cx, |app| app.marks.is_empty() && app.scan.is_none())
+        );
+    }
+    assert!(saw_host && saw_path, "Tab reaches both editing controls");
+    press(cx, "escape");
+    assert!(cx.update(|window, _| origin.is_focused(window)));
+}
+
+#[gpui_kit::test]
+fn help_focus_returns_to_the_originating_control(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    press(cx, "tab");
+    let origin = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("control focus");
+    for dismissal in ["escape", "done", "backdrop"] {
+        update(&view, cx, Disktree::open_help);
+        draw(cx);
+        press(cx, "tab shift-tab");
+        match dismissal {
+            "escape" => press(cx, "escape"),
+            "done" => click_on(cx, "overlay-done"),
+            _ => {
+                let card = cx.debug_bounds("help-overlay").expect("card");
+                let outside = card.origin - Point::new(px(8.), px(8.));
+                cx.simulate_click(outside, gpui_kit::Modifiers::none());
+                draw(cx);
+            }
+        }
+        assert!(cx.update(|window, _| origin.is_focused(window)));
+        assert!(read(&view, cx, |app| !app.show_help && app.marks.is_empty()));
+    }
+}
+
+#[gpui_kit::test]
+fn custom_menu_arrows_and_escape_leave_files_untouched(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, Disktree::toggle_app_menu);
+    draw(cx);
+    press(cx, "down down up");
+    assert_eq!(read(&view, cx, |app| app.app_menu_index), 1);
+    press(cx, "escape");
+    assert!(read(&view, cx, |app| !app.app_menu_open && app.marks.is_empty()));
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn custom_menu_enter_activates_the_named_safe_action(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let index = crate::app_menu::menus(crate::app_menu::Platform::Other)
+        .into_iter()
+        .flat_map(|menu| menu.items)
+        .filter_map(|item| {
+            if let gpui_kit::MenuItem::Action { name, .. } = item {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .position(|name| name == "Keyboard Shortcuts")
+        .expect("safe menu action");
+    update(&view, cx, |app, cx| {
+        app.toggle_app_menu(cx);
+        app.app_menu_index = index;
+    });
+    draw(cx);
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.show_help
+        && !app.app_menu_open
+        && app.marks.is_empty()));
+    press(cx, "escape");
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn a_large_directory_keeps_zero_weight_files_reachable_in_bounded_pages(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = tempfile::tempdir().expect("tempdir");
+    for index in 0..50_000 {
+        std::fs::write(temp.path().join(format!("entry-{index:05}.txt")), [])
+            .expect("empty fixture file");
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        app.selected = None;
+        app.file_step(1, cx);
+        app.file_step(isize::MAX, cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("file-row-49999").is_some());
+    assert!(cx.debug_bounds("file-row-49899").is_none());
+    read(&view, cx, |app| {
+        assert_eq!(app.current().unwrap().children.len(), 50_000);
+        assert_eq!(app.selected.as_deref(), Some([49_999].as_slice()));
+        assert!(app.marks.is_empty());
+    });
 }

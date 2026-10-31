@@ -96,7 +96,7 @@ machine; see `crates/disktree-core/src/classify.rs`.
 ## Marking
 
 Space, X, Enter and the arrows act on the tile under the mouse if the mouse
-moved last, and on the keyboard selection after you use an arrow or Tab.
+moved last, and on the keyboard selection after you use an arrow or n.
 
 A marked tile takes the danger colour, and so does everything inside it:
 removing a directory takes its contents with it. Marking a directory absorbs
@@ -141,7 +141,8 @@ and shows how much free space was actually gained.
 | `⌫` / `esc` | go up one directory |
 | `alt ←` `alt →` | back and forward through where you have been |
 | `←` `↑` `↓` `→` | move between tiles at this level |
-| `tab` | next largest sibling |
+| `tab` / `shift-tab` | next / previous control; Escape returns to files |
+| `n` / `shift-n` | next / previous largest sibling |
 | scroll | zoom toward a directory, then go into it |
 | `shift`-scroll | pan the magnified view |
 | `[` `]` | draw fewer or more levels at once |
