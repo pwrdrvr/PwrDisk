@@ -2337,7 +2337,7 @@ impl Disktree {
     }
 
     pub fn unmark(&mut self, path: &Path, cx: &mut Context<'_, Self>) {
-        self.marks.remove(path);
+        self.marks.remove(path, self.path_style());
         cx.notify();
     }
 

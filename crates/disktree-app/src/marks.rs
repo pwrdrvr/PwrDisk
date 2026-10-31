@@ -493,7 +493,7 @@ mod tests {
         marks.remove(Path::new("/home/tobi/.cache"), PathStyle::Native);
         assert!(
             marks
-                .crumbs(root_path, &root, Metric::Bytes)
+                .crumbs(root_path, &root, Metric::Bytes, PathStyle::Native)
                 .contains(&vec![1])
         );
         marks.clear();
@@ -522,12 +522,17 @@ mod tests {
         assert!(!Arc::ptr_eq(&files, &refreshed), "refresh invalidates");
         assert!(
             marks
-                .crumbs(Path::new("/elsewhere"), &root, Metric::Files)
+                .crumbs(
+                    Path::new("/elsewhere"),
+                    &root,
+                    Metric::Files,
+                    PathStyle::Native
+                )
                 .is_empty()
         );
         assert!(
             marks
-                .crumbs(root_path, &root, Metric::Files)
+                .crumbs(root_path, &root, Metric::Files, PathStyle::Native)
                 .contains(&vec![1])
         );
 
@@ -538,7 +543,7 @@ mod tests {
         assert!(old_tree.upgrade().is_none(), "old scan is released");
         assert!(
             marks
-                .crumbs(root_path, &root, Metric::Files)
+                .crumbs(root_path, &root, Metric::Files, PathStyle::Native)
                 .contains(&vec![0])
         );
         Arc::make_mut(&mut root).children.clear();

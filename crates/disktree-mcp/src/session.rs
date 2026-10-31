@@ -908,10 +908,7 @@ impl Session {
                 path: item.path.clone(),
                 bytes: item.entry.bytes,
                 is_dir: item.entry.is_dir,
-                hidden: is_hidden(
-                    &item.path,
-                    disktree_core::path_style::PathStyle::Native,
-                ),
+                hidden: is_hidden(&item.path),
             })
             .collect();
         let mut out = String::new();
@@ -1155,10 +1152,7 @@ impl Session {
             .marks
             .iter()
             .map(|mark| Target {
-                hidden: is_hidden(
-                    &mark.path,
-                    disktree_core::path_style::PathStyle::Native,
-                ),
+                hidden: is_hidden(&mark.path),
                 path: mark.path.clone(),
                 bytes: mark.bytes,
                 is_dir: mark.is_dir,
@@ -1518,10 +1512,7 @@ impl Session {
                 continue;
             }
             targets.push(Target {
-                hidden: is_hidden(
-                    &found.path,
-                    disktree_core::path_style::PathStyle::Native,
-                ),
+                hidden: is_hidden(&found.path),
                 is_dir: found.node.is_dir(),
                 bytes: found.node.bytes,
                 path: found.path,
