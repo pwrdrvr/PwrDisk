@@ -23,6 +23,13 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
 - **Scans stop at other filesystems.** Mounts, bind mounts and btrfs
   subvolumes under the root are not counted unless the user asks for them.
 
+## Root discovery
+
+The root chooser omits mounts at or below `/proc`, `/sys` and `/dev`,
+plus kernel pseudo filesystems including `binfmt_misc`, `bpf`, `efivarfs`
+and `ramfs`. Discovery reads the mount table without probing candidates
+or measuring their free space; an explicit scan root is still required.
+
 ## Access
 
 `pwrdisk mcp` runs as the user. Root-owned directories show as unreadable;
