@@ -788,7 +788,7 @@ fn overlay_backdrop(
 /// An overlay's footer: what it says on the left, Done where a dialog's
 /// default button sits, on the right.
 fn overlay_footer(
-    note: String,
+    note: impl IntoElement,
     close: CloseOverlay,
     cx: &Context<'_, Disktree>,
 ) -> Div {
@@ -4906,11 +4906,23 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     }
 
     let close: CloseOverlay = |this| this.show_help = false;
-    let note = format!(
-        "? or esc closes \u{00b7} {} \u{00b7} {}",
+    let context = format!(
+        "{} · {}",
         app.root_path.display(),
         app.options.metric.label()
     );
+    let note = div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .child("↑↓ / PageUp / PageDown scroll · ? / Esc closes")
+        .child(
+            crate::semantics::text("help-context", context.clone())
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(context),
+        );
     overlay_backdrop(
         "help-backdrop",
         div()

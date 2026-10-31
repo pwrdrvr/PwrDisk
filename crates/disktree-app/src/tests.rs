@@ -6774,6 +6774,13 @@ fn help_reflows_and_scrolls_at_minimum_size_and_double_scale(
         let popup = cx.debug_bounds("help-overlay").expect("Help popup");
         let close = cx.debug_bounds("overlay-done").expect("Done");
         assert!(
+            cx.debug_bounds("help-scroll")
+                .expect("reading lane")
+                .size
+                .height
+                >= px(rem * 3.0)
+        );
+        assert!(
             popup.left() >= px(0.) && popup.right() <= px(900.),
             "{popup:?}"
         );
