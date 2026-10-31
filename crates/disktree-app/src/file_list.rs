@@ -129,11 +129,7 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
         };
         let selected = app.selected.as_ref() == Some(&crumbs);
         let marked = app.marks.contains(&path);
-        let covered = app
-            .marks
-            .items()
-            .iter()
-            .any(|m| m.path != path && path.starts_with(&m.path));
+        let covered = app.marks.ancestor(&path).is_some();
         let filtered = app
             .matches
             .as_ref()
