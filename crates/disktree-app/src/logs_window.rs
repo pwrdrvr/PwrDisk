@@ -1120,6 +1120,7 @@ impl LogsWindow {
     ) -> impl IntoElement {
         let search = gpui_omarchy::input(SEARCH_ID, &self.search, window, cx)
             .aria_label("Search log text").aria_description("Enter moves to the next match; Shift Enter to the previous match. Tab moves to log controls. Escape clears the query.")
+            .aria_value(self.search.read(cx).value())
             .debug_selector(|| SEARCH_ID.into())
             .prefix(
                 icon(IconName::Search)
