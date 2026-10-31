@@ -125,25 +125,33 @@ fn a_live_supervised_client_receives_a_complete_snapshot() {
 #[test]
 fn memory_and_core_limits_are_installed_before_reading_a_request() {
     let mut helper = supervised_helper();
-    // No startup chatter on stderr: wait for the kernel limit itself
-    // while the helper is still blocked waiting for its first request.
+    // The helper installs these limits in separate syscalls. Wait for both
+    // in one snapshot, keeping stdin open and empty throughout.
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_secs(2);
     let limits = loop {
         let limits =
             std::fs::read_to_string(format!("/proc/{}/limits", helper.0.id()))
                 .unwrap();
-        if limits.lines().any(|line| {
+        let address_limited = limits.lines().any(|line| {
             line.starts_with("Max address space")
                 && line
                     .split_whitespace()
                     .nth(3)
                     .and_then(|value| value.parse::<u64>().ok())
                     .is_some_and(|value| value <= 1 << 30)
-        }) {
+        });
+        let core_disabled = limits.lines().any(|line| {
+            line.starts_with("Max core file size")
+                && line.split_whitespace().skip(4).take(2).eq(["0", "0"])
+        });
+        if address_limited && core_disabled {
             break limits;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "helper did not install resource limits:\n{limits}"
+        );
         assert!(helper.0.try_wait().unwrap().is_none());
         std::thread::yield_now();
     };
@@ -161,6 +169,7 @@ fn memory_and_core_limits_are_installed_before_reading_a_request() {
     let values: Vec<_> = core.split_whitespace().collect();
     assert_eq!(values[4], "0");
     assert_eq!(values[5], "0");
+    assert!(helper.0.try_wait().unwrap().is_none());
 }
 
 #[cfg(target_os = "linux")]
