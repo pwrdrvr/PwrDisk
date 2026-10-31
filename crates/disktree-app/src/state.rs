@@ -2049,7 +2049,8 @@ impl Disktree {
             area.width.as_f32().max(1.0),
             area.height.as_f32().max(1.0),
         );
-        self.transition = Some(LayoutTransition::new(src, dst));
+        self.transition = (!prefers_reduced_motion(cx))
+            .then(|| LayoutTransition::new(src, dst));
         cx.notify();
     }
 
@@ -2111,10 +2112,13 @@ impl Disktree {
         self.cache = None;
         self.selected = Some(ancestor);
         self.view = View::IDENTITY;
-        self.transition = self
-            .tile_body(&child_crumbs)
-            .filter(|rect| rect.w > 1.0 && rect.h > 1.0)
-            .map(|dst| LayoutTransition::new(src, dst));
+        self.transition = if prefers_reduced_motion(cx) {
+            None
+        } else {
+            self.tile_body(&child_crumbs)
+                .filter(|rect| rect.w > 1.0 && rect.h > 1.0)
+                .map(|dst| LayoutTransition::new(src, dst))
+        };
         cx.notify();
     }
 
@@ -4052,7 +4056,11 @@ impl Disktree {
     }
 
     /// Advance the layout transition, if one is running.
-    pub fn tick_transition(&mut self, window: &Window) {
+    pub fn tick_transition(&mut self, window: &Window, cx: &mut gpui_kit::App) {
+        if prefers_reduced_motion(cx) {
+            self.transition = None;
+            return;
+        }
         if let Some(transition) = self.transition {
             let (_, running) = transition.sample(Rect::default());
             if running {
@@ -4071,6 +4079,14 @@ impl Disktree {
             None => rect,
         }
     }
+}
+
+/// Base 0.6.6 follows Linux portal changes, but reads macOS/Windows only
+/// when asked. Re-sample before motion and during frames so a running app
+/// honors an OS toggle too. Base preserves explicit application overrides.
+fn prefers_reduced_motion(cx: &mut gpui_kit::App) -> bool {
+    gpui_kit::base::apply_system_reduce_motion(cx);
+    cx.reduce_motion()
 }
 
 /// A direction for geometric selection movement.
@@ -4343,7 +4359,7 @@ impl Render for Disktree {
             self.cache = None;
         }
         self.rem = window.rem_size().as_f32();
-        self.tick_transition(window);
+        self.tick_transition(window, cx);
         // The titlebar names the directory on screen, however it got there:
         // a key, a click, a rescan or a folder chosen from the menu.
         let title = if self.awaiting_root {
