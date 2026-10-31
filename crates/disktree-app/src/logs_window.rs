@@ -1243,6 +1243,7 @@ impl LogsWindow {
         let show_context =
             self.view.mode == SearchMode::Filter && self.view.searching();
         div()
+            .debug_selector(|| "logs-toolbar".into())
             .flex()
             .flex_row()
             .flex_wrap()
@@ -1252,8 +1253,10 @@ impl LogsWindow {
             .py(space::SM)
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
+                    // A zero flex basis lets the other controls consume the
+                    // row and squeeze the input to its search icon at 200%.
+                    .flex_grow(1.)
+                    .min_w(size::LOG_FILTER)
                     .w(size::LOG_FILTER)
                     .max_w_full()
                     .child(search),
@@ -1475,6 +1478,7 @@ impl LogsWindow {
             .child(
                 div()
                     .id("logs-viewport")
+                    .debug_selector(|| "logs-viewport".into())
                     .role(gpui_kit::Role::ListBox)
                     .aria_label(format!(
                         "{}; {}; {}",
@@ -1984,8 +1988,15 @@ impl LogsWindow {
                 .debug_selector(|| "logs-count".into())
                 .child(summary),
             )
-            .children(place)
-            .child(div().flex_1())
+            .when_some(place, |bar, place| {
+                bar.child(
+                    crate::semantics::text("logs-path", place.clone())
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(place),
+                )
+            })
             .when_some(self.note.as_ref(), |bar, (note, _)| {
                 bar.child(
                     div()

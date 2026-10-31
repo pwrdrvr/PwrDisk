@@ -36,6 +36,10 @@ def inspect(node, depth=0, remaining=None):
         row["value"] = value.currentValue
     except NotImplementedError:
         pass
+    try:
+        row["text"] = node.queryText().getText(0, -1)
+    except NotImplementedError:
+        pass
     print(json.dumps(row, ensure_ascii=False), flush=True)
     for index in range(node.childCount):
         child = node.getChildAtIndex(index)
@@ -52,6 +56,8 @@ def main():
         desktop = pyatspi.Registry.getDesktop(0)
         for app in desktop:
             if app.get_process_id() == args.pid and app.childCount:
+                # The first window can register before its scan completes.
+                time.sleep(2)
                 inspect(app)
                 return
         time.sleep(0.25)
