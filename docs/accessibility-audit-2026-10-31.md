@@ -901,7 +901,7 @@ the PRs remain drafts while native acceptance is incomplete.
 | PWR-33 / [#45](https://github.com/pwrdrvr/PwrDisk/pull/45) | Production tile-state contrast thresholds across 8,910 combinations; text backing and non-color cues | Contrived default dark rendering and later explicit light preset inspected | OS high contrast, real custom themes, remaining control/caption contexts and Windows/Linux appearance; no whole-window contrast certification |
 | PWR-34 / [#46](https://github.com/pwrdrvr/PwrDisk/pull/46) | Shared 75–200% UI scale; minimum reading lanes, reflow and target checks | macOS Help/Settings/License/file reader subset; native Logs check found the additional search collapse fixed here | OS display/text scaling, all supported desktop/AT combinations and scroll-to-focus |
 | PWR-35 / [#47](https://github.com/pwrdrvr/PwrDisk/pull/47) | Immediate navigation and active-transition cancellation regressions | macOS OS preference off/on/off in one running fixture; initial value restored | Native Windows/Linux motion policy and perceptual/AT evaluation |
-| PWR-36 / native validation PR | Read-only AT-SPI diagnostic, direct file-reader fixture, native-discovered Logs/label corrections | Results below; unavailable cases stay explicit | Windows UIA/Narrator/NVDA; VoiceOver; Orca, real X11/Wayland desktop, OS scaling/high contrast |
+| PWR-36 / [#48](https://github.com/pwrdrvr/PwrDisk/pull/48) | Read-only AT-SPI diagnostic, direct file-reader fixture, native-discovered Logs/label corrections | Results below; unavailable cases stay explicit | Windows UIA/Narrator/NVDA; VoiceOver; Orca, real X11/Wayland desktop, OS scaling/high contrast |
 
 #### Native-discovered corrections
 
