@@ -366,6 +366,12 @@ pub struct Disktree {
     /// Path from the scanned root to the directory currently drawn.
     pub crumbs: Vec<usize>,
     pub selected: Option<Vec<usize>>,
+    /// A bounded, semantic alternative to the painted mosaic.
+    pub file_list: bool,
+    pub file_page: usize,
+    pub file_scroll: gpui_kit::ScrollHandle,
+    pub file_focus: FocusHandle,
+    pub review_page: usize,
     pub hovered: Option<Vec<usize>>,
     pub history: History,
     /// The history button under the pointer, `true` for `<`: its card is
@@ -587,6 +593,11 @@ impl Disktree {
             pointer_active: false,
             view: View::default(),
             transition: None,
+            file_list: false,
+            file_page: 0,
+            file_scroll: gpui_kit::ScrollHandle::new(),
+            file_focus: cx.focus_handle(),
+            review_page: 0,
             layout_options: LayoutOptions {
                 max_depth: depth.clamp(1, 6),
                 ..LayoutOptions::default()
@@ -1252,6 +1263,7 @@ impl Disktree {
             ));
         } else {
             self.screen = Screen::Review;
+            self.focus_request = Some(FocusTarget::Root);
         }
         cx.notify();
     }
@@ -1833,6 +1845,7 @@ impl Disktree {
     /// Descend into the selected tile, or into the largest child of the
     /// current root when nothing is selected.
     pub fn descend(&mut self, cx: &mut Context<'_, Self>) {
+        self.file_page = 0;
         let target = match self.selected.clone() {
             // Enter what is selected, however deep: a directory opens itself,
             // a file opens the directory holding it.
@@ -1934,6 +1947,7 @@ impl Disktree {
     /// Ascend to the parent directory, keeping the directory we came from in
     /// view so the motion reads as zooming out.
     pub fn ascend(&mut self, cx: &mut Context<'_, Self>) {
+        self.file_page = 0;
         if let Some(parent_crumbs) = self.parent_crumbs() {
             self.ascend_to(parent_crumbs, cx);
         }
@@ -2812,7 +2826,14 @@ impl Disktree {
         cx: &mut Context<'_, Self>,
     ) {
         match self.focus_request.take() {
-            Some(FocusTarget::Root) => window.focus(&self.focus, cx),
+            Some(FocusTarget::Root) => window.focus(
+                if self.file_list && self.screen == Screen::Explore {
+                    &self.file_focus
+                } else {
+                    &self.focus
+                },
+                cx,
+            ),
             Some(FocusTarget::Dialog) => window.focus(&self.confirm_focus, cx),
             None => {}
         }
@@ -3417,6 +3438,34 @@ impl Disktree {
         shift: bool,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.file_list && !control {
+            match key {
+                "up" | "k" => self.file_step(-1, cx),
+                "down" | "j" => self.file_step(1, cx),
+                "pageup" => self.file_step(-100, cx),
+                "pagedown" => self.file_step(100, cx),
+                "right" | "l" => {
+                    self.file_page = 0;
+                    self.descend(cx);
+                }
+                "left" | "h" => {
+                    self.file_page = 0;
+                    self.ascend(cx);
+                }
+                _ => self.on_file_shared_key(key, control, shift, cx),
+            }
+            return;
+        }
+        self.on_file_shared_key(key, control, shift, cx);
+    }
+
+    fn on_file_shared_key(
+        &mut self,
+        key: &str,
+        control: bool,
+        shift: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
         // Keys that act on "the current tile" start from the pointer when it
         // moved last.
         if matches!(
@@ -3535,6 +3584,7 @@ impl Disktree {
         match key {
             "escape" => {
                 self.screen = Screen::Explore;
+                self.focus_request = Some(FocusTarget::Root);
                 cx.notify();
             }
             "enter" => self.commit(cx),
