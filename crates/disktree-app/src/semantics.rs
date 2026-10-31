@@ -9,7 +9,13 @@ pub fn text(
     id: impl Into<gpui_kit::ElementId>,
     label: impl Into<gpui_kit::SharedString>,
 ) -> Stateful<Div> {
-    div().id(id).role(Role::Label).aria_label(label)
+    let label = label.into();
+    // AT-SPI derives a static label's name from its value, unlike macOS AX.
+    div()
+        .id(id)
+        .role(Role::Label)
+        .aria_label(label.clone())
+        .aria_value(label)
 }
 
 pub fn status(id: &'static str, label: String) -> Stateful<Div> {
