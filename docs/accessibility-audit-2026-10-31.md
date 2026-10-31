@@ -457,3 +457,39 @@ Native focus/modal containment, Windows UIA/AT, speech, OS scaling and high
 contrast remain open under PWR-31/PWR-36. Changes add semantic metadata;
 the visible source/status presentation is unchanged, so screenshots do not
 show the repaired names/values. No real scan or live removal was performed.
+
+### PWR-31: focus, modal boundaries and menus
+
+Source `08a2b7f865d76db375b38cb5693ac1727cfa6186`, debug macOS binary
+SHA-256 `d4e7b7c11f5b21314dff6a9edfc7f5ea6c08769d2655bad04b5ae866ddbf6d1a`.
+Tab/Shift-Tab traverse controls and composite navigation; n/Shift-n retain
+sibling stepping. Escape returns to file navigation. Modal traversal stays
+inside its scope and dismissal restores the invoking focus handle. Explicit
+tracked handles carry their own tab metadata: element styles alone did not
+make the root/file lists reachable; strengthened regressions caught this.
+
+| Promise | Native macOS result | Harness / source |
+| --- | --- | --- |
+| Visible traversal | PASS inspected case: Tab adds a visible focus edge to Size while retaining file selection | PASS: Tab reaches file navigation without changing selection; 50,000 empty files remain reachable in bounded pages |
+| Source fields / root list | PASS keyboard: Tab reaches host and path inputs; keystrokes appear as values `a` and `b`; no acceptance or SSH connection | PASS: forward/reverse traversal reaches both inputs and the root list, stays in modal and restores originating control |
+| Help / source AX boundaries | PASS inspected trees: named dialogs exposed and application background controls absent from full AX snapshots | PASS: modal background shortcuts contained, safe Escape cancellation; opaque overlays contain pointer input |
+| Disabled actions | PASS: history and unconnected Scan buttons report disabled in native AX | Supported synthetic parent metadata supplies the flag omitted by the pinned button; Click remains removed by the base control |
+| Settings navigation | PASS: named Settings panes tab group and four tab states; Tab leaves Updates selected; Ctrl+PageDown selects Safety without changing a preference | PASS: pane navigation and control traversal regressions; Ctrl+PageUp/PageDown replace pane-cycling Tab |
+| Custom menu | NOT TESTED natively on Windows/Linux | PASS: arrows, Escape and Enter on the safe Keyboard Shortcuts action; menu/item/shortcut metadata and scroll-follow |
+| Removal alert | NOT TESTED natively by design | PASS: named alert metadata, keyboard containment and Escape retain files; destructive coverage remains harness-only |
+| AT focus / speech | Controller still reports the standard window as focused; no speech/navigation result | GPUI focus and active-descendant metadata do not establish VoiceOver/UIA/AT-SPI behavior |
+
+macOS lint, full workspace tests (225 app tests) and debug build passed.
+Linux `sb_uihqpdf98b` at this commit: setup 0 (1s), lint 0 (5s), test 0
+(12s), portable build 0 (43s), isolated SSH 0 (2s), all 0. Native Windows,
+Linux desktop/Orca, speech, native menu operation and OS scaling/high-contrast
+remain unverified under PWR-36. Help content/reflow findings remain tracked
+under PWR-32/PWR-34.
+
+Contrived before/after focus images use PWR-30 head `21ae8fe` and this commit,
+the same Projects/APFS fixture, default dark appearance and 100% UI zoom.
+Both windows were fitted with macOS's window Zoom action: 2992×1880 pixel
+captures (1496×940 logical at 2×). The initial offscreen capture had white
+clipped edges and was replaced; that capture artifact is not a layout fix.
+Before, Tab changes the selected tile; after, it focuses Size. No removal
+confirmation was activated through computer use or accessibility APIs.
