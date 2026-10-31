@@ -11,6 +11,17 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
   cloned tree can exceed the volume's used space. Listed allocation is not
   guaranteed freed space; do not cap the scan total to volume usage. The
   free space measured after the review is the real figure.
+- **Use the selected-set reclaim bounds, not listed bytes.** PwrDisk
+  evaluates accepted marks together: a complete clone group is counted
+  once, while copies retained outside the selection keep shared blocks
+  alive. All hardlink names must be selected before their allocation can
+  be reclaimed. Clone groups are scoped to their physical APFS volume.
+  Missing metadata widens the bounds; it does not justify projecting all
+  listed bytes. Apparent-size scans and disabled clone measurements cannot
+  establish physical reclaim estimates. Linked reports use the window's
+  measurement context; an ongoing scan has no final estimate.
+  Bounds are scan-derived, before snapshots, open files and
+  later changes; even the lower estimate is not a guaranteed saving.
 - **One container, several volumes.** The System, Data, Preboot, Recovery
   and VM volumes share one APFS container's space. A whole-disk scan of
   `/` explains the Data volume; the rest shows as space the scan does not
