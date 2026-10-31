@@ -11,7 +11,6 @@
 use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -368,6 +367,14 @@ pub struct Session {
     /// come up is not started twice.
     launched: Option<Instant>,
     pending_removal: Option<RemovalPreview>,
+    window_policy: WindowPolicy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowPolicy {
+    Optional,
+    Required,
+    Disabled,
 }
 
 impl std::fmt::Debug for Session {
@@ -381,26 +388,6 @@ impl std::fmt::Debug for Session {
     }
 }
 
-/// Start a PwrDisk window on `root`, detached from this process so the
-/// agent's exit does not take the window with it.
-fn launch_window(root: &Path) -> io::Result<()> {
-    let exe = std::env::current_exe()?;
-    let mut command = Command::new(exe);
-    command
-        .arg(root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        // Its own process group: a signal to the agent's group stops here.
-        command.process_group(0);
-    }
-    command.spawn()?;
-    Ok(())
-}
-
 impl Default for Session {
     fn default() -> Self {
         Self::new()
@@ -408,16 +395,22 @@ impl Default for Session {
 }
 
 impl Session {
-    /// A session over the real socket, able to launch a window.
+    /// A standalone session. Desktop ownership is selected by the host,
+    /// never discovered by silently adopting an unrelated window.
     pub fn new() -> Self {
-        // Where no window can be linked, starting one would only leave a
-        // window the agent cannot reach, and another on every retry.
-        let launcher: Option<Launcher> = if disktree_link::SUPPORTED {
-            Some(Box::new(launch_window))
-        } else {
-            None
-        };
-        Self::detached(disktree_link::socket_path(), launcher)
+        Self::standalone()
+    }
+
+    pub fn standalone() -> Self {
+        let mut session = Self::detached(disktree_link::socket_path(), None);
+        session.window_policy = WindowPolicy::Disabled;
+        session
+    }
+
+    pub fn desktop(socket: PathBuf) -> Self {
+        let mut session = Self::detached(socket, None);
+        session.window_policy = WindowPolicy::Required;
+        session
     }
 
     /// A session over `socket`, launching windows with `launcher` or not at
@@ -435,6 +428,7 @@ impl Session {
             unlinked: None,
             launched: None,
             pending_removal: None,
+            window_policy: WindowPolicy::Optional,
         }
     }
 
@@ -520,6 +514,9 @@ impl Session {
         if self.try_connect_for_request(Some(&request))? {
             Ok(ScanPlan::Window { root })
         } else {
+            if self.window_policy == WindowPolicy::Required {
+                return Err(crate::desktop::RECONNECT.into());
+            }
             Ok(ScanPlan::Local { root, options })
         }
     }
@@ -952,6 +949,9 @@ impl Session {
         &mut self,
         request: Option<&Request>,
     ) -> Result<bool, String> {
+        if self.window_policy == WindowPolicy::Disabled {
+            return Ok(false);
+        }
         if self.link.is_some() {
             if let Some(request) = request {
                 self.send_state_request(request)?;
@@ -1052,6 +1052,9 @@ impl Session {
 
     /// Open the link, launching a window on `root` when none answers.
     fn ensure_link(&mut self, root: &Path) -> Result<(), String> {
+        if self.window_policy == WindowPolicy::Disabled {
+            return Err("Standalone MCP cannot show, review or remove paths in a desktop. Connect with `pwrdisk mcp` after starting PwrDisk yourself.".into());
+        }
         if self.try_connect() {
             return Ok(());
         }
@@ -3657,5 +3660,48 @@ mod tests {
         assert_eq!(session.client(), "zed");
         session.set_client("");
         assert_eq!(session.client(), "an agent");
+    }
+
+    #[test]
+    fn a_desktop_session_cannot_fall_back_to_a_local_scan() {
+        let temp = fixture();
+        let mut session = Session::desktop(endpoint(temp.path()));
+        let error = session
+            .prepare_scan(&ScanParams {
+                path: Some(temp.path().into()),
+                ..ScanParams::default()
+            })
+            .expect_err("desktop backend required");
+        assert!(error.contains("restart/reconnect"));
+        assert!(session.scans().is_empty());
+        assert!(session.marks().is_empty());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn explicit_standalone_never_adopts_a_running_desktop() {
+        let temp = fixture();
+        let socket = endpoint(temp.path());
+        let window = FakeWindow::open(&socket, temp.path());
+        let mut session = Session::standalone();
+        session.socket = socket;
+        scanned(&mut session, temp.path());
+        session
+            .mark(&PathsParams {
+                paths: vec![temp.path().join("src")],
+            })
+            .expect("standalone mark");
+        assert!(!session.status().contains("Window: open"));
+        assert!(
+            session
+                .show_path(&ShowParams {
+                    path: temp.path().join("src"),
+                })
+                .expect_err("no desktop access")
+                .contains("Standalone")
+        );
+        assert!(window.asked().is_empty());
+        assert!(window.marks().is_empty());
+        assert_eq!(session.marks().len(), 1);
     }
 }

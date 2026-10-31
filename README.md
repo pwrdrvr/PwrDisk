@@ -149,12 +149,19 @@ measured, SSH, and what differs on macOS and Windows.
 ## With an AI agent
 
 PwrDisk is also an [MCP](https://modelcontextprotocol.io) server. Connect it
-once and ask your agent what is eating your disk:
+after starting PwrDisk and ask your agent what is eating your disk:
 
 ```sh
 claude mcp add --scope user pwrdisk -- pwrdisk mcp   # Claude Code
 codex mcp add pwrdisk -- pwrdisk mcp                 # Codex
 ```
+
+The desktop must already be running. The command is a transport relay;
+the desktop owns tools, schemas, instructions, skills, resources, prompts
+and execution. MCP never launches PwrDisk. If the desktop is unavailable,
+start it yourself and reconnect MCP in the client. For an independent
+scanner, explicitly use `pwrdisk mcp --standalone`; that process owns its
+own interface, scans and marks, and cannot remove files or drive a window.
 
 On macOS the command lives inside the app. The window's **Work with an AI
 agent** line, under the disk, shows each command with the full path and a
