@@ -894,7 +894,7 @@ the PRs remain drafts while native acceptance is incomplete.
 
 | Issue / focused PR | Source and harness | Native evidence | Remaining acceptance |
 | --- | --- | --- | --- |
-| PWR-29 / [#38](https://github.com/pwrdrvr/PwrDisk/pull/38) | Paged file reader, raw path IDs, full metadata, selection, marks, review summaries; large-list and guard checks | macOS AX file/page/Unicode/selected/review subset observed. Linux X11 AT-SPI file names, roles, metadata, selection and advertised actions observed in this pass | Actual AT reading/action/focus, review on Windows/Linux; removal approval remains human/harness only |
+| PWR-29 / [#38](https://github.com/pwrdrvr/PwrDisk/pull/38) | Paged file reader, raw path IDs, full metadata, selection, marks, review summaries; large-list, guard and PR #38 focus/pagination regressions | macOS AX file/page/Unicode/selected/review subset observed. Linux X11 AT-SPI file names, roles, metadata, selection and advertised actions observed in this pass | Actual AT reading/action/focus, review on Windows/Linux; removal approval remains human/harness only |
 | PWR-30 / [#40](https://github.com/pwrdrvr/PwrDisk/pull/40) | Source inputs, validation, polite sampled progress, cancellation, volume/mark status | macOS AX host/root value, error/completion/volume subset; Linux final status and volume names observed | Native live announcements/throttling, SSH success/failure and cancellation across readers |
 | PWR-31 / [#42](https://github.com/pwrdrvr/PwrDisk/pull/42) | Tab order, modal containment/restoration, disabled controls, menu keys | macOS AX modal boundaries and keyboard subset; Linux advertised menu/button actions read without invoking them | AT focus/activation; Windows/Linux custom menus; Linux disabled-state mapping discrepancy below |
 | PWR-32 / [#43](https://github.com/pwrdrvr/PwrDisk/pull/43) | Settings/Help/document text, original-source Copy, log navigation/search/selection | macOS AX readable auxiliary subset; native Logs End/search/selection at 200% in this pass | AT reading order/actions and native platforms; final native search value `299` observed after controller recovery |
@@ -1020,3 +1020,61 @@ Reduce Motion was restored to its initial off value; VoiceOver was left
 off. Remaining native acceptance is on the PwrAgent to-do card
 “Complete native accessibility acceptance before merging the PR stack.”
 No PR was merged and no removal confirmation was automated.
+
+
+### PR #38 review corrections: focus and pagination
+
+The four findings were reproduced against `3c92a33` using only temporary
+contrived filesystem fixtures. Fix commit
+`0613879e46fa46e78809c291834f219d975bb662` adds five window-harness
+regressions, each failing before and passing after:
+
+| Finding | Before | Observed correction |
+| --- | --- | --- |
+| Focused file list, rescan, Escape | The list's absent focus owner prevents cancellation | Focus moves to the persistent root before the list disappears; Escape cancels; a subsequent completed scan restores list focus when appropriate |
+| Entry 99, Tab/Shift-Tab | Selection reaches entry 100 while page 0 remains rendered | Shared sibling navigation updates page, scroll and selection; Space safely marks the visible selected row |
+| File Previous after filtering 450 entries to 150 | Page counter 4 becomes 3, still rendering effective page 1 | Previous uses the effective page and reaches page 0 in one click |
+| Review Previous after marks shrink from 4,801 to 1,201 | The same stale-counter failure | One click reaches page 0; all 4,801 fixture files remain |
+| Enter/Right on a file; Left/Backspace/u at the scanned root | No-op navigation resets the page and hides selection | Page and selection remain visible; an actual directory change resets pagination |
+
+At `0613879`, macOS 27.0.1 arm64 lint, full workspace tests (229 app
+passed, two ignored; 232 core passed, seven ignored) and normal app build
+PASS. Ubuntu 24.04.5 x86_64 Sandboxer `sb_uihqpdf98b`: setup 0 (1s),
+lint 0 (6s), tests 0 (15s), portable build 0 (56s), isolated SSH 0 (3s),
+all 0.
+
+Separate native macOS keyboard/AX observation: 128 invented files on a
+disposable APFS image named A11yReviewFixtures. PageDown, Up, Tab selects
+`item-000100.txt`. Before, the accessible list still reports entries 1–100
+without a selected row; after, it reports entries 101–128 with the selected
+row. Return, Left and Backspace preserve that page and selection. Matched
+2992×1878 window captures, dark at 100% application zoom, are attached in
+[PR #38](https://github.com/pwrdrvr/PwrDisk/pull/38). Normal app SHA-256:
+
+- Before `3c92a33`:
+  `843d85a2c4b4908bc56d02a43680e8c36713943de98cacb225da0b98ef227930`.
+- After `0613879`:
+  `606c6a9fbc97a5eaecef43d2e28dbbfe5c2ee765ea014468bfa6eb0d1ecafe13`.
+
+The dependent focus PR also assigns the navigation focus handle to the
+painted treemap. Its integration now tests visibility of either navigation
+view before transferring focus. Its existing Tab-order regression caught
+and verifies that distinction. The later control-traversal policy remains:
+Tab moves between controls, while n/Shift-n exercise shared sibling
+navigation. PR #38 retains its original Tab/Shift-Tab regression.
+
+The restacked production source
+`ec5847b292cdbd05c54215b3aad836d7a3a03d58` passes macOS lint, full workspace
+tests (250 app passed, two ignored; 232 core passed, seven ignored), and
+normal app build. Ubuntu 24.04.5 x86_64 Sandboxer at the same source:
+setup 0 (0s), lint 0 (5s), tests 0 (12s), portable build 0 (43s), isolated
+SSH 0 (3s), all 0. The first integration run's Tab-order failure is
+superseded by the visibility correction and these passing gates.
+
+No screen-reader speech was tested in this review pass. The Windows peer
+remains disconnected. VoiceOver, UIA/Narrator/NVDA, Orca, real Linux
+desktops, OS display/text scaling and high-contrast acceptance gaps in the
+native matrix remain open; no harness result replaces them. No removal
+confirmation was activated through computer use or accessibility APIs.
+The task-owned test windows were closed and the disposable APFS image was
+detached. Existing native acceptance work remains tracked separately.
