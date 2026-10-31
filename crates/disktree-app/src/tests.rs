@@ -2083,6 +2083,44 @@ fn remote_review_copies_host_guarded_script_and_prompt(
     assert!(temp.path().join("junk/blob.bin").exists());
 }
 
+#[gpui_kit::test]
+fn remote_history_keeps_literal_and_nested_names_separate(
+    cx: &mut TestAppContext,
+) {
+    use disktree_core::tree::Node;
+    cx.update(init);
+    let mut root = Node::directory("srv");
+    root.children.push(Node::directory(r"a\b"));
+    let mut a = Node::directory("a");
+    a.children.push(Node::directory("b"));
+    root.children.push(a);
+    root.children.push(Node::directory("other"));
+    let (view, cx) = cx.add_window_view(move |_, cx| {
+        let mut app =
+            Disktree::with_tree(PathBuf::from("/srv"), root, options(), 3, cx);
+        app.remote = Some("fixture".into());
+        app
+    });
+    update(&view, cx, |app, cx| {
+        for path in [r"/srv/a\b", "/srv/a/b", "/srv/other"] {
+            let crumbs = app.crumbs_for_path(Path::new(path)).unwrap();
+            app.go_to(crumbs, cx);
+        }
+        let paths: Vec<_> = app
+            .history
+            .back
+            .iter()
+            .map(|path| path.to_str().unwrap())
+            .collect();
+        assert_eq!(paths, ["/srv", r"/srv/a\b", "/srv/a/b"]);
+        app.go_back(cx);
+        assert_eq!(app.current_path().to_str(), Some("/srv/a/b"));
+        app.go_back(cx);
+        assert_eq!(app.current_path().to_str(), Some(r"/srv/a\b"));
+    });
+    draw(cx);
+}
+
 /// A Unix host's paths are POSIX on every client. A Windows client must not
 /// join them with `\`, split a name such as `logs\old` or `a:b`, or export a
 /// delete script that names a different file on the host.
@@ -2092,7 +2130,7 @@ fn remote_paths_keep_the_hosts_separators_on_every_client(
 ) {
     use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
 
-    cx.update(gpui_omarchy::init);
+    cx.update(init);
     let mut root = Node::directory("data");
     let mut logs = Node::directory(r"logs\old");
     logs.children

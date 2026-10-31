@@ -1094,7 +1094,7 @@ impl Disktree {
         let Some(disk) = self.disk_root.clone() else {
             return;
         };
-        if disk == self.root_path {
+        if self.path_style().same(&disk, &self.root_path) {
             self.go_to(Vec::new(), cx);
         } else {
             self.widen_to(disk, cx);
@@ -1998,7 +1998,12 @@ impl Disktree {
             return;
         }
         let here = self.current_path();
-        if self.history.back.last() != Some(&here) {
+        if self
+            .history
+            .back
+            .last()
+            .is_none_or(|last| !self.path_style().same(last, &here))
+        {
             self.history.back.push(here);
         }
         if self.history.back.len() > HISTORY_DEPTH {

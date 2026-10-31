@@ -40,6 +40,15 @@ impl PathStyle {
         }
     }
 
+    /// Whether two paths identify the same spelling in this namespace.
+    #[must_use]
+    pub fn same(self, left: &Path, right: &Path) -> bool {
+        match self {
+            Self::Native => left == right,
+            Self::Posix => left.as_os_str() == right.as_os_str(),
+        }
+    }
+
     /// Whether `path` names a directory from the machine's root.
     #[must_use]
     pub fn is_absolute(self, path: &Path) -> bool {
@@ -260,6 +269,15 @@ mod tests {
         assert!(!posix.is_absolute(Path::new(r"\home\someone")));
         assert!(!posix.is_absolute(Path::new(r"C:\Users")));
         assert_eq!(posix.separator(), '/');
+    }
+
+    #[test]
+    fn posix_equality_keeps_foreign_separators_literal() {
+        let literal = Path::new(r"/srv/a\b");
+        let nested = Path::new("/srv/a/b");
+        assert!(!PathStyle::Posix.same(literal, nested));
+        assert!(PathStyle::Posix.same(literal, literal));
+        assert_eq!(PathStyle::Native.same(literal, nested), literal == nested);
     }
 
     /// Native is `std::path`, so local scans behave exactly as before.

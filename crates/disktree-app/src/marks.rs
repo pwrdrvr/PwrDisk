@@ -278,7 +278,7 @@ impl Marks {
     ) -> Arc<FxHashSet<Vec<usize>>> {
         if let Some(resolved) = &self.resolved
             && resolved.tree.as_ptr() == Arc::as_ptr(tree)
-            && resolved.root_path == root_path
+            && style.same(&resolved.root_path, root_path)
             && resolved.metric == metric
             && resolved.style == style
         {
@@ -1032,6 +1032,26 @@ mod tests {
         assert_eq!(
             marks.crumbs(root_path, &root, Metric::Bytes, style).len(),
             2
+        );
+    }
+
+    #[test]
+    fn posix_crumb_cache_compares_root_text_in_the_host_namespace() {
+        let style = PathStyle::Posix;
+        let root_path = Path::new(r"/srv/a\b");
+        let mut root = Node::directory("root");
+        root.children.push(file("payload", 7));
+        let root = Arc::new(root);
+        let mut marks = Marks::default();
+        marks.toggle(target(r"/srv/a\b/payload", 7), style);
+        assert_eq!(
+            marks.crumbs(root_path, &root, Metric::Bytes, style).len(),
+            1
+        );
+        assert!(
+            marks
+                .crumbs(Path::new("/srv/a/b"), &root, Metric::Bytes, style)
+                .is_empty()
         );
     }
 }
