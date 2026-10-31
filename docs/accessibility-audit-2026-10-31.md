@@ -488,8 +488,8 @@ under PWR-32/PWR-34.
 
 Contrived before/after focus images use PWR-30 head `21ae8fe` and this commit,
 the same Projects/APFS fixture, default dark appearance and 100% UI zoom.
-Both windows were fitted with macOS's window Zoom action: 2992×1880 pixel
-captures (1496×940 logical at 2×). The initial offscreen capture had white
+Both windows were fitted with macOS's window Zoom action: 2992×1878 pixel
+captures (1496×939 logical at 2×). The initial offscreen capture had white
 clipped edges and was replaced; that capture artifact is not a layout fix.
 Before, Tab changes the selected tile; after, it focuses Size. No removal
 confirmation was activated through computer use or accessibility APIs.
