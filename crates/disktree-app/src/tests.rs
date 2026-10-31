@@ -731,10 +731,16 @@ fn remote_root_acceptance_never_stats_the_path_locally(
 ) {
     cx.update(init);
     let temp = fixture();
-    // Use a native absolute path so Windows reaches the remote acceptance
-    // branch too. Its absence proves local directory validation is skipped.
-    let remote_root = temp.path().join("only-on-the-remote-host");
-    assert!(remote_root.is_absolute() && !remote_root.exists());
+    // A Unix host sends a POSIX root on every client. Its absence here
+    // proves that accepting it skips local directory validation.
+    let remote_root = if cfg!(unix) {
+        temp.path().join("only-on-the-remote-host")
+    } else {
+        PathBuf::from("/srv/pwrdisk-fixture/only-on-the-remote-host")
+    };
+    assert!(
+        PathStyle::Posix.is_absolute(&remote_root) && !remote_root.exists()
+    );
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
         let crumbs = app.crumbs_for_path(&temp.path().join("junk")).unwrap();
