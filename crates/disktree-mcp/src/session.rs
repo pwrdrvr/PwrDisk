@@ -1008,7 +1008,7 @@ impl Session {
             }
             Ok(other) => Some(unexpected(&other)),
             Err(reason) => {
-                Some(format!("{reason}. {}", disktree_link::RECONNECT_MCP,))
+                Some(format!("{reason}. {}", disktree_link::RECONNECT_MCP))
             }
         };
         let request_refused =
