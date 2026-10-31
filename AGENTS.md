@@ -21,9 +21,11 @@ the removal mode, the confirmation). Marking is never destructive.
 
 `pwrdisk mcp` is the same thing for an AI agent: an MCP server over stdio
 that scans with `disktree-core`, marks, and opens the review screen in a
-window over a per-user socket or pipe (`disktree-link`). The agent marks; the
-person removes. There is no tool that deletes, and the link has no request
-that deletes.
+window over a per-user socket or pipe (`disktree-link`). Removal uses either
+human review or an explicit destructive MCP write after a single-use preview
+and user confirmation of the exact paths and mode. Computer use must never
+approve removal. Both routes enforce the configured per-operation capacity
+limit (5% per volume by default), including a fresh measurement on the worker.
 
 ## Commands
 
@@ -162,15 +164,19 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
     mark and removal APIs. Only a complete scan may replace the real tree.
     Counters and sampled paths belong in fixed, monospace progress lanes.
 
-12. **An agent marks; a person removes.** `pwrdisk mcp` has no tool that
-    deletes, and the window link has no request that does. `review` only
-    opens the review screen. When a window is linked it is the agent's
-    source of truth: `ls`, `find` and `scan` are answered from its tree,
-    a mark is measured from it, and its marks are the marks — every link
-    answer carries them, and the MCP session replaces its own with what
-    the window says. The session's own scans are read only while no
-    window is open. The listing and search logic is `core::query`, shared
-    by both sides, so they answer alike.
+12. **The user confirms removal.** Marking never authorizes deleting.
+    `review` only opens the review screen; agents must never click its
+    confirmation or press its approval keys through computer use. MCP removal
+    is a destructive write: prepare an expiring, single-use preview, show the
+    exact paths and mode and explain recoverability, then obtain explicit
+    confirmation for that operation. An expired or changed preview requires
+    new confirmation. The app validates the intent and rechecks existing
+    guards and its configured capacity limit for both UI and MCP removals.
+    Trash never falls back to permanent deletion. No headless or SSH removal.
+    A linked window's tree and marks remain the source of truth; `ls` and
+    `find` read it without navigating. Only an explicit `show` request moves
+    the view, and guidance requires the user to request that behavior.
+    `scan` explicitly changes the scan root; linking never does so implicitly.
 13. **The link is a same-user socket or pipe, nothing more.** `disktree-link`
     binds `0600` in a per-user directory on Unix. On Windows it uses a
     named pipe keyed by the user's SID, with a protected DACL granting only

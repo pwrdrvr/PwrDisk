@@ -395,14 +395,22 @@ macOS, show each command with the binary's full path and a Copy button.)
 Then ask it what is eating your disk. The agent walks the tree largest
 first, lists every cache, build directory and package store at once, and
 proposes what can go. It marks what you agree to, and marking is all it
-can do: `pwrdisk_review` opens PwrDisk's review screen, and you press Enter
-there. There is no tool that deletes.
+does by default. `pwrdisk_review` opens the marked list for you to approve;
+the agent must never approve it through computer use. For requested MCP
+removal, `pwrdisk_removal_preview` returns the exact paths and an explicit
+Trash or permanent mode. After you confirm that operation, the destructive
+`pwrdisk_remove` tool requires interactive confirmation through the MCP
+client. Clients without form elicitation use human review instead. Trash
+may be recoverable until emptied; permanent deletion cannot be undone
+through PwrDisk. Settings > Safety sets the per-operation limit: 5% of each
+volume's capacity by default, for both UI and MCP removal. The app rechecks
+the guards and re-measures the complete selection before removing anything.
 
 When a PwrDisk window is open, its tree is what the agent reads. `ls`,
 `find` and `scan` are answered from the mosaic on screen, a mark is
 measured from it, and the two of you see the same numbers. The agent's
 marks appear in the mosaic and in the free-space meter as it makes them,
-`show` moves the view to what it is looking at, a scan it asks for runs in
+`ls` and `find` never navigate; `show` moves the view only when you ask, a scan it asks for runs in
 the window, and the header names the agent and its last action while it is
 connected. With no window open the agent scans on its own, in seconds for a
 home directory, and can open a window for the review. Without a display it
@@ -412,7 +420,7 @@ over SSH.
 
 The tools: `pwrdisk_status`, `pwrdisk_scan`, `pwrdisk_ls`,
 `pwrdisk_find`, `pwrdisk_show`, `pwrdisk_mark`, `pwrdisk_unmark` and
-`pwrdisk_review`. Each `mark` answers with the real plan: what the guards
+`pwrdisk_review`, `pwrdisk_removal_preview` and `pwrdisk_remove`. Each `mark` answers with the real plan: what the guards
 below keep back and why, what another mark already covers, and the free
 space it gives back on the volume, counted the way the meter counts it.
 

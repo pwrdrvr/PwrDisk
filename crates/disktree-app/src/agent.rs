@@ -9,9 +9,9 @@
 //! and `scan` are answered from the tree on screen, and a mark is measured
 //! from it too, so the agent and the person read the same numbers.
 //!
-//! An agent can look, mark and open the review screen. It cannot remove
-//! anything: the review screen is where the person decides, same as when
-//! they marked everything themselves.
+//! An agent can look, mark and open review. Destructive requests require a
+//! single-use intent matching an explicitly confirmed preview. UI and MCP
+//! removal share the same guards and configured capacity limit.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -52,6 +52,7 @@ pub struct AgentLink {
     pending_show: Option<PathBuf>,
     /// The last removal, for an agent that asks what was freed.
     pub last_removal: Option<Removal>,
+    pub(crate) removal_preview: Option<crate::agent_removal::PreparedRemoval>,
 }
 
 impl AgentLink {
@@ -61,6 +62,7 @@ impl AgentLink {
             presence: None,
             pending_show: None,
             last_removal: None,
+            removal_preview: None,
         }
     }
 }
@@ -162,7 +164,7 @@ impl Disktree {
         }
     }
 
-    fn note_agent(&mut self, client: Option<&str>, action: String) {
+    pub(crate) fn note_agent(&mut self, client: Option<&str>, action: String) {
         let Some(agent) = &mut self.agent else {
             return;
         };
@@ -198,10 +200,17 @@ impl Disktree {
                          agent version {version}; restart the older one"
                     ));
                 }
+                if let Some(agent) = &mut self.agent {
+                    agent.removal_preview = None;
+                }
                 self.note_agent(Some(client), "connected".to_string());
                 Response::State(self.agent_state())
             }
             Request::State => Response::State(self.agent_state()),
+            Request::PrepareRemoval { mode } => {
+                self.agent_prepare_removal(*mode)
+            }
+            Request::Remove(request) => self.agent_remove(request, cx),
             Request::Show { root, path } => self.agent_show(root, path, cx),
             Request::Scan { root, options } => {
                 self.agent_scan(root, options, cx)

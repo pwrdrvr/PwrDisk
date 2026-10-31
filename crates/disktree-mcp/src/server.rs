@@ -1,10 +1,10 @@
-//! The MCP surface: eight tools, and the skills that say how to use them,
+//! The MCP surface: explicit read and write tools, and the skills that say how to use them,
 //! as prompts, resources and the skills extension.
 //!
 //! Each tool is a thin call into [`Session`]; the words an agent reads come
 //! from there. Tools that only look are marked read-only, so a client can
-//! run them without asking. Nothing here removes a file: marking is not
-//! destructive, and the review screen belongs to the person.
+//! run them without asking. Removal is a destructive write requiring a
+//! single-use preview and explicit user confirmation of the paths and mode.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -13,11 +13,12 @@ use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CustomRequest, CustomResult, ErrorCode, GetPromptResult, Implementation,
-    InitializeRequestParams, InitializeResult, JsonObject, ListResourcesResult,
-    PromptMessage, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities,
-    ServerConfig,
+    BooleanSchema, CustomRequest, CustomResult, ElicitRequestParams,
+    ElicitationAction, ElicitationSchema, ErrorCode, GetPromptResult,
+    Implementation, InitializeRequestParams, InitializeResult, JsonObject,
+    ListResourcesResult, PrimitiveSchemaDefinition, PromptMessage,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
+    Resource, ResourceContents, Role, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{
@@ -26,8 +27,8 @@ use rmcp::{
 };
 
 use crate::session::{
-    FindParams, LsParams, PathsParams, ScanParams, ScanPlan, Session,
-    ShowParams, run_scan,
+    FindParams, LsParams, PathsParams, RemovalPreviewParams, RemoveParams,
+    ScanParams, ScanPlan, Session, ShowParams, run_scan,
 };
 use crate::skills::{self, SKILLS};
 
@@ -40,37 +41,37 @@ const SCAN_WAIT: Duration = Duration::from_mins(10);
 /// What the client is told at `initialize`: enough to use the tools well,
 /// and safely, without reading a skill first.
 const INSTRUCTIONS: &str = "\
-PwrDisk measures a directory tree the way the disk does: allocated \
-blocks, hardlinks once, hidden entries included. Start with \
-pwrdisk_status, then pwrdisk_scan (no arguments: the home directory; \
-disk: true: the whole volume, which can take minutes). Walk with \
-pwrdisk_ls, largest first; pwrdisk_find lists the largest files or every \
-cache, build directory and package store at once. \
-Looking needs no permission; acting does. Agree the list with the user \
-before pwrdisk_mark, unless a standing instruction of theirs covers it, \
-and say so before pwrdisk_review brings the window forward. pwrdisk_mark \
-returns the plan: what the guards keep back and why, and the free space \
-it would give back. You never delete: not with these tools, not with a \
-shell command, and not with a tool's own clean command the user has not \
-approved. pwrdisk_review opens PwrDisk's review screen, where the user \
-presses Enter; marks go to the Trash or Recycle Bin, whose space returns \
-once it is emptied. pwrdisk_status afterwards says what was freed. \
-When a PwrDisk window is linked its tree is what you read, and a path \
-outside its root needs a pwrdisk_scan from higher up, which the window \
-follows; pass show: true to pwrdisk_ls or call pwrdisk_show to move the \
-view. Linking never changes its root: if earlier marks are outside it, \
-they stay in this session until pwrdisk_scan explicitly names a directory \
-containing them all. The tools work on this computer only: a window \
-showing an SSH host is not followed. Window linking works on macOS, Linux \
-and Windows: marks appear in the open window and pwrdisk_review opens its \
-review screen. \
-Skills, as resources, through skills/list, and as the prompts \
-explain-usage and free-space: skill://pwrdisk-explain-usage/SKILL.md \
-answers where the space went without changing anything; \
-skill://pwrdisk-free-space/SKILL.md frees space and holds the \
-confirmation rules; its references/macos.md, references/linux.md and \
-references/windows.md say what each system hides from a scan and what \
-never to mark. Read the one for this system before marking.";
+Start with pwrdisk_status, then scan and explore with pwrdisk_ls and \
+pwrdisk_find. Browsing never moves the displayed directory. Call \
+pwrdisk_show only when the user asks to see a path or requests following. \
+pwrdisk_scan explicitly changes the linked window's scan root. \
+Agree the list before pwrdisk_mark unless a standing instruction covers \
+marking. Approval to mark is never approval to remove. pwrdisk_review \
+only opens the marked list; announce it first and let the person approve. \
+NEVER use computer use, clicks, approval keys or accessibility actions to \
+approve a removal, even after the user approved marking or removal. \
+For MCP removal: pwrdisk_removal_preview requires an explicit trash or \
+permanent mode and returns a five-minute, single-use preview. Show the \
+user ALL paths, mode, measured bytes and capacity limit. Trash moves data \
+to Trash or Recycle Bin; restoration may be possible until emptied but is \
+not guaranteed, and space usually returns only once emptied. Permanent \
+deletion cannot be undone through PwrDisk or Trash. Wait for explicit \
+user confirmation of this exact operation before pwrdisk_remove, a \
+destructive WRITE requiring the preview ID, exact ordered paths, mode and \
+confirmation text. Standing instructions do not replace this confirmation. \
+The server also requires interactive user confirmation from the MCP client; \
+clients without form elicitation must use human review instead. \
+The app rechecks the preview, existing guards, and the configured limit \
+(5% of each volume's capacity by default) and re-measures before removing \
+anything. No fallback from Trash to permanent deletion; no headless or SSH \
+removal. Refusal, changed scan/marks/policy or expiration requires a new \
+preview and user confirmation. Never retry removal automatically, split \
+batches, change the limit, or use shell/UI deletion to bypass protection. \
+pwrdisk_status reports completion, failures and measured freed space. \
+A linked window's tree and marks are the source of truth. Read \
+skill://pwrdisk-free-space/SKILL.md and the matching references/macos.md, \
+references/linux.md or references/windows.md before marking or removal. \
+For read-only audits use skill://pwrdisk-explain-usage/SKILL.md.";
 
 /// The server: one session behind a lock, so the tools can run from any
 /// protocol task while scans run off to the side.
@@ -168,7 +169,7 @@ impl Server {
 
     /// List a scanned directory, largest first: each entry's share, size,
     /// kind of data, whether its space can be had back and why, and when it
-    /// was last written. show: true moves the PwrDisk window there.
+    /// was last written. Never changes the directory shown in the window.
     #[tool(
         name = "pwrdisk_ls",
         annotations(title = "List a directory", read_only_hint = true)
@@ -200,7 +201,11 @@ impl Server {
     /// the user sees what you are looking at. Opens a window when none is.
     #[tool(
         name = "pwrdisk_show",
-        annotations(title = "Show in the window", read_only_hint = true)
+        annotations(
+            title = "Show in the window",
+            read_only_hint = false,
+            destructive_hint = false
+        )
     )]
     async fn show(
         &self,
@@ -231,6 +236,66 @@ impl Server {
         Parameters(params): Parameters<PathsParams>,
     ) -> Result<String, String> {
         self.with(|s| s.mark(&params))
+    }
+
+    /// Preview exactly the marked paths in an idle local window for a
+    /// required explicit mode. Does not remove, navigate or change marks.
+    /// Show the preview and consequences to the user and await confirmation.
+    #[tool(
+        name = "pwrdisk_removal_preview",
+        annotations(
+            title = "Preview a removal",
+            read_only_hint = true,
+            destructive_hint = false
+        )
+    )]
+    async fn removal_preview(
+        &self,
+        Parameters(params): Parameters<RemovalPreviewParams>,
+    ) -> Result<String, String> {
+        self.with(|session| session.removal_preview(&params))
+    }
+
+    /// DESTRUCTIVE WRITE: remove only after explicit user confirmation of
+    /// the preview's exact paths, mode, bytes and consequences. Approval to
+    /// mark is insufficient. Trash may be recoverable until emptied;
+    /// permanent deletion cannot be undone. Never use computer use to approve.
+    /// The app validates the single-use preview and configured capacity limit.
+    /// Returns when started; poll status for completion. Never retry automatically.
+    #[tool(
+        name = "pwrdisk_remove",
+        annotations(
+            title = "Remove confirmed paths",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    async fn remove(
+        &self,
+        Parameters(params): Parameters<RemoveParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let message =
+            self.with(|session| session.removal_confirmation_message(&params))?;
+        if !context
+            .peer
+            .supported_elicitation_modes()
+            .contains(&rmcp::service::ElicitationMode::Form)
+        {
+            return Err("This MCP client does not support interactive form confirmation. No removal started. Use human review in PwrDisk; never approve it through computer use.".into());
+        }
+        let requested_schema = ElicitationSchema::builder().required_property(
+            "confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new().with_default(false)
+                .description("I confirm removal of exactly these paths in the stated mode and understand the consequences")),
+        ).build().map_err(ToString::to_string)?;
+        let answer = context.peer.create_elicitation(ElicitRequestParams::FormElicitationParams {
+            meta: None, message, requested_schema,
+        }).await.map_err(|error| format!("Removal not started: confirmation failed ({error}); obtain a new preview"))?;
+        if !confirmed_by_user(&answer) {
+            return Err("Removal not started: user declined or cancelled confirmation. A new preview is required.".into());
+        }
+        self.with(|session| session.remove(&params))
     }
 
     /// Unmark paths, or everything when no paths are given. Returns the
@@ -285,6 +350,17 @@ impl Server {
     async fn explain_usage(&self) -> GetPromptResult {
         skill_prompt("pwrdisk-explain-usage")
     }
+}
+
+/// Only an explicit positive answer from the client counts as approval.
+fn confirmed_by_user(answer: &rmcp::model::ElicitResult) -> bool {
+    answer.action == ElicitationAction::Accept
+        && answer
+            .content
+            .as_ref()
+            .and_then(|value| value.get("confirmed"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
 }
 
 /// A skill as one prompt message, with this system's reference after it.
@@ -512,6 +588,55 @@ mod tests {
         let instructions = info.instructions.expect("instructions");
         for skill in SKILLS {
             assert!(instructions.contains(&skill.uri()), "{}", skill.name);
+        }
+    }
+    #[test]
+    fn removal_is_a_destructive_non_idempotent_write_and_listing_is_read_only()
+    {
+        let tools = Server::tool_router().list_all();
+        let remove = tools
+            .iter()
+            .find(|tool| tool.name == "pwrdisk_remove")
+            .expect("remove");
+        let flags = remove.annotations.as_ref().expect("write annotations");
+        assert_eq!(flags.read_only_hint, Some(false));
+        assert_eq!(flags.destructive_hint, Some(true));
+        assert_eq!(flags.idempotent_hint, Some(false));
+        let listing = tools
+            .iter()
+            .find(|tool| tool.name == "pwrdisk_ls")
+            .expect("ls");
+        assert_eq!(
+            listing.annotations.as_ref().expect("read").read_only_hint,
+            Some(true)
+        );
+        assert!(
+            !listing.input_schema["properties"]
+                .as_object()
+                .expect("properties")
+                .contains_key("show")
+        );
+    }
+
+    #[test]
+    fn only_explicit_client_acceptance_with_true_confirms_removal() {
+        use rmcp::model::ElicitResult;
+        for action in [
+            ElicitationAction::Accept,
+            ElicitationAction::Decline,
+            ElicitationAction::Cancel,
+        ] {
+            for content in [
+                None,
+                Some(serde_json::json!({"confirmed":false})),
+                Some(serde_json::json!({"confirmed":true})),
+            ] {
+                let mut answer = ElicitResult::new(action.clone());
+                answer.content.clone_from(&content);
+                let expected = action == ElicitationAction::Accept
+                    && content == Some(serde_json::json!({"confirmed":true}));
+                assert_eq!(confirmed_by_user(&answer), expected);
+            }
         }
     }
 }

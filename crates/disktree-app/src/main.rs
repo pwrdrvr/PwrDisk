@@ -12,6 +12,7 @@
 #![windows_subsystem = "windows"]
 
 mod agent;
+mod agent_removal;
 mod app_menu;
 mod appearance;
 mod aux_window;
@@ -30,6 +31,7 @@ mod logs_window;
 mod marks;
 mod palette;
 mod power;
+mod safety;
 mod settings;
 mod state;
 #[cfg(test)]

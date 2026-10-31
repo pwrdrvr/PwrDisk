@@ -1088,8 +1088,26 @@ impl RemovalHandle {
     }
 }
 
+/// App removals use the same limit for UI and MCP. Preflight completes
+/// before the worker removes any target, so a rejected batch does no work.
+pub fn spawn_limited(
+    plan: Plan,
+    mode: RemovalMode,
+    limit: crate::removal_limit::Limit,
+) -> RemovalHandle {
+    spawn_checked(plan, mode, Some(limit))
+}
+
 /// Start removing the plan's targets on a worker thread.
 pub fn spawn(plan: Plan, mode: RemovalMode) -> RemovalHandle {
+    spawn_checked(plan, mode, None)
+}
+
+fn spawn_checked(
+    plan: Plan,
+    mode: RemovalMode,
+    limit: Option<crate::removal_limit::Limit>,
+) -> RemovalHandle {
     let (sender, events) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
@@ -1103,7 +1121,36 @@ pub fn spawn(plan: Plan, mode: RemovalMode) -> RemovalHandle {
         .name("disktree-remove".into())
         .spawn({
             let sender = sender.clone();
-            move || run(&plan, mode, backend, &worker_cancel, &sender)
+            move || {
+                if let Some(limit) = limit {
+                    let fresh = self::plan(&plan.targets, &plan.root);
+                    let checked = if fresh.blocked.is_empty() {
+                        crate::removal_limit::measured(&plan.targets)
+                            .and_then(|targets| limit.check(&targets))
+                    } else {
+                        Err("Removal guards changed before preflight; nothing was removed".into())
+                    };
+                    if let Err(reason) = checked {
+                        let _ = sender.send(RemovalEvent::Start {
+                            total: plan.targets.len(),
+                        });
+                        for target in &plan.targets {
+                            let _ = sender.send(RemovalEvent::Item {
+                                path: target.path.clone(),
+                                bytes: 0,
+                                outcome: Err(reason.clone()),
+                            });
+                        }
+                        let _ = sender.send(RemovalEvent::Done {
+                            removed: 0,
+                            bytes: 0,
+                            failed: plan.targets.len(),
+                        });
+                        return;
+                    }
+                }
+                run(&plan, mode, backend, &worker_cancel, &sender);
+            }
         });
     if let Err(error) = worker {
         let _ = sender.send(RemovalEvent::Item {
@@ -2884,6 +2931,42 @@ mod tests {
         // Library is theirs.
         for path in ["/Applications/Xcode.app", "/Users/tobi/Library/Caches"] {
             assert_eq!(tree_of(Path::new(path), home), None, "{path}");
+        }
+    }
+    #[test]
+    fn limited_worker_refuses_the_entire_batch_before_removing_anything() {
+        let temp = tree();
+        let paths = [temp.path().join("a/b"), temp.path().join("a/c.bin")];
+        let planned = plan(
+            &[
+                target(&paths[0], u64::MAX / 4),
+                target(&paths[1], u64::MAX / 4),
+            ],
+            temp.path(),
+        );
+        let handle = spawn_limited(
+            planned,
+            RemovalMode::Permanent,
+            crate::removal_limit::Limit::default(),
+        );
+        let mut done = None;
+        for _ in 0..2000 {
+            while let Some(event) = handle.poll() {
+                if let RemovalEvent::Done {
+                    removed, failed, ..
+                } = event
+                {
+                    done = Some((removed, failed));
+                }
+            }
+            if done.is_some() {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(done, Some((0, 2)));
+        for path in paths {
+            assert!(path.exists());
         }
     }
 }

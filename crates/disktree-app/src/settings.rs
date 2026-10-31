@@ -67,16 +67,19 @@ const SPEC: Spec = Spec {
 pub enum Pane {
     Updates,
     Diagnostics,
+    Safety,
     About,
 }
 
 impl Pane {
-    pub const ALL: [Self; 3] = [Self::Updates, Self::Diagnostics, Self::About];
+    pub const ALL: [Self; 4] =
+        [Self::Updates, Self::Safety, Self::Diagnostics, Self::About];
 
     pub const fn label(self) -> &'static str {
         match self {
             Self::Updates => "Updates",
             Self::Diagnostics => "Diagnostics",
+            Self::Safety => "Safety",
             Self::About => "About",
         }
     }
@@ -86,6 +89,7 @@ impl Pane {
         match self {
             Self::Updates => "settings-nav-updates",
             Self::Diagnostics => "settings-nav-diagnostics",
+            Self::Safety => "settings-nav-safety",
             Self::About => "settings-nav-about",
         }
     }
@@ -332,6 +336,7 @@ impl Render for SettingsWindow {
         let pane = match self.pane {
             Pane::Updates => self.updates(&theme, cx),
             Pane::Diagnostics => self.diagnostics_pane(&theme, cx),
+            Pane::Safety => self.safety_pane(&theme, cx),
             Pane::About => self.about(&theme, cx),
         };
         let body = div()
@@ -370,6 +375,60 @@ impl Render for SettingsWindow {
 // ── panes ───────────────────────────────────────────────────────────────
 
 impl SettingsWindow {
+    fn safety_pane(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
+        let current = crate::safety::load(self.updates_dir.as_deref());
+        let mut rows = div().flex().flex_col().gap(space::SM);
+        for percent in [1, 5, 10, 25, 50, 100] {
+            let picked = current
+                .as_ref()
+                .is_ok_and(|limit| limit.percent() == percent);
+            rows = rows.child(
+                button(
+                    ElementId::Name(format!("safety-limit-{percent}").into()),
+                    format!(
+                        "{percent}%{}",
+                        if picked { " (selected)" } else { "" }
+                    ),
+                    if picked {
+                        ButtonVariant::Primary
+                    } else {
+                        ButtonVariant::Secondary
+                    },
+                    cx,
+                )
+                .debug_selector(move || format!("safety-limit-{percent}"))
+                .on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.note =
+                            disktree_core::removal_limit::Limit::new(percent)
+                                .and_then(|limit| {
+                                    crate::safety::save(
+                                        this.updates_dir.as_deref(),
+                                        limit,
+                                    )
+                                })
+                                .err();
+                        window.focus(&this.focus, cx);
+                        cx.notify();
+                    },
+                )),
+            );
+        }
+        let mut body = div().flex().flex_col().gap(space::MD)
+            .child(div().text_size(text::TITLE).child("Removal limit"))
+            .child("Maximum measured data per operation, as a percentage of each volume's capacity. Applies to both Trash and permanent deletion, from the window and MCP. The default is 5%. Each operation is re-measured before anything is removed.")
+            .child("Trash may be recoverable until emptied; restoration is not guaranteed. Permanent deletion cannot be undone through PwrDisk. MCP requires confirmation of the exact paths and mode for every operation.")
+            .child(rows);
+        if let Err(reason) = current {
+            body = body.child(div().text_color(theme.warning).child(reason));
+        }
+        if let Some(note) = &self.note {
+            body =
+                body.child(div().text_color(theme.warning).child(note.clone()));
+        }
+        body
+    }
+
     fn updates(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
         use crate::updater::Installation;
 

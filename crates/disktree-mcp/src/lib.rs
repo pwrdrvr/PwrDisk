@@ -8,7 +8,7 @@
 //! follows along over [`disktree_link`], and a window can be opened for the
 //! review screen.
 //!
-//! The agent marks; the person removes. There is no tool that deletes.
+//! Destructive removal requires a single-use preview and user confirmation.
 //! [`Session`] holds what one connected agent knows; [`server`] is the
 //! protocol around it.
 
@@ -16,6 +16,9 @@ pub mod report;
 pub mod server;
 pub mod session;
 pub mod skills;
+
+#[cfg(test)]
+mod confirmation_tests;
 
 pub use session::Session;
 

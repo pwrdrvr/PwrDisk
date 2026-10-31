@@ -347,6 +347,7 @@ pub struct Disktree {
     pub options: ScanOptions,
     pub power_choice: Option<crate::power::PowerEfficiency>,
     pub power_settings_path: Option<PathBuf>,
+    pub removal_settings_dir: Option<PathBuf>,
     /// The Power Efficiency menu, when open: the row the arrow keys are on,
     /// as an index into [`crate::power::PowerEfficiency::ALL`].
     pub power_menu: Option<usize>,
@@ -567,6 +568,7 @@ impl Disktree {
             options,
             power_choice: None,
             power_settings_path: crate::power::settings_path(),
+            removal_settings_dir: crate::updater::settings_dir(),
             power_menu: None,
             power_hover: false,
             cpu_threads: crate::power::cpu_threads(),
@@ -2809,6 +2811,17 @@ impl Disktree {
             cx.notify();
             return;
         }
+        let limit =
+            match crate::safety::load(self.removal_settings_dir.as_deref())
+                .and_then(|limit| limit.check(&plan.targets).map(|_| limit))
+            {
+                Ok(limit) => limit,
+                Err(reason) => {
+                    self.notice = Some((reason, Status::Warning));
+                    cx.notify();
+                    return;
+                }
+            };
         // This window quits once the prompt is answered yes, and quitting
         // would stop a permanent delete halfway.
         if self.restarting {
@@ -2828,7 +2841,11 @@ impl Disktree {
         };
         self.run_log.clear();
         self.screen = Screen::Running;
-        self.run = Some(disktree_core::removal::spawn(plan, self.removal_mode));
+        self.run = Some(disktree_core::removal::spawn_limited(
+            plan,
+            self.removal_mode,
+            limit,
+        ));
         Self::poll_removal(epoch, cx);
         cx.notify();
     }
