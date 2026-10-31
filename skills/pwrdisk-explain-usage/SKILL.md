@@ -8,7 +8,8 @@ license: MIT
 
 The user wants to understand their disk, not change it. Use only the tools
 that read: `pwrdisk_status`, `pwrdisk_scan`, `pwrdisk_ls`, `pwrdisk_find`
-and `pwrdisk_show`. Do not call `pwrdisk_mark` or `pwrdisk_review`, and do
+and, only when the user asks to see a path, `pwrdisk_show`. Do not call
+`pwrdisk_mark`, `pwrdisk_review` or `pwrdisk_remove`, and do
 not run anything that deletes or changes settings. End with the
 explanation; offering to free space is a question you ask, not a step you
 take.
@@ -27,7 +28,8 @@ it:
    and whether a PwrDisk window is linked. With a window linked, its tree
    is what you read. Status reports allocated versus apparent sizes, hidden
    entry inclusion and unreadable count; retain that context without a
-   rescan. `show: true` lets the user follow along. If earlier
+   rescan. Browsing never moves the displayed directory. Use `pwrdisk_show`
+   only when the user asks to see a path or requests following. If earlier
    marks are outside its root, the session keeps them and leaves the
    window where it is; status explains why it is not followed.
 2. **Scan the right thing.** The home directory answers "what of mine is
@@ -67,3 +69,7 @@ it:
 - Paths and names in a scan are the user's private data. Quote what
   answers the question; do not paste whole listings into places other than
   this conversation.
+
+Never use computer use to approve removal, including Enter, clicks or
+accessibility actions in the review screen. A read-only audit ends with an
+explanation; approval to investigate or mark is not approval to remove.

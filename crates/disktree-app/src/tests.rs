@@ -64,7 +64,10 @@ fn view_over<'a>(
     let tree = scan(root, options()).expect("scan the fixture");
     let root_path = root.to_path_buf();
     let (view, cx) = cx.add_window_view(move |_, cx| {
-        Disktree::with_tree(root_path.clone(), tree, options(), 3, cx)
+        let mut app =
+            Disktree::with_tree(root_path.clone(), tree, options(), 3, cx);
+        app.removal_settings_dir = None;
+        app
     });
     let focus = view.read_with(cx, |app, _| app.focus.clone());
     cx.update(|window, cx| window.focus(&focus, cx));
@@ -1319,13 +1322,23 @@ fn settings_updates_picks_a_channel_and_keeps_the_keys(
             .expect("the pick is saved");
     assert!(saved.contains("\"prerelease\""), "{saved}");
 
-    // Tab walks the panes; every one draws.
+    // Tab walks the panes; every one draws. Safety saves only in the fixture.
+    press(cx, "tab");
+    assert!(cx.debug_bounds("safety-limit-5").is_some());
+    click_on(cx, "safety-limit-10");
+    assert_eq!(
+        crate::safety::load(Some(saved_in.path()))
+            .expect("saved limit")
+            .percent(),
+        10
+    );
     press(cx, "tab");
     assert!(
         cx.debug_bounds(crate::settings::COPY_DIAGNOSTICS_ID)
             .is_some()
     );
     press(cx, "tab");
+    assert_eq!(view.read_with(cx, |settings, _| settings.pane), Pane::About);
     assert!(cx.debug_bounds(crate::settings::COPY_BUILD_ID).is_some());
     assert!(cx.debug_bounds("about-notices").is_some());
 
@@ -4241,6 +4254,129 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         Response::error("nothing is marked")
     );
 
+    // Removal is a separate, explicit protocol operation, not a UI key.
+    ask(
+        cx,
+        Request::Mark {
+            root: root.clone(),
+            targets: vec![MarkRequest {
+                path: root.join("junk"),
+                bytes: 0,
+                is_dir: true,
+            }],
+        },
+    );
+    let preview_request = Request::PrepareRemoval {
+        mode: disktree_link::RemovalChoice::Permanent,
+    };
+    let Response::RemovalPreview(preview) = ask(cx, preview_request.clone())
+    else {
+        panic!("preview");
+    };
+    let confirmed = |preview: &disktree_link::RemovalPreview| {
+        disktree_link::ConfirmedRemoval {
+            preview_id: preview.preview_id.clone(),
+            mode: preview.mode,
+            paths: preview.paths.clone(),
+            confirmation: preview.mode.confirmation().into(),
+        }
+    };
+    let mut wrong = confirmed(&preview);
+    wrong.paths.push(root.join("keep"));
+    assert!(matches!(
+        ask(cx, Request::Remove(wrong)),
+        Response::Error { .. }
+    ));
+    assert!(root.join("junk/blob.bin").exists());
+    // A failed attempt consumes its preview as well.
+    assert!(matches!(
+        ask(cx, Request::Remove(confirmed(&preview))),
+        Response::Error { .. }
+    ));
+    let Response::RemovalPreview(changed) = ask(cx, preview_request.clone())
+    else {
+        panic!("preview");
+    };
+    ask(
+        cx,
+        Request::Unmark {
+            paths: vec![root.join("junk")],
+        },
+    );
+    assert!(matches!(
+        ask(cx, Request::Remove(confirmed(&changed))),
+        Response::Error { .. }
+    ));
+    ask(
+        cx,
+        Request::Mark {
+            root: root.clone(),
+            targets: vec![MarkRequest {
+                path: root.join("junk"),
+                bytes: 0,
+                is_dir: true,
+            }],
+        },
+    );
+    // A capacity-policy change also requires a new preview and confirmation.
+    let settings = temp.path().join("fixture-settings");
+    update(&view, cx, |app, _| {
+        app.removal_settings_dir = Some(settings.clone());
+    });
+    let Response::RemovalPreview(old_policy) = ask(cx, preview_request.clone())
+    else {
+        panic!("preview");
+    };
+    crate::safety::save(
+        Some(&settings),
+        disktree_core::removal_limit::Limit::new(10).expect("10%"),
+    )
+    .expect("save");
+    assert!(matches!(
+        ask(cx, Request::Remove(confirmed(&old_policy))),
+        Response::Error { .. }
+    ));
+    assert!(root.join("junk/blob.bin").exists());
+    crate::safety::save(
+        Some(&settings),
+        disktree_core::removal_limit::Limit::default(),
+    )
+    .expect("restore fixture policy");
+    let Response::RemovalPreview(preview) = ask(cx, preview_request) else {
+        panic!("preview");
+    };
+    assert_eq!(preview.paths, [root.join("junk")]);
+    assert_eq!(preview.limit_percent, 5);
+    let started = ask(cx, Request::Remove(confirmed(&preview)));
+    assert!(
+        matches!(started, Response::State(ref state) if state.screen == "running"),
+        "{started:?}"
+    );
+    assert!(
+        matches!(
+            ask(cx, Request::Remove(confirmed(&preview))),
+            Response::Error { .. }
+        ),
+        "no replay"
+    );
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done);
+    assert!(!root.join("junk").exists());
+    assert!(root.join("keep/notes.txt").exists());
+    assert!(root.join(".cache/blob.bin").exists());
+    assert_eq!(read(&view, cx, |app| app.run_summary.failed), 0);
+
     // Hanging up takes the name out of the header.
     drop(link);
     for _ in 0..400 {
@@ -4381,4 +4517,36 @@ fn an_agent_scan_leaves_the_chooser(cx: &mut TestAppContext) {
         assert_eq!(app.root_path, temp.path());
     });
     finish_scan(&view, cx);
+}
+
+/// UI removal cannot bypass the same capacity check used by MCP.
+#[gpui_kit::test]
+fn removal_capacity_limit_blocks_the_entire_ui_selection(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.marks.toggle(disktree_core::removal::Target {
+            path: temp.path().join("junk"),
+            bytes: u64::MAX / 4,
+            is_dir: true,
+            hidden: false,
+        });
+        app.screen = Screen::Review;
+        app.removal_mode = RemovalMode::Permanent;
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Review);
+        assert!(app.run.is_none());
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|(text, _)| text.contains("limit"))
+        );
+        assert_eq!(app.marks.len(), 1);
+    });
+    assert!(temp.path().join("junk/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+    draw(cx);
 }

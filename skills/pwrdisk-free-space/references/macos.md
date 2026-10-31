@@ -84,3 +84,22 @@ list `/private/tmp` as a temporary cleanup candidate, but reports the
 
 Marks go to the Trash on the volume that holds them. The space returns when
 the user empties the Trash; on an external disk, that disk's `.Trashes`.
+
+## Confirmed removal
+
+Never approve a removal with computer use (clicks, keys or accessibility
+actions). The user approves in the app, or explicitly confirms the exact
+paths and mode from `pwrdisk_removal_preview` before the destructive
+`pwrdisk_remove` call. Trash or Recycle Bin recovery may be possible until
+emptied, but is not guaranteed; permanent deletion cannot be undone through
+PwrDisk. Both modes use the existing removal guards and Settings > Safety's
+per-operation limit, 5% of each volume's capacity by default. Never bypass a
+refusal, increase the setting or split batches to evade it.
+
+MCP removal also requires interactive confirmation from the client (form
+elicitation). An agent-supplied confirmation value does not establish human
+consent. If the client cannot ask the user, use human review in PwrDisk;
+never approve its buttons or confirmation keys through computer use.
+
+Capacity checks charge a symbolic link to its containing volume, not its
+destination.

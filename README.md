@@ -60,7 +60,7 @@ delete?" moment.
   deletes over SSH; it hands you the list, or a delete script that checks it
   is on the right machine first.
 - **Let an AI agent do the digging.** Claude Code, Codex or any MCP client
-  can scan, explain and mark for you. The agent marks; you press Enter.
+  can scan, explain and mark for you. You confirm every removal.
 
 ## Install
 
@@ -161,9 +161,12 @@ agent** line, under the disk, shows each command with the full path and a
 Copy button.
 
 The agent walks the tree, lists every cache and build directory, and
-proposes what can go. It can mark things, and that is all: there is no tool
-that deletes. When you are happy with the list, it opens PwrDisk's review
-screen and you press Enter. If a PwrDisk window is open, you both look at the
+proposes what can go. You can confirm in PwrDisk's review screen yourself,
+or explicitly approve an exact removal preview for the destructive MCP
+removal tool. Approval to mark never authorizes removal. Agents must never
+approve through computer use. Trash may be recoverable until emptied;
+permanent deletion cannot be undone through PwrDisk. Settings > Safety
+limits each operation to 5% of each volume's capacity by default. If a PwrDisk window is open, you both look at the
 same map and its marks show up as the agent makes them. More in
 [the guide](docs/guide.md#with-an-ai-agent).
 

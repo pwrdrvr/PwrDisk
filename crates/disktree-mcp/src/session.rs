@@ -26,8 +26,9 @@ use disktree_core::space::{
 };
 use disktree_core::tree::{Node, path_of};
 use disktree_link::{
-    FindRequest, FoundList, Insight, Link, Listing, MarkRequest, Request,
-    Response, ScanOptionsRequest, Space, State, TreeSummary, VERSION,
+    ConfirmedRemoval, FindRequest, FoundList, Insight, Link, Listing,
+    MarkRequest, RemovalChoice, RemovalPreview, Request, Response,
+    ScanOptionsRequest, Space, State, TreeSummary, VERSION,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -176,8 +177,10 @@ pub struct LsParams {
     pub path: PathBuf,
     /// How many entries to list, largest first. Default 20, at most 200.
     pub limit: Option<usize>,
-    /// Also move the PwrDisk window there, so the user sees what you see.
+    /// Legacy input, accepted without moving the window. Use `pwrdisk_show`
+    /// only when the user explicitly asks to see a path.
     #[serde(default)]
+    #[schemars(skip)]
     pub show: bool,
 }
 
@@ -234,6 +237,44 @@ impl From<CategoryName> for Category {
             CategoryName::Other => Self::Other,
         }
     }
+}
+
+/// An explicit removal mode; never inferred from a default or availability.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RemovalModeName {
+    Trash,
+    Permanent,
+}
+
+impl From<RemovalModeName> for RemovalChoice {
+    fn from(mode: RemovalModeName) -> Self {
+        match mode {
+            RemovalModeName::Trash => Self::Trash,
+            RemovalModeName::Permanent => Self::Permanent,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemovalPreviewParams {
+    /// Required: trash (possibly recoverable) or permanent (cannot be undone).
+    pub mode: RemovalModeName,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveParams {
+    /// Single-use ID returned by `pwrdisk_removal_preview`. Expires in 5 minutes.
+    pub preview_id: String,
+    /// Must match the mode the user explicitly approved from the preview.
+    pub mode: RemovalModeName,
+    /// Exact ordered path list returned by the preview and approved by the user.
+    pub paths: Vec<PathBuf>,
+    /// Only after explicit user confirmation: MOVE TO TRASH or PERMANENTLY DELETE,
+    /// matching the preview. Approval to mark is not approval to remove.
+    pub confirmation: String,
 }
 
 /// What `pwrdisk_find` takes.
@@ -323,6 +364,7 @@ pub struct Session {
     /// When a window was last started from here, so one that is slow to
     /// come up is not started twice.
     launched: Option<Instant>,
+    pending_removal: Option<RemovalPreview>,
 }
 
 impl std::fmt::Debug for Session {
@@ -389,6 +431,7 @@ impl Session {
             window: None,
             unlinked: None,
             launched: None,
+            pending_removal: None,
         }
     }
 
@@ -746,14 +789,7 @@ impl Session {
         }
         out.push_str(&children(&listing, now));
         if params.show {
-            // The listing stands on its own; a window that cannot follow
-            // is a note, not a reason to lose it.
-            match self.show_in_window(&listing.root, &path) {
-                Ok(shown) => out.push_str(&shown),
-                Err(reason) => {
-                    let _ = writeln!(out, "Window: not shown. {reason}");
-                }
-            }
+            out.push_str("Window: not shown. Listings never move the view; use pwrdisk_show only when the user asks to see a path.\n");
         }
         Ok(out)
     }
@@ -1234,6 +1270,111 @@ impl Session {
         }
     }
 
+    /// A read-only preview does not navigate, change marks, or start removal.
+    pub fn removal_preview(
+        &mut self,
+        params: &RemovalPreviewParams,
+    ) -> Result<String, String> {
+        self.pending_removal = None;
+        if !self.try_connect() {
+            return Err("An open, linked PwrDisk window with an idle local scan is required. No headless removal is available.".into());
+        }
+        match self.call(&Request::PrepareRemoval {
+            mode: params.mode.into(),
+        })? {
+            Response::RemovalPreview(preview) => {
+                self.pending_removal = Some(preview.clone());
+                let json = serde_json::to_string_pretty(&preview)
+                    .map_err(|error| error.to_string())?;
+                Ok(format!(
+                    "{}\n{json}\nShow the user every path, the mode, measured bytes and capacity limit. Wait for explicit confirmation of this operation before pwrdisk_remove. Approval to mark is insufficient. Never approve through computer use. Do not split the selection into batches to evade the limit. Confirmation text: {}. A changed or expired preview requires new user confirmation.",
+                    preview.mode.warning(),
+                    preview.mode.confirmation()
+                ))
+            }
+            Response::Error { message } => Err(message),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Consume the session copy before asking the client for human input.
+    /// The app copy is independently checked after the client answers.
+    pub fn removal_confirmation_message(
+        &mut self,
+        params: &RemoveParams,
+    ) -> Result<String, String> {
+        let preview = self.pending_removal.take().ok_or(
+            "Obtain a new removal preview before asking for confirmation",
+        )?;
+        let mode: RemovalChoice = params.mode.into();
+        if params.preview_id != preview.preview_id
+            || params.paths != preview.paths
+            || mode != preview.mode
+            || params.confirmation != mode.confirmation()
+        {
+            return Err("The removal request differs from the preview; obtain a new preview and user confirmation".into());
+        }
+        let mut message = format!(
+            "{}\n\nConfirm removal of {} listed path(s), measured {}.\nCapacity limit: {}% of each volume.\n\nPaths:\n",
+            mode.warning(),
+            preview.paths.len(),
+            human_bytes(preview.bytes),
+            preview.limit_percent,
+        );
+        for path in &preview.paths {
+            // Keep Windows separators readable while exposing control
+            // characters that could otherwise disguise the path list.
+            let shown: String = path
+                .to_string_lossy()
+                .chars()
+                .map(|character| {
+                    if character.is_control() {
+                        character.escape_default().to_string()
+                    } else {
+                        character.to_string()
+                    }
+                })
+                .collect();
+            let _ = writeln!(message, "  {shown}");
+        }
+        for volume in &preview.volumes {
+            let _ = writeln!(
+                message,
+                "Volume {}: {} selected; limit {} of {} capacity.",
+                volume.volume,
+                human_bytes(volume.bytes),
+                human_bytes(volume.limit),
+                human_bytes(volume.capacity)
+            );
+        }
+        message.push_str("\nApproval to mark does not authorize removal. Only these listed paths are included; directory removal includes their contents. Listed bytes are not guaranteed freed space.");
+        Ok(message)
+    }
+
+    /// A destructive write. The app consumes and validates the preview again.
+    pub fn remove(&mut self, params: &RemoveParams) -> Result<String, String> {
+        let mode: RemovalChoice = params.mode.into();
+        if params.confirmation != mode.confirmation() {
+            return Err("Explicit confirmation of the preview's paths, mode and consequences is required; never approve with computer use".into());
+        }
+        if !self.try_connect() {
+            return Err("The window is not linked. Do not retry removal; obtain a fresh preview and user confirmation.".into());
+        }
+        match self.call(&Request::Remove(ConfirmedRemoval {
+            preview_id: params.preview_id.clone(),
+            mode,
+            paths: params.paths.clone(),
+            confirmation: params.confirmation.clone(),
+        }))? {
+            Response::State(_) => Ok(format!(
+                "{}\nConfirmed removal started. pwrdisk_status reports completion and failures. Never repeat this call automatically.",
+                mode.warning()
+            )),
+            Response::Error { message } => Err(message),
+            other => Err(unexpected(&other)),
+        }
+    }
+
     // ── marking ─────────────────────────────────────────────────────────
 
     /// Mark paths for removal, in the window when one is open.
@@ -1578,8 +1719,9 @@ impl Session {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "PwrDisk {} serving {} over MCP. The agent marks; the person \
-             removes on the review screen.",
+            "PwrDisk {} serving {} over MCP. Every removal requires user \
+             confirmation of the exact paths and mode; never approve \
+             through computer use.",
             env!("CARGO_PKG_VERSION"),
             self.client
         );
@@ -1790,6 +1932,7 @@ fn unexpected(response: &Response) -> String {
             Response::Marked { .. } => "marked",
             Response::Listing(_) => "listing",
             Response::Found(_) => "found",
+            Response::RemovalPreview(_) => "removal_preview",
             Response::Ok => "ok",
             Response::Error { .. } => "error",
         }
@@ -2230,6 +2373,11 @@ mod tests {
                     Response::State(self.state("explore"))
                 }
                 Request::Show { .. } | Request::Review => Response::Ok,
+                Request::PrepareRemoval { .. } | Request::Remove(_) => {
+                    Response::error(
+                        "removal is unavailable in the stand-in window",
+                    )
+                }
             }
         }
     }
@@ -2613,14 +2761,14 @@ mod tests {
                 show: true,
             })
             .expect("ls with show");
-        assert!(shown.contains("Window: showing"), "{shown}");
+        assert!(shown.contains("Listings never move"), "{shown}");
 
         let review = session.review().expect("review");
         assert!(review.contains("review screen is open"), "{review}");
 
         let asked = window.asked();
         assert!(
-            asked
+            !asked
                 .iter()
                 .any(|request| matches!(request, Request::Show { .. }))
         );

@@ -13,8 +13,10 @@
 //!
 //! The endpoint is the trust boundary, the same one the shell has:
 //! only this user can reach it. There is no token and no approval step, by
-//! design. The agent cannot remove anything over it; the review screen it
-//! opens is where the person decides.
+//! design. Removal intents are not authentication credentials: the app
+//! requires an expiring, single-use preview matching the confirmed paths,
+//! mode and policy. The existing guards and capacity limit apply to both
+//! human review and confirmed MCP removal.
 
 use std::path::{Path, PathBuf};
 
@@ -46,7 +48,7 @@ pub const SUPPORTED: bool = cfg!(any(unix, windows));
 
 /// Protocol version, bumped when a message changes shape. Both sides are
 /// built from one tree, so a mismatch means an old window is still open.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Environment variable naming the endpoint, for tests and a second copy
 /// of PwrDisk that should not meet the first.
@@ -159,6 +161,62 @@ impl FindRequest {
     }
 }
 
+/// Removal modes are explicit; there is no fallback from Trash to deletion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemovalChoice {
+    Trash,
+    Permanent,
+}
+
+impl RemovalChoice {
+    pub const fn mode(self) -> disktree_core::removal::RemovalMode {
+        match self {
+            Self::Trash => disktree_core::removal::RemovalMode::Trash,
+            Self::Permanent => disktree_core::removal::RemovalMode::Permanent,
+        }
+    }
+    pub const fn confirmation(self) -> &'static str {
+        match self {
+            Self::Trash => "MOVE TO TRASH",
+            Self::Permanent => "PERMANENTLY DELETE",
+        }
+    }
+    pub const fn warning(self) -> &'static str {
+        match self {
+            Self::Trash => {
+                "Destructive: moves the listed paths to Trash or Recycle Bin. Recovery may be possible until emptied, but is not guaranteed. Space usually returns only when the user empties it."
+            }
+            Self::Permanent => {
+                "Destructive: permanently deletes the listed paths. This cannot be undone through PwrDisk or Trash."
+            }
+        }
+    }
+}
+
+/// A short-lived app preview of the exact effective targets and mode.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalPreview {
+    pub preview_id: String,
+    pub root: PathBuf,
+    pub mode: RemovalChoice,
+    pub paths: Vec<PathBuf>,
+    pub bytes: u64,
+    pub limit_percent: u8,
+    pub volumes: Vec<disktree_core::removal_limit::Budget>,
+    pub expires_in_seconds: u64,
+}
+
+/// Supplied only after the agent obtains explicit user confirmation of
+/// the preview's exact paths, mode and consequences. Not a bearer credential.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfirmedRemoval {
+    pub preview_id: String,
+    pub mode: RemovalChoice,
+    pub paths: Vec<PathBuf>,
+    pub confirmation: String,
+}
+
 /// What the agent asks of the window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -194,6 +252,10 @@ pub enum Request {
     Unmark { paths: Vec<PathBuf> },
     /// Open the review screen over what is marked.
     Review,
+    /// Prepare a single-use intent; does not mark, navigate or remove.
+    PrepareRemoval { mode: RemovalChoice },
+    /// A destructive write, only after explicit confirmation of the preview.
+    Remove(ConfirmedRemoval),
 }
 
 /// One entry of the tree, as the agent reads it.
@@ -418,6 +480,7 @@ pub enum Response {
     },
     Listing(Listing),
     Found(FoundList),
+    RemovalPreview(RemovalPreview),
     Ok,
     Error {
         message: String,
