@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use disktree_core::filter::{Matches, filter};
 use disktree_core::insights::{Candidate, INSIGHT_LIMIT, worth_a_look};
+use disktree_core::path_style::PathStyle;
 use disktree_core::removal::{
     Plan, RemovalEvent, RemovalHandle, RemovalMode, Target, TrashBackend,
     detect_trash_backend, plan,
@@ -20,9 +21,7 @@ use disktree_core::scan::{ScanHandle, ScanOptions, ScanSnapshot};
 use disktree_core::space::{
     SpaceInfo, Volume, device_for, space_info, volume_root_for, volumes,
 };
-use disktree_core::tree::{
-    Metric, Node, aggregate_view, path_of, switch_measure,
-};
+use disktree_core::tree::{Metric, Node, aggregate, path_of};
 use disktree_core::treemap::{
     LayoutOptions, Rect as MapRect, Tile, TileKind, layout_filtered,
 };
@@ -160,6 +159,8 @@ impl VisibleChildren {
 #[derive(Debug)]
 pub struct App {
     pub root: PathBuf,
+    pub removal_settings_dir: Option<PathBuf>,
+    pub read_only: bool,
     pub options: ScanOptions,
     pub mode: ViewMode,
     pub tree: Option<Node>,
@@ -201,10 +202,7 @@ pub struct App {
     viewport: Rect,
     scan_started: Option<Instant>,
     scan_metric: Metric,
-    scan_apparent: bool,
-    scan_hidden: bool,
-    full_hidden_loaded: bool,
-    hidden_stash: Vec<(PathBuf, Vec<Node>)>,
+    pending_view: Option<(PathBuf, Option<PathBuf>)>,
     last_space_check: Instant,
     marquee_started: Instant,
     focused_marquee_started: Instant,
@@ -228,12 +226,11 @@ impl App {
             space: space_info(&root).ok(),
             device: device_for(&root),
             root,
+            removal_settings_dir: None,
+            read_only: false,
             mode,
             scan_metric: options.metric,
-            scan_apparent: options.apparent_size,
-            scan_hidden: options.include_hidden,
-            full_hidden_loaded: false,
-            hidden_stash: Vec::new(),
+            pending_view: None,
             options,
             tree: None,
             scan: None,
@@ -292,8 +289,10 @@ impl App {
         if let Some(scan) = &self.scan {
             scan.cancel();
         }
+        if let Some(directory) = self.current_path() {
+            self.pending_view = Some((directory, self.selected_path()));
+        }
         self.tree = None;
-        self.hidden_stash.clear();
         self.scan_error = None;
         self.scan_elapsed = None;
         self.scan_started = Some(Instant::now());
@@ -309,12 +308,8 @@ impl App {
         self.reset_marquee();
         self.invalidate_view_cache();
         self.scan_metric = self.options.metric;
-        self.scan_apparent = self.options.apparent_size;
-        self.scan_hidden =
-            self.options.include_hidden || self.full_hidden_loaded;
-        let mut scan_options = self.options.clone();
-        scan_options.include_hidden = self.scan_hidden;
-        self.scan = Some(ScanHandle::spawn(self.root.clone(), scan_options));
+        self.scan =
+            Some(ScanHandle::spawn(self.root.clone(), self.options.clone()));
     }
 
     pub fn tick(&mut self) -> bool {
@@ -349,42 +344,23 @@ impl App {
                 self.scan = None;
                 match outcome {
                     Ok(mut tree) => {
-                        if self.scan_apparent != self.options.apparent_size {
-                            switch_measure(
-                                &mut tree,
-                                self.options.metric,
-                                self.options.dedup_hardlinks,
-                            );
-                        } else if self.scan_metric != self.options.metric {
-                            aggregate_view(
-                                &mut tree,
-                                self.options.metric,
-                                self.options.dedup_hardlinks,
-                            );
+                        if self.scan_metric != self.options.metric {
+                            aggregate(&mut tree, self.options.metric);
                         }
                         self.refresh_marks(&tree);
-                        self.full_hidden_loaded = self.scan_hidden;
-                        self.hidden_stash.clear();
-                        if !self.options.include_hidden
-                            && self.full_hidden_loaded
-                        {
-                            hide_hidden(
-                                &mut tree,
-                                &self.root,
-                                &mut self.hidden_stash,
-                            );
-                            aggregate_view(
-                                &mut tree,
-                                self.options.metric,
-                                self.options.dedup_hardlinks,
-                            );
-                            disktree_core::classify::classify(&mut tree);
-                        }
                         self.insights =
                             worth_a_look(&tree, now_seconds(), INSIGHT_LIMIT);
                         self.scanned_at = now_seconds();
                         self.selected = first_child(&tree, &[]);
                         self.tree = Some(tree);
+                        if let Some((directory, selected)) =
+                            self.pending_view.take()
+                        {
+                            self.refresh_view_after_change(
+                                Some(directory),
+                                selected,
+                            );
+                        }
                         self.invalidate_view_cache();
                         self.keep_selection_visible();
                         self.reset_marquee();
@@ -466,14 +442,15 @@ impl App {
     }
 
     fn refresh_marks(&mut self, tree: &Node) {
-        for target in &mut self.marks {
-            if let Some(node) = node_at_path(&self.root, tree, &target.path) {
-                target.bytes = node.bytes;
-                target.is_dir = node.is_dir();
-            } else {
-                target.bytes = 0;
-            }
-        }
+        self.marks.retain_mut(|target| {
+            let Some(node) = node_at_path(&self.root, tree, &target.path)
+            else {
+                return false;
+            };
+            target.bytes = node.bytes;
+            target.is_dir = node.is_dir();
+            true
+        });
     }
 
     pub fn current_node(&self) -> Option<&Node> {
@@ -489,15 +466,33 @@ impl App {
             &self.root,
             self.tree.as_ref()?,
             self.selected.as_deref()?,
+            PathStyle::Native,
         ))
     }
 
     pub fn current_path(&self) -> Option<PathBuf> {
-        Some(path_of(&self.root, self.tree.as_ref()?, &self.current))
+        Some(path_of(
+            &self.root,
+            self.tree.as_ref()?,
+            &self.current,
+            PathStyle::Native,
+        ))
     }
 
     pub fn plan(&self) -> Plan {
-        plan(&self.marks, &self.root)
+        let mut plan = plan(&self.marks, &self.root);
+        if let Some(tree) = self.tree.as_ref() {
+            plan.estimate_selection(|targets| {
+                let nodes: Vec<_> = targets
+                    .iter()
+                    .filter_map(|target| {
+                        node_at_path(&self.root, tree, &target.path)
+                    })
+                    .collect();
+                disktree_core::sharing::estimate(nodes)
+            });
+        }
+        plan
     }
 
     pub fn marked_bytes(&self) -> u64 {
@@ -1261,7 +1256,10 @@ impl App {
         let before = self.marks.len();
         self.marks.retain(|mark| mark.path.starts_with(&root));
         self.root = root;
-        self.full_hidden_loaded = false;
+        self.tree = None;
+        self.pending_view = None;
+        self.current.clear();
+        self.selected = None;
         self.space = space_info(&self.root).ok();
         self.device = device_for(&self.root);
         self.start_scan();
@@ -1355,7 +1353,7 @@ impl App {
         let target = Target {
             bytes: node.bytes,
             is_dir: node.is_dir(),
-            hidden: node.hidden,
+            hidden: hidden_path(&self.root, &path),
             path: path.clone(),
         };
         self.marks.retain(|item| !item.path.starts_with(&path));
@@ -1382,67 +1380,19 @@ impl App {
         // Reorder the existing tree instead of walking a large disk again.
         // Crumbs change when sibling order changes; restore both places by
         // their absolute paths, just as marks are kept by path.
-        aggregate_view(tree, self.options.metric, self.options.dedup_hardlinks);
+        aggregate(tree, self.options.metric);
         self.refresh_present_marks();
         self.refresh_view_after_change(directory, selected);
     }
 
     fn switch_measure(&mut self) {
-        if self.scan.is_some() {
-            // The result contains both measurements; choose on completion.
-            return;
-        }
-        let directory = self.current_path();
-        let selected = self.selected_path();
-        let Some(tree) = self.tree.as_mut() else {
-            return;
-        };
-        if !self.options.include_hidden && self.full_hidden_loaded {
-            restore_hidden(tree, &self.root, &mut self.hidden_stash);
-        }
-        switch_measure(tree, self.options.metric, self.options.dedup_hardlinks);
-        for target in &mut self.marks {
-            if let Some(node) = node_at_path(&self.root, tree, &target.path) {
-                target.bytes = node.bytes;
-            }
-        }
-        if !self.options.include_hidden && self.full_hidden_loaded {
-            hide_hidden(tree, &self.root, &mut self.hidden_stash);
-            aggregate_view(
-                tree,
-                self.options.metric,
-                self.options.dedup_hardlinks,
-            );
-            disktree_core::classify::classify(tree);
-        }
-        self.refresh_view_after_change(directory, selected);
+        // The desktop and terminal share Node in one executable. Reusing the
+        // scanner avoids charging every GUI/MCP node for terminal metadata.
+        self.start_scan();
     }
 
     fn toggle_hidden(&mut self) {
-        if self.scan.is_some() {
-            if self.options.include_hidden && !self.scan_hidden {
-                self.start_scan();
-            }
-            return;
-        }
-        if self.options.include_hidden && !self.full_hidden_loaded {
-            self.start_scan();
-            return;
-        }
-        let directory = self.current_path();
-        let selected = self.selected_path();
-        let Some(tree) = self.tree.as_mut() else {
-            return;
-        };
-        if self.options.include_hidden {
-            restore_hidden(tree, &self.root, &mut self.hidden_stash);
-        } else {
-            hide_hidden(tree, &self.root, &mut self.hidden_stash);
-        }
-        aggregate_view(tree, self.options.metric, self.options.dedup_hardlinks);
-        disktree_core::classify::classify(tree);
-        self.refresh_present_marks();
-        self.refresh_view_after_change(directory, selected);
+        self.start_scan();
     }
 
     fn refresh_present_marks(&mut self) {
@@ -1484,12 +1434,31 @@ impl App {
     }
 
     fn begin_removal(&mut self) {
+        if self.read_only {
+            self.notice = Some(
+                "SSH sessions are read-only; export the reviewed list".into(),
+            );
+            self.screen = Screen::Review;
+            return;
+        }
         let plan = self.plan();
         if plan.is_empty() {
             self.notice = Some("No removable paths in the plan".to_string());
             self.screen = Screen::Review;
             return;
         }
+        let limit = match disktree_core::removal_limit::load_settings(
+            self.removal_settings_dir.as_deref(),
+        )
+        .and_then(|limit| limit.check(&plan.targets).map(|_| limit))
+        {
+            Ok(limit) => limit,
+            Err(reason) => {
+                self.notice = Some(reason);
+                self.screen = Screen::Review;
+                return;
+            }
+        };
         self.baseline_space = self.space;
         self.run_cancelled = false;
         self.run_summary = RunSummary {
@@ -1497,7 +1466,11 @@ impl App {
             ..RunSummary::default()
         };
         self.run_log.clear();
-        self.run = Some(disktree_core::removal::spawn(plan, self.removal_mode));
+        self.run = Some(disktree_core::removal::spawn_limited(
+            plan,
+            self.removal_mode,
+            limit,
+        ));
         self.screen = Screen::Running;
     }
 
@@ -1553,53 +1526,20 @@ fn node_at_path<'a>(
     Some(node)
 }
 
-/// Keep hidden subtrees intact while presenting a visible-only tree. Moving
-/// them out costs one traversal and no extra copy of a large scan.
-fn hide_hidden(
-    node: &mut Node,
-    path: &Path,
-    stash: &mut Vec<(PathBuf, Vec<Node>)>,
-) {
-    let hidden: Vec<Node> =
-        node.children.extract_if(.., |child| child.hidden).collect();
-    if !hidden.is_empty() {
-        stash.push((path.to_path_buf(), hidden));
-    }
-    for child in &mut node.children {
-        if child.is_dir() {
-            hide_hidden(child, &path.join(child.name.as_ref()), stash);
+fn hidden_path(root: &Path, path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        if std::fs::symlink_metadata(path)
+            .is_ok_and(|meta| meta.file_attributes() & 2 != 0)
+        {
+            return true;
         }
     }
-}
-
-fn restore_hidden(
-    tree: &mut Node,
-    root: &Path,
-    stash: &mut Vec<(PathBuf, Vec<Node>)>,
-) {
-    for (path, children) in stash.drain(..) {
-        let parent = node_at_path_mut(root, tree, &path)
-            .expect("a hidden entry's parent remains visible");
-        parent.children.extend(children);
-    }
-}
-
-fn node_at_path_mut<'a>(
-    root_path: &Path,
-    root: &'a mut Node,
-    path: &Path,
-) -> Option<&'a mut Node> {
-    let relative = path.strip_prefix(root_path).ok()?;
-    let mut node = root;
-    for component in relative.components() {
-        let name = component.as_os_str().to_string_lossy();
-        let index = node
-            .children
-            .iter()
-            .position(|child| child.name.as_ref() == name)?;
-        node = node.children.get_mut(index)?;
-    }
-    Some(node)
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .any(|part| part.as_os_str().to_string_lossy().starts_with('.'))
 }
 
 fn crumbs_for_path(
@@ -1681,7 +1621,7 @@ mod tests {
         // which the removal guard correctly treats as system-owned.
         #[cfg(target_os = "macos")]
         {
-            let home = std::env::home_dir().expect("home directory");
+            let home = std::env::current_dir().expect("workspace directory");
             tempfile::Builder::new()
                 .prefix("disktree-tui-")
                 .tempdir_in(home)
@@ -1784,68 +1724,67 @@ mod tests {
         assert_eq!(app.marked_bytes(), marked_bytes);
     }
 
+    fn finish_scan(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.scan.is_some() && Instant::now() < deadline {
+            app.tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.scan.is_none(), "scan finished");
+        assert!(app.scan_error.is_none(), "scan succeeded");
+    }
+
     #[test]
-    fn apparent_toggle_reuses_scan_and_updates_marked_bytes() {
+    fn apparent_toggle_rescans_and_preserves_the_marked_selection() {
         let temp = fixture_dir();
-        let root = temp.path();
-        let file = root.join("sparse");
+        let file = temp.path().join("sparse");
         std::fs::File::create(&file)
             .expect("create")
             .set_len(1024 * 1024)
             .expect("sparse length");
-        let tree = scan(root, ScanOptions::default()).expect("scan");
-        let mut app = App::new(root.to_path_buf(), ScanOptions::default());
-        if let Some(scan) = app.scan.take() {
-            scan.cancel();
-        }
-        app.tree = Some(tree);
-        app.selected =
-            crumbs_for_path(root, app.tree.as_ref().expect("tree"), &file);
+        let mut app = App::new(temp.path().into(), ScanOptions::default());
+        finish_scan(&mut app);
+        app.selected = crumbs_for_path(
+            temp.path(),
+            app.tree.as_ref().expect("tree"),
+            &file,
+        );
         app.toggle_mark();
         let allocated = app.marked_bytes();
         app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
-        assert!(app.scan.is_none());
+        assert!(app.scan.is_some());
+        finish_scan(&mut app);
         assert_eq!(app.marked_bytes(), 1024 * 1024);
         assert_eq!(app.selected_path().as_deref(), Some(file.as_path()));
         app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
-        assert!(app.scan.is_none());
+        finish_scan(&mut app);
         assert_eq!(app.marked_bytes(), allocated);
     }
 
     #[test]
-    fn hidden_toggle_reuses_full_scan_and_restores_paths() {
+    fn hidden_toggle_rescans_preserving_paths_and_drops_vanished_marks() {
         let temp = fixture_dir();
         let root = temp.path();
         std::fs::create_dir(root.join(".private")).expect("hidden dir");
         std::fs::write(root.join(".private/secret"), b"secret")
-            .expect("hidden file");
-        std::fs::write(root.join("visible"), b"visible").expect("visible file");
-        let tree = scan(root, ScanOptions::default()).expect("scan");
-        let full_bytes = tree.bytes;
-        let mut app = App::new(root.to_path_buf(), ScanOptions::default());
-        if let Some(scan) = app.scan.take() {
-            scan.cancel();
-        }
-        app.tree = Some(tree);
-        app.full_hidden_loaded = true;
-        app.selected = crumbs_for_path(
-            root,
-            app.tree.as_ref().expect("tree"),
-            &root.join(".private"),
-        );
+            .expect("hidden");
+        let visible = root.join("visible");
+        std::fs::write(&visible, b"visible").expect("visible");
+        let mut app = App::new(root.into(), ScanOptions::default());
+        finish_scan(&mut app);
+        let full_bytes = app.tree.as_ref().expect("tree").bytes;
+        app.selected =
+            crumbs_for_path(root, app.tree.as_ref().expect("tree"), &visible);
         app.toggle_mark();
-        let marked_path = app.marks[0].path.clone();
         app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert!(app.scan.is_none());
+        assert!(app.scan.is_some());
+        finish_scan(&mut app);
         assert!(app.tree.as_ref().expect("tree").bytes < full_bytes);
-        assert!(app.selected_path().is_some());
-        assert!(!app.hidden_stash.is_empty());
-        assert_eq!(app.marks[0].path, marked_path);
+        assert_eq!(app.marks[0].path, visible);
+        assert_eq!(app.selected_path().as_deref(), Some(visible.as_path()));
+        std::fs::remove_file(&visible).expect("remove fixture file");
         app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert!(app.scan.is_none());
-        assert_eq!(app.tree.as_ref().expect("tree").bytes, full_bytes);
-        assert!(app.hidden_stash.is_empty());
-        assert_eq!(app.marks[0].path, marked_path);
+        finish_scan(&mut app);
         assert!(
             app.tree
                 .as_ref()
@@ -1853,26 +1792,7 @@ mod tests {
                 .child_named(".private")
                 .is_some()
         );
-    }
-
-    #[test]
-    fn first_hidden_enable_after_excluding_it_loads_missing_entries() {
-        let temp = fixture_dir();
-        std::fs::write(temp.path().join(".private"), b"secret")
-            .expect("hidden file");
-        let options = ScanOptions {
-            include_hidden: false,
-            ..ScanOptions::default()
-        };
-        let tree = scan(temp.path(), options.clone()).expect("scan");
-        let mut app = App::new(temp.path().to_path_buf(), options);
-        if let Some(scan) = app.scan.take() {
-            scan.cancel();
-        }
-        app.tree = Some(tree);
-        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert!(app.scan.is_some());
-        assert!(app.scan_hidden);
+        assert!(app.marks.is_empty());
     }
 
     #[test]
@@ -2353,10 +2273,9 @@ mod tests {
     }
 
     #[test]
-    fn failed_removal_keeps_the_mark_for_review() {
+    fn a_missing_target_is_refused_before_removal_and_keeps_the_mark() {
         let temp = fixture_dir();
-        let mut app =
-            App::new(temp.path().to_path_buf(), ScanOptions::default());
+        let mut app = App::new(temp.path().into(), ScanOptions::default());
         if let Some(scan) = app.scan.take() {
             scan.cancel();
         }
@@ -2370,15 +2289,50 @@ mod tests {
         app.removal_mode = RemovalMode::Permanent;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
-        assert_eq!(app.screen, Screen::Running);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while app.screen == Screen::Running && Instant::now() < deadline {
-            app.tick();
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(app.screen, Screen::Done);
-        assert_eq!(app.run_summary.failed, 1);
+        assert_eq!(app.screen, Screen::Review);
+        assert!(app.run.is_none());
         assert_eq!(app.marks.len(), 1);
+        assert!(
+            app.notice
+                .as_deref()
+                .is_some_and(|text| text.contains("Cannot inspect"))
+        );
+    }
+
+    #[test]
+    fn ssh_and_invalid_policy_refuse_removal_but_allow_agent_export() {
+        let temp = fixture_dir();
+        let path = temp.path().join("selected");
+        std::fs::write(&path, b"keep").expect("selected");
+        let mut app = App::new(temp.path().into(), ScanOptions::default());
+        if let Some(scan) = app.scan.take() {
+            scan.cancel();
+        }
+        app.marks.push(Target {
+            path: path.clone(),
+            bytes: 4,
+            is_dir: false,
+            hidden: false,
+        });
+        app.read_only = true;
+        app.begin_removal();
+        assert!(app.run.is_none());
+        assert_eq!(app.screen, Screen::Review);
+        assert!(path.exists());
+        assert!(app.agent_prompt().contains("selected"));
+        app.read_only = false;
+        let settings = tempfile::tempdir().expect("settings");
+        app.removal_settings_dir = Some(settings.path().into());
+        std::fs::write(settings.path().join("removal-limit-percent"), "0")
+            .expect("invalid setting");
+        app.begin_removal();
+        assert!(app.run.is_none());
+        assert!(
+            app.notice
+                .as_deref()
+                .is_some_and(|text| text.contains("between 1% and 100%"))
+        );
+        assert!(path.exists());
     }
 
     #[test]
@@ -2389,8 +2343,10 @@ mod tests {
         if let Some(scan) = app.scan.take() {
             scan.cancel();
         }
+        let target = temp.path().join("selected");
+        std::fs::write(&target, b"keep").expect("target");
         app.marks.push(Target {
-            path: temp.path().join("missing"),
+            path: target,
             bytes: 100,
             is_dir: false,
             hidden: false,

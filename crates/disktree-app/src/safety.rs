@@ -6,25 +6,7 @@ use disktree_core::removal_limit::Limit;
 
 const FILE: &str = "removal-limit-percent";
 
-pub fn load(dir: Option<&Path>) -> Result<Limit, String> {
-    let Some(dir) = dir else {
-        return Ok(Limit::default());
-    };
-    let text = match std::fs::read_to_string(dir.join(FILE)) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Limit::default());
-        }
-        Err(error) => {
-            return Err(format!("Cannot read removal limit: {error}"));
-        }
-    };
-    let percent = text
-        .trim()
-        .parse::<u8>()
-        .map_err(|_| "Invalid removal limit in Settings > Safety")?;
-    Limit::new(percent)
-}
+pub use disktree_core::removal_limit::load_settings as load;
 
 pub fn save(dir: Option<&Path>, limit: Limit) -> Result<(), String> {
     let dir = dir.ok_or("No settings directory is available")?;

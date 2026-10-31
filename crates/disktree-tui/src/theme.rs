@@ -49,7 +49,7 @@ pub struct Palette {
     muted: Color,
     accent: Color,
     red: Color,
-    categories: [Color; 9],
+    categories: [Color; 11],
     light: bool,
 }
 
@@ -71,6 +71,8 @@ impl Palette {
                 base_category_color(Category::Media),
                 base_category_color(Category::Documents),
                 base_category_color(Category::Cache),
+                base_category_color(Category::FilesystemEvents),
+                base_category_color(Category::Spotlight),
                 base_category_color(Category::Other),
             ],
             light: false,
@@ -94,6 +96,8 @@ impl Palette {
                 Color::Rgb(118, 71, 153),
                 Color::Rgb(100, 103, 111),
                 Color::Rgb(141, 112, 36),
+                Color::Rgb(120, 105, 150),
+                Color::Rgb(55, 115, 130),
                 Color::Rgb(126, 128, 132),
             ],
             light: true,
@@ -128,7 +132,7 @@ impl Palette {
         )
         .unwrap_or(fallback.accent);
         let red = color_key(table, &["red", "color1"]).unwrap_or(fallback.red);
-        let pairs: [&[&str]; 9] = [
+        let pairs: [&[&str]; 11] = [
             &["blue", "color4"],
             &["orange", "color11", "color3"],
             &["green", "color2"],
@@ -137,6 +141,8 @@ impl Palette {
             &["magenta", "color5"],
             &["light_foreground", "light_fg", "color7"],
             &["yellow", "color3"],
+            &["magenta", "color5"],
+            &["cyan", "color6"],
             &["muted", "color8"],
         ];
         let categories = std::array::from_fn(|index| {
@@ -399,6 +405,8 @@ pub const fn base_category_color(category: Category) -> Color {
         Category::Media => Color::Rgb(151, 101, 194),
         Category::Documents => Color::Rgb(155, 163, 180),
         Category::Cache => Color::Rgb(197, 169, 83),
+        Category::FilesystemEvents => Color::Rgb(150, 132, 180),
+        Category::Spotlight => Color::Rgb(83, 155, 175),
         Category::Other => Color::Rgb(112, 123, 149),
     }
 }

@@ -62,17 +62,25 @@ impl Drop for TerminalSession {
     }
 }
 
-fn main() -> Result<()> {
-    let Some((root, options, theme_choice)) = arguments()? else {
+/// Run an interactive terminal session without starting GPUI or MCP.
+pub fn run(
+    args: impl Iterator<Item = std::ffi::OsString>,
+    removal_settings_dir: Option<PathBuf>,
+) -> Result<()> {
+    let Some((root, options, theme_choice)) = arguments(args)? else {
         return Ok(());
     };
     if !io::stdin().is_terminal() {
-        bail!("disktree-tui needs an interactive terminal for input");
+        bail!("pwrdisk tui needs an interactive terminal for input");
     }
     #[cfg(windows)]
     let _code_pages = windows_console::Utf8Console::enter()
         .context("enable UTF-8 in the Windows console")?;
     let mut app = App::new(root, options);
+    app.removal_settings_dir = removal_settings_dir;
+    app.read_only = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some());
     let mut theme = ThemeState::new(theme_choice);
     let stdout_prompt = {
         let session = TerminalSession::enter()?;
@@ -128,19 +136,20 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn arguments() -> Result<Option<(PathBuf, ScanOptions, ThemeChoice)>> {
+fn arguments(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<Option<(PathBuf, ScanOptions, ThemeChoice)>> {
     let mut root = None;
     let mut disk = false;
     let mut options = ScanOptions::default();
     let mut theme = ThemeChoice::Auto;
-    let mut args = std::env::args_os().skip(1);
     while let Some(argument) = args.next() {
         match argument.to_str() {
             Some("--help" | "-h") => {
                 const HELP: &str = concat!(
-                    "disktree-tui [OPTIONS] [PATH]\n",
+                    "pwrdisk tui [OPTIONS] PATH\n",
                     "\n",
-                    "A terminal treemap explorer. Defaults to your home.\n",
+                    "A terminal treemap explorer. PATH must be explicit.\n",
                     "\n",
                     "Options:\n",
                     "  --disk                   Scan the whole volume\n",
@@ -157,9 +166,9 @@ fn arguments() -> Result<Option<(PathBuf, ScanOptions, ThemeChoice)>> {
                 return Ok(None);
             }
             Some("--disk") => disk = true,
-            Some("--apparent-size") => options.apparent_size = true,
-            Some("--no-hidden") => options.include_hidden = false,
-            Some("--follow-links") => options.follow_links = true,
+            Some("--apparent-size" | "-a") => options.apparent_size = true,
+            Some("--no-hidden" | "-H") => options.include_hidden = false,
+            Some("--follow-links" | "-l") => options.follow_links = true,
             Some("--theme") => {
                 let value = args.next().context("--theme needs a value")?;
                 theme = value
@@ -178,9 +187,8 @@ fn arguments() -> Result<Option<(PathBuf, ScanOptions, ThemeChoice)>> {
             _ => bail!("expected only one PATH"),
         }
     }
-    let root = match root {
-        Some(path) => path,
-        None => std::env::home_dir().context("cannot find home directory")?,
+    let Some(root) = root else {
+        bail!("choose an explicit directory: pwrdisk tui [OPTIONS] PATH");
     };
     let root = canonicalize_path(&root)
         .with_context(|| format!("cannot access {}", root.display()))?;
@@ -193,4 +201,48 @@ fn arguments() -> Result<Option<(PathBuf, ScanOptions, ThemeChoice)>> {
         bail!("{} is not a directory", root.display());
     }
     Ok(Some((root, options, theme)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> impl Iterator<Item = std::ffi::OsString> {
+        values
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[test]
+    fn startup_requires_a_root_and_help_never_starts_a_session() {
+        assert!(
+            arguments(args(&[]))
+                .unwrap_err()
+                .to_string()
+                .contains("explicit directory")
+        );
+        assert!(arguments(args(&["--disk"])).is_err());
+        assert!(arguments(args(&["--help"])).expect("help").is_none());
+        assert!(arguments(args(&["--unknown"])).is_err());
+    }
+
+    #[test]
+    fn explicit_root_and_display_options_are_parsed_without_a_scan() {
+        let temp = tempfile::tempdir().expect("root");
+        let root = temp.path().to_string_lossy();
+        let (path, options, theme) =
+            arguments(args(&["-a", "-H", "--theme=light", &root]))
+                .expect("arguments")
+                .expect("session");
+        assert_eq!(
+            path,
+            canonicalize_path(temp.path()).expect("canonical root")
+        );
+        assert!(options.apparent_size);
+        assert!(!options.include_hidden);
+        assert_eq!(theme, ThemeChoice::Light);
+        assert!(arguments(args(&[&root, &root])).is_err());
+    }
 }

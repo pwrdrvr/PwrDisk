@@ -21,6 +21,7 @@ repository = "https://github.com/pwrdrvr/PwrDisk"
 disktree-core = { path = "crates/disktree-core" }
 disktree-link = { path = "crates/disktree-link" }
 disktree-mcp = { path = "crates/disktree-mcp" }
+disktree-tui = { path = "crates/disktree-tui" }
 anyhow = "1"
 rayon = "1"
 rustc-hash = "2"

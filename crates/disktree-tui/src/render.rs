@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use disktree_core::classify::Category;
 use disktree_core::insights::Finding;
+use disktree_core::path_style::PathStyle;
 use disktree_core::removal::RemovalMode;
 use disktree_core::size::{human_bytes, human_bytes_short, human_count};
 use disktree_core::tree::{Metric, path_of};
@@ -34,7 +35,7 @@ fn draw_base(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
     if area.width < 45 || area.height < 13 {
-        centered(frame, area, "disktree needs at least 45 × 13 cells");
+        centered(frame, area, "PwrDisk needs at least 45 × 13 cells");
         return;
     }
     // The list names each category, so its header does not need a legend.
@@ -84,7 +85,7 @@ fn header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Span::raw(" "),
         Span::styled("━", pane),
         Span::styled(
-            " disktree ",
+            " PwrDisk ",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -213,20 +214,17 @@ fn header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // have room for the mosaic, but not the desktop-length legend.
     let short = [
         "Code", "Agent", "Tools", "Sync", "Git", "Media", "Docs", "Cache",
+        "FSE", "Idx",
     ];
-    let (reclaim, separator) = if area.width >= 105 {
-        ("  / Reclaimable", "  ▪ ")
-    } else if area.width >= 77 {
-        (" / Reclaim", "  ▪ ")
-    } else if area.width >= 61 {
+    let (reclaim, separator) = if area.width >= 77 {
         (" / Reclaim", " ▪")
     } else {
-        (" / Rclm", " ▪")
+        (" / Rclm", "▪")
     };
     let mut legend = vec![Span::styled(reclaim, Style::default().fg(MUTED))];
     legend.extend(Category::LEGEND.iter().enumerate().map(
         |(index, category)| {
-            let label = if area.width >= 105 {
+            let label = if area.width >= 170 {
                 category.label()
             } else {
                 short[index]
@@ -444,7 +442,12 @@ fn treemap(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     item.value(app.options.metric),
                     item.category,
                     !app.marks.is_empty()
-                        && app.is_marked(&path_of(&app.root, root, crumbs)),
+                        && app.is_marked(&path_of(
+                            &app.root,
+                            root,
+                            crumbs,
+                            PathStyle::Native,
+                        )),
                     item.reclaim.is_some(),
                 )
             }
@@ -586,7 +589,12 @@ fn ranked_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         let selected = app.selected.as_ref() == Some(&crumbs);
         let marked = !app.marks.is_empty()
             && app.tree.as_ref().is_some_and(|root| {
-                app.is_marked(&path_of(&app.root, root, &crumbs))
+                app.is_marked(&path_of(
+                    &app.root,
+                    root,
+                    &crumbs,
+                    PathStyle::Native,
+                ))
             });
         let sigil = if marked {
             "◆"
@@ -771,7 +779,12 @@ fn detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 break;
             }
             if let Some(root) = app.tree.as_ref() {
-                let path = path_of(&app.root, root, &candidate.crumbs);
+                let path = path_of(
+                    &app.root,
+                    root,
+                    &candidate.crumbs,
+                    PathStyle::Native,
+                );
                 let size = human_bytes_short(candidate.bytes);
                 let path_width = usize::from(inner.width)
                     .saturating_sub(text_width(&size) + 4);
@@ -1129,7 +1142,11 @@ fn review(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
     let mut lines = vec![
         Line::styled(
-            "  REVIEW MARKED PATHS",
+            if app.read_only {
+                "  REVIEW MARKED PATHS · SSH READ-ONLY"
+            } else {
+                "  REVIEW MARKED PATHS"
+            },
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Line::styled(
@@ -1343,7 +1360,7 @@ fn insights(frame: &mut Frame<'_>, app: &App, area: Rect) {
     for (index, item) in app.insights.iter().enumerate().skip(start).take(rows)
     {
         let Some(root) = app.tree.as_ref() else { break };
-        let path = path_of(&app.root, root, &item.crumbs);
+        let path = path_of(&app.root, root, &item.crumbs, PathStyle::Native);
         let selected = index == app.insight_index;
         let name_color = if selected { ACCENT } else { TEXT };
         let category = root
@@ -1492,7 +1509,7 @@ fn help(frame: &mut Frame<'_>, area: Rect) {
             frame,
             area,
             vec![
-                Line::styled("  DISKTREE KEYS", Style::default().fg(ACCENT)),
+                Line::styled("  PWRDISK KEYS", Style::default().fg(ACCENT)),
                 guide_line(&[("arrows", "move"), ("Enter", "open")], BG),
                 guide_line(
                     &[("Backspace", "up"), ("Tab", "next"), ("Space", "mark")],
@@ -1529,7 +1546,7 @@ fn help(frame: &mut Frame<'_>, area: Rect) {
         area,
         vec![
             Line::styled(
-                "  DISKTREE KEYS",
+                "  PWRDISK KEYS",
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
             Line::raw(""),
@@ -1874,6 +1891,131 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn contrived_frames_cover_all_terminal_sizes_without_private_data() {
+        use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+        use std::fmt::Write as _;
+
+        fn directory(name: &str, children: Vec<Node>) -> Node {
+            let mut node = Node::directory(name);
+            node.children = children;
+            node
+        }
+        fn file(name: &str, mib: u64) -> Node {
+            let mut node = Node::entry(name, NodeKind::File, mib * 1024 * 1024);
+            node.modified = 1_699_900_000;
+            node
+        }
+        let mut tree = directory(
+            "Fixtures",
+            vec![
+                directory(
+                    "Projects",
+                    vec![
+                        directory(
+                            "atlas",
+                            vec![
+                                file("Cargo.toml", 1),
+                                directory("target", vec![file("app.bin", 120)]),
+                                directory("src", vec![file("main.rs", 6)]),
+                            ],
+                        ),
+                        directory(
+                            "beacon",
+                            vec![directory(
+                                "node_modules",
+                                vec![file("bundle.js", 40)],
+                            )],
+                        ),
+                    ],
+                ),
+                directory("photos", vec![file("IMG_0001.raw", 80)]),
+                directory(".cache", vec![file("browser", 32)]),
+                directory("Documents", vec![file("notes.txt", 5)]),
+                directory(".fseventsd", vec![file("history", 16)]),
+                directory(".Spotlight-V100", vec![file("index", 12)]),
+            ],
+        );
+        aggregate(&mut tree, Metric::Bytes);
+        disktree_core::classify::classify(&mut tree);
+        let mut app = App::new("/Fixtures".into(), ScanOptions::default());
+        if let Some(scan) = app.scan.take() {
+            scan.cancel();
+        }
+        app.insights = disktree_core::insights::worth_a_look(
+            &tree,
+            1_700_000_000,
+            disktree_core::insights::INSIGHT_LIMIT,
+        );
+        app.progress.files = tree.files;
+        app.progress.dirs = u64::from(tree.dirs);
+        app.tree = Some(tree);
+        app.selected = Some(vec![0]);
+        app.device = Some("Fixtures".into());
+        app.space = Some(disktree_core::space::SpaceInfo {
+            total: 1024 * 1024 * 1024 * 1024,
+            free: 750 * 1024 * 1024 * 1024,
+            available: 750 * 1024 * 1024 * 1024,
+        });
+        app.scan_elapsed = Some(Duration::from_millis(1400));
+        for (width, height) in [(45, 13), (80, 24), (120, 35)] {
+            app.set_viewport(width, height);
+            let mut terminal = Terminal::new(TestBackend::new(width, height))
+                .expect("terminal");
+            terminal
+                .draw(|frame| draw(frame, &app, &Palette::dark()))
+                .expect("draw contrived fixture");
+            let buffer = terminal.backend().buffer();
+            let output: String = buffer
+                .content()
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect();
+            assert!(output.contains("PwrDisk"));
+            assert!(output.contains("Fixtures"));
+            assert!(!output.contains("/Users/"));
+            let Some(dir) = std::env::var_os("PWRDISK_TUI_SCREENSHOTS") else {
+                continue;
+            };
+            let dir = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).expect("screenshot directory");
+            let mut svg = format!(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='{}' height='{}'><g font-family='Menlo,monospace' font-size='14' xml:space='preserve'>",
+                width * 9,
+                height * 18,
+            );
+            for y in 0..height {
+                for x in 0..width {
+                    let cell = buffer.cell((x, y)).expect("cell");
+                    let rgb = |color| match color {
+                        Color::Rgb(r, g, b) => {
+                            format!("#{r:02x}{g:02x}{b:02x}")
+                        }
+                        _ => "#121420".into(),
+                    };
+                    let text = cell
+                        .symbol()
+                        .replace('&', "&amp;")
+                        .replace('<', "&lt;")
+                        .replace('>', "&gt;");
+                    let _ = write!(
+                        svg,
+                        "<rect x='{}' y='{}' width='9' height='18' fill='{}'/><text x='{}' y='{}' fill='{}'>{text}</text>",
+                        x * 9,
+                        y * 18,
+                        rgb(cell.bg),
+                        x * 9,
+                        y * 18 + 14,
+                        rgb(cell.fg),
+                    );
+                }
+            }
+            svg.push_str("</g></svg>");
+            std::fs::write(dir.join(format!("tui-{width}.svg")), svg)
+                .expect("write fixture screenshot");
+        }
+    }
+
+    #[test]
     fn scan_panel_uses_the_gui_reading_and_activity_grammar() {
         let temp = tempfile::tempdir().expect("tempdir");
         let mut app =
@@ -1899,7 +2041,7 @@ mod tests {
                 .map(ratatui::buffer::Cell::symbol)
                 .collect();
             for phrase in [
-                "━ ━ disktree",
+                "━ ━ PwrDisk",
                 "Reading",
                 "files",
                 "directories",
@@ -2063,7 +2205,7 @@ mod tests {
                     .iter()
                     .map(ratatui::buffer::Cell::symbol)
                     .collect();
-                assert!(output.contains("disktree"));
+                assert!(output.contains("PwrDisk"));
                 if screen == Screen::Explore {
                     assert!(output.contains("hjkl move"), "width {width}");
                     for control in ["t Size", "i Hidden", "d Disk"] {
@@ -2099,7 +2241,7 @@ mod tests {
                             ] {
                                 assert!(legend.contains(label), "{legend}");
                             }
-                            assert!(legend.contains(if width == 60 {
+                            assert!(legend.contains(if width < 77 {
                                 "Rclm"
                             } else {
                                 "Reclaim"
@@ -2552,7 +2694,7 @@ mod tests {
         assert!(header.contains("d Apparent"));
         assert!(output.contains("files"));
         assert!(output.contains("dirs"));
-        assert!(output.contains("Media [Media]"), "{output}");
+        assert!(output.contains("Media [Other]"), "{output}");
         assert!(output.contains("fifth [Other]"), "{output}");
         assert!(!output.contains("Reclaimable"));
     }

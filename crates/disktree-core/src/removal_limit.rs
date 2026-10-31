@@ -20,6 +20,28 @@ impl Default for Limit {
     }
 }
 
+/// Load the user's limit for each removal; invalid configuration fails closed.
+pub fn load_settings(dir: Option<&Path>) -> Result<Limit, String> {
+    let Some(dir) = dir else {
+        return Ok(Limit::default());
+    };
+    let text = match std::fs::read_to_string(dir.join("removal-limit-percent"))
+    {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Limit::default());
+        }
+        Err(error) => {
+            return Err(format!("Cannot read removal limit: {error}"));
+        }
+    };
+    let percent = text
+        .trim()
+        .parse::<u8>()
+        .map_err(|_| "Invalid removal limit in Settings > Safety")?;
+    Limit::new(percent)
+}
+
 /// One volume's contribution to a proposed operation, before clone savings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Budget {
