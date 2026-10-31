@@ -195,9 +195,8 @@ impl Disktree {
         match request {
             Request::Hello { client, version } => {
                 if *version != VERSION {
-                    return Response::error(format!(
-                        "this window speaks link version {VERSION}, the \
-                         agent version {version}; restart the older one"
+                    return Response::error(disktree_link::protocol_mismatch(
+                        VERSION, *version,
                     ));
                 }
                 if let Some(agent) = &mut self.agent {

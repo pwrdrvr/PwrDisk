@@ -999,11 +999,16 @@ impl Session {
                 )),
             },
             // A version mismatch, said in the window's words.
-            Ok(Response::Error { message }) => Some(message),
+            Ok(Response::Error { message }) => {
+                Some(if message.contains(disktree_link::RECONNECT_MCP) {
+                    message
+                } else {
+                    format!("{message} {}", disktree_link::RECONNECT_MCP)
+                })
+            }
             Ok(other) => Some(unexpected(&other)),
-            Err(_) => {
-                self.unlinked = None;
-                None
+            Err(reason) => {
+                Some(format!("{reason}. {}", disktree_link::RECONNECT_MCP,))
             }
         };
         let request_refused =
@@ -1107,6 +1112,19 @@ impl Session {
                 if let Response::State(state) | Response::Marked { state, .. } =
                     &response
                 {
+                    // Validate both ends, even if a stale peer accepted Hello.
+                    // Never adopt its marks or interpret missing savings as
+                    // measured allocation before establishing compatibility.
+                    if state.version != VERSION {
+                        let reason = disktree_link::protocol_mismatch(
+                            state.version,
+                            VERSION,
+                        );
+                        self.unlinked = Some(reason.clone());
+                        self.link = None;
+                        self.window = None;
+                        return Ok(Response::error(reason));
+                    }
                     self.adopt(state);
                 }
                 Ok(response)
@@ -1114,7 +1132,7 @@ impl Session {
             Err(error) => {
                 self.link = None;
                 self.window = None;
-                Err(format!("the PwrDisk window went away: {error}"))
+                Err(format!("the PwrDisk window link failed: {error}"))
             }
         }
     }
@@ -1242,7 +1260,7 @@ impl Session {
                 };
                 format!(
                     "Window: open on {}{tree}, {} screen{}{} (PwrDisk {}). Its tree is \
-                     what pwrdisk_ls and pwrdisk_find read.\n{}",
+                     what pwrdisk_ls and pwrdisk_find read.\n{}{}",
                     self.show(&state.root),
                     state.screen,
                     if state.scanning { ", scanning" } else { "" },
@@ -1251,7 +1269,12 @@ impl Session {
                         1 => ", 1 mark".to_string(),
                         n => format!(", {n} marks"),
                     },
-                    state.app_version,
+                    if state.app_version.is_empty() {
+                        "version unknown"
+                    } else {
+                        &state.app_version
+                    },
+                    version_notice(state),
                     if state.tree.is_some() {
                         allocation_caveat()
                     } else {
@@ -1905,6 +1928,25 @@ fn union_reports(plans: Vec<Plan>) -> Vec<Plan> {
         .collect()
 }
 
+fn version_notice(window: &State) -> String {
+    if window.app_version.is_empty() {
+        format!(
+            "GUI application version unavailable. {}\n",
+            disktree_link::RECONNECT_MCP
+        )
+    } else if window.app_version != env!("CARGO_PKG_VERSION") {
+        format!(
+            "Release mismatch: MCP server {}; GUI {}. Link protocol {} is compatible, so the connection remains usable. {}\n",
+            env!("CARGO_PKG_VERSION"),
+            window.app_version,
+            VERSION,
+            disktree_link::RECONNECT_MCP,
+        )
+    } else {
+        String::new()
+    }
+}
+
 fn estimate_report(estimate: &SelectionEstimate) -> String {
     format!(
         "Selected-set reclaim estimate: {}–{}{}. Before snapshots, open files \
@@ -2054,7 +2096,7 @@ fn is_hidden(path: &Path) -> bool {
 /// An answer of a shape the request does not take: an old window.
 fn unexpected(response: &Response) -> String {
     format!(
-        "the window answered with something unexpected ({}); restart it",
+        "the window answered with something unexpected ({}). {}",
         match response {
             Response::State(_) => "state",
             Response::Marked { .. } => "marked",
@@ -2063,7 +2105,8 @@ fn unexpected(response: &Response) -> String {
             Response::RemovalPreview(_) => "removal_preview",
             Response::Ok => "ok",
             Response::Error { .. } => "error",
-        }
+        },
+        disktree_link::RECONNECT_MCP,
     )
 }
 
@@ -2501,6 +2544,7 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     struct FakeTree {
+        protocol: u32,
         root: PathBuf,
         tree: Arc<Node>,
         marks: Vec<Mark>,
@@ -2537,7 +2581,7 @@ mod tests {
                 }))
             });
             State {
-                version: VERSION,
+                version: self.protocol,
                 app_version: "0.13.0".into(),
                 root: self.root.clone(),
                 current: self.root.clone(),
@@ -2693,6 +2737,7 @@ mod tests {
             busy: bool,
         ) -> Self {
             let fake = FakeTree {
+                protocol: VERSION,
                 root: root.to_path_buf(),
                 tree: Arc::new(
                     disktree_core::scan::scan(root, apparent()).expect("scan"),
@@ -2769,6 +2814,7 @@ mod tests {
         let _window = FakeWindow::with_tree(
             &socket,
             FakeTree {
+                protocol: VERSION,
                 root: root.clone(),
                 tree: Arc::clone(&scan.tree),
                 marks: vec![],
@@ -2800,6 +2846,9 @@ mod tests {
         assert!(report.contains("Projects 500 MiB"), "{report}");
         let status = session.status();
         assert!(status.contains("0.13.0"), "{status}");
+        assert!(status.contains("Release mismatch:"), "{status}");
+        assert!(status.contains("connection remains usable"), "{status}");
+        assert!(status.contains("restart/reconnect"), "{status}");
         assert!(
             status.contains(concat!(env!("CARGO_PKG_VERSION"), " MCP server")),
             "{status}"
@@ -2834,6 +2883,73 @@ mod tests {
             assert_eq!(estimate.lower, 0, "{failure}");
             assert!(estimate.partial, "{failure}");
         }
+        let mut wire =
+            serde_json::to_value(session.window.as_ref().expect("window"))
+                .expect("state JSON");
+        let fields = wire.as_object_mut().expect("object");
+        fields.remove("app_version");
+        fields.remove("estimate");
+        let mut state: State =
+            serde_json::from_value(wire).expect("optional metadata");
+        assert!(state.app_version.is_empty());
+        assert!(version_notice(&state).contains("version unavailable"));
+        state.app_version = env!("CARGO_PKG_VERSION").into();
+        assert!(version_notice(&state).is_empty());
+        session.window = Some(state);
+        let mut plan = plan(session.marks(), &root);
+        let estimate = session.selection_estimate(&mut plan);
+        assert_eq!(
+            (estimate.lower, estimate.upper, estimate.on_volume),
+            (0, None, 0)
+        );
+        assert!(estimate.partial);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn incompatible_state_is_refused_before_adopting_marks_or_handing_over() {
+        let temp = fixture();
+        let socket = endpoint(temp.path());
+        let window = FakeWindow::with_tree(
+            &socket,
+            FakeTree {
+                protocol: VERSION - 1,
+                root: temp.path().into(),
+                tree: Arc::new(
+                    disktree_core::scan::scan(temp.path(), apparent())
+                        .expect("scan"),
+                ),
+                marks: vec![],
+                remote: None,
+                busy: false,
+                options: apparent(),
+                unreadable: 0,
+            },
+        );
+        let mut session = Session::detached(socket, None);
+        let mark = Target {
+            path: temp.path().join("notes"),
+            bytes: 500,
+            is_dir: true,
+            hidden: false,
+        };
+        session.marks.push(mark.clone());
+        assert!(!session.try_connect());
+        assert!(session.link.is_none() && session.window.is_none());
+        assert_eq!(session.marks(), &[mark]);
+        let reason = session.unlinked.as_deref().expect("explicit refusal");
+        assert!(
+            reason.contains("Incompatible PwrDisk link protocols"),
+            "{reason}"
+        );
+        assert!(reason.contains("restart/reconnect"), "{reason}");
+        assert!(reason.contains("updated installation"), "{reason}");
+        assert!(
+            window
+                .asked()
+                .iter()
+                .all(|r| matches!(r, Request::Hello { .. }))
+        );
     }
 
     #[cfg(any(unix, windows))]
@@ -2852,6 +2968,7 @@ mod tests {
             let window = FakeWindow::with_tree(
                 &socket,
                 FakeTree {
+                    protocol: VERSION,
                     root: temp.path().to_path_buf(),
                     tree: Arc::clone(&tree),
                     marks: Vec::new(),
@@ -2931,6 +3048,7 @@ mod tests {
                 FakeWindow::with_tree(
                     &socket,
                     FakeTree {
+                        protocol: VERSION,
                         root: PathBuf::from("/"),
                         tree: Arc::clone(&tree),
                         marks: Vec::new(),

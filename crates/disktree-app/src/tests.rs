@@ -4077,6 +4077,19 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         response
     };
 
+    let refused = ask(
+        cx,
+        Request::Hello {
+            client: "Old MCP fixture".into(),
+            version: disktree_link::VERSION - 1,
+        },
+    );
+    let Response::Error { message } = refused else {
+        panic!("incompatible Hello must be refused");
+    };
+    assert!(message.contains("Incompatible PwrDisk link protocols"));
+    assert!(message.contains("restart/reconnect"));
+    assert!(message.contains("updated installation"));
     let hello = ask(
         cx,
         Request::Hello {

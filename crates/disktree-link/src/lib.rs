@@ -50,6 +50,15 @@ pub const SUPPORTED: bool = cfg!(any(unix, windows));
 /// built from one tree, so a mismatch means an old window is still open.
 pub const VERSION: u32 = 4;
 
+/// Updating the GUI does not replace a process hosted by an MCP client.
+pub const RECONNECT_MCP: &str = "Updating PwrDisk's GUI does not restart its MCP server. In your MCP client, restart/reconnect the PwrDisk MCP server using `pwrdisk mcp` from the updated installation. If the GUI is outdated, quit and reopen the updated PwrDisk app.";
+
+pub fn protocol_mismatch(window: u32, server: u32) -> String {
+    format!(
+        "Incompatible PwrDisk link protocols (GUI {window}; MCP server {server}). {RECONNECT_MCP}"
+    )
+}
+
 /// Environment variable naming the endpoint, for tests and a second copy
 /// of PwrDisk that should not meet the first.
 pub const SOCKET_ENV: &str = "PWRDISK_LINK";
@@ -472,6 +481,7 @@ pub struct Removal {
 pub struct State {
     pub version: u32,
     /// GUI package version, independent of the MCP server and link protocol.
+    #[serde(default)]
     pub app_version: String,
     /// The scanned root.
     pub root: PathBuf,
@@ -485,6 +495,7 @@ pub struct State {
     pub scanned: bool,
     pub marks: Vec<Mark>,
     /// Absent until a complete local tree can supply the selected union.
+    #[serde(default)]
     pub estimate: Option<SelectionEstimate>,
     pub space: Option<Space>,
     pub removal: Option<Removal>,
