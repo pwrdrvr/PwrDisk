@@ -132,9 +132,15 @@ pub const fn highlight(theme: &Theme) -> Hsla {
     theme.warning
 }
 
-/// Text on a filled highlight.
+/// Text on a filled highlight: dark on dark themes and light on light
+/// ones, as before, unless that ink fails on this theme's highlight.
 pub fn on_highlight(theme: &Theme) -> Hsla {
-    ink_on(theme.bright, highlight(theme), 4.5)
+    let preferred = if dark(theme) {
+        theme.background
+    } else {
+        theme.bright
+    };
+    ink_on(preferred, highlight(theme), 4.5)
 }
 
 /// The diagonal hatch over reclaimable space: quiet enough to leave the hue
@@ -218,6 +224,17 @@ pub fn ink_on(preferred: Hsla, surface: Hsla, minimum: f32) -> Hsla {
         black
     } else {
         white
+    }
+}
+
+/// A ring or mark keeps the theme's colour, translucency included, when it
+/// passes over `surface`; otherwise it falls back to `ink_on`. Unlike text,
+/// a painted quad's alpha composites once, so it can be measured as is.
+pub fn boundary_on(preferred: Hsla, surface: Hsla, minimum: f32) -> Hsla {
+    if contrast(preferred, surface) >= minimum {
+        preferred
+    } else {
+        ink_on(preferred, surface, minimum)
     }
 }
 

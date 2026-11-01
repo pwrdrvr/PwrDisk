@@ -3323,6 +3323,24 @@ fn marking_a_directory_marks_everything_inside_it(cx: &mut TestAppContext) {
     assert!(inside >= 2, "blob.bin and deeper are drawn inside junk");
     assert!(covered, "every tile inside junk goes with it");
 
+    // The mark is said in words as well as drawn: a label carries its
+    // tile's state, so colour is never the only cue (WCAG 1.4.1).
+    let label = mosaic
+        .labels
+        .iter()
+        .find(|label| label.text.ends_with("junk"))
+        .expect("junk is large enough to be labelled");
+    assert_eq!(label.text, "[marked] junk");
+    assert!(label.decoration.marked, "the label paints its tile's state");
+    assert!(
+        mosaic
+            .labels
+            .iter()
+            .filter(|label| label.decoration.covered)
+            .all(|label| label.text.starts_with("[marked] ")),
+        "what goes with a mark is labelled as going"
+    );
+
     // Marking something inside it is refused, and says why.
     update(&view, cx, |app, cx| app.toggle_mark(&deeper, cx));
     let (count, notice) = read(&view, cx, |app| {

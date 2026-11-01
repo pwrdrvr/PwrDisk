@@ -103,29 +103,7 @@ pub fn preview(
         let Some(node) = root.resolve(tile.crumbs()) else {
             continue;
         };
-        mosaic.labels.push(Label {
-            text: node.name.to_string(),
-            rect: tile.rect,
-            header: None,
-            depth: 0,
-            dim: false,
-            marked: false,
-            size_text: crate::widgets::short_value(node, app.options.metric),
-            decoration: TileDeco {
-                rect: tile.rect,
-                depth: 0,
-                category: Category::Other,
-                age_bucket: None,
-                reclaimable: false,
-                filtered: Filtered::Shown,
-                unreadable: false,
-                marked: false,
-                covered: false,
-                hovered: false,
-                selected: false,
-            },
-        });
-        mosaic.tiles.push(TileDeco {
+        let decoration = TileDeco {
             rect: tile.rect,
             depth: 0,
             category: Category::Other,
@@ -137,7 +115,18 @@ pub fn preview(
             covered: false,
             hovered: false,
             selected: false,
+        };
+        mosaic.labels.push(Label {
+            text: node.name.to_string(),
+            rect: tile.rect,
+            header: None,
+            depth: 0,
+            dim: false,
+            marked: false,
+            size_text: crate::widgets::short_value(node, app.options.metric),
+            decoration: decoration.clone(),
         });
+        mosaic.tiles.push(decoration);
     }
     mosaic_inner(mosaic, app, window, cx, false)
 }
@@ -367,6 +356,7 @@ fn paint_tiles(
     // slivers of it showing in the gaps between them.
     let mut outlines: Vec<(u8, Bounds<Pixels>, f32, Hsla)> = Vec::new();
     for tile in tiles {
+        let fill = colors.fill(tile);
         let rect = view.project(tile.rect);
         if rect.w <= 0.5 || rect.h <= 0.5 {
             continue;
@@ -378,7 +368,7 @@ fn paint_tiles(
         window.paint_quad(quad(
             quad_bounds,
             Corners::default(),
-            colors.fill(tile),
+            fill,
             none,
             colors.hover_border,
             solid,
@@ -435,8 +425,7 @@ fn paint_tiles(
                 ),
                 Size::new(px(4.), px(4.)),
             );
-            let warning =
-                palette::ink_on(colors.warning, colors.fill(tile), 3.0);
+            let warning = palette::boundary_on(colors.warning, fill, 3.0);
             window.paint_quad(quad(
                 mark,
                 Corners::default(),
@@ -449,26 +438,17 @@ fn paint_tiles(
 
         // Ranked so the most important ring is painted last, on top.
         let outline = if tile.selected {
-            Some((
-                3,
-                3.0,
-                palette::ink_on(colors.selected_border, colors.fill(tile), 3.0),
-            ))
+            Some((3, 3.0, colors.selected_border))
         } else if tile.hovered {
-            Some((
-                2,
-                1.0,
-                palette::ink_on(colors.hover_border, colors.fill(tile), 3.0),
-            ))
+            Some((2, 1.0, colors.hover_border))
         } else if tile.marked {
-            Some((
-                1,
-                2.0,
-                palette::ink_on(colors.marked_border, colors.fill(tile), 3.0),
-            ))
+            Some((1, 2.0, colors.marked_border))
         } else {
             None
-        };
+        }
+        .map(|(rank, width, preferred)| {
+            (rank, width, palette::boundary_on(preferred, fill, 3.0))
+        });
         if let Some((rank, width, color)) = outline {
             outlines.push((rank, quad_bounds, width, color));
         }
@@ -714,7 +694,9 @@ mod tests {
                                 for ink in [name, value] {
                                     assert!(
                                         palette::contrast(ink, fill) >= 4.5,
-                                        "{category:?} age {age_bucket:?} depth {depth} {filtered:?} marked {marked} covered {covered}"
+                                        "{category:?} age {age_bucket:?} \
+                                         depth {depth} {filtered:?} marked \
+                                         {marked} covered {covered}"
                                     );
                                     assert!(
                                         (ink.a - 1.0).abs() < f32::EPSILON,
@@ -729,7 +711,7 @@ mod tests {
                                 ] {
                                     assert!(
                                         palette::contrast(
-                                            palette::ink_on(
+                                            palette::boundary_on(
                                                 preferred, fill, 3.0
                                             ),
                                             fill
