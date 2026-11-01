@@ -2153,6 +2153,60 @@ fn a_view_without_flags_or_marks_still_draws(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("disktree-root").is_some());
 }
 
+/// In a short window what does not fit in the summary is reached by
+/// scrolling it. Its box ended above the footer even before the fix; its
+/// content painted past the box, so the wheel checks are the guard.
+#[gpui_kit::test]
+fn the_review_summary_fits_a_short_window(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1100.), px(420.)));
+    update(&view, cx, |app, cx| {
+        app.marks.toggle(
+            disktree_core::removal::Target {
+                path: temp.path().join("junk"),
+                bytes: 300_000,
+                is_dir: true,
+                hidden: false,
+            },
+            app.path_style(),
+        );
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+    draw(cx);
+    let summary = cx.debug_bounds("review-summary").expect("summary");
+    let footer = cx.debug_bounds("review-footer").expect("footer");
+    assert!(
+        summary.bottom() <= footer.top(),
+        "summary ends at {:?}, under the footer at {:?}",
+        summary.bottom(),
+        footer.top()
+    );
+    // The panel's end starts below its bottom edge, and the wheel brings
+    // it up into view. Without scrolling it stays put and paints over the
+    // footer.
+    let end = cx.debug_bounds("review-summary-end").expect("summary end");
+    assert!(end.bottom() > summary.bottom(), "starts out of view");
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: summary.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+            px(0.),
+            px(-2000.),
+        )),
+        ..Default::default()
+    });
+    draw(cx);
+    let scrolled = cx.debug_bounds("review-summary-end").expect("summary end");
+    assert!(scrolled.top() < end.top(), "{scrolled:?} did not move");
+    assert!(
+        scrolled.bottom() <= summary.bottom(),
+        "{scrolled:?} still past {summary:?}"
+    );
+}
+
 /// The removal mode is a choice with two independent channels: the key and the
 /// button both have to reach the same state.
 #[gpui_kit::test]

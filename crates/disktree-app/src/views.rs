@@ -3557,10 +3557,10 @@ fn review(
             chrome::Platform::current() == chrome::Platform::Linux,
             |screen| screen.child(review_hints(app, &theme, cx)),
         )
-        .child(screen_footer(
-            review_actions(app, &plan, cx),
-            &theme,
-        ))
+        .child(
+            screen_footer(review_actions(app, &plan, cx), &theme)
+                .debug_selector(|| "review-footer".into()),
+        )
 }
 
 /// One marked path. Lanes are fixed, so names, bars and sizes line up down
@@ -3678,7 +3678,7 @@ fn review_summary(
     theme: &Theme,
     window: &mut Window,
     cx: &mut Context<'_, Disktree>,
-) -> Div {
+) -> Stateful<Div> {
     // What comes back to the volume on screen, which is all its meter can
     // project; the totals below say what the removal does in full.
     let reclaiming = plan.reclaim();
@@ -3728,12 +3728,19 @@ fn review_summary(
         }
     };
 
+    // Never taller than its space above the footer: in a short window, or
+    // at a larger interface zoom, the panel scrolls instead of running
+    // under the footer.
     let mut panel = div()
+        .id("review-summary")
+        .debug_selector(|| "review-summary".into())
         .flex()
         .flex_col()
         .gap(space::XL)
         .w(size::REVIEW_SUMMARY)
         .flex_shrink_0()
+        .min_h_0()
+        .overflow_y_scroll()
         .p(space::LG)
         .border_1()
         .border_color(theme.border)
@@ -3832,7 +3839,9 @@ fn review_summary(
 
     // The panel says what will happen; the footer below does it.
     panel
-        .child(div().flex_1())
+        // Named for the test that scrolls to the panel's end: with no
+        // notice, nothing comes after it.
+        .child(div().flex_1().debug_selector(|| "review-summary-end".into()))
         .children(notice_line(app, theme, cx))
 }
 
