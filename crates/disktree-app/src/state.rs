@@ -4192,16 +4192,22 @@ pub fn now_seconds() -> i64 {
 /// Freed in place, a home directory's tens of millions of nodes held the
 /// main thread for seconds after Quit, long enough for macOS to call the
 /// app not responding. On quit the process exits before that thread is
-/// done, which is the point: the system takes the memory back whole.
+/// done, which is the point: the system takes the memory back whole. The
+/// find results (an entry per match and ancestor) and a finished scan not
+/// yet taken from its channel can be as large, so they go with it.
 impl Drop for Disktree {
     fn drop(&mut self) {
-        discard(self.tree.take());
+        discard(Some((
+            self.tree.take(),
+            self.matches.take(),
+            self.scan.take(),
+        )));
     }
 }
 
 /// Let go of a tree off the UI thread: freeing a disk's millions of nodes
 /// takes from a good part of a second to many, and nothing waits on it.
-fn discard(tree: Option<Arc<Node>>) {
+fn discard<T: Send + 'static>(tree: Option<T>) {
     if let Some(tree) = tree {
         #[cfg(test)]
         crate::marks::work::DISCARDED
