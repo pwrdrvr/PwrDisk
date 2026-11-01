@@ -2009,6 +2009,14 @@ fn selection_section(
             cx,
         ))
         .child(widgets::bar(share, highlight, cx))
+        .when_some(clone_split(node), |this, split| {
+            this.child(
+                div()
+                    .text_size(text::CAPTION)
+                    .text_color(theme.secondary)
+                    .child(split),
+            )
+        })
         .when(node.sharing().estimate.is_some(), |this| {
             this.child(
                 div()
@@ -4542,7 +4550,15 @@ fn node_card(
                         ),
                         human_bytes(node.own_bytes())
                     )),
-            );
+            )
+            .when_some(clone_split(node), |this, split| {
+                this.child(
+                    div()
+                        .text_size(text::CAPTION)
+                        .text_color(theme.secondary)
+                        .child(split),
+                )
+            });
 
     let mut badges = div().flex().flex_row().gap(space::XS).flex_wrap();
     if hidden {
@@ -4741,6 +4757,20 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
         close,
         cx,
     )
+}
+
+/// A node's listed bytes split into private and APFS-clone-shared, as the
+/// MCP rows read; `None` without clone blocks, so other systems and other
+/// scans show nothing new. Tile weights stay the allocated bytes.
+pub fn clone_split(node: &disktree_core::tree::Node) -> Option<String> {
+    let clones = disktree_link::Clones::of(node)?;
+    (clones.shared > 0).then(|| {
+        format!(
+            "{} private · {} shared with other APFS clones",
+            human_bytes(clones.private),
+            human_bytes(clones.shared)
+        )
+    })
 }
 
 /// Both ends are scan-derived; the meter uses the lower bound only.

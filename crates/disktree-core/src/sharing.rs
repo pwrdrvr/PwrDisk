@@ -56,6 +56,14 @@ impl Sharing {
     pub fn possible(self, listed: u64) -> u64 {
         self.estimate.map_or(listed, |estimate| estimate.upper)
     }
+
+    /// Allocation in clone files not known to be private. Other clones,
+    /// selected or not and inside the scan or not, may hold these blocks,
+    /// so deleting this alone does not free them. An unknown private size
+    /// counts as shared: the conservative side for a saving.
+    pub const fn shared_bytes(self) -> u64 {
+        self.bytes.saturating_sub(self.private_bytes)
+    }
 }
 
 /// Leaf metadata is already retained; do not allocate another box per clone.

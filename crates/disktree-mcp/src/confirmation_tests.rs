@@ -82,6 +82,7 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
                                             upper: None,
                                             on_volume: 0,
                                             partial: true,
+                                            shared: 0,
                                         },
                                     limit_percent: 5,
                                     volumes: vec![],

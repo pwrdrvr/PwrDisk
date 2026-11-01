@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use disktree_core::size::{human_bytes, human_count, share, share_bar};
-use disktree_link::{Entry, Found, Listing};
+use disktree_link::{Clones, Entry, Found, Listing};
 
 /// Width of the share bar on a row.
 const BAR: usize = 8;
@@ -48,6 +48,9 @@ pub fn describe(entry: &Entry, now: i64) -> String {
     if entry.is_dir {
         parts.push(format!("{} files", human_count(entry.files)));
     }
+    if let Some(clones) = entry.clones.filter(|clones| clones.shared > 0) {
+        parts.push(clone_split(&clones));
+    }
     if entry.category != "other" {
         parts.push(entry.category.clone());
     }
@@ -59,6 +62,56 @@ pub fn describe(entry: &Entry, now: i64) -> String {
     }
     parts.push(age(now, entry.modified));
     parts.join(" \u{00b7} ")
+}
+
+/// Allocated bytes overstate what goes when blocks are APFS clones. The
+/// refcount behind `lower` counts clones outside the scan too, so the
+/// wording never says the blocks are shared only within it.
+fn clone_split(clones: &Clones) -> String {
+    format!(
+        "{} private \u{00b7} {} shared with other APFS clones \u{00b7} \
+         frees \u{2248} {} alone{}",
+        human_bytes(clones.private),
+        human_bytes(clones.shared),
+        bounds(clones.lower, clones.upper),
+        if clones.partial { " (partial)" } else { "" },
+    )
+}
+
+/// `lower` alone when the bounds meet, else `lower–upper`.
+fn bounds(lower: u64, upper: u64) -> String {
+    if lower == upper {
+        human_bytes(lower)
+    } else {
+        format!("{}\u{2013}{}", human_bytes(lower), human_bytes(upper))
+    }
+}
+
+/// A line for a header: how much of `entry` is clone blocks, and how much
+/// of it is listed twice. `None` without clone blocks, so reports off APFS
+/// read as they always have.
+pub fn clone_summary(entry: &Entry) -> Option<String> {
+    let clones = entry.clones.filter(|clones| clones.shared > 0)?;
+    let mut line = format!(
+        "APFS clones: {} of this is shared clone blocks",
+        human_bytes(clones.shared)
+    );
+    if clones.repeated > 0 {
+        let _ = write!(
+            line,
+            "; \u{2248} {} is counted again, so the files here take \
+             \u{2248} {} on disk",
+            human_bytes(clones.repeated),
+            human_bytes(entry.bytes.saturating_sub(clones.repeated)),
+        );
+    }
+    let _ = writeln!(
+        line,
+        "{}. Rows split private from shared bytes; shared blocks stay while \
+         any clone of them remains, inside this scan or outside it.",
+        if clones.partial { " (partial)" } else { "" },
+    );
+    Some(line)
 }
 
 /// One row of a listing: share of `total`, size, name and description.
@@ -145,6 +198,95 @@ mod tests {
         assert_eq!(age(now, now - 3 * 86_400), "3 d ago");
         assert_eq!(age(now, now - 70 * 86_400), "2 mo ago");
         assert_eq!(age(now, now - 800 * 86_400), "2 y ago");
+    }
+
+    fn entry(clones: Option<Clones>) -> Entry {
+        Entry {
+            name: "w".into(),
+            is_dir: true,
+            bytes: 12 * 1024 * 1024,
+            files: 12,
+            category: "other".into(),
+            reclaim: None,
+            modified: 0,
+            read_error: false,
+            clones,
+        }
+    }
+
+    #[test]
+    fn rows_without_clones_read_as_they_always_have() {
+        let plain = entry(None);
+        assert_eq!(describe(&plain, 0), "12 files \u{00b7} age unknown");
+        assert_eq!(
+            row(&plain, "w", plain.bytes, 0),
+            "\u{2593}\u{2593}\u{2593}\u{2593}\u{2593}\u{2593}\u{2593}\
+             \u{2593} 100%     12 MiB  w/  12 files \u{00b7} age unknown"
+        );
+        assert_eq!(clone_summary(&plain), None);
+        // A modified clone that shares nothing any more says nothing new.
+        let unshared = entry(Some(Clones {
+            private: plain.bytes,
+            shared: 0,
+            repeated: 0,
+            lower: plain.bytes,
+            upper: plain.bytes,
+            partial: false,
+        }));
+        assert_eq!(describe(&unshared, 0), describe(&plain, 0));
+        assert_eq!(clone_summary(&unshared), None);
+    }
+
+    #[test]
+    fn clone_rows_split_private_from_shared_and_say_what_goes_alone() {
+        let full = entry(Some(Clones {
+            private: 4096,
+            shared: 12 * 1024 * 1024 - 4096,
+            repeated: 0,
+            lower: 4096,
+            upper: 4096,
+            partial: false,
+        }));
+        assert_eq!(
+            describe(&full, 0),
+            "12 files \u{00b7} 4.0 KiB private \u{00b7} 12 MiB shared with \
+             other APFS clones \u{00b7} frees \u{2248} 4.0 KiB alone \u{00b7} \
+             age unknown"
+        );
+        let partial = entry(Some(Clones {
+            lower: 0,
+            upper: 8 * 1024 * 1024,
+            partial: true,
+            ..full.clones.expect("clones")
+        }));
+        let text = describe(&partial, 0);
+        assert!(
+            text.contains("frees \u{2248} 0 B\u{2013}8.0 MiB alone (partial)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_header_says_how_much_is_counted_again() {
+        let mut root = entry(Some(Clones {
+            private: 0,
+            shared: 12 * 1024 * 1024,
+            repeated: 8 * 1024 * 1024,
+            lower: 4 * 1024 * 1024,
+            upper: 4 * 1024 * 1024,
+            partial: false,
+        }));
+        let line = clone_summary(&root).expect("a summary");
+        assert!(line.starts_with("APFS clones: 12 MiB"), "{line}");
+        assert!(line.contains("\u{2248} 8.0 MiB is counted again"), "{line}");
+        assert!(line.contains("take \u{2248} 4.0 MiB on disk"), "{line}");
+        assert!(line.contains("outside it"), "{line}");
+        root.clones = root.clones.map(|clones| Clones {
+            repeated: 0,
+            ..clones
+        });
+        let line = clone_summary(&root).expect("a summary");
+        assert!(!line.contains("counted again"), "{line}");
     }
 
     #[test]

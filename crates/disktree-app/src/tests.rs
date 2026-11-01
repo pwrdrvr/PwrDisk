@@ -3605,6 +3605,39 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         Disktree::with_tree(root_for_view.clone(), tree, options, 3, cx)
     });
     draw(cx);
+    // The window answers a listing with the clone split `pwrdisk mcp`
+    // computes in process, and draws the same split for the selection.
+    update(&view, cx, |app, cx| {
+        let answer = app.answer_agent(
+            &disktree_link::Request::Ls {
+                path: root.clone(),
+                limit: 10,
+            },
+            cx,
+        );
+        let disktree_link::Response::Listing(listing) = answer else {
+            panic!("{answer:?}");
+        };
+        let tree = app.tree().expect("tree");
+        let here =
+            disktree_link::Listing::of(&root, tree.bytes, &root, tree, 10);
+        assert_eq!(listing, here);
+        let copies = listing
+            .children
+            .iter()
+            .find(|child| child.name == "copies")
+            .and_then(|child| child.clones)
+            .expect("clone facts for copies");
+        assert!(copies.private <= 8 * 1024, "{copies:?}");
+        assert!(copies.shared >= 8 * 1024 * 1024 - 64 * 1024, "{copies:?}");
+        let node = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_ref() == "copies")
+            .expect("copies");
+        let split = crate::views::clone_split(node).expect("a split");
+        assert!(split.contains("shared with other APFS clones"), "{split}");
+    });
     update(&view, cx, |app, cx| {
         let index = app
             .tree()
@@ -3625,6 +3658,8 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         assert_eq!(estimate.paths, vec![root.join("copies")]);
         assert_eq!((estimate.lower, estimate.upper), (0, Some(0)));
         assert_eq!(estimate.on_volume, 0);
+        // The agent hears why: the listed bytes are clone blocks.
+        assert!(estimate.shared >= 8 * 1024 * 1024 - 64 * 1024);
     });
     // Remote selections are exports: local clone metadata and mount
     // attribution cannot authorize or project a remote saving.
