@@ -1448,6 +1448,10 @@ fn view_settings(
             check(app.options.include_hidden),
             cx,
         )
+        // gpui-omarchy's checkbox is `self_start`, made to hug its label in
+        // a column; in the strip that pins it to the top edge instead of
+        // the centre line the other controls share.
+        .self_center()
         .tab_stop(true)
         .on_change(move |_, _, window, cx| {
             let _ = entity.update(cx, |this, cx| {
@@ -1464,6 +1468,7 @@ fn view_settings(
             check(app.options.apparent_size),
             cx,
         )
+        .self_center()
         .tab_stop(true)
         .on_change(move |_, _, window, cx| {
             let _ = entity.update(cx, |this, cx| {
