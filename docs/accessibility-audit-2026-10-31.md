@@ -634,3 +634,32 @@ OS scaling/high contrast and document reflow are not verified here.
 Semantic text/names do not produce a meaningful pixel comparison; operator
 review of the native evidence in lieu of before/after images is required
 before merging. Visible reflow/scaling changes belong to PWR-34.
+
+### PWR-32 on main's Settings and About redesign
+
+PR #43 moves onto main `a63a726` (after #42, #52 grouped Settings and #55
+About header) as one implementation commit plus this record; #42's merged
+commits are omitted. Main had replaced the Settings panes this work named,
+so its semantics are applied to the new ones rather than restoring the old
+layout:
+
+| Surface on main | Applied |
+| --- | --- |
+| Pane head, cards, fields | Pane title and card titles are headings; heads, cards and fields are named groups; labels, descriptions and values are readable text |
+| Safety | The "Applies to" statement is readable; load errors and save notes are alerts |
+| Updates grid | Each channel tile is a radio button named for its slot and purpose, with its toggled state; Enter/Space pick, arrows move as the window's keys do; the channel caption, follow/picked line and status are readable |
+| About header (#55) | Version is a heading; the build line keeps its whole text as its label when the painted line is cut short |
+| Copy buttons | Diagnostics, checkout, branch or tag and commit Copy buttons carry distinct names, prefixed "Copied:" after use |
+
+The native fixture example also lists main's `toasts` module. The earlier
+native macOS AX observations above were made on the old Settings layout;
+they were not repeated on main's panes. The Settings/About part of this
+record is harness/source evidence only.
+
+Contrived Logs images: debug builds of main `a63a726` and this PR, with
+`HOME` set to a temporary folder holding 300 invented INFO lines (plus the
+three lines each run writes), macOS 27.0.1, Logs window 1120×721 logical
+(2240×1442 capture), dark, 100% UI zoom. Help › Logs was opened with
+System Events, then Escape and End: main selects nothing; this PR selects
+the last line and shows its copy bar. Nothing was scanned beyond a 4 MiB
+invented folder, and nothing was removed.
