@@ -3916,7 +3916,7 @@ fn export_menu(
         .relative()
         .flex_none()
         .child(
-            button("export", "Export \u{25be}", ButtonVariant::Secondary, cx)
+            button("export", "Export \u{25be}", ButtonVariant::Outline, cx)
             .debug_selector(|| "export".into())
                 .disabled(plan.is_empty())
                 .selected(app.export_menu_open)
@@ -3925,8 +3925,12 @@ fn export_menu(
                 .capture_any_mouse_down(cx.listener(|this, _, _, _| {
                     this.export_menu_was_open = this.export_menu_open;
                 }))
-                .on_click(cx.listener(|this, _, _, cx| {
+                .on_click(cx.listener(|this, _, window, cx| {
                     this.export_menu_open = !this.export_menu_was_open;
+                    // The keys stay the window's: the button is disabled
+                    // once nothing is marked, and a disabled button that
+                    // kept focus would swallow every key after it.
+                    window.focus(&this.focus, cx);
                     cx.notify();
                 })),
         )
@@ -3944,14 +3948,14 @@ fn review_actions(
     cx: &Context<'_, Disktree>,
 ) -> Div {
     let unmark =
-        button("unmark-all", "Unmark all", ButtonVariant::Secondary, cx)
+        button("unmark-all", "Unmark all", ButtonVariant::Outline, cx)
             .debug_selector(|| "unmark-all".into())
             .disabled(app.marks.is_empty())
             .on_click(cx.listener(|this, _, window, cx| {
                 this.clear_marks(cx);
                 window.focus(&this.focus, cx);
             }));
-    let back = button("back", "Back", ButtonVariant::Secondary, cx)
+    let back = button("back", "Back", ButtonVariant::Outline, cx)
         .debug_selector(|| "back".into())
         .on_click(cx.listener(|this, _, window, cx| {
             this.screen = Screen::Explore;
@@ -4138,7 +4142,7 @@ fn running(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
             dialog_footer(
                 [],
                 None,
-                // Secondary, not danger: it loses nothing, and what was
+                // Outlined, not danger: it loses nothing, and what was
                 // removed stays removed either way.
                 Some(
                     button(
@@ -4148,7 +4152,7 @@ fn running(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
                         } else {
                             "Stop after this item"
                         },
-                        ButtonVariant::Secondary,
+                        ButtonVariant::Outline,
                         cx,
                     )
                     .debug_selector(|| "stop-removal".into())

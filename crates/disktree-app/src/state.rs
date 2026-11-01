@@ -2481,6 +2481,8 @@ impl Disktree {
         let count = taken.len();
         self.marks.clear();
         self.unmarked = Some(taken);
+        // Export and Unmark all are disabled now; neither may keep focus.
+        self.focus_request = Some(FocusTarget::Root);
         self.notice = Some((
             format!("Unmarked {count} \u{b7} u or {UNDO_KEYS} to undo"),
             Status::Neutral,

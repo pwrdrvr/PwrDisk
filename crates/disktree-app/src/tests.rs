@@ -2249,6 +2249,15 @@ fn unmark_all_can_be_undone(cx: &mut TestAppContext) {
     press(cx, "u");
     assert_eq!(marked(&view, cx), both, "nothing more to undo");
 
+    // Keys still reach the window after a click on Export, whose button
+    // Unmark all then disables: a disabled button must not keep focus.
+    click_on(cx, "export");
+    press(cx, "escape");
+    press(cx, "!");
+    assert!(marked(&view, cx).is_empty());
+    press(cx, "u");
+    assert_eq!(marked(&view, cx), both);
+
     // A mark made since stays, and a path it now covers is not re-added.
     press(cx, "!");
     mark_paths(&view, cx, &[temp.path().to_path_buf()]);
