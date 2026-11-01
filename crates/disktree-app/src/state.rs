@@ -2958,12 +2958,20 @@ impl Disktree {
         let directory = self.current_path();
         let selected = self.selected.as_deref().and_then(|c| self.path_at(c));
         self.options.metric = self.options.metric.toggled();
-        if let Some(tree) = &self.tree {
-            let mut tree = (**tree).clone();
+        if let Some(tree) = self.tree.take() {
+            // The window is usually the tree's only owner, and then it is
+            // reordered where it lies. A copy of 20 million nodes is quick
+            // in arenas, about 0.1 s, but it briefly holds the whole tree
+            // twice, 3.7 GiB more on such a scan. A find or a widening walk
+            // still reading it gets its own copy, as before. Either way it
+            // becomes a new `Arc`, so a removal preview bound to the old
+            // order lapses as it did.
+            let mut tree = Arc::try_unwrap(tree)
+                .unwrap_or_else(|shared| (*shared).clone());
             // Totals and sharing do not depend on the metric; only the order
             // of children does.
             disktree_core::tree::reorder(&mut tree, self.options.metric);
-            discard(self.tree.replace(Arc::new(tree)));
+            self.tree = Some(Arc::new(tree));
             let metric = self.options.metric;
             let style = self.path_style();
             self.marks.refresh(

@@ -351,14 +351,17 @@ fn gather(node: &Node) -> Accumulator {
 
 #[cfg(test)]
 thread_local! {
-    static WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Map entries visited, here and by `sharing::refresh`, which tests
+    /// hold to a budget.
+    pub(super) static WORK: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 #[cfg(not(test))]
-const fn work() {}
+pub(super) const fn work() {}
 
 #[cfg(test)]
-fn work() {
+pub(super) fn work() {
     WORK.with(|work| work.set(work.get() + 1));
 }
 
