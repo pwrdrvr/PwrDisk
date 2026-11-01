@@ -104,6 +104,13 @@ pub fn panel_width(pointer_x: f32, viewport: f32, rem: f32) -> f32 {
 /// How many "worth a look" findings the panel lists.
 const INSIGHT_LIMIT: usize = 6;
 
+/// The menu bar's Undo, as each system spells it; `u` works everywhere.
+pub const UNDO_KEYS: &str = if cfg!(target_os = "macos") {
+    "\u{2318}Z"
+} else {
+    "Ctrl+Z"
+};
+
 /// Which screen the app is showing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -399,6 +406,14 @@ pub struct Disktree {
     pub treemap_size: Rc<Cell<Size<Pixels>>>,
 
     pub marks: Marks,
+    /// What Unmark all took, so one key or ⌘Z can put it back. Dropped
+    /// wherever the marks stop meaning this machine's paths.
+    pub unmarked: Option<Vec<Target>>,
+    /// The review footer's Export menu is open.
+    pub export_menu_open: bool,
+    /// Whether it was open when the press that may close it began, so
+    /// pressing its button toggles instead of reopening.
+    pub export_menu_was_open: bool,
     pub removal_mode: RemovalMode,
     pub trash_backend: TrashBackend,
     /// The permanent-deletion alert dialog is open. Trash needs no dialog: it
@@ -429,6 +444,8 @@ pub struct Disktree {
     /// to follow interface zoom like the rest of the interface.
     pub rem: f32,
     pub run: Option<RemovalHandle>,
+    /// Stop was asked for: the removal ends after the current item.
+    pub stop_requested: bool,
     pub run_epoch: u64,
     pub run_summary: RunSummary,
     pub run_log: Vec<(PathBuf, Result<(), String>)>,
@@ -437,6 +454,12 @@ pub struct Disktree {
     /// free" number rather than the sum of what was marked.
     pub space_baseline: Option<SpaceInfo>,
     pub notice: Option<(String, Status)>,
+    /// Toasts over the window's bottom right: the updater's answers.
+    pub toasts: crate::toasts::Toasts,
+    /// Wakes when the next toast runs out.
+    pub toast_timer: Option<gpui_kit::Task<()>>,
+    /// What the updater has said that the toasts have answered.
+    pub update_watch: crate::toasts::UpdateWatch,
 
     pub find: String,
     pub find_open: bool,
@@ -494,6 +517,9 @@ pub struct Disktree {
     pub volumes_loading: bool,
     pub awaiting_root: bool,
     pub volumes_source: Option<String>,
+    /// The chooser's source switch is on SSH host: the host field shows,
+    /// and nothing is listed until Connect.
+    pub picker_ssh: bool,
     pub volumes_error: Option<String>,
     pub picker_error: Option<String>,
     pub picker_host: Option<Entity<InputState>>,
@@ -614,6 +640,9 @@ impl Disktree {
             treemap_origin: Rc::new(Cell::new(Point::new(px(0.), px(0.)))),
             treemap_size: Rc::new(Cell::new(size(px(0.), px(0.)))),
             marks: Marks::default(),
+            unmarked: None,
+            export_menu_open: false,
+            export_menu_was_open: false,
             // Reversible by default whenever this machine has a trash: the
             // permanent path stays one choice away, behind a dialog.
             removal_mode: if trash_backend.is_available() {
@@ -631,12 +660,16 @@ impl Disktree {
             content_edges: gpui_kit::Edges::default(),
             rem: crate::ui::BASE_REM,
             run: None,
+            stop_requested: false,
             run_epoch: 0,
             run_summary: RunSummary::default(),
             run_log: Vec::new(),
             space,
             space_baseline: None,
             notice: None,
+            toasts: crate::toasts::Toasts::default(),
+            toast_timer: None,
+            update_watch: crate::toasts::UpdateWatch::default(),
             find: String::new(),
             find_open: false,
             matches: None,
@@ -665,6 +698,7 @@ impl Disktree {
             volumes_loading: false,
             awaiting_root: !start,
             volumes_source: None,
+            picker_ssh: false,
             volumes_error: None,
             picker_error: None,
             picker_host: None,
@@ -807,6 +841,7 @@ impl Disktree {
         self.volumes_open = true;
         self.picker_host = None;
         self.picker_path = None;
+        self.picker_ssh = self.remote.is_some();
         self.focus_request = Some(FocusTarget::Dialog);
         self.load_volume_source(self.remote.clone(), cx);
     }
@@ -901,6 +936,11 @@ impl Disktree {
         cx: &mut Context<'_, Self>,
     ) {
         self.volumes_loading = false;
+        // A path typed while the list loaded keeps its row selected.
+        let typed = self
+            .picker_path
+            .as_ref()
+            .is_some_and(|input| !input.read(cx).value().is_empty());
         match result {
             Ok((mut volumes, home)) => {
                 if let Some(home) = home
@@ -916,6 +956,9 @@ impl Disktree {
                     );
                 }
                 self.volumes = volumes;
+                if typed {
+                    self.volume_highlight = self.volumes.len();
+                }
             }
             Err(error) => self.volumes_error = Some(error.to_string()),
         }
@@ -947,10 +990,15 @@ impl Disktree {
             let path = cx.new(|cx| {
                 InputState::new(window, cx).placeholder("/absolute/path")
             });
-            cx.subscribe(&path, |this, _, event, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.choose_picker_path(cx);
+            cx.subscribe(&path, |this, _, event, cx| match event {
+                InputEvent::PressEnter { .. } => this.choose_picker_path(cx),
+                // Typing or clicking in the Directory row selects it, so
+                // Scan and Enter act on what was just typed.
+                InputEvent::Change | InputEvent::Focus => {
+                    this.volume_highlight = this.volumes.len();
+                    cx.notify();
                 }
+                InputEvent::Blur => {}
             })
             .detach();
             self.picker_path = Some(path);
@@ -969,10 +1017,56 @@ impl Disktree {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        self.picker_ssh = false;
         if let Some(host) = self.picker_host.clone() {
             host.update(cx, |host, cx| host.set_value("", window, cx));
         }
-        self.load_volume_source(None, cx);
+        // This computer's list is already there unless a host replaced it.
+        if self.volumes_source.is_some() || self.volumes_error.is_some() {
+            self.load_volume_source(None, cx);
+        }
+        cx.notify();
+    }
+
+    /// The source switch's SSH side: show the host field and put the
+    /// cursor in it. Nothing is listed until Connect.
+    pub fn choose_ssh_source(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.picker_ssh = true;
+        if let Some(host) = &self.picker_host {
+            let focus = gpui_kit::Focusable::focus_handle(host.read(cx), cx);
+            window.focus(&focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// The Directory row's Choose…: the system's folder picker, and a scan
+    /// of what it returns, through the same checks as a typed path.
+    pub fn browse_picker_path(&self, cx: &Context<'_, Self>) {
+        if self.volumes_source.is_some() {
+            return;
+        }
+        let chosen = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Scan".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.choose_source_root(path, cx);
+            });
+        })
+        .detach();
     }
 
     pub fn connect_picker(&mut self, cx: &mut Context<'_, Self>) {
@@ -1038,6 +1132,7 @@ impl Disktree {
         if self.remote != self.volumes_source {
             // Absolute paths only identify marks within one machine.
             self.marks.clear();
+            self.unmarked = None;
             self.history = History::default();
             self.remote_identity = None;
             self.remote_platform.clear();
@@ -1075,7 +1170,13 @@ impl Disktree {
         cx.notify();
     }
 
+    /// Scan the highlighted row: a listed mount, or the Directory row
+    /// after them.
     pub fn choose_volume(&mut self, cx: &mut Context<'_, Self>) {
+        if self.volume_highlight >= self.volumes.len() {
+            self.choose_picker_path(cx);
+            return;
+        }
         if let Some(point) = self
             .volumes
             .get(self.volume_highlight)
@@ -1091,11 +1192,9 @@ impl Disktree {
         step: i32,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.volumes.is_empty() {
-            return;
-        }
-        let len = self.volumes.len();
-        let at = self.volume_highlight;
+        // The Directory row follows the mounts.
+        let len = self.volumes.len() + 1;
+        let at = self.volume_highlight.min(len - 1);
         // Picker steps are ±1, but wrap either way without casting the length
         // down to a narrower type.
         let next = match step.signum() {
@@ -1449,6 +1548,9 @@ impl Disktree {
     ) {
         // A stable SSH alias can be repointed to a different machine.
         // Old marks must not acquire that machine's freshly captured guard.
+        if self.remote_identity != identity {
+            self.unmarked = None;
+        }
         if self.remote_identity != identity && !self.marks.is_empty() {
             self.marks.clear();
             self.notice = Some((
@@ -2378,9 +2480,70 @@ impl Disktree {
         cx.notify();
     }
 
+    /// Review's Unmark all, or `!`. Marks live only in memory, so what goes
+    /// is kept for [`Self::undo_unmark`] rather than asked about first.
     pub fn clear_marks(&mut self, cx: &mut Context<'_, Self>) {
+        if self.marks.is_empty() {
+            return;
+        }
+        let taken = self.marks.items().to_vec();
+        let count = taken.len();
         self.marks.clear();
-        self.notice = None;
+        self.unmarked = Some(taken);
+        // Export and Unmark all are disabled now; neither may keep focus.
+        self.focus_request = Some(FocusTarget::Root);
+        self.notice = Some((
+            format!("Unmarked {count} \u{b7} u or {UNDO_KEYS} to undo"),
+            Status::Neutral,
+        ));
+        cx.notify();
+    }
+
+    /// Put back what Unmark all took. Marks made since stay; a path that
+    /// is marked again, or now goes with a marked directory, is skipped.
+    /// Only where marks are edited: during a removal they are the running
+    /// list's, and are cleared when it ends.
+    pub fn undo_unmark(&mut self, cx: &mut Context<'_, Self>) {
+        if !matches!(self.screen, Screen::Explore | Screen::Review) {
+            return;
+        }
+        let Some(taken) = self.unmarked.take() else {
+            return;
+        };
+        let style = self.path_style();
+        let mut restored = 0;
+        for target in taken {
+            if self.marks.contains(&target.path, style)
+                || self.marks.ancestor(&target.path, style).is_some()
+            {
+                continue;
+            }
+            let path = target.path.clone();
+            self.marks.toggle(target, style);
+            self.marks.absorb(&path, style);
+            restored += 1;
+        }
+        self.notice = Some((
+            if restored == 0 {
+                "Nothing to put back: those paths are marked again".into()
+            } else {
+                format!("Marked {restored} again")
+            },
+            Status::Neutral,
+        ));
+        cx.notify();
+    }
+
+    /// The Removing screen's Stop, or Escape: the worker finishes the item
+    /// in hand and starts no other.
+    pub fn stop_removal(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(run) = &self.run else {
+            return;
+        };
+        run.cancel();
+        self.stop_requested = true;
+        self.notice =
+            Some(("stopping after the current item".into(), Status::Warning));
         cx.notify();
     }
 
@@ -2944,6 +3107,7 @@ impl Disktree {
             ..RunSummary::default()
         };
         self.run_log.clear();
+        self.stop_requested = false;
         self.screen = Screen::Running;
         self.run = Some(disktree_core::removal::spawn_limited(
             plan,
@@ -3024,6 +3188,7 @@ impl Disktree {
             self.run = None;
             self.record_removal();
             self.marks.clear();
+            self.unmarked = None;
             self.screen = Screen::Done;
             // The tree on screen is now wrong; start over rather than leaving
             // numbers that include what was just removed.
@@ -3448,15 +3613,8 @@ impl Disktree {
             Screen::Review if !control => self.on_review_key(key, cx),
             Screen::Review => {}
             Screen::Running => {
-                if key == "escape"
-                    && let Some(run) = &self.run
-                {
-                    run.cancel();
-                    self.notice = Some((
-                        "stopping after the current item".into(),
-                        Status::Warning,
-                    ));
-                    cx.notify();
+                if key == "escape" {
+                    self.stop_removal(cx);
                 }
             }
             Screen::Done => {
@@ -3599,7 +3757,15 @@ impl Disktree {
                 self.show_help = true;
                 cx.notify();
             }
-            "q" if !control => cx.quit(),
+            // A bare letter quitting is Omarchy's habit, kept there; macOS
+            // and Windows quit with ⌘Q and Alt+F4, and q would throw away
+            // marks by surprise.
+            "q" if !control
+                && crate::chrome::Platform::current()
+                    == crate::chrome::Platform::Linux =>
+            {
+                cx.quit();
+            }
             _ => {}
         }
     }
@@ -3607,6 +3773,19 @@ impl Disktree {
     fn on_review_key(&mut self, key: &str, cx: &mut Context<'_, Self>) {
         if self.remote.is_some() && matches!(key, "m" | "p" | "enter") {
             return;
+        }
+        // The open Export menu shows each row's key: those keys run the
+        // row and close it, as a click would; Escape only closes it.
+        if self.export_menu_open {
+            let row = matches!(key, "s" | "a" | "e" | "y");
+            if row || key == "escape" {
+                self.export_menu_open = false;
+                self.focus_request = Some(FocusTarget::Root);
+                cx.notify();
+            }
+            if !row {
+                return;
+            }
         }
         if key == "e" {
             self.save_delete_script(cx);
@@ -3620,6 +3799,7 @@ impl Disktree {
             }
             "enter" => self.commit(cx),
             "!" => self.clear_marks(cx),
+            "u" => self.undo_unmark(cx),
             "p" => {
                 self.removal_mode = RemovalMode::Permanent;
                 cx.notify();

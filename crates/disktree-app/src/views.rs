@@ -14,11 +14,11 @@ use disktree_core::size::human_bytes;
 use disktree_core::tree::Metric;
 use gpui_kit::base::CheckboxState;
 use gpui_kit::{
-    App, AppContext as _, ClickEvent, Context, Div, DragMoveEvent, ElementId,
-    Focusable as _, FontWeight, InteractiveElement as _, IntoElement,
-    KeyDownEvent, MouseDownEvent, ParentElement, Rems, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled, Window, anchored, deferred, div,
-    pattern_slash, px, relative,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Div, DragMoveEvent,
+    ElementId, Focusable as _, FontWeight, InteractiveElement as _,
+    IntoElement, KeyDownEvent, MouseDownEvent, ParentElement, Rems,
+    SharedString, Stateful, StatefulInteractiveElement as _, Styled, Window,
+    anchored, deferred, div, pattern_slash, px, relative,
 };
 use gpui_omarchy::{
     ActiveTheme, ButtonVariant, ChoiceItem, Theme, alert_dialog, button,
@@ -155,6 +155,9 @@ pub fn root(
                 this.open_volumes(cx);
             },
         ))
+        .on_action(cx.listener(|this, _: &crate::app_menu::Undo, _, cx| {
+            this.undo_unmark(cx);
+        }))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ShowExplore, _, cx| {
                 if this.screen == Screen::Review {
@@ -231,6 +234,10 @@ pub fn root(
     if !modal && let Some(tip) = cursor_tooltip(app, window, cx) {
         root = root.child(tip);
     }
+    // Under the overlays and dialogs, which take the mouse while open.
+    if let Some(toasts) = crate::toasts::stack(app, cx) {
+        root = root.child(toasts);
+    }
     if app.show_help {
         root = root.child(help_overlay(app, cx));
     }
@@ -252,7 +259,7 @@ pub fn root(
 /// Discovery is lightweight; a separate, explicit action starts the walk.
 fn volumes_dialog(
     app: &Disktree,
-    window: &Window,
+    window: &mut Window,
     cx: &mut Context<'_, Disktree>,
 ) -> impl IntoElement {
     let theme = cx.omarchy().clone();
@@ -261,10 +268,10 @@ fn volumes_dialog(
     let host_invalid = app.volumes_error.is_some();
     let path_invalid = app.picker_error.is_some();
     let source_ready = app.picker_source_matches(cx);
-    let source = app.volumes_source.as_ref().map_or_else(
-        || "This computer".to_owned(),
-        |host| format!("{host} · SSH · read-only"),
-    );
+    let listable = source_ready
+        && !app.volumes_loading
+        && app.volumes_error.is_none()
+        && !(app.picker_ssh && app.volumes_source.is_none());
     let mut rows = div()
         .id("volume-rows")
         .role(gpui_kit::Role::ListBox)
@@ -274,61 +281,78 @@ fn volumes_dialog(
         .debug_selector(|| "volume-rows".into())
         .flex()
         .flex_col()
-        .gap(space::XS)
         .max_h(size::SOURCE_LIST_HEIGHT)
-        .overflow_y_scroll();
-    if app.volumes_loading {
-        rows = rows.child(dialog_description(
-            "Listing mounts, not scanning files…",
-            cx,
+        .overflow_y_scroll()
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.inset);
+    let quiet = |line: String| {
+        div()
+            .px(space::MD)
+            .py(space::SM)
+            .text_size(text::CAPTION)
+            .text_color(theme.secondary)
+            .child(line)
+    };
+    if app.picker_ssh && app.volumes_source.is_none() && !app.volumes_loading {
+        rows = rows.child(quiet(
+            "Enter an SSH alias or user@host, then Connect.".into(),
         ));
+    } else if app.volumes_loading {
+        rows = rows.child(quiet("Listing mounts, not scanning files…".into()));
     } else if let Some(error) = &app.volumes_error {
         rows = rows.child(
             div()
                 .id("discovery-error")
                 .role(gpui_kit::Role::Alert)
                 .aria_label(error.clone())
+                .px(space::MD)
+                .py(space::SM)
                 .text_color(theme.danger)
                 .child(error.clone()),
         );
-    } else if app.volumes.is_empty() {
-        rows = rows.child(dialog_description(
-            "No mounts listed. Enter a directory below.",
-            cx,
-        ));
     }
-    for (index, volume) in app.volumes.iter().enumerate() {
+    let row = |id: ElementId, index: usize, label: String| {
         let highlighted = index == app.volume_highlight;
+        div()
+            .id(id)
+            .role(gpui_kit::Role::ListBoxOption)
+            .aria_label(label)
+            .aria_selected(highlighted)
+            .when(
+                highlighted,
+                gpui_kit::StatefulInteractiveElement::aria_active_descendant,
+            )
+            .debug_selector(move || format!("volume-{index}"))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(space::SM)
+            .px(space::MD)
+            .py(space::SM)
+            .text_size(text::BODY)
+            .text_color(if highlighted {
+                theme.bright
+            } else {
+                theme.foreground
+            })
+            .when(highlighted, |row| row.bg(theme.accent.opacity(0.18)))
+            .hover(|row| row.bg(theme.accent.opacity(0.1)))
+    };
+    for (index, volume) in app.volumes.iter().enumerate() {
         let label = format!(
             "{}  ·  {}",
             volume.point.display(),
             volume.device.as_deref().unwrap_or("Mounted volume")
         );
-        rows = rows.child(
-            div()
-                .id(crate::file_list::path_id(&volume.point))
-                .role(gpui_kit::Role::ListBoxOption)
-                .aria_label(label.clone())
-                .aria_selected(highlighted)
-                .when(highlighted, gpui_kit::StatefulInteractiveElement::aria_active_descendant)
-                .debug_selector(move || format!("volume-{index}"))
-                .px(space::MD)
-                .py(space::SM)
-                .text_size(text::BODY)
-                .text_color(if highlighted {
-                    theme.bright
-                } else {
-                    theme.foreground
-                })
-                .when(highlighted, |row| row.bg(theme.accent.opacity(0.18)))
-                .hover(|row| row.bg(theme.accent.opacity(0.1)))
-                .child(label)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.volume_highlight = index;
-                    window.focus(&this.confirm_focus, cx);
-                    cx.notify();
-                })),
-        );
+        let id = ElementId::Name(crate::file_list::path_id(&volume.point));
+        rows = rows.child(row(id, index, label.clone()).child(label).on_click(
+            cx.listener(move |this, _, window, cx| {
+                this.volume_highlight = index;
+                window.focus(&this.confirm_focus, cx);
+                cx.notify();
+            }),
+        ));
     }
     let host = app
         .picker_host
@@ -338,48 +362,181 @@ fn volumes_dialog(
         .picker_path
         .as_ref()
         .expect("picker prepared before rendering");
-    let popup = dialog_popup(cx).w_full()
-        .child(crate::semantics::text("source-cautions", "Connect, then select a mount or directory. No scan starts until Scan is accepted. Nested mounts and symlinks are not traversed; remote sources are read-only. Space is measured only after selection."))
+    // The typed path is the list's last row, so one Scan acts on whichever
+    // row is highlighted and Enter never depends on which field has focus.
+    let directory = app.volumes.len();
+    if listable {
+        rows = rows.child(
+            row(
+                "source-directory".into(),
+                directory,
+                "Directory to scan".into(),
+            )
+            .child("Directory")
+            .child(
+                gpui_omarchy::input("source-path", path, window, cx)
+                    .aria_label("Root directory to scan")
+                    .aria_value(path.read(cx).value())
+                    .a11y_synthetic_children(move |b| {
+                        if path_invalid {
+                            b.parent_node().set_invalid(
+                                gpui_kit::accesskit::Invalid::True,
+                            );
+                        }
+                    })
+                    .aria_description(format!(
+                        "Absolute path in the selected machine. Scan starts \
+                         only after explicit acceptance. {}",
+                        source_error.map_or("", String::as_str)
+                    ))
+                    .debug_selector(|| "source-path".into())
+                    .flex_1(),
+            )
+            .when(app.volumes_source.is_none(), |row| {
+                row.child(
+                    button(
+                        "source-browse",
+                        "Choose\u{2026}",
+                        ButtonVariant::Secondary,
+                        cx,
+                    )
+                    .debug_selector(|| "source-browse".into())
+                    .on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.browse_picker_path(cx);
+                        },
+                    )),
+                )
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.volume_highlight = directory;
+                cx.notify();
+            })),
+        );
+    }
+    let entity = cx.entity().downgrade();
+    let switch = button_group(
+        "source-switch",
+        vec![
+            ChoiceItem::new("local", "This computer"),
+            ChoiceItem::new("ssh", "SSH host"),
+        ],
+        Some(usize::from(app.picker_ssh)),
+        move |index, window, cx| {
+            let _ = entity.update(cx, |this, cx| {
+                if index == 0 {
+                    this.choose_local_source(window, cx);
+                } else {
+                    this.choose_ssh_source(window, cx);
+                }
+            });
+        },
+        window,
+        cx,
+    );
+    let scan_ready = listable
+        && (app.volume_highlight < app.volumes.len()
+            || !path.read(cx).value().trim().is_empty());
+    let cancel_button =
+        dialog_button("source-cancel", "Cancel", ButtonVariant::Secondary, cx)
+            .debug_selector(|| "source-cancel".into())
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.close_volumes(cx);
+                this.apply_focus(window, cx);
+            }));
+    let scan_button =
+        dialog_button("source-scan", "Scan", ButtonVariant::Primary, cx)
+            .debug_selector(|| "source-scan".into())
+            .disabled(!scan_ready)
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.choose_volume(cx);
+                this.apply_focus(window, cx);
+            }));
+    let popup = dialog_popup(cx)
+        .w_full()
+        .child(crate::semantics::text(
+            "source-cautions",
+            "Choose this computer or an SSH host, then select a mount or \
+             directory. No scan starts until Scan is accepted. Nested mounts \
+             and symlinks are not traversed; remote sources are read-only. \
+             Space is measured only after selection.",
+        ))
         .child(dialog_title("Choose what to scan", cx))
-        .child(dialog_description(
-            "Connect, then select a mount or directory. No new scan starts until you choose Scan.",
-            cx))
-        .child(div().flex().flex_row().gap(space::SM)
-            .child(button("source-local", "This computer", ButtonVariant::Secondary, cx)
-                .on_click(cx.listener(|this, _, window, cx| this.choose_local_source(window, cx))))
-            .child(gpui_omarchy::input("source-host", host, window, cx)
-                .aria_label("SSH destination")
-                .aria_value(host.read(cx).value())
-                .a11y_synthetic_children(move |b| { if host_invalid { b.parent_node().set_invalid(gpui_kit::accesskit::Invalid::True); } })
-                .aria_description(format!("SSH alias or user@host; blank uses this computer. {}", source_error.map_or("", String::as_str)))
-                .debug_selector(|| "source-host".into()).flex_1())
-            .child(button("source-connect", "Connect SSH", ButtonVariant::Secondary, cx)
-                .on_click(cx.listener(|this, _, _, cx| this.connect_picker(cx)))))
-        .child(crate::semantics::text("selected-source", source.clone()).text_color(theme.bright).child(source))
+        .child(
+            div()
+                .debug_selector(|| "source-switch".into())
+                .child(switch),
+        )
+        .when(app.picker_ssh, |popup| {
+            popup.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(space::SM)
+                    .child(
+                        gpui_omarchy::input("source-host", host, window, cx)
+                            .aria_label("SSH destination")
+                            .aria_value(host.read(cx).value())
+                            .a11y_synthetic_children(move |b| {
+                                if host_invalid {
+                                    b.parent_node().set_invalid(
+                                        gpui_kit::accesskit::Invalid::True,
+                                    );
+                                }
+                            })
+                            .aria_description(format!(
+                                "SSH alias or user@host. {}",
+                                source_error.map_or("", String::as_str)
+                            ))
+                            .debug_selector(|| "source-host".into())
+                            .flex_1(),
+                    )
+                    .child(
+                        button(
+                            "source-connect",
+                            "Connect",
+                            ButtonVariant::Secondary,
+                            cx,
+                        )
+                        .debug_selector(|| "source-connect".into())
+                        .on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.connect_picker(cx);
+                            },
+                        )),
+                    ),
+            )
+        })
+        .children(app.volumes_source.as_ref().map(|host| {
+            let source = format!("{host} \u{b7} SSH \u{b7} read-only");
+            crate::semantics::text("selected-source", source.clone())
+                .text_color(theme.bright)
+                .child(source)
+        }))
         .child(rows)
         .child(dialog_description(
-            "Nested mounts and symlinks are not traversed. Space is measured only after selection.", cx))
-        .child(div().flex().flex_row().gap(space::SM)
-            .child(gpui_omarchy::input("source-path", path, window, cx)
-                .aria_label("Root directory to scan")
-                .aria_value(path.read(cx).value())
-                .a11y_synthetic_children(move |b| { if path_invalid { b.parent_node().set_invalid(gpui_kit::accesskit::Invalid::True); } })
-                .aria_description(format!("Absolute path in the selected machine. Scan starts only after explicit acceptance. {}", source_error.map_or("", String::as_str)))
-                .debug_selector(|| "source-path".into()).flex_1())
-            .child(button("source-scan-path", "Scan directory", ButtonVariant::Secondary, cx)
-                .disabled(!source_ready || app.volumes_loading || app.volumes_error.is_some())
-                .on_click(cx.listener(|this, _, _, cx| this.choose_picker_path(cx)))))
-        .children(app.picker_error.as_ref().map(|error| div().id("source-error").role(gpui_kit::Role::Alert).aria_label(error.clone()).text_color(theme.danger).child(error.clone())))
-        .child(div().flex().flex_row().justify_end().gap(space::SM)
-            .child(dialog_button("source-cancel", "Cancel", ButtonVariant::Secondary, cx)
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.close_volumes(cx); this.apply_focus(window, cx);
-                })))
-            .child(dialog_button("source-scan", "Scan selected root", ButtonVariant::Primary, cx)
-                .disabled(!source_ready || app.volumes_loading || app.volumes_error.is_some() || app.volumes.is_empty())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.choose_volume(cx); this.apply_focus(window, cx);
-                }))));
+            if app.picker_ssh {
+                "Read-only over SSH. Nested mounts and symlinks are not \
+                 followed. Nothing is read until you press Scan."
+            } else {
+                "Nested mounts and symlinks are not followed. Nothing is \
+                 read until you press Scan."
+            },
+            cx,
+        ))
+        .children(app.picker_error.as_ref().map(|error| {
+            div()
+                .id("source-error")
+                .role(gpui_kit::Role::Alert)
+                .aria_label(error.clone())
+                .text_color(theme.danger)
+                .child(error.clone())
+        }))
+        .child(dialog_footer(
+            [],
+            Some(cancel_button.into_any_element()),
+            Some(scan_button.into_any_element()),
+        ));
     let popup = div()
         .id("source-picker-scroll")
         .debug_selector(|| "source-picker".into())
@@ -394,15 +551,7 @@ fn volumes_dialog(
         ))
         .overflow_y_scroll()
         .child(popup);
-    let centred = centred_popup(popup, {
-        let close = cancel.clone();
-        move |_, window, cx| {
-            let _ = close.update(cx, |this, cx| {
-                this.close_volumes(cx);
-                this.apply_focus(window, cx);
-            });
-        }
-    });
+    let centred = centred_popup(popup);
     let accept = cx.entity().downgrade();
     alert_dialog(&app.confirm_focus, cx)
         .open(true)
@@ -439,19 +588,16 @@ fn volumes_dialog(
         .popup(centred)
 }
 
-/// Put a dialog's popup in the middle of the window, and close it when a
-/// click lands outside it.
+/// Put a dialog's popup in the middle of the window, where a click outside
+/// it does nothing.
 ///
 /// The base dialog hosts its popup as an ordinary child of a full-window box,
-/// so a popup lands in the top-left corner unless something centres it. That
-/// something ends up in front of the backdrop, which is what used to receive
-/// the click that dismisses a dialog, so the click is taken here instead. The
-/// card stops a mouse-down from reaching this wrapper, so a click on the
-/// dialog itself stays the dialog's own.
-fn centred_popup(
-    card: impl IntoElement,
-    on_outside: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
+/// so a popup lands in the top-left corner unless something centres it. A
+/// dialog asks something or holds typing, so a stray click must not answer
+/// or discard it, as macOS sheets and Windows dialogs ignore one: Cancel and
+/// Escape close it. Overlays, which only show, close on one instead (see
+/// `overlay_backdrop`).
+fn centred_popup(card: impl IntoElement) -> Stateful<Div> {
     div()
         .id("dialog-outside")
         .absolute()
@@ -459,11 +605,9 @@ fn centred_popup(
         .flex()
         .items_center()
         .justify_center()
-        // Any button, as the backdrop took them: a right-click outside closes
-        // the dialog too.
-        .on_any_mouse_down(move |event, window, cx| {
+        // Taken here, so nothing behind the dialog sees it either.
+        .on_any_mouse_down(|_: &MouseDownEvent, _: &mut Window, cx| {
             cx.stop_propagation();
-            on_outside(event, window, cx);
         })
         .child(
             div()
@@ -475,6 +619,33 @@ fn centred_popup(
                 )
                 .child(card),
         )
+}
+
+/// The footer every dialog and screen ends with. What does not end it sits
+/// on the left; what does sits on the right, in the order the system
+/// expects: Cancel then the default on macOS, GNOME and Omarchy, so the
+/// default is in the corner; the default then Cancel on Windows.
+fn dialog_footer(
+    left: impl IntoIterator<Item = AnyElement>,
+    cancel: Option<AnyElement>,
+    primary: Option<AnyElement>,
+) -> Div {
+    let (first, second) =
+        if chrome::Platform::current() == chrome::Platform::Windows {
+            (primary, cancel)
+        } else {
+            (cancel, primary)
+        };
+    div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap(space::SM)
+        .children(left)
+        .child(div().flex_1())
+        .children(first)
+        .children(second)
 }
 
 /// Clears an overlay's flag; one value serves its Done and its backdrop.
@@ -534,36 +705,25 @@ fn overlay_footer(
     cx: &Context<'_, Disktree>,
 ) -> Div {
     let theme = cx.omarchy();
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(space::MD)
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_size(text::CAPTION)
-                .text_color(theme.secondary)
-                .child(note),
-        )
-        .child(
-            div().debug_selector(|| "overlay-done".into()).child(
-                dialog_button(
-                    "overlay-done",
-                    "Done",
-                    ButtonVariant::Primary,
-                    cx,
-                )
-                .on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        close(this);
-                        window.focus(&this.focus, cx);
-                        cx.notify();
-                    },
-                )),
-            ),
-        )
+    let done = div().debug_selector(|| "overlay-done".into()).child(
+        dialog_button("overlay-done", "Done", ButtonVariant::Primary, cx)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                close(this);
+                window.focus(&this.focus, cx);
+                cx.notify();
+            })),
+    );
+    dialog_footer(
+        [div()
+            .flex_1()
+            .min_w_0()
+            .text_size(text::CAPTION)
+            .text_color(theme.secondary)
+            .child(note)
+            .into_any_element()],
+        None,
+        Some(done.into_any_element()),
+    )
 }
 
 /// The one question disktree asks: a permanent deletion cannot be undone, so
@@ -587,50 +747,29 @@ fn delete_dialog(
     );
     let confirm = cx.entity().downgrade();
     let cancel = confirm.clone();
-    let actions = div()
-        .flex()
-        .flex_row()
-        .justify_end()
-        .gap(space::SM)
-        .child(
-            dialog_button(
-                "delete-cancel",
-                "Cancel",
-                ButtonVariant::Secondary,
-                cx,
-            )
+    let cancel_button =
+        dialog_button("delete-cancel", "Cancel", ButtonVariant::Secondary, cx)
+            .debug_selector(|| "delete-cancel".into())
             .on_click(cx.listener(|this, _, window, cx| {
                 this.cancel_delete(cx);
                 this.apply_focus(window, cx);
-            })),
-        )
-        .child(
-            dialog_button(
-                "delete-confirm",
-                "Delete",
-                ButtonVariant::Danger,
-                cx,
-            )
+            }));
+    let delete_button =
+        dialog_button("delete-confirm", "Delete", ButtonVariant::Danger, cx)
+            .debug_selector(|| "delete-confirm".into())
             .on_click(cx.listener(|this, _, window, cx| {
                 this.confirm_delete(cx);
                 this.apply_focus(window, cx);
-            })),
-        );
+            }));
     let popup = dialog_popup(cx)
         .child(dialog_title(title, cx))
         .child(dialog_description(body, cx))
-        .child(actions);
-    // Built before the chain below, which moves `cancel` into its own
-    // handler for Escape.
-    let centred = centred_popup(popup, {
-        let close = cancel.clone();
-        move |_, window, cx| {
-            let _ = close.update(cx, |this, cx| {
-                this.cancel_delete(cx);
-                this.apply_focus(window, cx);
-            });
-        }
-    });
+        .child(dialog_footer(
+            [],
+            Some(cancel_button.into_any_element()),
+            Some(delete_button.into_any_element()),
+        ));
+    let centred = centred_popup(popup);
     alert_dialog(&app.confirm_focus, cx)
         .open(true)
         .on_ok(move |_, window, cx| {
@@ -3409,7 +3548,14 @@ fn review(
                 .child(list)
                 .child(summary),
         )
-        .child(review_footer(app, &theme, cx))
+        .when(
+            chrome::Platform::current() == chrome::Platform::Linux,
+            |screen| screen.child(review_hints(app, &theme, cx)),
+        )
+        .child(
+            screen_footer(review_actions(app, &plan, cx), &theme)
+                .debug_selector(|| "review-footer".into()),
+        )
 }
 
 /// One marked path. Lanes are fixed, so names, bars and sizes line up down
@@ -3527,7 +3673,7 @@ fn review_summary(
     theme: &Theme,
     window: &mut Window,
     cx: &mut Context<'_, Disktree>,
-) -> Div {
+) -> Stateful<Div> {
     // What comes back to the volume on screen, which is all its meter can
     // project; the totals below say what the removal does in full.
     let reclaiming = plan.reclaim();
@@ -3577,17 +3723,23 @@ fn review_summary(
         }
     };
 
-    // Everything above the commitment scrolls when the window is too short
-    // for it; Back and the commit button stay pinned below.
+    // Never taller than its space above the footer: in a short window, or
+    // at a larger interface zoom, the panel scrolls instead of running
+    // under the footer.
     let mut panel = div()
         .id("review-summary")
         .debug_selector(|| "review-summary".into())
         .flex()
         .flex_col()
         .gap(space::XL)
-        .flex_1()
+        .w(size::REVIEW_SUMMARY)
+        .flex_shrink_0()
         .min_h_0()
         .overflow_y_scroll()
+        .p(space::LG)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.surface)
         .child(
             div()
                 .flex()
@@ -3680,189 +3832,217 @@ fn review_summary(
         );
     }
 
-    div()
-        .flex()
-        .flex_col()
-        .gap(space::XL)
-        .w(size::REVIEW_SUMMARY)
-        .flex_shrink_0()
-        .min_h_0()
-        .p(space::LG)
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.surface)
-        .child(
-            panel
-                .child(div().flex_1())
-                .children(notice_line(app, theme, cx))
-                .child(export_controls(plan, cx)),
-        )
-        .children(app.remote.is_none().then(|| {
-            div()
-                .debug_selector(|| "review-commit".into())
-                .child(commit_controls(app, plan, cx))
-        }))
+    // The panel says what will happen; the footer below does it.
+    panel
+        .child(div().flex_1())
+        .children(notice_line(app, theme, cx))
+        // Where the panel ends, for the test that scrolls to it.
+        .child(div().debug_selector(|| "review-summary-end".into()))
 }
 
 /// The list handed on instead of acted on: saved as paths, or copied as a
-/// prompt for a coding agent to do the cleanup with care.
-fn export_controls(
+/// prompt or script for a person or a coding agent to act on with care.
+/// One menu, so four ways of handing it on don't outweigh the commit.
+fn export_menu(
+    app: &Disktree,
     plan: &disktree_core::removal::Plan,
     cx: &Context<'_, Disktree>,
-) -> Div {
-    div()
-        .debug_selector(|| "review-export".into())
-        .flex()
-        .flex_col()
-        .justify_end()
-        .gap(space::SM)
-        .child(
-            button(
-                "save-list",
-                "Save list\u{2026}",
-                ButtonVariant::Secondary,
-                cx,
-            )
-            .disabled(plan.is_empty())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.save_delete_list(cx);
-            })),
-        )
-        .child(
-            button(
-                "copy-prompt",
-                "Copy as prompt",
-                ButtonVariant::Secondary,
-                cx,
-            )
-            .disabled(plan.is_empty())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.copy_agent_prompt(cx);
-            })),
-        )
-        .child(
-            button(
-                "save-script",
-                "Save delete script…",
-                ButtonVariant::Secondary,
-                cx,
-            )
-            .disabled(plan.is_empty())
-            .on_click(cx.listener(|this, _, _, cx| {
+) -> impl IntoElement {
+    type Export = fn(&mut Disktree, &mut Context<'_, Disktree>);
+    let theme = cx.omarchy().clone();
+    let rows: [(&'static str, &'static str, &'static str, Export); 4] = [
+        ("save-list", "Save list\u{2026}", "s", |this, cx| {
+            this.save_delete_list(cx);
+        }),
+        ("copy-prompt", "Copy as prompt", "a", |this, cx| {
+            this.copy_agent_prompt(cx);
+        }),
+        (
+            "save-script",
+            "Save delete script\u{2026}",
+            "e",
+            |this, cx| {
                 this.save_delete_script(cx);
+            },
+        ),
+        ("copy-script", "Copy delete script", "y", |this, cx| {
+            this.copy_delete_script(cx);
+        }),
+    ];
+    let menu = rows.into_iter().fold(
+        div()
+            .id("export-menu")
+            .debug_selector(|| "export-menu".into())
+            .absolute()
+            // Above the button: the footer is the window's bottom edge.
+            .bottom_full()
+            .left_0()
+            .mb(space::XS)
+            .w(size::EXPORT_MENU)
+            .flex()
+            .flex_col()
+            .py(space::XS)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .shadow_lg()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.export_menu_open = false;
+                cx.notify();
             })),
-        )
-        .child(
-            button(
-                "copy-script",
-                "Copy delete script",
-                ButtonVariant::Secondary,
-                cx,
+        |menu, (id, label, key, run)| {
+            menu.child(
+                div()
+                    .id(id)
+                    .debug_selector(move || id.into())
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(space::LG)
+                    .px(space::MD)
+                    .py(space::XS)
+                    .cursor_pointer()
+                    .hover(|row| row.bg(theme.hover_fill()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(theme.foreground)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme.mono_font.clone())
+                            .text_size(text::CAPTION)
+                            .text_color(theme.secondary)
+                            .child(key),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.export_menu_open = false;
+                        run(this, cx);
+                        window.focus(&this.focus, cx);
+                        cx.notify();
+                    })),
             )
-            .disabled(plan.is_empty())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.copy_delete_script(cx);
-            })),
+        },
+    );
+    div()
+        .relative()
+        .flex_none()
+        .child(
+            button("export", "Export \u{25be}", ButtonVariant::Outline, cx)
+            .debug_selector(|| "export".into())
+                .disabled(plan.is_empty())
+                .selected(app.export_menu_open)
+                // Capture runs before the open menu's press-outside handler
+                // closes it, so a press on the button toggles.
+                .capture_any_mouse_down(cx.listener(|this, _, _, _| {
+                    this.export_menu_was_open = this.export_menu_open;
+                }))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.export_menu_open = !this.export_menu_was_open;
+                    // The keys stay the window's: the button is disabled
+                    // once nothing is marked, and a disabled button that
+                    // kept focus would swallow every key after it.
+                    window.focus(&this.focus, cx);
+                    cx.notify();
+                })),
         )
+        .when(app.export_menu_open, |export| export.child(deferred(menu)))
 }
 
-/// The screen's one commitment. Moving to the trash is the default commit,
-/// so it is the primary action; a permanent deletion is destructive, so it is
-/// the danger action and asks first, which its ellipsis promises.
-fn commit_controls(
+/// The review screen's footer. Exporting and unmarking stay on the left,
+/// since neither leaves the screen; Back and the commit end it, on the
+/// right. Moving to the trash is the default commit, so it is the primary
+/// action; a permanent deletion is the danger action and asks first, which
+/// its ellipsis promises. Over SSH nothing is removed here: Back alone.
+fn review_actions(
     app: &Disktree,
     plan: &disktree_core::removal::Plan,
     cx: &Context<'_, Disktree>,
 ) -> Div {
-    let count = plan.targets.len();
-    let noun = if count == 1 { "item" } else { "items" };
-    let (label, variant) = match app.removal_mode {
-        RemovalMode::Trash => (
-            format!("Move {count} {noun} to trash"),
-            ButtonVariant::Primary,
-        ),
-        RemovalMode::Permanent => (
-            format!("Delete {count} {noun}\u{2026}"),
-            ButtonVariant::Danger,
-        ),
-    };
-    let unavailable = plan.is_empty()
-        || (app.removal_mode == RemovalMode::Trash
-            && !app.trash_backend.is_available());
-
-    div()
-        .flex()
-        .flex_row()
-        .justify_end()
-        .gap(space::SM)
-        .child(
-            button("back", "Back", ButtonVariant::Secondary, cx).on_click(
-                cx.listener(|this, _, window, cx| {
-                    this.screen = Screen::Explore;
-                    cx.notify();
-                    window.focus(&this.focus, cx);
-                }),
+    let unmark = button("unmark-all", "Unmark all", ButtonVariant::Outline, cx)
+        .debug_selector(|| "unmark-all".into())
+        .disabled(app.marks.is_empty())
+        .on_click(cx.listener(|this, _, window, cx| {
+            this.clear_marks(cx);
+            window.focus(&this.focus, cx);
+        }));
+    let back = button("back", "Back", ButtonVariant::Outline, cx)
+        .debug_selector(|| "back".into())
+        .on_click(cx.listener(|this, _, window, cx| {
+            this.screen = Screen::Explore;
+            cx.notify();
+            window.focus(&this.focus, cx);
+        }));
+    let commit = app.remote.is_none().then(|| {
+        let count = plan.targets.len();
+        let noun = if count == 1 { "item" } else { "items" };
+        let (label, variant) = match app.removal_mode {
+            RemovalMode::Trash => (
+                format!("Move {count} {noun} to trash"),
+                ButtonVariant::Primary,
             ),
-        )
-        .child(
-            button("commit", label, variant, cx)
-                .disabled(unavailable)
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.commit(cx);
-                    this.apply_focus(window, cx);
-                })),
-        )
+            RemovalMode::Permanent => (
+                format!("Delete {count} {noun}\u{2026}"),
+                ButtonVariant::Danger,
+            ),
+        };
+        let unavailable = plan.is_empty()
+            || (app.removal_mode == RemovalMode::Trash
+                && !app.trash_backend.is_available());
+        button("commit", label, variant, cx)
+            .debug_selector(|| "commit".into())
+            .disabled(unavailable)
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.commit(cx);
+                this.apply_focus(window, cx);
+            }))
+            .into_any_element()
+    });
+    dialog_footer(
+        [
+            export_menu(app, plan, cx).into_any_element(),
+            unmark.into_any_element(),
+        ],
+        Some(back.into_any_element()),
+        commit,
+    )
 }
 
-fn review_footer(app: &Disktree, theme: &Theme, cx: &App) -> Div {
+/// Review's keys, on Linux, where Omarchy's apps keep them in view. macOS
+/// and Windows have the buttons, their menus and `?` for the same keys.
+fn review_hints(app: &Disktree, theme: &Theme, cx: &App) -> Div {
     let commit = match app.removal_mode {
         RemovalMode::Trash => "move to trash",
         RemovalMode::Permanent => "delete\u{2026}",
     };
+    let local = app.remote.is_none();
     div()
-        .debug_selector(|| "review-footer".into())
         .flex()
         .flex_row()
+        .flex_wrap()
         .items_center()
         .gap(space::LG)
         .px(space::LG)
+        .py(space::XS)
+        .border_t_1()
+        .border_color(theme.divider())
+        .children(local.then(|| widgets::hint("enter", commit, cx)))
+        .children(local.then(|| widgets::hint("m", "trash", cx)))
+        .children(local.then(|| widgets::hint("p", "permanent", cx)))
+        .child(widgets::hint("!", "unmark all", cx))
+        .child(widgets::hint("u", "undo", cx))
+        .child(widgets::hint("s e a y", "export", cx))
+        .child(widgets::hint("esc", "back", cx))
+}
+
+/// A screen's footer band: [`dialog_footer`]'s row across the window's
+/// bottom edge.
+fn screen_footer(row: Div, theme: &Theme) -> Div {
+    row.px(space::LG)
         .py(space::SM)
         .border_t_1()
         .border_color(theme.divider())
-        .children(
-            app.remote
-                .is_none()
-                .then(|| widgets::hint("enter", commit, cx)),
-        )
-        .children(
-            app.remote
-                .is_none()
-                .then(|| widgets::hint("m", "trash", cx)),
-        )
-        .children(
-            app.remote
-                .is_none()
-                .then(|| widgets::hint("p", "permanent", cx)),
-        )
-        .child(widgets::hint("e", "save script", cx))
-        .child(widgets::hint("y", "copy script", cx))
-        .child(widgets::hint("!", "unmark all", cx))
-        .child(widgets::hint("s", "save list", cx))
-        .child(widgets::hint("a", "copy as prompt", cx))
-        .child(widgets::hint("esc", "back", cx))
-        .child(div().flex_1())
-        .child(
-            div()
-                .text_size(text::CAPTION)
-                .text_color(theme.secondary)
-                .child(format!(
-                    "{} available",
-                    app.space.map_or_else(
-                        || "?".into(),
-                        |space| human_bytes(space.available)
-                    )
-                )),
-        )
 }
 
 // ── running ─────────────────────────────────────────────────────────────
@@ -3970,18 +4150,34 @@ fn running(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
                 )
                 .child(log),
         )
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(space::LG)
-                .px(space::LG)
-                .py(space::SM)
-                .border_t_1()
-                .border_color(theme.divider())
-                .child(widgets::hint("esc", "stop after the current item", cx)),
-        )
+        .child(screen_footer(
+            dialog_footer(
+                [],
+                None,
+                // Outlined, not danger: it loses nothing, and what was
+                // removed stays removed either way.
+                Some(
+                    button(
+                        "stop-removal",
+                        if app.stop_requested {
+                            "Stopping\u{2026}"
+                        } else {
+                            "Stop after this item"
+                        },
+                        ButtonVariant::Outline,
+                        cx,
+                    )
+                    .debug_selector(|| "stop-removal".into())
+                    .disabled(app.stop_requested)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.stop_removal(cx);
+                        window.focus(&this.focus, cx);
+                    }))
+                    .into_any_element(),
+                ),
+            ),
+            &theme,
+        ))
 }
 
 // ── done ────────────────────────────────────────────────────────────────
@@ -4098,27 +4294,24 @@ fn done(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
         .min_h_0()
         .child(screen_header("Done", "removal finished", &theme, cx))
         .child(body)
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(space::LG)
-                .px(space::LG)
-                .py(space::SM)
-                .border_t_1()
-                .border_color(theme.divider())
-                .child(
-                    // An acknowledgement: the result is already on screen.
+        .child(screen_footer(
+            dialog_footer(
+                [],
+                None,
+                // An acknowledgement, the default: Enter and Escape press it.
+                Some(
                     button("continue", "Done", ButtonVariant::Primary, cx)
+                        .debug_selector(|| "continue".into())
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.screen = Screen::Explore;
                             cx.notify();
                             window.focus(&this.focus, cx);
-                        })),
-                )
-                .child(widgets::hint("enter", "continue", cx)),
-        )
+                        }))
+                        .into_any_element(),
+                ),
+            ),
+            &theme,
+        ))
 }
 
 // ── shared ──────────────────────────────────────────────────────────────
@@ -4455,11 +4648,21 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             "shift-u",
             "Updates: the version, the release channel, check now",
         ),
-        ("q", "Quit"),
+        // A bare q only on Linux, where Omarchy's apps quit that way.
+        (
+            if cfg!(target_os = "macos") {
+                "\u{2318}Q"
+            } else if cfg!(windows) {
+                "alt f4"
+            } else {
+                "q"
+            },
+            "Quit",
+        ),
         ("", ""),
         (
             "Review screen",
-            "m trash \u{00b7} p permanent \u{00b7} ! unmark all \u{00b7} s save list \u{00b7} a copy as prompt",
+            "m trash \u{00b7} p permanent \u{00b7} ! unmark all \u{00b7} u undo \u{00b7} s save list \u{00b7} a copy as prompt",
         ),
         ("", "enter commits \u{00b7} esc goes back"),
         ("", "A permanent deletion always asks first"),
