@@ -656,8 +656,10 @@ impl RemoteScan {
             move |input, progress| {
                 let mut snapshot =
                     read_snapshot_with_progress(input, progress)?;
+                // The snapshot is already aggregated by size; another
+                // metric needs only its children reordered.
                 if metric != crate::tree::Metric::Bytes {
-                    aggregate(&mut snapshot.tree, metric);
+                    crate::tree::reorder(&mut snapshot.tree, metric);
                 }
                 Ok(snapshot)
             },

@@ -14,7 +14,7 @@ pub struct Estimate {
     pub partial: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct Group {
     members: u64,
     references: u32,
@@ -23,6 +23,19 @@ struct Group {
 }
 
 impl Group {
+    /// One file's membership, as [`Accumulator::member`] would add it.
+    fn member(info: CloneInfo, allocated: u64) -> Self {
+        Self {
+            members: 1,
+            references: info.references,
+            shared: info.data_bytes.min(
+                allocated
+                    .saturating_sub(info.private_bytes.unwrap_or(allocated)),
+            ),
+            all_zero_private: info.private_bytes == Some(0),
+        }
+    }
+
     fn credit(&self) -> Estimate {
         let complete =
             self.references >= 2 && self.members == u64::from(self.references);
@@ -86,34 +99,60 @@ impl Accumulator {
     pub(super) fn leaf(node: &Node, limit: usize) -> Self {
         work();
         let mut acc = Self::new(limit);
-        if let Some(allocation) = node.allocation.as_deref() {
-            if allocation.followed {
-                return acc;
-            }
-            if allocation.links > 1 {
-                if let Some(key) = allocation.identity {
-                    acc.links.insert(
-                        key,
-                        Links {
-                            allocation: *allocation,
-                            names: 1,
-                        },
-                    );
-                } else {
-                    acc.base.partial = true;
-                    acc.base.upper = allocation.bytes;
-                }
-            } else {
-                acc.file(allocation, true);
-            }
-        } else {
-            acc.base.lower = node.bytes;
-            acc.base.upper = node.bytes;
-        }
+        acc.add_leaf(node);
         acc
     }
 
+    /// The same as merging [`Self::leaf`], without a leaf's own maps: a
+    /// tree of millions of clones would allocate, merge and free one for
+    /// every file.
+    pub(super) fn add_leaf(&mut self, node: &Node) {
+        let Some(allocation) = node.allocation.as_deref() else {
+            self.base.lower = self.base.lower.saturating_add(node.bytes);
+            self.base.upper = self.base.upper.saturating_add(node.bytes);
+            return;
+        };
+        if allocation.followed {
+            return;
+        }
+        if allocation.links > 1 {
+            if let Some(key) = allocation.identity {
+                self.join_links(
+                    key,
+                    Links {
+                        allocation: *allocation,
+                        names: 1,
+                    },
+                );
+            } else {
+                self.base.partial = true;
+                self.base.upper =
+                    self.base.upper.saturating_add(allocation.bytes);
+            }
+            return;
+        }
+        if let Some(info) = self.bounds(allocation, true) {
+            work();
+            self.join(
+                (info.device, info.id),
+                Group::member(info, allocation.bytes),
+            );
+        }
+    }
+
     fn file(&mut self, allocation: &Allocation, add: bool) {
+        if let Some(info) = self.bounds(allocation, add) {
+            self.member(info, allocation.bytes, add);
+        }
+    }
+
+    /// A file's private and possible bytes; its clone facts when they can
+    /// join a group.
+    fn bounds(
+        &mut self,
+        allocation: &Allocation,
+        add: bool,
+    ) -> Option<CloneInfo> {
         let info = allocation.clone;
         // Missing clone facts may widen the bounds but cannot prove group
         // completeness. Keep that limitation when crossing the window link.
@@ -138,9 +177,7 @@ impl Accumulator {
         };
         adjust(&mut self.base.lower, private, add);
         adjust(&mut self.base.upper, upper, add);
-        if let Some(info) = grouped {
-            self.member(info, allocation.bytes, add);
-        }
+        grouped
     }
 
     fn member(&mut self, info: CloneInfo, allocated: u64, add: bool) {
@@ -190,56 +227,62 @@ impl Accumulator {
         self.incomplete |= other.incomplete;
         for (key, group) in other.groups {
             work();
-            if !self.groups.contains_key(&key)
-                && self.groups.len() >= self.limit
-            {
-                self.base.partial = true;
-                self.base.upper = self.base.upper.saturating_add(group.shared);
-                continue;
-            }
-            let old = self.groups.entry(key).or_insert_with(|| Group {
-                shared: u64::MAX,
-                all_zero_private: true,
-                ..Group::default()
-            });
-            let before = old.credit();
-            old.members += group.members;
-            old.references = old.references.max(group.references);
-            old.shared = old.shared.min(group.shared);
-            old.all_zero_private &= group.all_zero_private;
-            replace(&mut self.credit, before, old.credit());
+            self.join(key, group);
         }
         for (key, links) in other_links {
             work();
-            if let Some(old) = self.links.remove(&key) {
-                if old.complete() {
-                    self.file(&old.allocation, false);
-                }
-                let mut allocation = old.allocation;
-                allocation.bytes = allocation.bytes.min(links.allocation.bytes);
-                allocation.links = allocation.links.max(links.allocation.links);
-                if allocation.clone != links.allocation.clone {
-                    // Inconsistent live observations cannot authorize saving.
-                    allocation.clone = Some(CloneInfo::default());
-                }
-                let joined = Links {
-                    allocation,
-                    names: old.names + links.names,
-                };
-                if joined.complete() {
-                    self.file(&joined.allocation, true);
-                }
-                self.links.insert(key, joined);
-            } else if self.links.len() < self.limit {
-                if links.complete() {
-                    self.file(&links.allocation, true);
-                }
-                self.links.insert(key, links);
-            } else {
-                self.base.partial = true;
-                self.base.upper =
-                    self.base.upper.saturating_add(links.allocation.bytes);
+            self.join_links(key, links);
+        }
+    }
+
+    fn join(&mut self, key: (u64, u64), group: Group) {
+        if !self.groups.contains_key(&key) && self.groups.len() >= self.limit {
+            self.base.partial = true;
+            self.base.upper = self.base.upper.saturating_add(group.shared);
+            return;
+        }
+        let old = self.groups.entry(key).or_insert_with(|| Group {
+            shared: u64::MAX,
+            all_zero_private: true,
+            ..Group::default()
+        });
+        let before = old.credit();
+        old.members += group.members;
+        old.references = old.references.max(group.references);
+        old.shared = old.shared.min(group.shared);
+        old.all_zero_private &= group.all_zero_private;
+        replace(&mut self.credit, before, old.credit());
+    }
+
+    fn join_links(&mut self, key: (u64, u64), links: Links) {
+        if let Some(old) = self.links.remove(&key) {
+            if old.complete() {
+                self.file(&old.allocation, false);
             }
+            let mut allocation = old.allocation;
+            allocation.bytes = allocation.bytes.min(links.allocation.bytes);
+            allocation.links = allocation.links.max(links.allocation.links);
+            if allocation.clone != links.allocation.clone {
+                // Inconsistent live observations cannot authorize saving.
+                allocation.clone = Some(CloneInfo::default());
+            }
+            let joined = Links {
+                allocation,
+                names: old.names + links.names,
+            };
+            if joined.complete() {
+                self.file(&joined.allocation, true);
+            }
+            self.links.insert(key, joined);
+        } else if self.links.len() < self.limit {
+            if links.complete() {
+                self.file(&links.allocation, true);
+            }
+            self.links.insert(key, links);
+        } else {
+            self.base.partial = true;
+            self.base.upper =
+                self.base.upper.saturating_add(links.allocation.bytes);
         }
     }
 }
@@ -297,7 +340,11 @@ fn gather(node: &Node) -> Accumulator {
     }
     let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
     for child in &node.children {
-        total.merge(gather(child));
+        if child.is_dir() {
+            total.merge(gather(child));
+        } else {
+            total.add_leaf(child);
+        }
     }
     total
 }
