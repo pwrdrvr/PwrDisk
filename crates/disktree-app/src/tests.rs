@@ -4941,3 +4941,242 @@ fn removal_capacity_limit_blocks_the_entire_ui_selection(
     assert!(temp.path().join("keep/notes.txt").exists());
     draw(cx);
 }
+
+#[gpui_kit::test]
+fn accessible_file_pages_reach_every_entry_and_share_safe_marks(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = tempfile::tempdir().expect("tempdir");
+    for i in 0..235 {
+        std::fs::write(
+            temp.path().join(format!("Résumé 日本語-{i:03}.txt")),
+            b"fixture",
+        )
+        .expect("file");
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        app.selected = None;
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("file-row-99").is_some());
+    assert!(cx.debug_bounds("file-row-100").is_none());
+    press(cx, "down pagedown pagedown");
+    assert!(cx.debug_bounds("file-row-200").is_some());
+    assert!(cx.debug_bounds("file-row-199").is_none());
+    read(&view, cx, |app| {
+        assert_eq!(app.file_entries().len(), 235);
+        assert_eq!(app.selected.as_deref(), Some([200].as_slice()));
+    });
+    press(cx, "space c");
+    read(&view, cx, |app| {
+        assert_eq!(app.screen, Screen::Review);
+        assert_eq!(app.marks.len(), 1);
+        assert!(
+            app.marks.items()[0]
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("200")
+        );
+    });
+    press(cx, "escape");
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 235);
+}
+
+#[gpui_kit::test]
+fn accessible_file_navigation_uses_absolute_paths_and_filter(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        app.selected = Some(child_crumbs(app, &[], "junk"));
+        cx.notify();
+    });
+    press(cx, "right down space");
+    read(&view, cx, |app| {
+        assert_eq!(app.current_path(), temp.path().join("junk"));
+        assert!(
+            app.marks.items()[0]
+                .path
+                .starts_with(temp.path().join("junk"))
+        );
+    });
+    press(cx, "left / k e e p enter");
+    read(&view, cx, |app| {
+        assert_eq!(app.file_entries().len(), 1);
+    });
+}
+
+fn paginated_fixture(count: usize) -> tempfile::TempDir {
+    let temp = tempfile::tempdir().expect("tempdir");
+    for index in 0..count {
+        let prefix = if index < 150 { "match" } else { "other" };
+        std::fs::write(
+            temp.path().join(format!("{prefix}-{index:06}.txt")),
+            b"fixture",
+        )
+        .expect("file");
+    }
+    temp
+}
+
+fn focus_file_list(view: &Entity<Disktree>, cx: &mut Window) {
+    update(view, cx, |app, cx| {
+        app.file_list = true;
+        cx.notify();
+    });
+    draw(cx);
+    let focus = view.read_with(cx, |app, _| app.file_focus.clone());
+    cx.update(|window, cx| window.focus(&focus, cx));
+}
+
+#[gpui_kit::test]
+fn accessible_list_review_rescan_preserves_keyboard_focus(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    focus_file_list(&view, cx);
+    press(cx, "r");
+    assert!(cx.debug_bounds("file-list").is_none());
+    let root_focused =
+        cx.update(|window, cx| view.read(cx).focus.is_focused(window));
+    press(cx, "escape");
+    assert!(read(&view, cx, |app| app.scan.is_none()), "Escape cancels");
+    assert!(root_focused, "the persistent root owns scan keys");
+
+    press(cx, "r");
+    finish_scan(&view, cx);
+    draw(cx);
+    assert!(cx.debug_bounds("file-list").is_some());
+    assert!(
+        cx.update(|window, cx| { view.read(cx).file_focus.is_focused(window) })
+    );
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+#[gpui_kit::test]
+fn accessible_list_review_sibling_navigation_tracks_page(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = paginated_fixture(235);
+    let (view, cx) = view_over(temp.path(), cx);
+    focus_file_list(&view, cx);
+    update(&view, cx, |app, cx| app.select(Some(vec![99]), cx));
+    press(cx, "tab");
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), Some(vec![100]));
+    assert_eq!(read(&view, cx, |app| app.file_page), 1);
+    assert!(cx.debug_bounds("file-row-100").is_some());
+    assert!(cx.debug_bounds("file-row-99").is_none());
+    let marked = read(&view, cx, |app| app.path_at(&[100]).unwrap());
+    press(cx, "space shift-tab");
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), Some(vec![99]));
+    assert_eq!(read(&view, cx, |app| app.file_page), 0);
+    assert!(cx.debug_bounds("file-row-99").is_some());
+    assert!(read(&view, cx, |app| {
+        app.marks.contains(&marked, app.path_style())
+    }));
+    assert!(marked.exists(), "marking never removes the file");
+}
+
+#[gpui_kit::test]
+fn accessible_list_review_previous_uses_filtered_page(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = paginated_fixture(450);
+    let (view, cx) = view_over(temp.path(), cx);
+    focus_file_list(&view, cx);
+    press(cx, "down pagedown pagedown pagedown pagedown");
+    assert_eq!(read(&view, cx, |app| app.file_page), 4);
+    press(cx, "/");
+    cx.simulate_input("match");
+    cx.run_until_parked();
+    press(cx, "enter");
+    assert_eq!(read(&view, cx, |app| app.file_entries().len()), 150);
+    assert!(cx.debug_bounds("file-row-100").is_some());
+    click_on(cx, "file-previous");
+    assert_eq!(read(&view, cx, |app| app.file_page), 0);
+    assert!(cx.debug_bounds("file-row-0").is_some());
+    assert!(cx.debug_bounds("file-row-100").is_none());
+}
+
+#[gpui_kit::test]
+fn accessible_list_review_previous_uses_shrunken_marks_page(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = paginated_fixture(4801);
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        for index in 0..4801 {
+            let target = app.target_at(&[index]).expect("file");
+            app.marks.toggle(target, app.path_style());
+        }
+        app.review_page = 4;
+        app.open_review(cx);
+    });
+    draw(cx);
+    // Removing marks leaves one row on the effective last page, so the
+    // real Previous button remains visible without scrolling 1,200 rows.
+    update(&view, cx, |app, cx| {
+        let keep = app.marks.items()[..1201].to_vec();
+        app.marks.clear();
+        for target in keep {
+            app.marks.toggle(target, app.path_style());
+        }
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.marks.len()), 1201);
+    click_on(cx, "review-previous");
+    assert_eq!(read(&view, cx, |app| app.review_page), 0);
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 4801);
+}
+
+#[gpui_kit::test]
+fn accessible_list_review_noop_navigation_preserves_page(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = paginated_fixture(235);
+    std::fs::create_dir(temp.path().join("nested")).expect("directory");
+    std::fs::write(temp.path().join("nested/child.txt"), b"x").expect("file");
+    let (view, cx) = view_over(temp.path(), cx);
+    focus_file_list(&view, cx);
+    let selected = update(&view, cx, |app, cx| {
+        let selected = child_crumbs(app, &[], "other-000150.txt");
+        assert_eq!(selected, [150]);
+        app.file_page = 1;
+        app.select(Some(selected.clone()), cx);
+        selected
+    });
+    for key in ["enter", "right", "left", "backspace", "u"] {
+        press(cx, key);
+        assert_eq!(read(&view, cx, |app| app.file_page), 1, "{key}");
+        assert_eq!(
+            read(&view, cx, |app| app.selected.clone()),
+            Some(selected.clone()),
+            "{key}"
+        );
+        assert!(cx.debug_bounds("file-row-150").is_some(), "{key}");
+    }
+    update(&view, cx, |app, cx| {
+        let nested = child_crumbs(app, &[], "nested");
+        app.go_to(nested, cx);
+    });
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.file_page), 0);
+    assert_eq!(
+        read(&view, cx, Disktree::current_path),
+        temp.path().join("nested")
+    );
+}
