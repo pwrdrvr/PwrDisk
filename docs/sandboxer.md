@@ -2,8 +2,14 @@
 
 Use this procedure when the thread has Sandboxer MCP tools. Run Linux
 builds, lint, tests and integration checks in the remote VM. This keeps
-the Rust compile load off the local machine. Use the local commands in
-[AGENTS.md](../AGENTS.md#commands) when Sandboxer is not available.
+the Rust compile load off the local machine. Use the headless local
+commands in [AGENTS.md](../AGENTS.md#commands) when Sandboxer is not
+available; never `make run` or `cargo run`, which open a window.
+
+Sandboxer is Linux only and has no desktop. A check that needs an on-screen
+macOS window, screenshots included, runs in the PwrSuiteLab VM as
+[headed-e2e-pwrsuitelab.md](headed-e2e-pwrsuitelab.md) says, never on the
+local desktop.
 
 This procedure follows PwrRoute's Sandboxer workflow. It uses committed
 source, one VM per thread, a shared base snapshot and saved exit codes.
@@ -176,7 +182,8 @@ socket. They run in `test`; they do not need Xvfb. The `e2e` step uses
 temporary SSH keys and a localhost server. It does not use real SSH hosts.
 It builds the portable app again, which is incremental after `build`.
 PwrDisk has no separate desktop E2E runner. Do not substitute PwrRoute's
-`cargo xtask e2e` command.
+`cargo xtask e2e` command, and do not launch the app on the local desktop
+instead; see [Mac GUI checks](headed-e2e-pwrsuitelab.md).
 
 ## Read and report the results
 
@@ -206,8 +213,9 @@ scripts/sandboxer/transfer.sh get "$URL" test.log /tmp/pwrdisk-test.log
 ```
 
 The transfer server accepts single file names. Archive a directory before
-download. Use contrived trees for screenshots. Follow the separate
-[PR attachment procedure](pr-screenshots.md) before uploading media.
+download. Screenshots are not made here: they come from a contrived tree in
+the PwrSuiteLab VM, and [pr-screenshots.md](pr-screenshots.md) covers making
+and attaching them.
 
 ## Build or refresh the base snapshot
 
@@ -267,7 +275,9 @@ commit; a base snapshot is a cache, not proof that a change passes.
 ## Scope and lifecycle
 
 - Linux checks do not verify macOS, Windows, another CPU architecture or
-  the oldest supported glibc. Keep the relevant platform CI checks.
+  the oldest supported glibc. Keep the relevant platform CI checks. A macOS
+  window is checked in the [lab VM](headed-e2e-pwrsuitelab.md); for a
+  Windows or Linux window, ask the operator.
 - `test` includes the default tests. It does not run ignored tests. The
   `e2e` step selects only the ignored real SSH tests. Run mount-namespace
   tests with [test-linux-mounts.sh](../scripts/test-linux-mounts.sh) only

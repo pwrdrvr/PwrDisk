@@ -31,7 +31,7 @@ limit (5% per volume by default), including a fresh measurement on the worker.
 
 ```sh
 make build                      # release build
-make run                        # build and open the source/root chooser
+make run                        # opens a window: see Testing on a desktop
 make install                    # ~/.local: binary, desktop entry, icon
 make install PREFIX=/usr/local  # system-wide (needs root)
 make uninstall
@@ -83,10 +83,40 @@ done, and it must not fix anything: a red local run is the same signal CI gives.
 On Windows, where there is no make, run `cargo xtask lint`, `cargo xtask test`
 and `cargo build --release` directly; CI runs the gate on both systems.
 
-When Sandboxer MCP tools are available, run Linux builds, lint, tests and
-integration checks there. Start from `pwrdisk-base-us-east` in `us-east`;
-read [remote verification](docs/sandboxer.md) first. Use local checks when
-Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
+When Sandboxer MCP tools are available, run Linux builds, lint, tests, SSH
+integration and other Linux-only checks there. Start from
+`pwrdisk-base-us-east` in `us-east`; read
+[remote verification](docs/sandboxer.md) first. Use local checks when
+Sandboxer is unavailable. Sandboxer is Linux only. macOS and Windows changes
+are verified on those systems with the headless gate (`cargo xtask lint`,
+`cargo xtask test`) and CI; anything that needs a window follows
+[Testing on a desktop](#testing-on-a-desktop).
+
+## Testing on a desktop
+
+Never launch PwrDisk, or send synthetic input, on the operator's desktop.
+Keys and clicks from `osascript` or System Events, `cliclick`, AX actions,
+computer use, and moving or resizing windows land wherever the operator is
+working; they have landed in another app. That holds for screenshots,
+native accessibility checks and every other GUI check, and for `make run`
+or `cargo run` to look at a change. The window-harness tests (`make test`,
+`cargo xtask test`) are fine: they draw headless.
+
+* **An on-screen macOS window** (screenshots, VoiceOver, native AX checks) runs
+  in the PwrSuiteLab headed E2E Tart VM through the PwrSuiteLab Control
+  MCP. Read [docs/headed-e2e-pwrsuitelab.md](docs/headed-e2e-pwrsuitelab.md)
+  before the first job. Without that MCP, stop and ask the operator: there
+  is no local fallback and no script fallback.
+* **Any other window**, such as a Linux or Windows GUI the lab cannot show:
+  ask the operator. Never the local desktop.
+* **Files, not the clipboard.** Lab VMs start with clipboard sharing off.
+  Inputs travel in the committed source a job stages and outputs come back
+  as collected artifacts; never ask the operator to paste into or copy
+  from the guest.
+* **Keep the lab out of this repository.** PwrDisk is public: no lab
+  detail goes in code, docs, commits or PRs. The last section of
+  [docs/headed-e2e-pwrsuitelab.md](docs/headed-e2e-pwrsuitelab.md) lists
+  what counts. Targets come from `lab_status` at run time.
 
 ## House rules
 
@@ -247,8 +277,10 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
 * `disktree-mcp` tests every tool as a function against a temporary tree,
   with a stand-in window on the socket or pipe for the linked cases;
   `disktree-link` tests the transport itself.
-* Rendering was verified by those tests and by running the app against a real
-  home directory; it has not been eyeballed in every theme and font size.
+* Rendering is verified by those tests and, where an on-screen macOS window
+  is needed, in the PwrSuiteLab VM against a contrived tree (see
+  [Testing on a desktop](#testing-on-a-desktop)); it has not been eyeballed
+  in every theme and font size.
 
 ## Pull requests
 
@@ -263,8 +295,9 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
   `--attach`, and before any later body edit.
 * **A PR that changes what the window shows has before/after screenshots**,
   of a contrived tree rather than a real disk;
-  [docs/pr-screenshots.md](docs/pr-screenshots.md) says how to make one. If
-  nothing can show the change, say why in the body and ask the operator.
+  [docs/pr-screenshots.md](docs/pr-screenshots.md) says how to make one in
+  the lab VM, never on the operator's desktop. If nothing can show the
+  change, say why in the body and ask the operator.
 * **Scans are private data.** A real scan shows user names in paths,
   project and client names, volume names and sizes, and the chooser lists
   mounts and SSH hosts. Show any screenshot that is not 100% contrived to the
@@ -295,8 +328,12 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
   (`add_todo`, with a `start_thread` action whose prompt stands alone), not a
   note in the PR body, a commit message or a code comment. The operator does
   not read those notes; a card can be tracked and started.
-* Before launching the app, check whether a PwrDisk window from this checkout
-  is already open and reuse it. Several checkouts and builds can run at once.
+* A PwrDisk window open on this machine belongs to the operator or another
+  thread: several checkouts and builds run here at once. Leave it alone, and
+  do not start another to look at a change; that runs in the lab, as
+  [Testing on a desktop](#testing-on-a-desktop) says. That includes the
+  link: do not point a local `pwrdisk mcp` at it to test a change; the
+  `disktree-mcp` tests use a stand-in window.
 
 ## Agent instruction files
 
