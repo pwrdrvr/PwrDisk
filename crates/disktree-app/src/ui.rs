@@ -107,6 +107,12 @@ pub mod size {
     /// Settings › Updates' channel names' lane, so their descriptions line
     /// up.
     pub const UPDATE_SLOT: Rems = Rems(9.5);
+    /// A toast: PwrDisk's 330 px, a little under the family's 380 to 460,
+    /// since it sits over the treemap.
+    pub const TOAST: Rems = Rems(20.625);
+    /// How far the toasts sit above the window's bottom edge: clear of the
+    /// key bar.
+    pub const TOAST_BOTTOM: Rems = Rems(3.0);
     /// The key column of the keyboard overlay.
     pub const KEY_LANE: Rems = Rems(7.0);
     /// A document's measure (the changelog): about 90 characters.

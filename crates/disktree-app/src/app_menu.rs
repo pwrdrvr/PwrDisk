@@ -162,14 +162,17 @@ pub fn install(cx: &mut App) {
         cx.defer(|cx| settings::open(settings::Pane::About, cx));
     });
     cx.on_action(|_: &CheckForUpdates, cx| {
-        // One already running is left to finish, rather than queueing a
-        // second right behind it.
-        if !crate::updater::state().checking {
-            crate::updater::check_in_background(
-                crate::updater::Trigger::Manual,
-            );
-        }
-        cx.defer(|cx| settings::open(settings::Pane::Updates, cx));
+        // The main window answers in a toast, from whichever window asked:
+        // it comes forward so the answer is seen.
+        cx.defer(|cx| {
+            let Some(main) = main_window(cx) else {
+                return;
+            };
+            let _ = main.update(cx, |this, window, cx| {
+                window.activate_window();
+                this.check_for_updates(cx);
+            });
+        });
     });
     // The main window's rows (Rescan, Open Folder, Choose Source, Show in
     // Finder, the screens and the history) are handled by that window,
@@ -220,11 +223,7 @@ const MAIN_WINDOW_ACTIONS: [fn(&mut App); 10] = [
 fn forward_to_main<A: gpui_kit::Action + Default>(cx: &mut App) {
     cx.on_action(|_: &A, cx| {
         cx.defer(|cx| {
-            let Some(main) = cx
-                .windows()
-                .into_iter()
-                .find_map(|window| window.downcast::<crate::state::Disktree>())
-            else {
+            let Some(main) = main_window(cx) else {
                 return;
             };
             let _ = main.update(cx, |_, window, cx| {
@@ -233,6 +232,15 @@ fn forward_to_main<A: gpui_kit::Action + Default>(cx: &mut App) {
             });
         });
     });
+}
+
+/// The main window, which owns the scan, the marks and the toasts.
+fn main_window(
+    cx: &App,
+) -> Option<gpui_kit::WindowHandle<crate::state::Disktree>> {
+    cx.windows()
+        .into_iter()
+        .find_map(|window| window.downcast::<crate::state::Disktree>())
 }
 
 /// Every shortcut for `platform`.

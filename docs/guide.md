@@ -464,9 +464,14 @@ release in the background. The download installs when PwrDisk quits, or at
 once from **Restart to update**. Nothing is sent but the request for the
 release list.
 
-**Shift-U** opens the Updates panel (on macOS also **PwrDisk › Check for
-Updates…**): the version, what the last check found, **Check now**, and the
-release channel:
+**Check for Updates…** (in the PwrDisk menu on macOS, the strip's menu
+elsewhere) checks at once and answers in a toast at the bottom left of the
+main window: up to date, an update ready to install with **Restart to
+update**, or why the check failed. A check on its own says nothing unless it
+has downloaded an update, and then says so once for each version.
+
+**Shift-U** opens the Updates panel: the version, what the last check found,
+**Check now**, and the release channel:
 
 | Channel | Gets |
 | --- | --- |
