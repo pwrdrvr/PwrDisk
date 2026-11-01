@@ -4813,32 +4813,35 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
         .gap(space::SM)
         .min_h_0()
         .overflow_y_scroll();
-    for (key, label) in rows {
+    for (index, (key, label)) in rows.into_iter().enumerate() {
         if key.is_empty() && label.is_empty() {
             continue;
         }
         keys = keys.child(
-            div()
-                .flex()
-                .flex_row()
-                .gap(space::MD)
-                .items_center()
-                .child(
-                    div()
-                        .w(size::KEY_LANE)
-                        .flex_shrink_0()
-                        .text_size(text::CAPTION)
-                        .text_color(theme.accent)
-                        .child(key.to_string()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(text::BODY)
-                        .text_color(theme.foreground)
-                        .child(label.to_string()),
-                ),
+            crate::semantics::text(
+                ("help-shortcut", index),
+                format!("{key}: {label}"),
+            )
+            .flex()
+            .flex_row()
+            .gap(space::MD)
+            .items_center()
+            .child(
+                div()
+                    .w(size::KEY_LANE)
+                    .flex_shrink_0()
+                    .text_size(text::CAPTION)
+                    .text_color(theme.accent)
+                    .child(key.to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(text::BODY)
+                    .text_color(theme.foreground)
+                    .child(label.to_string()),
+            ),
         );
     }
 
@@ -4873,11 +4876,15 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                             .text_color(theme.accent),
                     )
                     .child(
-                        div()
-                            .text_size(text::TITLE)
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme.bright)
-                            .child("Keyboard and mouse"),
+                        crate::semantics::text(
+                            "help-heading",
+                            "Keyboard and mouse",
+                        )
+                        .role(gpui_kit::Role::Heading)
+                        .text_size(text::TITLE)
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.bright)
+                        .child("Keyboard and mouse"),
                     ),
             )
             .child(keys)

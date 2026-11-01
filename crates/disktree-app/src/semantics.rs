@@ -5,8 +5,13 @@ use gpui_kit::{
     StatefulInteractiveElement as _, div,
 };
 
+/// Lines or blocks Page Up or Page Down moves in the Logs and document
+/// readers: about one window of text at the default size, so a page key
+/// moves roughly a screen without measuring the viewport each press.
+pub const PAGE_STEP: usize = 20;
+
 pub fn text(
-    id: &'static str,
+    id: impl Into<gpui_kit::ElementId>,
     label: impl Into<gpui_kit::SharedString>,
 ) -> Stateful<Div> {
     div().id(id).role(Role::Label).aria_label(label)

@@ -597,3 +597,95 @@ The Settings outline was observed in the native macOS window only. Native
 AX/UIA/AT-SPI and VoiceOver/Narrator/NVDA/Orca were not rerun for the
 integration; Windows is verified by CI. The native acceptance gaps above
 remain open.
+
+### PWR-32: auxiliary text and keyboard reading
+
+Implementation `e47e994`, Copy-name correction `0cb8d3e`, rebased on main
+`cece3b9`. Final macOS debug binary SHA-256:
+`0495f8e49c8cea040fa9d67c8182137ec7f769b34f205449bf30b9b78313917d`.
+The native log example at `e47e994` reuses the production views with an
+explicitly supplied invented log and no preference file; it never opens the
+production log, scans, or removal UI.
+
+| Surface | Observed native macOS AX / keyboard | Harness / source |
+| --- | --- | --- |
+| Help | PASS inspected sheet: heading and all shortcut descriptions exposed; background absent | Existing modal/keyboard tests remain green |
+| Settings | PASS About: pane/card headings, descriptions, version/build/source values and project URLs exposed | Named groups scope repeated field/value IDs; channels expose radio state and retain keyboard activation |
+| Contextual Copy | Initial native run found that the base button overwrote `aria_label`; corrected through its supported `accessibility_label` API. PASS final native names: Copy checkout path, Copy branch or tag, Copy commit, Copy complete License | Copy actions retain their existing payloads; complete-document clipboard regression passes |
+| Documents | PASS: all 22 license lines; End reaches notices line 25,779 and exposes its final rows | PASS: long-notices Home/End brings virtual rows into view and keyboard Copy copies the complete source. Changelog contributes heading/paragraph semantics and block navigation |
+| Logs | PASS invented 300-line log: named search, level/mode states, Unicode rows, selected lines 1 and 300, paused/live summary. Search for invented line 299 exposes one match | PASS keyboard Home/End, selected-line copying and existing search/rotation/empty-log tests. Input Escape action is captured to return to the log reader |
+| Announcements / focus | No spoken-output result; native controller still reports the standard window as focused | Appending lines/counts deliberately have no live-region metadata; this does not prove AT announcement behavior |
+
+macOS 27.0.1 / 26A434 arm64, default dark, 100% UI zoom. Native fixture log:
+`/private/tmp/pwrdisk-a11y-invented.log`, 300 invented INFO lines with Unicode.
+No real logs, diagnostics, removal approval or deletion were used. Closing
+document and Settings windows returned to the fixture main window; useful
+AT focus restoration and speech still require an actual screen reader.
+
+Final `0cb8d3e`: macOS lint, full workspace tests (234 app tests) and debug
+main/example builds passed. Dedicated Ubuntu 24.04.5 x86_64 Sandboxer:
+setup 0 (1s), lint 0 (4s), tests 0 (11s), portable build 0 (44s), isolated
+SSH 0 (2s), all 0. The earlier integrated `e47e994` run also passed all
+five checks. These results cover the rebased PWR-29/30/31 implementation;
+their historical native observations above retain their original SHAs.
+
+Windows UIA/Narrator/NVDA, Linux AT-SPI/Orca, actual VoiceOver reading,
+OS scaling/high contrast and document reflow are not verified here.
+Semantic text/names do not produce a meaningful pixel comparison; operator
+review of the native evidence in lieu of before/after images is required
+before merging. Visible reflow/scaling changes belong to PWR-34.
+
+### PWR-32 on main's Settings and About redesign
+
+PR #43 moves onto main `a63a726` (after #42, #52 grouped Settings and #55
+About header) as one implementation commit plus this record; #42's merged
+commits are omitted. Main had replaced the Settings panes this work named,
+so its semantics are applied to the new ones rather than restoring the old
+layout:
+
+| Surface on main | Applied |
+| --- | --- |
+| Pane head, cards, fields | Pane title and card titles are headings; heads, cards and fields are named groups; labels, descriptions and values are readable text |
+| Safety | The "Applies to" statement is readable; load errors and save notes are alerts |
+| Updates grid | Each channel tile is a radio button named for its slot and purpose, with its toggled state; Enter/Space pick, arrows move as the window's keys do; the channel caption, follow/picked line and status are readable |
+| About header (#55) | Version is a heading; the build line keeps its whole text as its label when the painted line is cut short |
+| Copy buttons | Diagnostics, checkout, branch or tag and commit Copy buttons carry distinct names, prefixed "Copied:" after use |
+
+The native fixture example also lists main's `toasts` module. The earlier
+native macOS AX observations above were made on the old Settings layout;
+they were not repeated on main's panes. The Settings/About part of this
+record is harness/source evidence only.
+
+Contrived Logs images: debug builds of main `a63a726` and this PR, with
+`HOME` set to a temporary folder holding 300 invented INFO lines (plus the
+three lines each run writes), macOS 27.0.1, Logs window 1120×721 logical
+(2240×1442 capture), dark, 100% UI zoom. Help › Logs was opened with
+System Events, then Escape and End: main selects nothing; this PR selects
+the last line and shows its copy bar. Nothing was scanned beyond a 4 MiB
+invented folder, and nothing was removed.
+
+### PWR-32 review corrections: Tab order, roles and first step
+
+A high-effort review of PR #43 at `dd9f2f9` found that Tab could not
+reach several of the controls this work exposes. In GPUI `focusable()`
+alone is not a tab stop, and Tab from the auxiliary windows' title-strip
+buttons had no handler at all. Four new `aux_review_` window-harness tests
+cover the corrections; every log and document is invented.
+
+| Promise | Reviewed behavior | After |
+| --- | --- | --- |
+| Logs controls reachable | Mode and level segments, context-line items and Include diagnostics were focusable but not tab stops; Tab from Copy path/Reveal stayed put | All are tab stops; the shared frame takes Tab (and the text field's indent actions) above the strip, so Tab cycles both ways and Space toggles a level |
+| Document Copy | Tab from the title strip's Copy stayed put | Tab reaches the reader from Copy and back |
+| Channel radios | Focusable but not a tab stop | One stop for the group, on the picked channel |
+| Mode semantics | Filter/Highlight exposed as independent checkboxes | Radio buttons; levels stay checkboxes |
+| First keyboard step | Down with no selection selected line 2 | Down starts at line 1, Up at the last line |
+| Changelog layout | The scroll area had shrunk to the column width | Window-wide scroll area again; each block keeps the column's width and padding |
+
+Tab handling moved from the Logs, document and Settings bodies to
+`aux_window::frame`. Page Up/Down share one named step. macOS 27.0.1:
+lint passes; workspace tests pass (275 app, 233 core) with
+`an_agent_marks_shows_and_reviews_over_the_link` skipped. That test passes
+alone three times. In full runs on this Mac it now aborts when
+gpui-omarchy's theme-file watcher wakes inside it, and does so on the
+unreviewed `dd9f2f9` too, which passed earlier the same day. Native AX and
+screen readers were not rerun for these corrections.

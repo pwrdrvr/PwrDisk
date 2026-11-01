@@ -10,7 +10,7 @@
 //! restarts). Restart to update goes through the main window, which knows
 //! whether a removal is running and refuses to cut one short.
 
-use crate::semantics::AccessibleButton as _;
+use crate::semantics::{AccessibleButton as _, text as readable};
 use disktree_core::path_style::PathStyle;
 use std::path::PathBuf;
 
@@ -18,8 +18,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClipboardItem, Context, Div, ElementId, FocusHandle,
     FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, WindowHandle, div, img,
+    ParentElement as _, Render, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Window, WindowHandle, div,
+    img,
 };
 use gpui_omarchy::{
     ActiveTheme as _, ButtonVariant, ChoiceItem, Theme, button, button_group,
@@ -415,21 +416,10 @@ impl Render for SettingsWindow {
             .track_focus(&self.focus)
             .tab_group()
             .tab_stop(false)
-            .on_key_down(cx.listener(
-                |this, event: &KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "tab" {
-                        crate::semantics::advance_focus(
-                            window,
-                            cx,
-                            event.keystroke.modifiers.shift,
-                            None,
-                        );
-                        cx.stop_propagation();
-                        return;
-                    }
-                    this.on_key(event, cx);
-                },
-            ))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                // Tab is the frame's; see `aux_window::frame`.
+                this.on_key(event, cx);
+            }))
             .flex()
             .flex_row()
             .flex_1()
@@ -458,6 +448,11 @@ impl Render for SettingsWindow {
 
 /// The removal limits Settings › Safety offers, in percent of a volume.
 const LIMITS: [u8; 6] = [1, 5, 10, 25, 50, 100];
+
+const APPLIES_TO: &str = "Trash may be recoverable until it is emptied; \
+     restoring is not guaranteed. A permanent deletion cannot be undone \
+     through PwrDisk. An agent must have the exact paths and mode confirmed \
+     every time.";
 
 // ── panes ───────────────────────────────────────────────────────────────
 
@@ -542,27 +537,24 @@ impl SettingsWindow {
                         "Applies to",
                         Some("Trash and permanent deletion."),
                         vec![
-                            div()
+                            readable("safety-applies", APPLIES_TO)
                                 .text_color(theme.foreground)
-                                .child(
-                                    "Trash may be recoverable until it is \
-                                     emptied; restoring is not guaranteed. A \
-                                     permanent deletion cannot be undone \
-                                     through PwrDisk. An agent must have the \
-                                     exact paths and mode confirmed every \
-                                     time.",
-                                )
+                                .child(APPLIES_TO)
                                 .into_any_element(),
                         ],
                         theme,
                     )),
             );
         if let Err(reason) = current {
-            body = body.child(div().text_color(theme.warning).child(reason));
+            body = body.child(
+                readable("safety-error", reason.clone())
+                    .role(Role::Alert)
+                    .text_color(theme.warning)
+                    .child(reason),
+            );
         }
         if let Some(note) = &self.note {
-            body =
-                body.child(div().text_color(theme.warning).child(note.clone()));
+            body = body.child(alert_note(note, theme));
         }
         body
     }
@@ -622,7 +614,7 @@ impl SettingsWindow {
         let channel = card(
             "Release channel",
             Some(
-                div()
+                readable("channel-purpose", "Which releases a check reads")
                     .text_size(text::CAPTION)
                     .text_color(theme.secondary)
                     .child("Which releases a check reads")
@@ -632,7 +624,7 @@ impl SettingsWindow {
         )
         .child(grid)
         .child(
-            div()
+            readable("channel-follows", follows)
                 .px(space::MD)
                 .pb(space::SM)
                 .text_size(text::CAPTION)
@@ -687,14 +679,15 @@ impl SettingsWindow {
                 .on_click(|_, _, cx| cx.defer(Self::restart)),
             );
         }
+        let status = status_line(&state, ready.as_ref());
         let this_copy = card("This copy", chip, theme)
             .child(field_with(
                 "Status",
                 Some(checked.into()),
                 vec![
-                    div()
+                    readable("updates-status", status.clone())
                         .debug_selector(|| "updates-status".into())
-                        .child(status_line(&state, ready.as_ref()))
+                        .child(status)
                         .into_any_element(),
                 ],
                 theme,
@@ -720,8 +713,7 @@ impl SettingsWindow {
             .child(channel)
             .child(this_copy);
         if let Some(note) = &self.note {
-            pane =
-                pane.child(div().text_color(theme.warning).child(note.clone()));
+            pane = pane.child(alert_note(note, theme));
         }
         // Omarchy's apps list their keys; on macOS and Windows the keys
         // still work, and the help overlay names them.
@@ -751,6 +743,35 @@ impl SettingsWindow {
         div()
             .id(ElementId::Name(format!("update-slot-{index}").into()))
             .debug_selector(move || format!("update-slot-{index}"))
+            .role(Role::RadioButton)
+            .aria_label(format!("{choice}: {}", slot_purpose(choice)))
+            .aria_toggled(if picked {
+                gpui_kit::accesskit::Toggled::True
+            } else {
+                gpui_kit::accesskit::Toggled::False
+            })
+            .focusable()
+            // One stop for the group, on the channel picked, as a radio
+            // group takes Tab; the arrows move within it.
+            .tab_stop(picked)
+            .on_key_down(cx.listener(
+                move |this, event: &KeyDownEvent, window, cx| {
+                    match event.keystroke.key.as_str() {
+                        "enter" | "space" => {
+                            this.updates_row = index;
+                            this.pick(choice, cx);
+                            cx.stop_propagation();
+                        }
+                        "up" | "down" | "left" | "right" => {
+                            this.updates_row = index;
+                            this.on_key(event, cx);
+                            window.focus(&this.focus, cx);
+                            cx.stop_propagation();
+                        }
+                        _ => {}
+                    }
+                },
+            ))
             .flex_1()
             .min_w_0()
             .flex()
@@ -815,7 +836,7 @@ impl SettingsWindow {
         let mut this_copy = card("This copy", None, theme).child(field(
             "Version",
             None,
-            vec![model.version_line().into_any_element()],
+            vec![value_text(model.version_line())],
             theme,
         ));
         // Paths and Session have their own cards below.
@@ -828,7 +849,7 @@ impl SettingsWindow {
                 this_copy = this_copy.child(field(
                     fact.label,
                     None,
-                    vec![fact.value.clone().into_any_element()],
+                    vec![value_text(fact.value.clone())],
                     theme,
                 ));
             }
@@ -914,7 +935,7 @@ impl SettingsWindow {
                     card.child(field(
                         fact.label,
                         None,
-                        vec![fact.value.clone().into_any_element()],
+                        vec![value_text(fact.value.clone())],
                         theme,
                     ))
                 },
@@ -947,7 +968,8 @@ impl SettingsWindow {
                     .min_w_0()
                     .gap(space::XXS)
                     .child(
-                        div()
+                        readable("version", format!("PwrDisk {}", build.version))
+                            .role(Role::Heading)
                             .text_size(text::HEADING)
                             .font_weight(FontWeight::BOLD)
                             .text_color(theme.bright)
@@ -955,8 +977,10 @@ impl SettingsWindow {
                     )
                     // One line, as the design draws it: a long branch
                     // name ends in an ellipsis rather than wrapping.
+                    // The label keeps the whole line for assistive
+                    // technology when the painted one is cut short.
                     .child(
-                        div()
+                        readable("build", build.header_line(&channel))
                             .debug_selector(|| ABOUT_BUILD_LINE_ID.into())
                             .overflow_hidden()
                             .whitespace_nowrap()
@@ -996,8 +1020,9 @@ impl SettingsWindow {
                     cx,
                 ));
             }
-            _ => source
-                .push("Detached HEAD: the commit names it.".into_any_element()),
+            _ => source.push(value_text(
+                "Detached HEAD: the commit names it.".to_owned(),
+            )),
         }
         match &build.commit {
             Some(commit) => {
@@ -1008,15 +1033,15 @@ impl SettingsWindow {
                     cx,
                 ));
             }
-            None => source.push(
+            None => source.push(value_text(
                 "No commit recorded: this copy was built outside a git \
                  checkout."
-                    .into_any_element(),
-            ),
+                    .to_owned(),
+            )),
         }
         if let Some(line) = build.commit_line() {
             source.push(
-                div()
+                readable("commit-details", line.clone())
                     .text_color(theme.secondary)
                     .child(line)
                     .into_any_element(),
@@ -1024,7 +1049,7 @@ impl SettingsWindow {
         }
         if let Some(line) = build.changes_line() {
             source.push(
-                div()
+                readable("build-changes", line.clone())
                     .text_color(theme.warning)
                     .child(line)
                     .into_any_element(),
@@ -1146,7 +1171,22 @@ impl SettingsWindow {
         } else {
             label
         };
+        // Several buttons read "Copy", so each is named for what it
+        // copies, and "Copied" says so too.
+        let name = match id {
+            COPY_DIAGNOSTICS_ID => "Copy diagnostics report",
+            "about-copy-checkout" => "Copy checkout path",
+            "about-copy-branch" => "Copy branch or tag",
+            "about-copy-commit" => "Copy commit",
+            _ => label,
+        };
+        let name = if self.copied == Some(id) {
+            format!("Copied: {name}")
+        } else {
+            name.to_owned()
+        };
         button(id, label, ButtonVariant::Secondary, cx)
+            .accessibility_label(name)
             .debug_selector(move || id.into())
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.copy(id, text.clone(), cx);
@@ -1162,6 +1202,7 @@ impl SettingsWindow {
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         command_box(value.to_owned(), theme)
+            .id(ElementId::Name(format!("{id}-row").into()))
             .child(self.copy_button(id, "Copy", value.to_owned(), cx))
             .into_any_element()
     }
@@ -1222,8 +1263,12 @@ fn head(
     lede: &'static str,
     action: Option<AnyElement>,
     theme: &Theme,
-) -> Div {
+) -> Stateful<Div> {
+    let title = SharedString::from(title.to_owned());
     div()
+        .id("settings-heading")
+        .role(Role::Group)
+        .aria_label(title.clone())
         .flex()
         .flex_col()
         .gap(space::XS)
@@ -1250,17 +1295,18 @@ fn head(
                                 )),
                         )
                         .child(
-                            div()
+                            readable("pane-title", title.clone())
+                                .role(Role::Heading)
                                 .text_size(text::HEADING)
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(theme.bright)
-                                .child(SharedString::from(title.to_owned())),
+                                .child(title),
                         ),
                 )
                 .children(action),
         )
         .child(
-            div()
+            readable("pane-description", lede)
                 .max_w(size::SETTINGS_LEDE)
                 .text_color(theme.secondary)
                 .child(lede),
@@ -1273,25 +1319,30 @@ fn card(
     title: &'static str,
     trailing: Option<AnyElement>,
     theme: &Theme,
-) -> Div {
-    card_frame(theme).child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(space::MD)
-            .px(space::MD)
-            .py(space::SM)
-            .bg(theme.surface)
-            .child(
-                div()
-                    .flex_1()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(theme.bright)
-                    .child(title),
-            )
-            .children(trailing),
-    )
+) -> Stateful<Div> {
+    card_frame(theme)
+        .id(title)
+        .role(Role::Group)
+        .aria_label(title)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(space::MD)
+                .px(space::MD)
+                .py(space::SM)
+                .bg(theme.surface)
+                .child(
+                    readable("card-heading", title)
+                        .role(Role::Heading)
+                        .flex_1()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.bright)
+                        .child(title),
+                )
+                .children(trailing),
+        )
 }
 
 /// A card with no heading strip: its first row's rule is the card's top
@@ -1316,7 +1367,7 @@ fn field(
     sub: Option<&'static str>,
     values: Vec<AnyElement>,
     theme: &Theme,
-) -> Div {
+) -> Stateful<Div> {
     field_with(label, sub.map(SharedString::from), values, theme)
 }
 
@@ -1325,8 +1376,11 @@ fn field_with(
     sub: Option<SharedString>,
     values: Vec<AnyElement>,
     theme: &Theme,
-) -> Div {
+) -> Stateful<Div> {
     div()
+        .id(label)
+        .role(Role::Group)
+        .aria_label(label)
         .flex()
         .flex_row()
         .items_center()
@@ -1343,13 +1397,13 @@ fn field_with(
                 .w(size::SETTINGS_LABEL)
                 .flex_shrink_0()
                 .child(
-                    div()
+                    readable("field-label", label)
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.bright)
                         .child(label),
                 )
                 .children(sub.map(|sub| {
-                    div()
+                    readable("field-description", sub.clone())
                         .text_size(text::CAPTION)
                         .text_color(theme.secondary)
                         .child(sub)
@@ -1384,7 +1438,7 @@ fn command_box(value: String, theme: &Theme) -> Div {
         .border_color(theme.divider())
         .bg(theme.background)
         .child(
-            div()
+            readable("command-value", value.clone())
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
@@ -1396,8 +1450,8 @@ fn command_box(value: String, theme: &Theme) -> Div {
         )
 }
 
-fn mono(value: String, theme: &Theme) -> Div {
-    div()
+fn mono(value: String, theme: &Theme) -> Stateful<Div> {
+    readable("project-url", value.clone())
         .font_family(theme.mono_font.clone())
         .text_color(theme.foreground)
         .child(value)
@@ -1414,9 +1468,24 @@ fn chip(label: String, color: gpui_kit::Hsla, theme: &Theme) -> Div {
         .child(label)
 }
 
-fn hint(text_: &'static str, theme: &Theme) -> Div {
-    div()
+fn hint(text_: &'static str, theme: &Theme) -> Stateful<Div> {
+    readable("settings-hint", text_)
         .text_size(text::CAPTION)
         .text_color(theme.secondary)
         .child(text_)
+}
+
+/// A value read out as text, not just painted.
+fn value_text(value: String) -> AnyElement {
+    readable("value", value.clone())
+        .child(value)
+        .into_any_element()
+}
+
+/// A failed save or pick, announced as it appears.
+fn alert_note(note: &str, theme: &Theme) -> Stateful<Div> {
+    readable("settings-note", note.to_owned())
+        .role(Role::Alert)
+        .text_color(theme.warning)
+        .child(note.to_owned())
 }

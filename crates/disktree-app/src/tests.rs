@@ -1613,7 +1613,7 @@ fn help_documents_draw_and_copy(cx: &mut TestAppContext) {
 
     cx.update(init);
     for doc in [Doc::Changelog, Doc::License, Doc::ThirdPartyNotices] {
-        let (_, cx) = cx.add_window_view(move |_, _| DocWindow::new(doc));
+        let (_, cx) = cx.add_window_view(move |_, cx| DocWindow::new(doc, cx));
         draw(cx);
         assert!(cx.debug_bounds("title-strip").is_some(), "{doc:?}");
         let copy = cx
@@ -6426,4 +6426,165 @@ fn main_integration_help_dismisses_the_export_menu(cx: &mut TestAppContext) {
     press(cx, "escape");
     assert!(read(&view, cx, |app| !app.show_help && app.marks.len() == 1));
     assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// Offscreen document text becomes a real row before its active semantic
+/// descendant changes. Copy remains complete, independent of virtualization.
+#[gpui_kit::test]
+fn documents_reach_the_end_and_copy_by_keyboard(cx: &mut TestAppContext) {
+    use crate::doc_window::{Doc, DocWindow};
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let view = DocWindow::new(Doc::ThirdPartyNotices, cx);
+        window.focus(&view.focus, cx);
+        view
+    });
+    draw(cx);
+    press(cx, "end");
+    let last = view.read_with(cx, |view, _| view.position);
+    assert!(last > 1_000, "a long document, beyond its first viewport");
+    assert!(cx.debug_bounds("document-current").is_some());
+    press(cx, "home");
+    assert_eq!(view.read_with(cx, |view, _| view.position), 0);
+    assert!(cx.debug_bounds("document-current").is_some());
+    press(cx, "ctrl-c");
+    assert_eq!(
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some(Doc::ThirdPartyNotices.source())
+    );
+}
+
+/// Keyboard selection reaches virtual log rows and copying retains the full
+/// Unicode line. No append is a live announcement.
+#[gpui_kit::test]
+fn logs_read_and_copy_offscreen_lines_by_keyboard(cx: &mut TestAppContext) {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    for n in 0..300 {
+        writeln!(text, "2026-10-31T12:00:00.000-04:00 INFO  fixture: invented line {n} 日本語")
+            .expect("string");
+    }
+    let (_dir, _path, view, cx) = logs_over(cx, &text);
+    cx.update(|window, cx| {
+        view.read(cx)
+            .search_state()
+            .update(cx, |search, cx| search.focus(window, cx));
+    });
+    draw(cx);
+    press(cx, "escape");
+    press(cx, "end");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.selection),
+        Some((300, 300))
+    );
+    assert!(cx.debug_bounds("log-row-300").is_some());
+    press(cx, "ctrl-c");
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert!(copied.contains("invented line 299 日本語"));
+    assert!(!copied.contains("invented line 298"));
+    press(cx, "home");
+    assert_eq!(view.read_with(cx, |view, _| view.selection), Some((1, 1)));
+    assert!(cx.debug_bounds("log-row-1").is_some());
+}
+
+fn invented_log(lines: usize) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    for n in 0..lines {
+        writeln!(
+            text,
+            "2026-10-31T12:00:00.000-04:00 INFO  fixture: invented line {n}"
+        )
+        .expect("string");
+    }
+    text
+}
+
+/// The level and mode segments are reachable by Tab, both ways, and Space
+/// works them: focusable alone is not a tab stop in GPUI.
+#[gpui_kit::test]
+fn aux_review_log_toggles_are_tab_stops(cx: &mut TestAppContext) {
+    use crate::log_view::Level;
+    let (_dir, _path, view, cx) = logs_over(cx, &invented_log(30));
+    draw(cx);
+    click_on(cx, "logs-level-info");
+    assert!(!view.read_with(cx, |view, _| view.view.shows(Level::Info)));
+    let target = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("segment focus");
+    cycle_back_to_focus(cx, &target, "tab");
+    cycle_back_to_focus(cx, &target, "shift-tab");
+    press(cx, "space");
+    assert!(view.read_with(cx, |view, _| view.view.shows(Level::Info)));
+}
+
+/// With nothing selected, Down starts at the first line and Up at the
+/// last, rather than stepping past either.
+#[gpui_kit::test]
+fn aux_review_first_log_step_selects_an_end(cx: &mut TestAppContext) {
+    let (_dir, _path, view, cx) = logs_over(cx, &invented_log(30));
+    cx.update(|window, cx| {
+        view.read(cx)
+            .search_state()
+            .update(cx, |search, cx| search.focus(window, cx));
+    });
+    draw(cx);
+    press(cx, "escape");
+    press(cx, "down");
+    assert_eq!(view.read_with(cx, |view, _| view.selection), Some((1, 1)));
+    press(cx, "escape");
+    assert_eq!(view.read_with(cx, |view, _| view.selection), None);
+    press(cx, "up");
+    assert_eq!(view.read_with(cx, |view, _| view.selection), Some((30, 30)));
+}
+
+/// The release channels are one radio group with one Tab stop, on the
+/// channel picked.
+#[gpui_kit::test]
+fn aux_review_picked_channel_is_a_tab_stop(cx: &mut TestAppContext) {
+    use crate::settings::{Pane, SettingsWindow};
+    cx.update(init);
+    let saved_in = tempfile::TempDir::new().expect("tempdir");
+    let (view, cx) =
+        cx.add_window_view(|_, cx| SettingsWindow::new(Pane::Updates, cx));
+    cx.update(|_, cx| {
+        view.update(cx, |view, _| {
+            view.updates_dir = Some(saved_in.path().to_path_buf());
+        });
+    });
+    draw(cx);
+    click_on(cx, "update-slot-0");
+    let target = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("channel focus");
+    cycle_back_to_focus(cx, &target, "tab");
+    cycle_back_to_focus(cx, &target, "shift-tab");
+}
+
+/// Tab leaves the title strip's Copy for the reader and comes back: the
+/// frame takes Tab above the strip, where the reader's own keys cannot.
+#[gpui_kit::test]
+fn aux_review_document_tab_leaves_the_title_strip(cx: &mut TestAppContext) {
+    use crate::doc_window::{COPY_ID, Doc, DocWindow};
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let view = DocWindow::new(Doc::License, cx);
+        window.focus(&view.focus, cx);
+        view
+    });
+    draw(cx);
+    let reader = view.read_with(cx, |view, _| view.focus.clone());
+    cycle_back_to_focus(cx, &reader, "tab");
+    click_on(cx, COPY_ID);
+    let copy = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("copy focus");
+    assert!(copy != reader, "the strip's Copy takes focus");
+    cycle_back_to_focus(cx, &reader, "tab");
+    cycle_back_to_focus(cx, &copy, "shift-tab");
 }
