@@ -122,7 +122,10 @@ pub enum QuitApply {
 /// window. The updater waits for the exit on its own, so this returns at
 /// once and the quit goes on; PwrDisk is not started again, and the next
 /// launch is the new version.
-pub fn apply_pending_on_quit() {
+fn apply_pending_on_quit() {
+    if !first_hand_off(&HANDED_OFF) {
+        return;
+    }
     match apply_pending() {
         QuitApply::Nothing => {}
         QuitApply::Applying(version) => {
@@ -134,6 +137,16 @@ pub fn apply_pending_on_quit() {
             );
         }
     }
+}
+
+/// Whether this process has handed a downloaded update to Velopack.
+static HANDED_OFF: AtomicBool = AtomicBool::new(false);
+
+/// True the first time only. Two updaters waiting on the same exit each
+/// replace the installed app, racing for Velopack's lock on the packages
+/// directory; one is all a quit needs.
+fn first_hand_off(handed_off: &AtomicBool) -> bool {
+    !handed_off.swap(true, Ordering::SeqCst)
 }
 
 fn apply_pending() -> QuitApply {
@@ -805,6 +818,13 @@ mod tests {
             on_quit(Some(asset()), |_| Err("no updater".to_owned())),
             QuitApply::Failed("no updater".to_owned())
         );
+    }
+
+    #[test]
+    fn a_quit_hands_the_update_off_once() {
+        let handed_off = AtomicBool::new(false);
+        assert!(first_hand_off(&handed_off));
+        assert!(!first_hand_off(&handed_off), "a second updater");
     }
 
     #[test]

@@ -141,7 +141,10 @@ pub fn install(cx: &mut App) {
     })
     .detach();
 
-    cx.on_action(|_: &Quit, cx| quit(cx));
+    // A downloaded update is handed to Velopack by the quit hook
+    // `updater::install` registers, which every route to quitting runs;
+    // handing it off here as well started a second updater.
+    cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &CloseWindow, cx| {
         in_front_window(cx, |window, _| window.remove_window());
     });
@@ -192,13 +195,6 @@ pub fn install(cx: &mut App) {
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
         cx.set_menus(menus(platform));
     }
-}
-
-/// Quit, from the menu or ⌘Q: a downloaded update is handed to Velopack
-/// first, which installs it once this process has exited.
-fn quit(cx: &App) {
-    crate::updater::apply_pending_on_quit();
-    cx.quit();
 }
 
 /// Actions the main window answers. Chosen while another PwrDisk window is
