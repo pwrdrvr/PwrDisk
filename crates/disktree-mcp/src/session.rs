@@ -3270,6 +3270,105 @@ mod tests {
         assert!(all.contains("36 MiB of the selection is APFS clone"));
     }
 
+    /// Three 10 GiB worktrees sharing all but 100 MiB each. `modified`
+    /// puts the private 100 MiB inside the clone file (a rewritten
+    /// clone); otherwise it is a separate, ordinary file beside a full
+    /// clone.
+    fn worktree_trio(root: &Path, modified: bool) -> Scan {
+        use disktree_core::sharing::{Allocation, CloneInfo};
+        use disktree_core::tree::{Metric, NodeKind, aggregate};
+        const MIB: u64 = 1024 * 1024;
+        let mut tree = Node::directory("fixture");
+        for name in ["wt-a", "wt-b", "wt-c"] {
+            std::fs::create_dir(root.join(name)).expect("fixture directory");
+            let mut dir = Node::directory(name);
+            let (bytes, private) = if modified {
+                (10_240 * MIB, 100 * MIB)
+            } else {
+                (10_140 * MIB, 0)
+            };
+            let mut file = Node::entry("objects", NodeKind::File, bytes);
+            file.allocation = Some(Box::new(Allocation {
+                bytes,
+                identity: None,
+                links: 1,
+                followed: false,
+                clone: Some(CloneInfo {
+                    device: 1,
+                    id: 77,
+                    references: 3,
+                    private_bytes: Some(private),
+                    data_bytes: bytes,
+                }),
+            }));
+            dir.children.push(file);
+            if !modified {
+                dir.children.push(Node::entry(
+                    "own",
+                    NodeKind::File,
+                    100 * MIB,
+                ));
+            }
+            tree.children.push(dir);
+        }
+        aggregate(&mut tree, Metric::Bytes);
+        Scan {
+            root: root.into(),
+            tree: Arc::new(tree),
+            options: ScanOptions::default(),
+            at: now(),
+            elapsed: Duration::ZERO,
+            unreadable: 0,
+            space: None,
+            device: None,
+            insights: vec![],
+        }
+    }
+
+    #[test]
+    fn marking_a_worktree_trio_one_by_one_frees_one_copy_at_the_end() {
+        const MIB: u64 = 1024 * 1024;
+        for modified in [false, true] {
+            let temp =
+                tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+                    .expect("fixture");
+            let root = temp.path().canonicalize().expect("root");
+            let mut session = unlinked(&root);
+            session.store_scan(worktree_trio(&root, modified));
+            let mut seen = Vec::new();
+            for name in ["wt-a", "wt-b", "wt-c"] {
+                let report = session
+                    .mark(&PathsParams {
+                        paths: vec![root.join(name)],
+                    })
+                    .expect("mark");
+                let mut plan = plan(session.marks(), &root);
+                let estimate = session.selection_estimate(&mut plan);
+                assert_eq!(estimate.on_volume, estimate.lower, "{report}");
+                seen.push((estimate.lower, estimate.upper));
+            }
+            // Each worktree's own 100 MiB until the last clone of the
+            // group is selected; then the shared data counts, once.
+            let lower: Vec<u64> =
+                seen.iter().map(|(lower, _)| *lower).collect();
+            assert_eq!(
+                lower,
+                [100 * MIB, 200 * MIB, (300 + 10_140) * MIB],
+                "modified={modified}"
+            );
+            if !modified {
+                // Full clones beside ordinary files: exact, no range.
+                let upper: Vec<_> =
+                    seen.iter().map(|(_, upper)| *upper).collect();
+                assert_eq!(
+                    upper,
+                    [Some(100 * MIB), Some(200 * MIB), Some(10_440 * MIB)]
+                );
+            }
+            eprintln!("modified={modified}: {seen:?}");
+        }
+    }
+
     #[test]
     fn a_clone_outside_the_scan_keeps_every_shared_block() {
         let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
