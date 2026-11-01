@@ -58,6 +58,8 @@ mod menu_actions {
             GoForward,
             /// Show how to connect an AI agent over MCP.
             ConnectAgent,
+            /// Put back the marks the review screen's Unmark all took.
+            Undo,
             /// Edit's rows: the focused text field's own keys, replayed
             /// (see [`replay`]).
             Cut,
@@ -248,6 +250,9 @@ fn bindings(platform: Platform) -> Vec<KeyBinding> {
         // modifier too.
         KeyBinding::new(&key("shift-r"), ShowInFinder, None),
         KeyBinding::new(&key(","), settings::OpenSettings, None),
+        // In the main window only, where the marks are; a text field's own
+        // binding is deeper, so it still undoes its typing.
+        KeyBinding::new(&key("z"), Undo, Some("Disktree")),
         KeyBinding::new(&key("x"), Cut, Some(MENU_ONLY)),
         KeyBinding::new(&key("c"), Copy, Some(MENU_ONLY)),
         KeyBinding::new(&key("v"), Paste, Some(MENU_ONLY)),
@@ -346,8 +351,10 @@ pub fn menus(platform: Platform) -> Vec<Menu> {
     }
     menus.push(Menu::new("File").items(file));
 
-    // No Undo or Redo: no field here keeps a history to undo.
+    // Undo is Unmark all's; no field here keeps a history, so no Redo.
     menus.push(Menu::new("Edit").items([
+        MenuItem::action("Undo", Undo),
+        MenuItem::separator(),
         MenuItem::action("Cut", Cut),
         MenuItem::action("Copy", Copy),
         MenuItem::action("Paste", Paste),
@@ -559,7 +566,7 @@ mod tests {
             );
             assert_eq!(
                 labels(menu(&menus, "Edit")),
-                ["Cut", "Copy", "Paste", "---", "Select All"]
+                ["Undo", "---", "Cut", "Copy", "Paste", "---", "Select All"]
             );
             assert_eq!(labels(menu(&menus, "Go")), ["Back", "Forward"]);
         }

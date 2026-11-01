@@ -136,6 +136,8 @@ pub mod size {
     pub const MENU_BUTTON: Rems = Rems(1.625);
     /// Its dropdown: wide enough for a row and its shortcut.
     pub const APP_MENU: Rems = Rems(18.0);
+    /// The review footer's Export menu: its longest row and its key.
+    pub const EXPORT_MENU: Rems = Rems(14.0);
     pub const APP_MENU_HEIGHT: Rems = Rems(36.0);
 }
 
