@@ -19,13 +19,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
-# The Rust cache. Every rust-cache step saves only on main, and every PR
-# restores main's entry for its job, by prefix when Cargo.lock differs. The
-# store holds 10 GB and evicts the least recently used entry first; when PRs
-# saved too, each one wrote about 6 GB across these jobs, pushed main's out,
-# and the next PR compiled cold: macOS lint went from under a minute to six.
-# scripts/ci/prune-rust-toolchains.sh keeps runner image updates from
-# changing the key, and main's runs are never cancelled (see concurrency).
+# The Rust cache: every rust-cache step saves only on main, so PR saves
+# cannot evict the entries every PR restores from the 10 GB store. Each job
+# prunes extra toolchains first so image updates keep the key. The reasons
+# and numbers are in README.md beside this file, under "The Rust cache".
 jobs:
   # The pull_request trigger stays path-unfiltered so every job reports on
   # every PR: a skipped job satisfies a required check, a missing one leaves
