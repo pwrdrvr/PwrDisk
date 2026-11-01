@@ -113,7 +113,17 @@ impl Toasts {
     pub fn dismiss(&mut self, key: &str) -> bool {
         let before = self.entries.len();
         self.entries.retain(|entry| entry.toast.key != key);
+        self.forget_hover_if_empty();
         self.entries.len() != before
+    }
+
+    /// An empty stack is not drawn, so it never hears the pointer leave:
+    /// a click on Dismiss or × takes it away from under the pointer. Left
+    /// set, every later toast would wait for a hover that never ends.
+    const fn forget_hover_if_empty(&mut self) {
+        if self.entries.is_empty() {
+            self.hovered = false;
+        }
     }
 
     /// Runs the timeouts up to `now` and drops what has run out; whether
@@ -133,6 +143,7 @@ impl Toasts {
                 .map(|remaining| remaining.saturating_sub(elapsed));
             entry.remaining.is_none_or(|remaining| !remaining.is_zero())
         });
+        self.forget_hover_if_empty();
         self.entries.len() != before
     }
 
@@ -449,7 +460,11 @@ pub fn stack(app: &Disktree, cx: &Context<'_, Disktree>) -> Option<AnyElement> {
     Some(column.into_any_element())
 }
 
-fn card(app: &Disktree, toast: &Toast, cx: &Context<'_, Disktree>) -> Div {
+fn card(
+    app: &Disktree,
+    toast: &Toast,
+    cx: &Context<'_, Disktree>,
+) -> gpui_kit::Stateful<Div> {
     let theme = cx.omarchy();
     let edge: Hsla = match toast.tone {
         Tone::Accent => theme.accent,
@@ -483,7 +498,9 @@ fn card(app: &Disktree, toast: &Toast, cx: &Context<'_, Disktree>) -> Div {
         }
         actions = actions.child(action_button(app, key, action, cx));
     }
-    div()
+    // A live status, as the window's other notices are, so a screen reader
+    // speaks the answer as well as showing it.
+    crate::semantics::status(key, format!("{}: {}", toast.title, toast.body))
         .debug_selector(move || format!("toast-{key}"))
         .flex()
         .flex_col()
@@ -597,6 +614,18 @@ mod tests {
         assert!(toasts.settle(start + Duration::from_secs(18)));
         assert!(toasts.get("a").is_none());
         assert!(toasts.get("sticky").is_some(), "no timeout, stays");
+    }
+
+    #[test]
+    fn a_dismissed_stack_forgets_the_pointer_it_hid_from() {
+        let now = Instant::now();
+        let mut toasts = Toasts::default();
+        toasts.push(note(UPDATE, None), now);
+        toasts.set_hovered(true, now);
+        // Dismiss was clicked: the stack goes, and no hover-out follows.
+        assert!(toasts.dismiss(UPDATE));
+        toasts.push(note("answer", Some(8)), now);
+        assert_eq!(toasts.next_deadline(), Some(Duration::from_secs(8)));
     }
 
     #[test]
