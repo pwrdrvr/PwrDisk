@@ -12,7 +12,10 @@ use gpui_kit::{
 use gpui_omarchy::ActiveTheme as _;
 
 use crate::chrome::{self, Drags, Frame};
+use crate::semantics;
 use crate::ui;
+use gpui_kit::KeyDownEvent;
+use gpui_kit::base::input::{IndentInline, OutdentInline};
 
 /// A window's title (the Window menu, the taskbar and Waybar read it), its
 /// size and its least size.
@@ -120,6 +123,28 @@ pub fn frame<V: Drags>(
     let theme = cx.omarchy().clone();
     let content = div()
         .id("aux-root")
+        // Tab walks every control, the title strip's buttons included, so
+        // it is taken here, above them all, rather than by each window's
+        // body. A text field binds Tab to indenting, and bindings run
+        // before key handlers, so its actions are caught too.
+        .capture_key_down(|event: &KeyDownEvent, window, cx| {
+            let keys = &event.keystroke;
+            if keys.key == "tab"
+                && !keys.modifiers.control
+                && !keys.modifiers.platform
+            {
+                semantics::advance_focus(window, cx, keys.modifiers.shift, None);
+                cx.stop_propagation();
+            }
+        })
+        .capture_action(|_: &IndentInline, window, cx| {
+            semantics::advance_focus(window, cx, false, None);
+            cx.stop_propagation();
+        })
+        .capture_action(|_: &OutdentInline, window, cx| {
+            semantics::advance_focus(window, cx, true, None);
+            cx.stop_propagation();
+        })
         .flex()
         .flex_col()
         .size_full()

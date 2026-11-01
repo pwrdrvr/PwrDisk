@@ -57,6 +57,15 @@ const NOTE_FOR: Duration = Duration::from_secs(3);
 /// Rows kept above a line the window scrolls to (a match, the line Esc
 /// returns to), so what led to it shows.
 const REVEAL_ABOVE: usize = 2;
+
+/// How far Page Up and Page Down move the line selection.
+const PAGE_LINES: usize = crate::semantics::PAGE_STEP;
+
+/// What the reader is and which keys it takes, for assistive technology.
+const READER_LABEL: &str = "Logs; Tab moves through controls; Escape \
+     leaves search; Up/Down selects lines, Shift extends selection, \
+     Home/End reaches either end; Command or Control C copies selected \
+     lines";
 /// Where the view's settings are kept, in the settings folder.
 const PREFS_FILE: &str = "logs-view.json";
 
@@ -799,23 +808,6 @@ impl LogsWindow {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if event.keystroke.key == "tab" {
-            crate::semantics::advance_focus(
-                window,
-                cx,
-                event.keystroke.modifiers.shift,
-                None,
-            );
-            cx.stop_propagation();
-            return;
-        }
-        if event.keystroke.key == "escape"
-            && self.search.focus_handle(cx).is_focused(window)
-        {
-            window.focus(&self.focus, cx);
-            cx.stop_propagation();
-            return;
-        }
         if self.search.focus_handle(cx).is_focused(window) {
             return;
         }
@@ -842,19 +834,19 @@ impl LogsWindow {
                     })
                     .collect();
                 if let Some(last) = numbers.len().checked_sub(1) {
-                    let at = self
-                        .selection
-                        .and_then(|(_, number)| {
-                            numbers.iter().position(|n| *n == number)
-                        })
-                        .unwrap_or(0);
-                    let next = match keystroke.key.as_str() {
-                        "home" => 0,
-                        "end" => last,
-                        "up" => at.saturating_sub(1),
-                        "pageup" => at.saturating_sub(20),
-                        "pagedown" => (at + 20).min(last),
-                        _ => (at + 1).min(last),
+                    let at = self.selection.and_then(|(_, number)| {
+                        numbers.iter().position(|n| *n == number)
+                    });
+                    // With nothing selected yet, moving down starts at
+                    // the first line and moving up at the last, rather
+                    // than stepping past either.
+                    let next = match (keystroke.key.as_str(), at) {
+                        ("end", _) | ("up" | "pageup", None) => last,
+                        ("home", _) | (_, None) => 0,
+                        ("up", Some(at)) => at.saturating_sub(1),
+                        ("pageup", Some(at)) => at.saturating_sub(PAGE_LINES),
+                        ("pagedown", Some(at)) => (at + PAGE_LINES).min(last),
+                        (_, Some(at)) => (at + 1).min(last),
                     };
                     let number = numbers[next];
                     self.click_number(number, keystroke.modifiers.shift, cx);
@@ -1054,21 +1046,20 @@ impl Render for LogsWindow {
             );
         let content = div()
             .id("logs-window")
-            .capture_action(cx.listener(|this, _: &gpui_kit::base::input::Escape, window, cx| {
-                if this.search.read(cx).value().is_empty() { window.focus(&this.focus, cx); cx.stop_propagation(); }
-            }))
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "tab" {
-                    crate::semantics::advance_focus(window, cx, event.keystroke.modifiers.shift, None);
-                    cx.stop_propagation();
-                } else if event.keystroke.key == "escape" && this.search.focus_handle(cx).is_focused(window) && this.search.read(cx).value().is_empty() {
-                    window.focus(&this.focus, cx);
-                    cx.stop_propagation();
-                }
-            }))
+            // The search input consumes Escape itself, clearing its query,
+            // so the action is caught on the way down: an empty search
+            // hands the keys back to the reader instead.
+            .capture_action(cx.listener(
+                |this, _: &gpui_kit::base::input::Escape, window, cx| {
+                    if this.search.read(cx).value().is_empty() {
+                        window.focus(&this.focus, cx);
+                        cx.stop_propagation();
+                    }
+                },
+            ))
             .track_focus(&self.focus)
-            .tab_stop(true)
-            .role(gpui_kit::Role::Group).aria_label("Logs; Tab moves through controls; Escape leaves search; Up/Down selects lines, Shift extends selection, Home/End reaches either end; Command or Control C copies selected lines")
+            .role(gpui_kit::Role::Group)
+            .aria_label(READER_LABEL)
             .on_key_down(cx.listener(
                 |this, event: &KeyDownEvent, window, cx| {
                     this.key(event, window, cx);
@@ -1137,21 +1128,30 @@ impl LogsWindow {
         .into_iter()
         .fold(segmented(theme), |seg, (mode, id, label, hint)| {
             seg.child(with_tooltip(
-                segment(id, label, self.view.mode == mode, theme)
-                    .on_key_down(cx.listener(
-                        move |this, event: &KeyDownEvent, _, cx| {
-                            if matches!(
-                                event.keystroke.key.as_str(),
-                                "enter" | "space"
-                            ) {
-                                this.set_mode(mode, cx);
-                                cx.stop_propagation();
-                            }
-                        },
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                // One of two, so radio buttons; the levels are checkboxes.
+                segment(
+                    id,
+                    label,
+                    self.view.mode == mode,
+                    gpui_kit::Role::RadioButton,
+                    theme,
+                )
+                .on_key_down(cx.listener(
+                    move |this, event: &KeyDownEvent, _, cx| {
+                        if matches!(
+                            event.keystroke.key.as_str(),
+                            "enter" | "space"
+                        ) {
+                            this.set_mode(mode, cx);
+                            cx.stop_propagation();
+                        }
+                    },
+                ))
+                .on_click(cx.listener(
+                    move |this, _, _, cx| {
                         this.set_mode(mode, cx);
-                    })),
+                    },
+                )),
                 hint,
             ))
         });
@@ -1169,7 +1169,7 @@ impl LogsWindow {
                 };
                 let id = level_id(level);
                 seg.child(
-                    segment(id, label, on, theme)
+                    segment(id, label, on, gpui_kit::Role::CheckBox, theme)
                         .on_key_down(cx.listener(
                             move |this, event: &KeyDownEvent, _, cx| {
                                 if matches!(
@@ -1345,6 +1345,7 @@ impl LogsWindow {
                         .role(gpui_kit::Role::MenuItem)
                         .aria_label(context_label(lines))
                         .focusable()
+                        .tab_stop(true)
                         .on_key_down(cx.listener(
                             move |this, event: &KeyDownEvent, _, cx| {
                                 if matches!(
@@ -1845,6 +1846,7 @@ impl LogsWindow {
                                 gpui_kit::accesskit::Toggled::False
                             })
                             .focusable()
+                            .tab_stop(true)
                             .on_key_down(cx.listener(
                                 |this, event: &KeyDownEvent, _, cx| {
                                     if matches!(
@@ -2004,13 +2006,14 @@ fn segment(
     id: &'static str,
     label: impl Into<SharedString>,
     on: bool,
+    role: gpui_kit::Role,
     theme: &Theme,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     let label = label.into();
     div()
         .id(id)
         .debug_selector(move || id.into())
-        .role(gpui_kit::Role::CheckBox)
+        .role(role)
         .aria_label(label.clone())
         .aria_toggled(if on {
             gpui_kit::accesskit::Toggled::True
@@ -2018,6 +2021,7 @@ fn segment(
             gpui_kit::accesskit::Toggled::False
         })
         .focusable()
+        .tab_stop(true)
         .px(space::SM)
         .py(space::XS)
         .border_r_1()

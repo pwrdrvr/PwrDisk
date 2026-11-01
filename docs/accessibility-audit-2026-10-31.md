@@ -663,3 +663,29 @@ three lines each run writes), macOS 27.0.1, Logs window 1120×721 logical
 System Events, then Escape and End: main selects nothing; this PR selects
 the last line and shows its copy bar. Nothing was scanned beyond a 4 MiB
 invented folder, and nothing was removed.
+
+### PWR-32 review corrections: Tab order, roles and first step
+
+A high-effort review of PR #43 at `dd9f2f9` found that Tab could not
+reach several of the controls this work exposes. In GPUI `focusable()`
+alone is not a tab stop, and Tab from the auxiliary windows' title-strip
+buttons had no handler at all. Four new `aux_review_` window-harness tests
+cover the corrections; every log and document is invented.
+
+| Promise | Reviewed behavior | After |
+| --- | --- | --- |
+| Logs controls reachable | Mode and level segments, context-line items and Include diagnostics were focusable but not tab stops; Tab from Copy path/Reveal stayed put | All are tab stops; the shared frame takes Tab (and the text field's indent actions) above the strip, so Tab cycles both ways and Space toggles a level |
+| Document Copy | Tab from the title strip's Copy stayed put | Tab reaches the reader from Copy and back |
+| Channel radios | Focusable but not a tab stop | One stop for the group, on the picked channel |
+| Mode semantics | Filter/Highlight exposed as independent checkboxes | Radio buttons; levels stay checkboxes |
+| First keyboard step | Down with no selection selected line 2 | Down starts at line 1, Up at the last line |
+| Changelog layout | The scroll area had shrunk to the column width | Window-wide scroll area again; each block keeps the column's width and padding |
+
+Tab handling moved from the Logs, document and Settings bodies to
+`aux_window::frame`. Page Up/Down share one named step. macOS 27.0.1:
+lint passes; workspace tests pass (275 app, 233 core) with
+`an_agent_marks_shows_and_reviews_over_the_link` skipped. That test passes
+alone three times. In full runs on this Mac it now aborts when
+gpui-omarchy's theme-file watcher wakes inside it, and does so on the
+unreviewed `dd9f2f9` too, which passed earlier the same day. Native AX and
+screen readers were not rerun for these corrections.

@@ -22,6 +22,7 @@ use gpui_omarchy::{ActiveTheme as _, ButtonVariant, Theme, button};
 
 use crate::aux_window::{self, Spec};
 use crate::chrome::Drags;
+use crate::semantics::PAGE_STEP;
 use crate::ui::{size, space, text};
 
 pub const CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
@@ -145,18 +146,11 @@ impl DocWindow {
     fn key(
         &mut self,
         event: &KeyDownEvent,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         let key = &event.keystroke.key;
-        if key == "tab" {
-            crate::semantics::advance_focus(
-                window,
-                cx,
-                event.keystroke.modifiers.shift,
-                None,
-            );
-        } else if (event.keystroke.modifiers.platform
+        if (event.keystroke.modifiers.platform
             || event.keystroke.modifiers.control)
             && key == "c"
         {
@@ -173,10 +167,10 @@ impl DocWindow {
                 "down" => {
                     self.position.saturating_add(1).min(count.saturating_sub(1))
                 }
-                "pageup" => self.position.saturating_sub(20),
+                "pageup" => self.position.saturating_sub(PAGE_STEP),
                 "pagedown" => self
                     .position
-                    .saturating_add(20)
+                    .saturating_add(PAGE_STEP)
                     .min(count.saturating_sub(1)),
                 _ => return,
             };
@@ -227,25 +221,37 @@ impl Render for DocWindow {
             Body::Changelog(blocks) => div()
                 .id("doc-scroll")
                 .debug_selector(|| "doc-scroll".into())
-                .role(Role::Document).aria_label("Changelog; Up/Down reads a block, PageUp/PageDown moves twenty blocks, Home/End reaches either end, Command or Control C copies all")
+                .role(Role::Document)
+                .aria_label(CHANGELOG_LABEL)
                 .track_focus(&self.focus)
                 .on_key_down(cx.listener(Self::key))
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
                 .track_scroll(&self.block_scroll)
-                .max_w(size::DOCUMENT)
-                .px(space::XXL)
                 .py(space::XL)
+                .flex()
+                .flex_col()
+                // Each block is a direct child, so the scroll handle can
+                // bring the current one into view; each takes the column's
+                // width and side padding the single column used to have,
+                // and the window-wide scroll area keeps its scrollbar at
+                // the window's edge.
                 .children(blocks.iter().enumerate().map(|(index, block)| {
-                    div().id(("doc-block", index))
+                    div()
+                        .id(("doc-block", index))
                         .role(if matches!(block, Block::Version { .. }) {
                             Role::Heading
                         } else {
                             Role::Paragraph
                         })
                         .aria_label(block.label())
-                        .when(index == position, gpui_kit::StatefulInteractiveElement::aria_active_descendant)
+                        .when(
+                            index == position,
+                            gpui_kit::StatefulInteractiveElement::aria_active_descendant,
+                        )
+                        .max_w(size::DOCUMENT)
+                        .px(space::XXL)
                         .child(draw_block(block, &theme))
                 }))
                 .into_any_element(),
@@ -253,9 +259,16 @@ impl Render for DocWindow {
                 let rows = lines.clone();
                 let ink = theme.foreground;
                 let mono = theme.mono_font.clone();
-                div().id("document-text").role(Role::Document)
-                    .aria_label(format!("{}; {} lines. Up/Down reads a line, PageUp/PageDown moves twenty lines, Home/End reaches either end, Command or Control C copies all", self.doc.title(), rows.len()))
-                    .track_focus(&self.focus).on_key_down(cx.listener(Self::key))
+                div()
+                    .id("document-text")
+                    .role(Role::Document)
+                    .aria_label(format!(
+                        "{}; {} lines. {LINES_KEYS}",
+                        self.doc.title(),
+                        rows.len()
+                    ))
+                    .track_focus(&self.focus)
+                    .on_key_down(cx.listener(Self::key))
                     .flex_1()
                     .min_h_0()
                     .p(space::LG)
@@ -273,15 +286,17 @@ impl Render for DocWindow {
                                     move |range, _, _| {
                                         range
                                             .map(|index| {
-                                                crate::semantics::text(("document-line", index), format!("Line {}: {}", index + 1, rows[index]))
-                                                    .when(index == position, gpui_kit::StatefulInteractiveElement::aria_active_descendant)
-                                                    .debug_selector(move || if index == position { "document-current".into() } else { format!("document-line-{index}") })
-                                                    .px(space::LG)
-                                                    .font_family(mono.clone())
-                                                    .text_size(text::BODY)
-                                                    .text_color(ink)
-                                                    .whitespace_nowrap()
-                                                    .child(rows[index].clone())
+                                                document_line(
+                                                    index,
+                                                    &rows[index],
+                                                    index == position,
+                                                )
+                                                .px(space::LG)
+                                                .font_family(mono.clone())
+                                                .text_size(text::BODY)
+                                                .text_color(ink)
+                                                .whitespace_nowrap()
+                                                .child(rows[index].clone())
                                             })
                                             .collect()
                                     },
@@ -295,6 +310,39 @@ impl Render for DocWindow {
         };
         aux_window::frame(&["Help", self.doc.title()], copy, body, window, cx)
     }
+}
+
+/// The keys a document reader takes, for assistive technology.
+const LINES_KEYS: &str = "Up/Down reads a line, PageUp/PageDown moves \
+     twenty lines, Home/End reaches either end, Command or Control C \
+     copies all";
+
+const CHANGELOG_LABEL: &str = "Changelog; Up/Down reads a block, \
+     PageUp/PageDown moves twenty blocks, Home/End reaches either end, \
+     Command or Control C copies all";
+
+/// One line of a plain document, named with its number; the current line
+/// is the reader's active descendant.
+fn document_line(
+    index: usize,
+    line: &SharedString,
+    current: bool,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    crate::semantics::text(
+        ("document-line", index),
+        format!("Line {}: {line}", index + 1),
+    )
+    .when(
+        current,
+        gpui_kit::StatefulInteractiveElement::aria_active_descendant,
+    )
+    .debug_selector(move || {
+        if current {
+            "document-current".into()
+        } else {
+            format!("document-line-{index}")
+        }
+    })
 }
 
 // ---- The changelog -------------------------------------------------------

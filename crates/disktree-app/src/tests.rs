@@ -6452,3 +6452,100 @@ fn logs_read_and_copy_offscreen_lines_by_keyboard(cx: &mut TestAppContext) {
     assert_eq!(view.read_with(cx, |view, _| view.selection), Some((1, 1)));
     assert!(cx.debug_bounds("log-row-1").is_some());
 }
+
+fn invented_log(lines: usize) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    for n in 0..lines {
+        writeln!(
+            text,
+            "2026-10-31T12:00:00.000-04:00 INFO  fixture: invented line {n}"
+        )
+        .expect("string");
+    }
+    text
+}
+
+/// The level and mode segments are reachable by Tab, both ways, and Space
+/// works them: focusable alone is not a tab stop in GPUI.
+#[gpui_kit::test]
+fn aux_review_log_toggles_are_tab_stops(cx: &mut TestAppContext) {
+    use crate::log_view::Level;
+    let (_dir, _path, view, cx) = logs_over(cx, &invented_log(30));
+    draw(cx);
+    click_on(cx, "logs-level-info");
+    assert!(!view.read_with(cx, |view, _| view.view.shows(Level::Info)));
+    let target = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("segment focus");
+    cycle_back_to_focus(cx, &target, "tab");
+    cycle_back_to_focus(cx, &target, "shift-tab");
+    press(cx, "space");
+    assert!(view.read_with(cx, |view, _| view.view.shows(Level::Info)));
+}
+
+/// With nothing selected, Down starts at the first line and Up at the
+/// last, rather than stepping past either.
+#[gpui_kit::test]
+fn aux_review_first_log_step_selects_an_end(cx: &mut TestAppContext) {
+    let (_dir, _path, view, cx) = logs_over(cx, &invented_log(30));
+    cx.update(|window, cx| {
+        view.read(cx)
+            .search_state()
+            .update(cx, |search, cx| search.focus(window, cx));
+    });
+    draw(cx);
+    press(cx, "escape");
+    press(cx, "down");
+    assert_eq!(view.read_with(cx, |view, _| view.selection), Some((1, 1)));
+    press(cx, "escape");
+    assert_eq!(view.read_with(cx, |view, _| view.selection), None);
+    press(cx, "up");
+    assert_eq!(view.read_with(cx, |view, _| view.selection), Some((30, 30)));
+}
+
+/// The release channels are one radio group with one Tab stop, on the
+/// channel picked.
+#[gpui_kit::test]
+fn aux_review_picked_channel_is_a_tab_stop(cx: &mut TestAppContext) {
+    use crate::settings::{Pane, SettingsWindow};
+    cx.update(init);
+    let saved_in = tempfile::TempDir::new().expect("tempdir");
+    let (view, cx) =
+        cx.add_window_view(|_, cx| SettingsWindow::new(Pane::Updates, cx));
+    cx.update(|_, cx| {
+        view.update(cx, |view, _| {
+            view.updates_dir = Some(saved_in.path().to_path_buf());
+        });
+    });
+    draw(cx);
+    click_on(cx, "update-slot-0");
+    let target = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("channel focus");
+    cycle_back_to_focus(cx, &target, "tab");
+    cycle_back_to_focus(cx, &target, "shift-tab");
+}
+
+/// Tab leaves the title strip's Copy for the reader and comes back: the
+/// frame takes Tab above the strip, where the reader's own keys cannot.
+#[gpui_kit::test]
+fn aux_review_document_tab_leaves_the_title_strip(cx: &mut TestAppContext) {
+    use crate::doc_window::{COPY_ID, Doc, DocWindow};
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let view = DocWindow::new(Doc::License, cx);
+        window.focus(&view.focus, cx);
+        view
+    });
+    draw(cx);
+    let reader = view.read_with(cx, |view, _| view.focus.clone());
+    cycle_back_to_focus(cx, &reader, "tab");
+    click_on(cx, COPY_ID);
+    let copy = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("copy focus");
+    assert!(copy != reader, "the strip's Copy takes focus");
+    cycle_back_to_focus(cx, &reader, "tab");
+    cycle_back_to_focus(cx, &copy, "shift-tab");
+}

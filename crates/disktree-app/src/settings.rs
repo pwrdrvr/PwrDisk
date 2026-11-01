@@ -416,21 +416,10 @@ impl Render for SettingsWindow {
             .track_focus(&self.focus)
             .tab_group()
             .tab_stop(false)
-            .on_key_down(cx.listener(
-                |this, event: &KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "tab" {
-                        crate::semantics::advance_focus(
-                            window,
-                            cx,
-                            event.keystroke.modifiers.shift,
-                            None,
-                        );
-                        cx.stop_propagation();
-                        return;
-                    }
-                    this.on_key(event, cx);
-                },
-            ))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                // Tab is the frame's; see `aux_window::frame`.
+                this.on_key(event, cx);
+            }))
             .flex()
             .flex_row()
             .flex_1()
@@ -762,6 +751,9 @@ impl SettingsWindow {
                 gpui_kit::accesskit::Toggled::False
             })
             .focusable()
+            // One stop for the group, on the channel picked, as a radio
+            // group takes Tab; the arrows move within it.
+            .tab_stop(picked)
             .on_key_down(cx.listener(
                 move |this, event: &KeyDownEvent, window, cx| {
                     match event.keystroke.key.as_str() {
