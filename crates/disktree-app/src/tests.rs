@@ -5255,7 +5255,7 @@ fn status_review_removal_completion_survives_its_background_rescan(
         app.toggle_mark(&notes, cx);
         app.removal_mode = RemovalMode::Permanent;
         app.begin_removal(cx);
-        assert_eq!(app.screen, Screen::Running);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice);
         app.run_epoch
     });
     let mut status = None;
