@@ -511,7 +511,7 @@ fn startup_chooser_never_scans_before_explicit_acceptance(
     cx.run_until_parked();
     draw(cx);
     assert!(cx.debug_bounds("choose-root-idle").is_some());
-    assert!(cx.debug_bounds("source-host").is_some());
+    assert!(cx.debug_bounds("source-switch").is_some());
     read(&view, cx, |app| {
         assert!(app.awaiting_root);
         assert_eq!(app.scan_epoch, 0);
@@ -586,6 +586,7 @@ fn invalid_ssh_input_does_not_start_a_scan_or_change_the_source(
         cx.add_window_view(|_, cx| Disktree::choose(options(), 3, None, cx));
     cx.run_until_parked();
     draw(cx);
+    choose_ssh(cx);
     let input = cx.debug_bounds("source-host").expect("host editor");
     cx.simulate_click(input.center(), gpui_kit::Modifiers::none());
     cx.simulate_input("invalid host");
@@ -665,6 +666,7 @@ fn editing_a_host_never_retargets_an_existing_scan(cx: &mut TestAppContext) {
     cx.run_until_parked();
     draw(cx);
     let before = read(&view, cx, |app| app.scan_epoch);
+    choose_ssh(cx);
     let input = cx.debug_bounds("source-host").unwrap();
     cx.simulate_click(input.center(), gpui_kit::Modifiers::none());
     cx.simulate_input("new-host-not-connected");
@@ -1538,8 +1540,16 @@ fn settings_updates_picks_a_channel_and_keeps_the_keys(
 
     // Tab walks the panes; every one draws. Safety saves only in the fixture.
     press(cx, "tab");
-    assert!(cx.debug_bounds("safety-limit-5").is_some());
-    click_on(cx, "safety-limit-10");
+    // One control of six equal segments, 1 5 10 25 50 100: 10% is third.
+    let limits = cx.debug_bounds("safety-limit").expect("the limit control");
+    cx.simulate_click(
+        gpui_kit::point(
+            limits.origin.x + limits.size.width * 2.5 / 6.,
+            limits.center().y,
+        ),
+        gpui_kit::Modifiers::none(),
+    );
+    draw(cx);
     assert_eq!(
         crate::safety::load(Some(saved_in.path()))
             .expect("saved limit")
@@ -1989,7 +1999,7 @@ fn enter_in_the_focused_volume_picker_scans_the_selected_root(
 }
 
 #[gpui_kit::test]
-fn the_volume_picker_is_centred_and_still_dismisses_from_outside(
+fn the_volume_picker_is_centred_and_ignores_clicks_outside(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
@@ -2031,16 +2041,16 @@ fn the_volume_picker_is_centred_and_still_dismisses_from_outside(
         "the popup is not centred down: {centre:?} in {viewport:?}"
     );
 
-    // The wrapper that centres the popup must not swallow the backdrop's
-    // clicks: a click in the corner, outside the popup, still closes it.
+    // A dialog keeps what was typed: a click in the corner, outside the
+    // popup, closes nothing. Cancel and Escape do.
     cx.simulate_click(
         gpui_kit::point(px(4.), px(4.)),
         gpui_kit::Modifiers::none(),
     );
     draw(cx);
     assert!(
-        !read(&view, cx, |app| app.volumes_open),
-        "clicking outside the picker closes it"
+        read(&view, cx, |app| app.volumes_open),
+        "clicking outside the picker leaves it open"
     );
 }
 
@@ -2177,6 +2187,239 @@ fn the_review_screen_switches_removal_mode(cx: &mut TestAppContext) {
     );
     press(cx, "!");
     assert!(read(&view, cx, |app| app.marks.is_empty()));
+}
+
+/// Put `paths` on the marked list, as the treemap would.
+fn mark_paths(view: &Entity<Disktree>, cx: &mut Window, paths: &[PathBuf]) {
+    update(view, cx, |app, cx| {
+        for path in paths {
+            app.marks.toggle(
+                disktree_core::removal::Target {
+                    path: path.clone(),
+                    bytes: 1_000,
+                    is_dir: true,
+                    hidden: false,
+                },
+                app.path_style(),
+            );
+        }
+        cx.notify();
+    });
+}
+
+fn marked(view: &Entity<Disktree>, cx: &Window) -> Vec<PathBuf> {
+    read(view, cx, |app| {
+        app.marks
+            .items()
+            .iter()
+            .map(|item| item.path.clone())
+            .collect()
+    })
+}
+
+/// Unmark all keeps what it took: `u`, or Edit › Undo, puts it back,
+/// and a source switch forgets it, since the paths were that machine's.
+#[gpui_kit::test]
+fn unmark_all_can_be_undone(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let both = vec![temp.path().join("junk"), temp.path().join("keep")];
+    mark_paths(&view, cx, &both);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    click_on(cx, "unmark-all");
+    assert!(marked(&view, cx).is_empty());
+    let notice = read(&view, cx, |app| app.notice.clone());
+    assert!(
+        notice.is_some_and(|(message, _)| message.contains("to undo")),
+        "the way back is said"
+    );
+    press(cx, "u");
+    assert_eq!(marked(&view, cx), both);
+
+    // The menu's Undo does the same, once.
+    press(cx, "!");
+    assert!(marked(&view, cx).is_empty());
+    cx.dispatch_action(crate::app_menu::Undo);
+    draw(cx);
+    assert_eq!(marked(&view, cx), both);
+    press(cx, "u");
+    assert_eq!(marked(&view, cx), both, "nothing more to undo");
+
+    // A mark made since stays, and a path it now covers is not re-added.
+    press(cx, "!");
+    mark_paths(&view, cx, &[temp.path().to_path_buf()]);
+    press(cx, "u");
+    assert_eq!(marked(&view, cx), vec![temp.path().to_path_buf()]);
+}
+
+/// The review screen's footer: Export and Unmark all on the left, Back
+/// and the commit on the right, the commit in the corner except on
+/// Windows, where the default comes first.
+#[gpui_kit::test]
+fn the_review_footer_puts_the_commit_with_back_on_the_right(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let junk = temp.path().join("junk");
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_paths(&view, cx, std::slice::from_ref(&junk));
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+    let bounds = |cx: &mut Window, selector| {
+        cx.debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"))
+    };
+    let export = bounds(cx, "export");
+    let unmark = bounds(cx, "unmark-all");
+    let back = bounds(cx, "back");
+    let commit = bounds(cx, "commit");
+    assert!(export.right() <= unmark.origin.x, "{export:?} {unmark:?}");
+    assert!(unmark.right() < back.origin.x.min(commit.origin.x));
+    if cfg!(windows) {
+        assert!(commit.right() <= back.origin.x, "{commit:?} {back:?}");
+    } else {
+        assert!(back.right() <= commit.origin.x, "{back:?} {commit:?}");
+    }
+    // One row, along the bottom.
+    assert_eq!(back.center().y, commit.center().y);
+    assert_eq!(export.center().y, commit.center().y);
+
+    // Export opens a menu of the four ways to hand the list on; a row
+    // runs and closes it, removing nothing.
+    click_on(cx, "export");
+    assert!(cx.debug_bounds("export-menu").is_some());
+    press(cx, "escape");
+    assert!(cx.debug_bounds("export-menu").is_none());
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    click_on(cx, "export");
+    click_on(cx, "copy-prompt");
+    assert!(cx.debug_bounds("export-menu").is_none());
+    assert!(
+        clipboard(cx).contains(&format!("- {}", junk.display())),
+        "the prompt names the path"
+    );
+    assert!(junk.exists(), "nothing was removed");
+}
+
+/// While a removal runs, Stop is a button; when it ends, Done is the
+/// footer's right-hand button.
+#[gpui_kit::test]
+fn removing_shows_stop_and_done_sits_on_the_right(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let width = cx.update(|window, _| window.viewport_size().width);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Running;
+        cx.notify();
+    });
+    draw(cx);
+    let stop = cx.debug_bounds("stop-removal").expect("a Stop button");
+    assert!(stop.origin.x > width / 2., "{stop:?}");
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Done;
+        cx.notify();
+    });
+    draw(cx);
+    let done = cx.debug_bounds("continue").expect("a Done button");
+    assert!(done.origin.x > width / 2., "{done:?}");
+    press(cx, "enter");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Explore);
+}
+
+/// The chooser asks, so a stray click outside it neither answers nor
+/// throws away what was typed: only Cancel or Escape close it.
+#[gpui_kit::test]
+fn a_click_outside_the_chooser_keeps_it_open(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, Disktree::open_volumes);
+    cx.run_until_parked();
+    draw(cx);
+    let picker = cx.debug_bounds("source-picker").expect("the chooser");
+    let outside = gpui_kit::point(picker.origin.x / 2., picker.center().y);
+    cx.simulate_click(outside, gpui_kit::Modifiers::none());
+    draw(cx);
+    assert!(read(&view, cx, |app| app.volumes_open));
+    click_on(cx, "source-cancel");
+    assert!(!read(&view, cx, |app| app.volumes_open));
+}
+
+/// The source switch: SSH host shows the host field, This computer hides
+/// it, and the typed directory is the list's last row, which typing
+/// selects so the one Scan acts on it.
+#[gpui_kit::test]
+fn the_chooser_switches_source_and_scans_the_selected_row(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let selected = fixture();
+    let (view, cx) =
+        cx.add_window_view(|_, cx| Disktree::choose(options(), 3, None, cx));
+    cx.run_until_parked();
+    update(&view, cx, |app, _| {
+        app.volumes = vec![Volume {
+            point: selected.path().join("keep"),
+            device: None,
+            space: None,
+        }];
+        app.volumes_loading = false;
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("source-host").is_none());
+    choose_ssh(cx);
+    assert!(read(&view, cx, |app| app.picker_ssh));
+    assert!(cx.debug_bounds("source-host").is_some());
+    assert!(
+        cx.debug_bounds("source-path").is_none(),
+        "nothing to choose from before Connect"
+    );
+    let switch = cx.debug_bounds("source-switch").expect("the switch");
+    cx.simulate_click(
+        gpui_kit::point(
+            switch.origin.x + switch.size.width / 4.,
+            switch.center().y,
+        ),
+        gpui_kit::Modifiers::none(),
+    );
+    draw(cx);
+    assert!(!read(&view, cx, |app| app.picker_ssh));
+    assert!(cx.debug_bounds("source-host").is_none());
+
+    assert_eq!(read(&view, cx, |app| app.volume_highlight), 0);
+    let input = cx.debug_bounds("source-path").expect("the Directory row");
+    cx.simulate_click(input.center(), gpui_kit::Modifiers::none());
+    cx.simulate_input(selected.path().to_str().unwrap());
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.volume_highlight), 1);
+    click_on(cx, "source-scan");
+    assert_eq!(
+        read(&view, cx, |app| app.root_path.clone()),
+        dunce::canonicalize(selected.path()).unwrap()
+    );
+    finish_scan(&view, cx);
+}
+
+/// Click the chooser's SSH host segment.
+fn choose_ssh(cx: &mut Window) {
+    let switch = cx.debug_bounds("source-switch").expect("the switch");
+    cx.simulate_click(
+        gpui_kit::point(
+            switch.origin.x + switch.size.width * 3. / 4.,
+            switch.center().y,
+        ),
+        gpui_kit::Modifiers::none(),
+    );
+    draw(cx);
 }
 
 /// `a` on the review screen copies a prompt for an agent naming the marked

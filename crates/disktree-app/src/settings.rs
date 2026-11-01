@@ -20,7 +20,9 @@ use gpui_kit::{
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
     Styled as _, Window, WindowHandle, div,
 };
-use gpui_omarchy::{ActiveTheme as _, ButtonVariant, Theme, button};
+use gpui_omarchy::{
+    ActiveTheme as _, ButtonVariant, ChoiceItem, Theme, button, button_group,
+};
 
 use crate::aux_window::{self, Spec};
 use crate::build_info::BuildInfo;
@@ -337,7 +339,7 @@ impl Render for SettingsWindow {
         let pane = match self.pane {
             Pane::Updates => self.updates(&theme, cx),
             Pane::Diagnostics => self.diagnostics_pane(&theme, cx),
-            Pane::Safety => self.safety_pane(&theme, cx),
+            Pane::Safety => self.safety_pane(&theme, window, cx),
             Pane::About => self.about(&theme, cx),
         };
         let body = div()
@@ -373,35 +375,49 @@ impl Render for SettingsWindow {
     }
 }
 
+/// The removal limits Settings › Safety offers, in percent of a volume.
+const LIMITS: [u8; 6] = [1, 5, 10, 25, 50, 100];
+
 // ── panes ───────────────────────────────────────────────────────────────
 
 impl SettingsWindow {
-    fn safety_pane(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
+    fn safety_pane(
+        &self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Div {
         let current = crate::safety::load(self.updates_dir.as_deref());
-        let mut rows = div().flex().flex_col().gap(space::SM);
-        for percent in [1, 5, 10, 25, 50, 100] {
-            let picked = current
-                .as_ref()
-                .is_ok_and(|limit| limit.percent() == percent);
-            rows = rows.child(
-                button(
-                    ElementId::Name(format!("safety-limit-{percent}").into()),
-                    format!(
-                        "{percent}%{}",
-                        if picked { " (selected)" } else { "" }
-                    ),
-                    if picked {
-                        ButtonVariant::Primary
-                    } else {
-                        ButtonVariant::Secondary
-                    },
-                    cx,
-                )
-                .debug_selector(move || format!("safety-limit-{percent}"))
-                .on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.note =
-                            disktree_core::removal_limit::Limit::new(percent)
+        // One choice of six, so one control: the segments the review
+        // screen uses for Trash or permanent, saved as soon as one is
+        // picked. Six buttons read as six commands.
+        let picked = current.as_ref().ok().and_then(|limit| {
+            LIMITS
+                .iter()
+                .position(|&percent| percent == limit.percent())
+        });
+        let entity = cx.entity().downgrade();
+        let rows =
+            div()
+                .debug_selector(|| "safety-limit".into())
+                .child(button_group(
+                    "safety-limit",
+                    LIMITS
+                        .iter()
+                        .map(|percent| {
+                            ChoiceItem::new(
+                                percent.to_string(),
+                                format!("{percent}%"),
+                            )
+                        })
+                        .collect(),
+                    picked,
+                    move |index, window, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            this.note =
+                                disktree_core::removal_limit::Limit::new(
+                                    LIMITS[index],
+                                )
                                 .and_then(|limit| {
                                     crate::safety::save(
                                         this.updates_dir.as_deref(),
@@ -409,12 +425,15 @@ impl SettingsWindow {
                                     )
                                 })
                                 .err();
-                        window.focus(&this.focus, cx);
-                        cx.notify();
+                            // Back to the window, as the other panes'
+                            // controls do, so Tab keeps walking panes.
+                            window.focus(&this.focus, cx);
+                            cx.notify();
+                        });
                     },
-                )),
-            );
-        }
+                    window,
+                    cx,
+                ));
         let mut body = div().flex().flex_col().gap(space::MD)
             .child(div().text_size(text::TITLE).child("Removal limit"))
             .child("Maximum measured data per operation, as a percentage of each volume's capacity. Applies to both Trash and permanent deletion, from the window and MCP. The default is 5%. Each operation is re-measured before anything is removed.")
