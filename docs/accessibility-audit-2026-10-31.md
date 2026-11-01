@@ -744,3 +744,88 @@ removal was approved or performed. Light, custom and high-contrast native
 rendering and AT results remain the PWR-36 gaps listed above.
 Ubuntu 24.04.5 x86_64 Sandboxer at `e02dd98`: setup 0 (2s), lint 0
 (12s), test 0 (24s), portable build 0 (83s), isolated SSH 0 (3s), all 0.
+
+### PWR-34: reflow and shared UI scaling
+
+Final implementation `16f7570`; macOS main binary SHA-256
+`f61fa6b61bf17643e810408e9ca568fa7f533ebd6cb4ce469fb3ebdcc6f5b77d`;
+native fixture example SHA-256
+`b0cad63bb67174d6965838d66e4ca7ef07ec3e69a3f5186fc62779309b9ccf79`.
+Interface zoom now spans 75–200% and is shared by existing/new main,
+Settings, document and Logs windows. This is application zoom, separate
+from OS display/text scaling. Help keeps a bounded reading lane, heading,
+Close action and visible scroll-key guidance. Narrow controls wrap below
+the strip; free-space/source information remains visible when the sidebar
+is hidden. Short file lists retain a complete entry above compact actions,
+with full path/action names in AX. Scrolled file/review rows retain their
+content height. Documents rewrap using measured glyph widths and preserve
+relative reading position; complete Copy always uses the original source.
+
+| Surface | Native macOS observation | Harness / source |
+| --- | --- | --- |
+| Help | PASS inspected 100% and 200%: heading/Close remain in the window, End reaches final review shortcuts, Home returns to the start | PASS bounds, usable lane height and keyboard scroll at 900×600 / 16 and 32 px rem |
+| Shared scale | PASS: Settings and License inherit the main window's 200%; reset in an auxiliary window restores normal main layout | Session-wide scale plus redraw/sync of existing and newly opened views |
+| Settings | PASS inspected Safety: text reflows, End reaches the final option; selected 5% retained without preference edits | PASS 640×480 / 200% pane/navigation bounds and scroll; labels/values wrap |
+| Documents / native menu | PASS: native Help → View License opens the document at 200%; 35 wrapped lines, final text reachable. Reset reflows to 22 lines | PASS 640×480 / 200%, end navigation and full-source keyboard Copy; Changelog PageUp/Down scrolls within long blocks |
+| Minimum file reader | PASS final light-preset fixture: 900×600 requested content, 200%, one complete selected entry, full action/path AX names, Down selects the next entry; volume/source remain visible | Regression first failed with a 4 px viewport and shrinking rows. Final bounds require a complete line plus padding and retain intrinsic row heights |
+| Logs | Native 200% log reading not exercised in this pass | PASS minimum-size Unicode wrapping and pixel paging inside one oversized line. Earlier paging regression was 0 → 0; final paging progresses without changing selection |
+| Review | Native destructive route not exercised | PASS 900×600 / 200% safe End scrolling; files retained. Explanation/list stack, rows/footer wrap and retain content height |
+| Targets | Native minimum reader supplies the larger target alternative to tiny painted tiles | PASS depth controls >=24 logical pixels at minimum/maximum UI zoom; file rows remain >=24 at 75% |
+| Short progress sidebar | Existing regression caught an overly broad toolbar wrap; final wide layout preserves its scroll room | PASS free-space/progress/stop reachability regression and full workspace suite |
+
+The light rendering used the shipped Flexoki Light preset explicitly in
+`a11y-fixture --tree /Volumes/A11yFixtures/Projects --light`, under the
+unchanged macOS appearance. It is native GPUI rendering, not proof of an
+OS light/high-contrast setting or a custom theme. The requested 900×600
+fixture yields a 1800×1202 window capture at 2× backing scale. Help's matched
+100% pair uses `08402c3` and `8b612ee` (Help code retained at the final head),
+2992×1878 fitted window captures; the 200% reader pair uses `8b612ee` and
+`16f7570`, 1800×1202. All filesystem data is the invented APFS fixture.
+
+A controller click on the offscreen About license action did not open it
+at 200%; the native Help-menu action did. Actual AT activation/scroll-to-
+focus still needs verification. The controller still reports window focus;
+no VoiceOver speech result is inferred from these observations.
+
+Final macOS lint, full workspace tests (243 app tests), main and fixture
+builds passed. Ubuntu 24.04.5 x86_64 Sandboxer at `16f7570`: setup 0 (1s),
+lint 0 (5s), tests 0 (14s), portable build 0 (44s), isolated SSH 0 (3s),
+all 0. Earlier failed reflow runs are superseded; they exposed the progress
+and reading-lane regressions fixed here. Native Windows/Linux desktop,
+VoiceOver/Narrator/NVDA/Orca, OS display/text scaling and high contrast remain
+unverified. UI zoom and a 2× capture backing scale do not establish those
+OS/AT results. No removal approval was performed through native APIs or
+computer use.
+
+### PWR-34 rebase and review corrections
+
+Source `d5990e3` and later, rebased onto main after #45 (contrast), #60 and
+#61. Main's Settings redesign (grouped panes with an accent bar) landed
+after this work was written, so the narrow-window rules were carried onto
+it: below `ui::COMPACT_WINDOW_REMS` (50 rem) the panes wrap in a row above
+the content and the group headings step out; Tab stays with
+`aux_window::frame`, which now also takes interface zoom for every
+auxiliary window. The fixed 20-line Page Up/Down step (`PAGE_STEP`) is gone:
+documents page by the measured view and Logs scrolls within wrapped lines.
+
+#60 replaced the `a11y-fixture` example with a debug build's
+`pwrdisk logs-fixture LOG`, so the example's `--tree`/`--light` mode cited
+above no longer exists. Its earlier observations stand as recorded at
+`16f7570`; a contrived tree now opens with plain `pwrdisk ROOT`. After #61,
+on-screen macOS checks run in the PwrSuiteLab headed E2E VM, never on the
+operator's desktop.
+
+| Review finding | Correction |
+| --- | --- |
+| Review scroll keys ran before the strip's app menu | An open menu takes its keys first, so its arrows move through rows instead of scrolling the review behind it (Linux, Windows) |
+| Compact "Mark / unmark" not in its accessible name | Visible text is "Mark or unmark", inside "Mark or unmark selected path" (WCAG 2.5.3) |
+| Notices re-wrapped on every pixel of a resize | Wrapping is keyed on whole monospace columns |
+| Scrolling guidance appended under Hyprland | Moved under Keys in `docs/guide.md` |
+| Duplicate compact threshold and checks | One named token; view settings decide inline once; the compact space line is built only when shown |
+
+macOS arm64 (headless gate): lint, workspace tests (289 app passed, 2
+ignored; 234 core passed, 7 ignored). The GPUI theme-watcher abort described
+above also struck `the_agent_overlay_opens_and_closes`; it and the link test
+pass alone. Ubuntu 24.04.5 x86_64 Sandboxer at `d5990e3`: setup 0 (8s),
+lint 0 (17s), test 0 (17s), portable build 0 (49s), isolated SSH 0 (2s),
+all 0. Native AT, OS scaling and high contrast remain the PWR-36 gaps above.

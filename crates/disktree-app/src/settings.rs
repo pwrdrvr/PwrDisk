@@ -173,6 +173,7 @@ pub struct SettingsWindow {
     /// Why the last pick could not be saved.
     pub note: Option<String>,
     focus: FocusHandle,
+    pub pane_scroll: gpui_kit::ScrollHandle,
     strip_drag: bool,
 }
 
@@ -193,6 +194,7 @@ impl SettingsWindow {
             copied: None,
             note: None,
             focus: cx.focus_handle(),
+            pane_scroll: gpui_kit::ScrollHandle::new(),
             strip_drag: false,
         }
     }
@@ -317,7 +319,14 @@ impl Render for SettingsWindow {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        crate::ui::sync_scale(window, cx);
         let theme = cx.omarchy().clone();
+        // When compact the panes wrap in a row above the content instead of
+        // taking a column beside it, and the group headings, which only
+        // make sense in a column, step out.
+        let compact = window.viewport_size().width.as_f32()
+            / window.rem_size().as_f32()
+            < crate::ui::COMPACT_WINDOW_REMS;
         // Grouped, with the pane shown marked by an accent bar, as the
         // family's Settings windows have it; square, as Omarchy draws.
         let mut nav = div()
@@ -333,10 +342,13 @@ impl Render for SettingsWindow {
             .pb(space::SM)
             .border_r_1()
             .border_color(theme.divider())
-            .bg(theme.inset);
+            .bg(theme.inset)
+            .when(compact, |nav| {
+                nav.pt(space::SM).flex_row().flex_wrap().w_full()
+            });
         let mut group = "";
         for &pane in &Pane::ALL {
-            if pane.group() != group {
+            if pane.group() != group && !compact {
                 group = pane.group();
                 nav = nav.child(
                     div()
@@ -416,18 +428,39 @@ impl Render for SettingsWindow {
             .track_focus(&self.focus)
             .tab_group()
             .tab_stop(false)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                // Tab is the frame's; see `aux_window::frame`.
-                this.on_key(event, cx);
-            }))
+            .on_key_down(cx.listener(
+                |this, event: &KeyDownEvent, window, cx| {
+                    // Tab is the frame's; see `aux_window::frame`.
+                    if !event.keystroke.modifiers.control
+                        && matches!(
+                            event.keystroke.key.as_str(),
+                            "pageup" | "pagedown" | "home" | "end"
+                        )
+                        && crate::ui::scroll_key(
+                            &event.keystroke.key,
+                            &this.pane_scroll,
+                            window.rem_size(),
+                        )
+                    {
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
+                    this.on_key(event, cx);
+                },
+            ))
             .flex()
             .flex_row()
+            .when(compact, gpui_kit::Styled::flex_col)
             .flex_1()
             .min_h_0()
             .child(nav)
             .child(
                 div()
                     .id("settings-scroll")
+                    .debug_selector(|| "settings-scroll".into())
+                    .min_h_0()
+                    .track_scroll(&self.pane_scroll)
                     .flex_1()
                     .min_w_0()
                     .overflow_y_scroll()
@@ -1384,6 +1417,7 @@ fn field_with(
         .flex()
         .flex_row()
         .items_center()
+        .flex_wrap()
         .gap(space::LG)
         .px(space::MD)
         .py(space::SM)
@@ -1417,7 +1451,9 @@ fn field_with(
                 .items_end()
                 .gap(space::SM)
                 .flex_1()
-                .min_w_0()
+                // At least half the row, so a narrow window wraps the
+                // values below their label rather than crushing them.
+                .min_w(gpui_kit::relative(0.5))
                 .text_color(theme.bright)
                 .children(values),
         )

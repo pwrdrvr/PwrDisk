@@ -80,6 +80,7 @@ pub fn open<V: Render + 'static>(
             ..Default::default()
         },
         |window, cx| {
+            ui::sync_scale(window, cx);
             if crate::appearance::follows_system(
                 std::env::home_dir().as_deref(),
             ) {
@@ -126,8 +127,13 @@ pub fn frame<V: Drags>(
         // Tab walks every control, the title strip's buttons included, so
         // it is taken here, above them all, rather than by each window's
         // body. A text field binds Tab to indenting, and bindings run
-        // before key handlers, so its actions are caught too.
+        // before key handlers, so its actions are caught too. Interface
+        // zoom is taken here for the same reason: every window gets it.
         .capture_key_down(|event: &KeyDownEvent, window, cx| {
+            if ui::zoom_interface(event, window, cx) {
+                cx.stop_propagation();
+                return;
+            }
             let keys = &event.keystroke;
             if keys.key == "tab"
                 && !keys.modifiers.control

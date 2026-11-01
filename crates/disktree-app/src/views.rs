@@ -40,8 +40,8 @@ use crate::treemap_view::{self, Mosaic};
 use crate::ui::{icon, size, space, text};
 use crate::widgets;
 
-/// How many marks the review screen lists. Everything above the cap is still
-/// removed; the list only stops being exhaustive, which it says out loud.
+/// Marks per review page: every mark stays reachable while bounding layout
+/// and semantic work independently of the full marked list.
 const LIST_LIMIT: usize = 1200;
 
 /// Row decoration borrows this render's freshly evaluated plan. It must
@@ -92,6 +92,13 @@ impl<'a> ReviewStatus<'a> {
     }
 }
 
+/// When the panel gives way, wrap controls below the strip too. Keeping
+/// both changes at one width budget preserves the short panel's scroll lane.
+const INLINE_SETTINGS_REMS: f32 = PANEL_SHOWN_REMS;
+
+/// Below the list-plus-explanation width budget, review becomes one column.
+const REVIEW_COLUMNS_REMS: f32 = 65.0;
+
 /// The whole window.
 pub fn root(
     app: &mut Disktree,
@@ -117,7 +124,9 @@ pub fn root(
         .role(gpui_kit::Role::Group).aria_label("Application content")
         .a11y_synthetic_children(move |b| { if modal { b.parent_node().set_hidden(); } })
         .flex().flex_col().flex_1().min_h_0().w_full()
-        .child(strip).child(body)
+        .child(strip)
+        .children((app.screen == Screen::Explore && window.viewport_size().width.as_f32() / app.rem < INLINE_SETTINGS_REMS).then(|| div().px(space::LG).py(space::XS).child(view_settings(app, window, cx))))
+        .child(body)
         .children(app.is_indexing().then(|| div().id("scan-progress")
             .role(gpui_kit::Role::ProgressIndicator)
             .aria_label(if app.screen == Screen::Explore { "Scan in progress; indeterminate; overview is incomplete; Escape cancels" } else { "Background scan in progress; indeterminate; overview is incomplete" })
@@ -211,11 +220,14 @@ pub fn root(
             },
         ))
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-            if this.zoom_interface(event, window) {
+            if this.zoom_interface(event, window, cx) {
                 cx.notify();
                 return;
             }
+            // An open menu owns the arrows before the page behind it scrolls.
             if this.app_menu_open && app_menu_key(this, event, window, cx) { return; }
+            if !this.has_modal() && this.screen == Screen::Review && crate::ui::scroll_key(&event.keystroke.key, &this.review_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
+            if this.show_help && crate::ui::scroll_key(&event.keystroke.key, &this.help_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
             if event.keystroke.key == "tab" && !event.keystroke.modifiers.control && !event.keystroke.modifiers.platform {
                 if !this.has_modal() { this.find_open = false; }
                 let scope = (this.has_modal() || this.app_menu_open).then(|| this.confirm_focus.clone());
@@ -763,6 +775,7 @@ fn overlay_backdrop(
                 .occlude()
                 .flex()
                 .flex_col()
+                .max_w_full()
                 .max_h_full()
                 .on_any_mouse_down(
                     |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
@@ -776,7 +789,7 @@ fn overlay_backdrop(
 /// An overlay's footer: what it says on the left, Done where a dialog's
 /// default button sits, on the right.
 fn overlay_footer(
-    note: String,
+    note: impl IntoElement,
     close: CloseOverlay,
     cx: &Context<'_, Disktree>,
 ) -> Div {
@@ -886,6 +899,21 @@ fn delete_dialog(
 
 // ── explore ─────────────────────────────────────────────────────────────
 
+/// The volume's space, for the row that stands in for the hidden panel.
+fn compact_space(app: &Disktree) -> String {
+    app.space.map_or_else(
+        || "Volume space unavailable".to_owned(),
+        |space| {
+            format!(
+                "{} available of {}; {} marked",
+                human_bytes(space.available),
+                human_bytes(space.total),
+                app.marks.len()
+            )
+        },
+    )
+}
+
 fn explore(
     app: &mut Disktree,
     window: &Window,
@@ -947,7 +975,7 @@ fn explore(
         }
     } else {
         if app.file_list {
-            crate::file_list::list(app, cx).into_any_element()
+            crate::file_list::list(app, window, cx).into_any_element()
         } else {
             treemap_view::mosaic(mosaic, app, window, cx).into_any_element()
         }
@@ -991,7 +1019,7 @@ fn explore(
                         .flex_1()
                         .min_w_0()
                         .min_h_0()
-                        .child(trail_and_legend(app, &theme, cx))
+                        .when(!app.file_list || !crate::file_list::compact(window, app.rem), |view| view.child(trail_and_legend(app, &theme, cx)))
                         .child(button("file-view", if app.file_list { "Show treemap" } else { "Show accessible file list" }, ButtonVariant::Outline, cx)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.file_list = !this.file_list;
@@ -1022,6 +1050,9 @@ fn explore(
                 .py(space::SM)
                 .child(indexing_compact(app, &theme, cx))
         }))
+        .children((!panel).then(|| div().flex().flex_row().flex_wrap().items_center().gap(space::SM).px(space::LG).py(space::XS)
+            .child({ let space = compact_space(app); crate::semantics::text("compact-space", space.clone()).child(space) })
+            .child(button("compact-source", "Source…", ButtonVariant::Secondary, cx).on_click(cx.listener(|this, _, window, cx| { this.open_volumes(cx); this.apply_focus(window, cx); })))))
         .child(key_bar(app, &theme, cx))
 }
 
@@ -1100,7 +1131,7 @@ fn title_strip(
                     .self_stretch(),
             )
             .children(agent_pill(app, &theme, cx))
-            .child(view_settings(app, window, cx))
+            .when(width_rems >= INLINE_SETTINGS_REMS, |row| row.child(view_settings(app, window, cx)))
     } else {
         div()
             .flex()
@@ -1565,6 +1596,9 @@ fn view_settings(
                    step: i32,
                    cx: &mut Context<'_, Disktree>| {
         button(id, label, ButtonVariant::Secondary, cx)
+            .debug_selector(move || format!("{id}-target"))
+            .min_w(size::POINTER_TARGET)
+            .min_h(size::POINTER_TARGET)
             .accessibility_label(if step < 0 {
                 "Decrease treemap depth"
             } else {
@@ -1597,12 +1631,20 @@ fn view_settings(
         "Levels drawn at once \u{00b7} [ and ]",
     );
 
+    let inline =
+        window.viewport_size().width.as_f32() / app.rem >= INLINE_SETTINGS_REMS;
     div()
         .flex()
         .flex_row()
         .items_center()
         .gap(space::SM)
-        .flex_shrink_0()
+        .map(|row| {
+            if inline {
+                row.flex_shrink_0()
+            } else {
+                row.flex_wrap().min_w_0()
+            }
+        })
         .child(history)
         .child(mode)
         .child(hidden)
@@ -3527,6 +3569,9 @@ fn review(
     cx: &mut Context<'_, Disktree>,
 ) -> Div {
     let theme = cx.omarchy().clone();
+    let compact = window.viewport_size().width.as_f32()
+        / window.rem_size().as_f32()
+        < REVIEW_COLUMNS_REMS;
     let plan = app.plan();
     let items = app.marks.items();
     let status = ReviewStatus::new(&plan);
@@ -3549,7 +3594,8 @@ fn review(
         .overflow_y_scroll()
         .border_1()
         .border_color(theme.border)
-        .bg(theme.inset);
+        .bg(theme.inset)
+        .when(compact, gpui_kit::Styled::flex_none);
 
     if items.is_empty() {
         list = list.child(
@@ -3658,9 +3704,10 @@ fn review(
                 if app.removal_mode == RemovalMode::Trash { "Move to trash; recoverable until emptied" } else { "Permanent deletion; not recoverable" },
                 savings(plan.reclaimable_bytes(), plan.possible_bytes()))))
         .child(
-            div()
+            div().id("review-scroll").debug_selector(|| "review-scroll".into())
+                .overflow_y_scroll().track_scroll(&app.review_scroll)
                 .flex()
-                .flex_row()
+                .flex_row().when(compact, gpui_kit::Styled::flex_col)
                 .gap(space::LG)
                 .p(space::LG)
                 .flex_1()
@@ -3711,6 +3758,8 @@ fn mark_row(
         ))
         .flex()
         .flex_row()
+        .flex_wrap()
+        .flex_shrink_0()
         .items_center()
         .gap(space::MD)
         .px(space::MD)
@@ -3732,7 +3781,7 @@ fn mark_row(
                 .flex()
                 .flex_col()
                 .gap(space::XXS)
-                .min_w_0()
+                .min_w(relative(0.5))
                 .flex_1()
                 .child(
                     div()
@@ -3853,6 +3902,11 @@ fn review_summary(
         .flex_col()
         .gap(space::XL)
         .w(size::REVIEW_SUMMARY)
+        .when(
+            window.viewport_size().width.as_f32() / window.rem_size().as_f32()
+                < REVIEW_COLUMNS_REMS,
+            |panel| panel.w_full().max_w_full(),
+        )
         .flex_shrink_0()
         .min_h_0()
         .overflow_y_scroll()
@@ -4811,13 +4865,17 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     // The list scrolls inside the card when the window is too short for
     // it; the title and Done stay in view.
     let mut keys = div()
-        .id("help-keys")
-        .debug_selector(|| "help-keys".into())
+        .id("help-scroll")
+        .debug_selector(|| "help-scroll".into())
+        .role(gpui_kit::Role::Document)
+        .aria_label("Shortcut list; arrows scroll, PageUp/PageDown scroll a page, Home/End reaches either end")
         .flex()
         .flex_col()
         .gap(space::SM)
+        .flex_1()
         .min_h_0()
-        .overflow_y_scroll();
+        .overflow_y_scroll()
+        .track_scroll(&app.help_scroll);
     for (index, (key, label)) in rows.into_iter().enumerate() {
         if key.is_empty() && label.is_empty() {
             continue;
@@ -4829,11 +4887,13 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             )
             .flex()
             .flex_row()
+            .flex_shrink_0()
             .gap(space::MD)
-            .items_center()
+            .items_start()
             .child(
                 div()
                     .w(size::KEY_LANE)
+                    .max_w(relative(0.35))
                     .flex_shrink_0()
                     .text_size(text::CAPTION)
                     .text_color(theme.accent)
@@ -4851,11 +4911,23 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     }
 
     let close: CloseOverlay = |this| this.show_help = false;
-    let note = format!(
-        "? or esc closes \u{00b7} {} \u{00b7} {}",
+    let context = format!(
+        "{} · {}",
         app.root_path.display(),
         app.options.metric.label()
     );
+    let note = div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .child("↑↓ / PageUp / PageDown scroll · ? / Esc closes")
+        .child(
+            crate::semantics::text("help-context", context.clone())
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(context),
+        );
     overlay_backdrop(
         "help-backdrop",
         div()
@@ -4864,6 +4936,8 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             .flex_col()
             .gap(space::MD)
             .w(size::HELP)
+            .max_w_full()
+            .max_h_full()
             .min_h_0()
             .p(space::XL)
             .border_1()
@@ -4871,6 +4945,7 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             .bg(theme.surface)
             .child(
                 div()
+                    .flex_shrink_0()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -4893,7 +4968,7 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                     ),
             )
             .child(keys)
-            .child(overlay_footer(note, close, cx)),
+            .child(overlay_footer(note, close, cx).flex_shrink_0()),
         close,
         cx,
     )

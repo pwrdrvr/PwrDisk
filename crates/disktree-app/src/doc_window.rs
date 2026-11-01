@@ -4,9 +4,9 @@
 //! works offline on every platform, bundle or not.
 //!
 //! The changelog is drawn from its Markdown (headings, bullets, `code`,
-//! **bold**); the license and the notices are monospace text, wrapped at
-//! [`WRAP_COLUMNS`] once when the window opens so the notices' megabyte
-//! draws as a list of fixed-height rows.
+//! **bold**); license and notices use measured monospace wrapping at the
+//! current width/scale, capped by [`WRAP_COLUMNS`]. Only visible rows of the
+//! notices' megabyte are drawn; Copy always retains the original source.
 
 use std::rc::Rc;
 
@@ -22,7 +22,6 @@ use gpui_omarchy::{ActiveTheme as _, ButtonVariant, Theme, button};
 
 use crate::aux_window::{self, Spec};
 use crate::chrome::Drags;
-use crate::semantics::PAGE_STEP;
 use crate::ui::{size, space, text};
 
 pub const CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
@@ -30,7 +29,7 @@ pub const LICENSE: &str = include_str!("../../../LICENSE");
 pub const THIRD_PARTY_NOTICES: &str =
     include_str!("../../../THIRD_PARTY_LICENSES");
 
-/// Where the license and the notices wrap.
+/// Maximum columns when the document window has room.
 pub const WRAP_COLUMNS: usize = 100;
 
 /// The window's Copy button.
@@ -102,6 +101,7 @@ pub struct DocWindow {
     pub focus: FocusHandle,
     pub position: usize,
     block_scroll: ScrollHandle,
+    wrap_key: Option<(u32, u32, SharedString)>,
 }
 
 enum Body {
@@ -140,13 +140,75 @@ impl DocWindow {
             focus: cx.focus_handle().tab_stop(true),
             position: 0,
             block_scroll: ScrollHandle::new(),
+            wrap_key: None,
         }
+    }
+
+    /// Wrap against measured glyph widths after a resize or shared scale
+    /// change. Keep the relative reading position; Copy always uses source.
+    fn reflow(&mut self, window: &Window, theme: &Theme) {
+        let Body::Lines(lines, scroll) = &mut self.body else {
+            return;
+        };
+        let rem = window.rem_size();
+        let font = gpui_kit::font(theme.mono_font.clone());
+        let font_size = rem * text::BODY.0;
+        let font_id = window.text_system().resolve_font(&font);
+        let advance = window
+            .text_system()
+            .advance(font_id, font_size, 'm')
+            .map_or(font_size * 0.6, |size| size.width);
+        // Body and row padding plus border clearance. A 100-column ceiling
+        // keeps wide windows readable without imposing it on narrow ones.
+        let room = (window.viewport_size().width - rem * 5.0)
+            .max(advance * 8.0)
+            .min(advance * WRAP_COLUMNS as f32);
+        // Monospace text wraps the same until a whole column is gained or
+        // lost, so a live resize re-wraps the megabyte of notices once per
+        // column rather than once per pixel.
+        let columns = (room / advance).floor();
+        let width = advance * columns;
+        let key = (
+            columns.to_bits(),
+            rem.as_f32().to_bits(),
+            theme.mono_font.clone(),
+        );
+        if self.wrap_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.wrap_key = Some(key);
+        let mut wrapper = window.text_system().line_wrapper(font, font_size);
+        let mut rows = Vec::new();
+        for raw in self.doc.source().lines() {
+            let expanded = raw.replace('\t', "    ");
+            if expanded.is_empty() {
+                rows.push(SharedString::from(""));
+                continue;
+            }
+            let fragments = [gpui_kit::LineFragment::text(&expanded)];
+            let mut starts = vec![0];
+            starts.extend(
+                wrapper
+                    .wrap_line(&fragments, width)
+                    .map(|boundary| boundary.ix),
+            );
+            starts.push(expanded.len());
+            starts.dedup();
+            rows.extend(starts.windows(2).map(|range| {
+                SharedString::from(expanded[range[0]..range[1]].to_owned())
+            }));
+        }
+        self.position =
+            self.position.saturating_mul(rows.len()) / lines.len().max(1);
+        self.position = self.position.min(rows.len().saturating_sub(1));
+        *lines = Rc::new(rows);
+        scroll.scroll_to_item(self.position, ScrollStrategy::Top);
     }
 
     fn key(
         &mut self,
         event: &KeyDownEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         let key = &event.keystroke.key;
@@ -156,6 +218,32 @@ impl DocWindow {
         {
             self.copy(cx);
         } else {
+            if matches!(&self.body, Body::Changelog(_))
+                && matches!(key.as_str(), "pageup" | "pagedown")
+            {
+                crate::ui::scroll_key(
+                    key,
+                    &self.block_scroll,
+                    window.rem_size(),
+                );
+                self.position = self.block_scroll.top_item();
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
+            let page = match &self.body {
+                Body::Changelog(_) => 1,
+                Body::Lines(_, scroll) => {
+                    let measured = scroll.0.borrow();
+                    measured.last_item_size.map_or(1, |size| {
+                        ((measured.base_handle.bounds().size.height.as_f32()
+                            / size.item.height.as_f32())
+                        .floor() as usize)
+                            .saturating_sub(1)
+                            .max(1)
+                    })
+                }
+            };
             let count = match &self.body {
                 Body::Changelog(blocks) => blocks.len(),
                 Body::Lines(lines, _) => lines.len(),
@@ -167,16 +255,24 @@ impl DocWindow {
                 "down" => {
                     self.position.saturating_add(1).min(count.saturating_sub(1))
                 }
-                "pageup" => self.position.saturating_sub(PAGE_STEP),
+                "pageup" => self.position.saturating_sub(page),
                 "pagedown" => self
                     .position
-                    .saturating_add(PAGE_STEP)
+                    .saturating_add(page)
                     .min(count.saturating_sub(1)),
                 _ => return,
             };
             match &self.body {
                 Body::Changelog(_) => {
-                    self.block_scroll.scroll_to_item(self.position);
+                    if matches!(key.as_str(), "home" | "end") {
+                        crate::ui::scroll_key(
+                            key,
+                            &self.block_scroll,
+                            window.rem_size(),
+                        );
+                    } else {
+                        self.block_scroll.scroll_to_item(self.position);
+                    }
                 }
                 Body::Lines(_, scroll) => {
                     scroll.scroll_to_item(self.position, ScrollStrategy::Top);
@@ -202,7 +298,9 @@ impl Render for DocWindow {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        crate::ui::sync_scale(window, cx);
         let theme = cx.omarchy().clone();
+        self.reflow(window, &theme);
         let label = if self.copied { "Copied" } else { "Copy" };
         let copy = button(COPY_ID, label, ButtonVariant::Secondary, cx)
             .accessibility_label(format!(
@@ -313,12 +411,12 @@ impl Render for DocWindow {
 }
 
 /// The keys a document reader takes, for assistive technology.
-const LINES_KEYS: &str = "Up/Down reads a line, PageUp/PageDown moves \
-     twenty lines, Home/End reaches either end, Command or Control C \
+const LINES_KEYS: &str = "Up/Down reads a line, PageUp/PageDown reads \
+     a page, Home/End reaches either end, Command or Control C \
      copies all";
 
 const CHANGELOG_LABEL: &str = "Changelog; Up/Down reads a block, \
-     PageUp/PageDown moves twenty blocks, Home/End reaches either end, \
+     PageUp/PageDown scrolls a page, Home/End reaches either end, \
      Command or Control C copies all";
 
 /// One line of a plain document, named with its number; the current line

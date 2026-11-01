@@ -383,6 +383,7 @@ pub struct Disktree {
     pub file_focus: FocusHandle,
     restore_file_focus: bool,
     pub review_page: usize,
+    pub review_scroll: gpui_kit::ScrollHandle,
     pub hovered: Option<Vec<usize>>,
     pub history: History,
     /// The history button under the pointer, `true` for `<`: its card is
@@ -424,6 +425,7 @@ pub struct Disktree {
     pub overlay_return: Option<FocusHandle>,
     pub app_menu_index: usize,
     pub menu_scroll: gpui_kit::ScrollHandle,
+    pub help_scroll: gpui_kit::ScrollHandle,
     pub source_roots_focus: FocusHandle,
     /// Focus to move on the next occasion a window is in hand. Key handling
     /// has no window, and opening or closing the dialog must move focus.
@@ -639,6 +641,7 @@ impl Disktree {
             file_focus: cx.focus_handle().tab_stop(true),
             restore_file_focus: false,
             review_page: 0,
+            review_scroll: gpui_kit::ScrollHandle::new(),
             layout_options: LayoutOptions {
                 max_depth: depth.clamp(1, 6),
                 ..LayoutOptions::default()
@@ -665,6 +668,7 @@ impl Disktree {
             overlay_return: None,
             app_menu_index: 0,
             menu_scroll: gpui_kit::ScrollHandle::new(),
+            help_scroll: gpui_kit::ScrollHandle::new(),
             source_roots_focus: cx.focus_handle().tab_stop(true),
             focus_request: None,
             window_title: String::new(),
@@ -3093,26 +3097,14 @@ impl Disktree {
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
+        cx: &mut Context<'_, Self>,
     ) -> bool {
-        let keystroke = &event.keystroke;
-        if !(keystroke.modifiers.control || keystroke.modifiers.platform) {
-            return false;
+        if crate::ui::zoom_interface(event, window, cx) {
+            self.cache = None;
+            true
+        } else {
+            false
         }
-        let steps = crate::ui::ZOOM_STEPS;
-        let current = window.rem_size().as_f32() / crate::ui::BASE_REM;
-        let index = steps
-            .iter()
-            .position(|step| (step - current).abs() < 0.01)
-            .unwrap_or(2);
-        let next = match keystroke.key.as_str() {
-            "=" | "+" => (index + 1).min(steps.len() - 1),
-            "-" => index.saturating_sub(1),
-            "0" => 2,
-            _ => return false,
-        };
-        window.set_rem_size(px(crate::ui::BASE_REM * steps[next]));
-        self.cache = None;
-        true
     }
 
     pub fn begin_removal(&mut self, cx: &mut Context<'_, Self>) {
@@ -4347,6 +4339,9 @@ impl Render for Disktree {
     ) -> impl gpui_kit::IntoElement {
         #[cfg(test)]
         crate::marks::work::RENDERS.set(crate::marks::work::RENDERS.get() + 1);
+        if crate::ui::sync_scale(window, cx) {
+            self.cache = None;
+        }
         self.rem = window.rem_size().as_f32();
         self.tick_transition(window);
         // The titlebar names the directory on screen, however it got there:

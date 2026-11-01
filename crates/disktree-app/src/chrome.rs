@@ -29,7 +29,7 @@ use gpui_omarchy::{ActiveTheme as _, IconName, Theme, with_tooltip};
 
 use crate::palette;
 use crate::state::Disktree;
-use crate::ui::{chrome, space};
+use crate::ui::{self, chrome, space};
 
 /// Which system the window is on, as far as its frame is concerned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -347,7 +347,13 @@ pub fn aux_strip<V: Drags>(
     );
     let last = crumbs.len().saturating_sub(1);
     let trail = crumbs.iter().enumerate().fold(
-        div().flex().flex_row().items_center().gap(space::SM),
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(space::SM)
+            .min_w_0()
+            .overflow_hidden(),
         |trail, (index, crumb)| {
             trail
                 .child(
@@ -398,7 +404,12 @@ pub fn aux_strip<V: Drags>(
                 .when(frame.leading == Controls::None, |area| {
                     area.pl(space::LG)
                 })
-                .child(brand(true, &theme))
+                .child(brand(
+                    window.viewport_size().width.as_f32()
+                        / window.rem_size().as_f32()
+                        >= ui::COMPACT_WINDOW_REMS,
+                    &theme,
+                ))
                 .child(trail),
         )
         .child(

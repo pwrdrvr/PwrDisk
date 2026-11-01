@@ -14,7 +14,7 @@ use gpui_kit::{
 use gpui_omarchy::{ActiveTheme as _, ButtonVariant, button};
 
 use crate::state::Disktree;
-use crate::ui::{space, text};
+use crate::ui::{size, space, text};
 
 /// Explicit pages keep offscreen entries reachable to AT while bounding
 /// layout and semantic work independently of the size of the scan.
@@ -123,7 +123,17 @@ impl Disktree {
     }
 }
 
-pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
+pub fn compact(window: &gpui_kit::Window, rem: f32) -> bool {
+    window.viewport_size().height.as_f32() / rem
+        < size::FILE_LIST_FULL_DETAILS.0
+}
+
+pub fn list(
+    app: &Disktree,
+    window: &gpui_kit::Window,
+    cx: &Context<'_, Disktree>,
+) -> Stateful<Div> {
+    let compact = compact(window, app.rem);
     let theme = cx.omarchy();
     // Unfiltered navigation needs only the visible page, even in a directory
     // with millions of zero-weight files that the mosaic cannot draw.
@@ -222,6 +232,8 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                 b.parent_node().set_size_of_set(count);
             })
             .debug_selector(move || format!("file-row-{position}"))
+            .flex_shrink_0()
+            .min_h(size::FILE_ENTRY)
             .p(space::SM)
             .border_b_1()
             .border_color(theme.divider())
@@ -259,82 +271,140 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                 .aria_label(summary.clone())
                 .text_size(text::CAPTION)
                 .p(space::SM)
-                .child(summary),
+                .when(compact, |header| {
+                    header
+                        .flex()
+                        .items_center()
+                        .gap(space::SM)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(
+                                    app.current_path().display().to_string(),
+                                ),
+                        )
+                        .child(div().flex_shrink_0().child(format!(
+                            "{count} entries · {}–{end}",
+                            usize::from(count > 0) + start
+                        )))
+                })
+                .when(!compact, |header| header.child(summary)),
         )
         .child(rows)
         .child(
             div()
                 .flex()
-                .gap(space::SM)
+                .flex_col()
+                .flex_shrink_0()
+                .when(compact, |actions| {
+                    actions.flex_row().flex_wrap().gap(space::SM)
+                })
                 .child(
-                    button(
-                        "file-open",
-                        "Open selected directory",
-                        ButtonVariant::Outline,
-                        cx,
-                    )
-                    .semantic_disabled(
-                        !app.selected
-                            .as_ref()
-                            .and_then(|c| app.node_at(c))
-                            .is_some_and(disktree_core::tree::Node::is_dir),
-                    )
-                    .on_click(cx.listener(
-                        |this, _, window, cx| {
-                            this.pointer_active = false;
-                            this.descend(cx);
-                            window.focus(&this.file_focus, cx);
-                        },
-                    )),
+                    div()
+                        .flex()
+                        .gap(space::SM)
+                        .child(
+                            button(
+                                "file-open",
+                                if compact {
+                                    "Open"
+                                } else {
+                                    "Open selected directory"
+                                },
+                                ButtonVariant::Outline,
+                                cx,
+                            )
+                            .accessibility_label("Open selected directory")
+                            .min_h(size::POINTER_TARGET)
+                            .semantic_disabled(
+                                !app.selected
+                                    .as_ref()
+                                    .and_then(|c| app.node_at(c))
+                                    .is_some_and(
+                                        disktree_core::tree::Node::is_dir,
+                                    ),
+                            )
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.pointer_active = false;
+                                    this.descend(cx);
+                                    window.focus(&this.file_focus, cx);
+                                },
+                            )),
+                        )
+                        .child(
+                            button(
+                                "file-mark",
+                                if compact {
+                                    // Visible words stay inside the
+                                    // accessible name, for voice control.
+                                    "Mark or unmark"
+                                } else {
+                                    "Mark or unmark selected path"
+                                },
+                                ButtonVariant::Outline,
+                                cx,
+                            )
+                            .accessibility_label("Mark or unmark selected path")
+                            .min_h(size::POINTER_TARGET)
+                            .semantic_disabled(app.selected.is_none())
+                            .on_click(cx.listener(
+                                |this, _, _, cx| this.toggle_mark_selected(cx),
+                            )),
+                        ),
                 )
                 .child(
-                    button(
-                        "file-mark",
-                        "Mark or unmark selected path",
-                        ButtonVariant::Outline,
-                        cx,
-                    )
-                    .semantic_disabled(app.selected.is_none())
-                    .on_click(cx.listener(
-                        |this, _, _, cx| this.toggle_mark_selected(cx),
-                    )),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .gap(space::SM)
-                .child(
-                    button(
-                        "file-previous",
-                        "Previous 100 entries",
-                        ButtonVariant::Outline,
-                        cx,
-                    )
-                    .debug_selector(|| "file-previous".into())
-                    .semantic_disabled(page == 0)
-                    .on_click(cx.listener(
-                        |this, _, window, cx| {
-                            this.file_turn_page(-1, cx);
-                            window.focus(&this.file_focus, cx);
-                        },
-                    )),
-                )
-                .child(
-                    button(
-                        "file-next",
-                        "Next 100 entries",
-                        ButtonVariant::Outline,
-                        cx,
-                    )
-                    .debug_selector(|| "file-next".into())
-                    .semantic_disabled(end == count)
-                    .on_click(cx.listener(
-                        |this, _, window, cx| {
-                            this.file_turn_page(1, cx);
-                            window.focus(&this.file_focus, cx);
-                        },
-                    )),
+                    div()
+                        .flex()
+                        .gap(space::SM)
+                        .child(
+                            button(
+                                "file-previous",
+                                if compact {
+                                    "Previous"
+                                } else {
+                                    "Previous 100 entries"
+                                },
+                                ButtonVariant::Outline,
+                                cx,
+                            )
+                            .accessibility_label("Previous 100 entries")
+                            .min_h(size::POINTER_TARGET)
+                            .debug_selector(|| "file-previous".into())
+                            .semantic_disabled(page == 0)
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.file_turn_page(-1, cx);
+                                    window.focus(&this.file_focus, cx);
+                                },
+                            )),
+                        )
+                        .child(
+                            button(
+                                "file-next",
+                                if compact {
+                                    "Next"
+                                } else {
+                                    "Next 100 entries"
+                                },
+                                ButtonVariant::Outline,
+                                cx,
+                            )
+                            .accessibility_label("Next 100 entries")
+                            .min_h(size::POINTER_TARGET)
+                            .debug_selector(|| "file-next".into())
+                            .semantic_disabled(end == count)
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.file_turn_page(1, cx);
+                                    window.focus(&this.file_focus, cx);
+                                },
+                            )),
+                        ),
                 ),
         )
 }
