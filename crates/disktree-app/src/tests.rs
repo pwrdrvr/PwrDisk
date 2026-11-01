@@ -2263,6 +2263,23 @@ fn unmark_all_can_be_undone(cx: &mut TestAppContext) {
     mark_paths(&view, cx, &[temp.path().to_path_buf()]);
     press(cx, "u");
     assert_eq!(marked(&view, cx), vec![temp.path().to_path_buf()]);
+    let notice = read(&view, cx, |app| app.notice.clone());
+    assert!(
+        notice.is_some_and(|(message, _)| message.contains("Nothing to put")),
+        "no count of nothing"
+    );
+
+    // During a removal the marks are the running list's: Undo leaves
+    // them alone and keeps what it holds.
+    press(cx, "!");
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Running;
+        cx.notify();
+    });
+    cx.dispatch_action(crate::app_menu::Undo);
+    draw(cx);
+    assert!(marked(&view, cx).is_empty());
+    assert!(read(&view, cx, |app| app.unmarked.is_some()));
 }
 
 /// The review screen's footer: Export and Unmark all on the left, Back
@@ -2308,6 +2325,11 @@ fn the_review_footer_puts_the_commit_with_back_on_the_right(
     press(cx, "escape");
     assert!(cx.debug_bounds("export-menu").is_none());
     assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    // The keys the menu shows run their row and close it.
+    click_on(cx, "export");
+    press(cx, "y");
+    assert!(cx.debug_bounds("export-menu").is_none());
+    assert!(clipboard(cx).contains(&junk.display().to_string()));
     click_on(cx, "export");
     click_on(cx, "copy-prompt");
     assert!(cx.debug_bounds("export-menu").is_none());

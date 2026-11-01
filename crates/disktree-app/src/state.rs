@@ -2492,7 +2492,12 @@ impl Disktree {
 
     /// Put back what Unmark all took. Marks made since stay; a path that
     /// is marked again, or now goes with a marked directory, is skipped.
+    /// Only where marks are edited: during a removal they are the running
+    /// list's, and are cleared when it ends.
     pub fn undo_unmark(&mut self, cx: &mut Context<'_, Self>) {
+        if !matches!(self.screen, Screen::Explore | Screen::Review) {
+            return;
+        }
         let Some(taken) = self.unmarked.take() else {
             return;
         };
@@ -2509,8 +2514,14 @@ impl Disktree {
             self.marks.absorb(&path, style);
             restored += 1;
         }
-        self.notice =
-            Some((format!("Marked {restored} again"), Status::Neutral));
+        self.notice = Some((
+            if restored == 0 {
+                "Nothing to put back: those paths are marked again".into()
+            } else {
+                format!("Marked {restored} again")
+            },
+            Status::Neutral,
+        ));
         cx.notify();
     }
 
@@ -3754,15 +3765,21 @@ impl Disktree {
         if self.remote.is_some() && matches!(key, "m" | "p" | "enter") {
             return;
         }
-        if key == "e" {
-            self.save_delete_script(cx);
-            return;
-        }
+        // The open Export menu shows each row's key: those keys run the
+        // row and close it, as a click would; Escape only closes it.
         if self.export_menu_open {
-            if key == "escape" {
+            let row = matches!(key, "s" | "a" | "e" | "y");
+            if row || key == "escape" {
                 self.export_menu_open = false;
+                self.focus_request = Some(FocusTarget::Root);
                 cx.notify();
             }
+            if !row {
+                return;
+            }
+        }
+        if key == "e" {
+            self.save_delete_script(cx);
             return;
         }
         match key {
