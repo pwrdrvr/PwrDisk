@@ -520,7 +520,15 @@ impl SettingsWindow {
         let slot = selection.resolve(&installed);
         let state = updater::state();
         let ready = updater::ready(&state, &installed, slot);
-        let lede = match updater::installation() {
+        let installation = updater::installation();
+        // Only a copy Velopack installed checks on its own.
+        let on_its_own = match installation {
+            Installation::Velopack { .. } => "PwrDisk also checks on its own.",
+            Installation::NotInstalled { .. } => {
+                "This copy never checks on its own."
+            }
+        };
+        let lede = match installation {
             Installation::Velopack { .. } => {
                 "Checks GitHub Releases at startup and every six hours. A \
                  download installs when you restart or quit."
@@ -638,7 +646,7 @@ impl SettingsWindow {
             ))
             .child(field(
                 "Check now",
-                Some("PwrDisk also checks on its own."),
+                Some(on_its_own),
                 vec![actions.into_any_element()],
                 theme,
             ));
@@ -1187,7 +1195,7 @@ fn card(
     trailing: Option<AnyElement>,
     theme: &Theme,
 ) -> Div {
-    card_plain(theme).child(
+    card_frame(theme).child(
         div()
             .flex()
             .flex_row()
@@ -1207,9 +1215,13 @@ fn card(
     )
 }
 
-/// A card with no heading strip: its first row's rule is the card's edge,
-/// so the rows start with none.
+/// A card with no heading strip: its first row's rule is the card's top
+/// edge, so the card draws none of its own.
 fn card_plain(theme: &Theme) -> Div {
+    card_frame(theme).border_t_0()
+}
+
+fn card_frame(theme: &Theme) -> Div {
     div()
         .flex()
         .flex_col()
