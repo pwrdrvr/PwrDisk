@@ -3178,6 +3178,10 @@ impl Disktree {
 
     pub fn open_help(&mut self, cx: &mut Context<'_, Self>) {
         if !self.has_modal() {
+            // A modal must not leave another keyboard owner behind it.
+            self.crumb_menu = None;
+            self.power_menu = None;
+            self.app_menu_open = false;
             self.show_help = true;
             self.focus_request = Some(FocusTarget::Dialog);
             cx.notify();

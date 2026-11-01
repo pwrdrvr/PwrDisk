@@ -5702,3 +5702,133 @@ fn focus_review_application_menu_is_a_forward_and_reverse_tab_stop(
     press(cx, "escape");
     assert!(temp.path().join("junk/blob.bin").exists());
 }
+
+#[gpui_kit::test]
+fn routing_review_search_escape_preserves_the_widening_scan(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(&temp.path().join("junk"), cx);
+    for file_list in [false, true] {
+        update(&view, cx, |app, cx| {
+            app.file_list = file_list;
+            app.widen_to(temp.path().into(), cx);
+        });
+        draw(cx);
+        let epoch = read(&view, cx, |app| app.scan_epoch);
+        press(cx, "/ b l o b");
+        assert!(read(&view, cx, |app| app.find_open && app.find == "blob"));
+        press(cx, "escape");
+        read(&view, cx, |app| {
+            assert!(!app.find_open, "Escape dismisses the foreground search");
+            assert!(app.find.is_empty());
+            assert!(app.scan.is_some(), "dismissing search preserves the scan");
+            assert_eq!(app.scan_epoch, epoch);
+            assert!(!app.progress.cancelled);
+            assert!(app.tree().is_some());
+        });
+        press(cx, "escape");
+        read(&view, cx, |app| {
+            assert!(app.scan.is_none(), "the next Escape cancels the scan");
+            assert!(app.progress.cancelled);
+        });
+    }
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn routing_review_menu_escape_preserves_the_widening_scan(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(&temp.path().join("junk"), cx);
+    for menu in ["crumb", "power", "application"] {
+        update(&view, cx, |app, cx| {
+            app.widen_to(temp.path().into(), cx);
+            match menu {
+                "crumb" => {
+                    let deeper = child_crumbs(app, &[], "deeper");
+                    app.open_crumb_menu(&deeper, cx);
+                }
+                "power" => {
+                    app.cpu_threads = 8;
+                    app.toggle_power_menu(cx);
+                }
+                _ => app.toggle_app_menu(cx),
+            }
+        });
+        draw(cx);
+        let epoch = read(&view, cx, |app| app.scan_epoch);
+        press(cx, "escape");
+        read(&view, cx, |app| {
+            assert!(app.crumb_menu.is_none(), "{menu}");
+            assert!(app.power_menu.is_none(), "{menu}");
+            assert!(!app.app_menu_open, "{menu}");
+            assert!(app.scan.is_some(), "{menu} Escape preserves the scan");
+            assert_eq!(app.scan_epoch, epoch);
+            assert!(!app.progress.cancelled);
+        });
+        press(cx, "escape");
+        assert!(read(&view, cx, |app| app.scan.is_none()));
+    }
+}
+
+#[gpui_kit::test]
+fn routing_review_help_dismisses_menus_and_contains_navigation(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let junk = read(&view, cx, |app| child_crumbs(app, &[], "junk"));
+    update(&view, cx, |app, cx| {
+        app.go_to(junk.clone(), cx);
+        app.power_settings_path = None;
+        app.cpu_threads = 8;
+        app.chrome_pin = window_frames()
+            .into_iter()
+            .find(|(name, _)| *name == "GNOME, controls right")
+            .map(|(_, frame)| frame);
+        cx.notify();
+    });
+    draw(cx);
+    for menu in ["crumb", "power", "application"] {
+        for native_action in [false, true] {
+            update(&view, cx, |app, cx| match menu {
+                "crumb" => app.open_crumb_menu(&junk, cx),
+                "power" => app.toggle_power_menu(cx),
+                _ => app.toggle_app_menu(cx),
+            });
+            draw(cx);
+            if native_action {
+                cx.update(|window, cx| {
+                    window.dispatch_action(
+                        Box::new(crate::app_menu::ShowKeyboardShortcuts),
+                        cx,
+                    );
+                });
+                draw(cx);
+            } else {
+                press(cx, "?");
+            }
+            read(&view, cx, |app| {
+                assert!(app.show_help, "{menu}, action={native_action}");
+                assert!(app.crumb_menu.is_none(), "Help closes {menu}");
+                assert!(app.power_menu.is_none(), "Help closes {menu}");
+                assert!(!app.app_menu_open, "Help closes {menu}");
+            });
+            press(cx, "down enter");
+            read(&view, cx, |app| {
+                assert!(app.show_help);
+                assert_eq!(app.crumbs, junk, "Help contains navigation");
+                assert!(app.marks.is_empty());
+                assert_eq!(app.screen, Screen::Explore);
+            });
+            press(cx, "escape");
+            assert!(read(&view, cx, |app| !app.show_help));
+        }
+    }
+    assert!(temp.path().join("junk/blob.bin").exists());
+}

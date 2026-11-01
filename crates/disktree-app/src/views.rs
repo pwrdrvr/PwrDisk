@@ -230,7 +230,9 @@ pub fn root(
                 this.open_help(cx); this.apply_focus(window, cx); return;
             }
             if event.keystroke.key == "escape" && this.screen == Screen::Explore && !this.has_modal() && this.is_indexing() {
-                this.cancel_scan(cx); window.focus(&this.focus, cx); return;
+                // Search and menus own Escape before scan cancellation,
+                // including when a toolbar control currently has focus.
+                this.on_key_down(event, cx); this.apply_focus(window, cx); return;
             }
             if !this.has_modal() && !this.app_menu_open && this.screen != Screen::Running && !this.focus.is_focused(window) && !this.file_focus.is_focused(window) {
                 if event.keystroke.key == "escape" { window.focus(&this.focus, cx); cx.notify(); }
