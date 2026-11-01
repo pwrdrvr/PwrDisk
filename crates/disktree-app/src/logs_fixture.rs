@@ -5,10 +5,12 @@
 //! It lives in the binary, rather than an example that re-declares the
 //! binary's modules, so a module added to `main.rs` cannot break it. It opens
 //! that one window and nothing else: no main window, so no scan and no
-//! removal; no agent link or update check; no saved Logs view, read or
-//! written; and `main` takes this path before it opens `main.log`, so the
-//! real log is never written either. Release builds leave it out, which is
-//! why the usage text does not mention it.
+//! removal; no agent link and no startup update check; no saved Logs view,
+//! read or written; and `main` takes this path before it opens `main.log`,
+//! so the real log is never written either. The menu bar is the app's, so
+//! its Settings and Check for Updates still do what they do there; a check
+//! that wants the fixture untouched leaves them alone. Release builds leave
+//! it out, which is why the usage text does not mention it.
 //!
 //! `cargo run -p disktree-app -- logs-fixture /tmp/invented.log`
 
@@ -25,14 +27,9 @@ const COMMAND: &str = "logs-fixture";
 /// `None` when it asks for something else.
 pub fn run_if_asked() -> Option<Result<()>> {
     let own_logs = crate::diag_log::log_dir();
-    match requested(std::env::args_os().skip(1), own_logs.as_deref()) {
-        Ok(None) => None,
-        Ok(Some(log)) => {
-            open(log);
-            Some(Ok(()))
-        }
-        Err(error) => Some(Err(error)),
-    }
+    requested(std::env::args_os().skip(1), own_logs.as_deref())
+        .transpose()
+        .map(|log| log.map(open))
 }
 
 /// The log `logs-fixture LOG` names, program name already skipped. It
@@ -114,6 +111,9 @@ mod tests {
         let missing = temp.path().join("missing.log");
         // Through `..`, to the real log all the same.
         let around = temp.path().join("own/../own/main.log");
+        // Other case: macOS and Windows canonicalize it to the folder's own
+        // case, so it is refused there too; on Linux it does not exist.
+        let cased = temp.path().join("OWN/main.log");
         for args in [
             &[command][..],
             &[command, missing.as_os_str()],
@@ -121,6 +121,7 @@ mod tests {
             &[command, invented.as_os_str(), OsStr::new("extra")],
             &[command, real.as_os_str()],
             &[command, around.as_os_str()],
+            &[command, cased.as_os_str()],
         ] {
             assert!(ask(args, Some(&own)).is_err(), "{args:?} is refused");
         }
