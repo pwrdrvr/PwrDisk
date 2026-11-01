@@ -386,3 +386,74 @@ commit SHA and platform result. Documentation/test-only changes do not
 have a before/after production window change. The audit publishes text
 and numeric evidence; future visible remediations require contrived
 before/after PR attachments under [the screenshot procedure](pr-screenshots.md).
+
+## Remediation observations (separate from the v0.14.0 baseline)
+
+### PWR-29: file navigation and review
+
+Source: `0568e97cff3c29beebd3a70556e8f3de0765f93d`, debug macOS build,
+2026-10-31. Binary SHA-256:
+`98dfba4cde4a3c79b79c71cb86e0a2f7ae9d3918280855fdbd32cc0074e09a22`.
+The original matrix above remains a record of the production baseline.
+
+The new **Show accessible file list** control opens a directory-at-a-time
+list over the completed scan. Right/Enter opens a directory, Left/Backspace
+returns to its parent, Up/Down selects, Space marks and c reviews. Explicit
+100-entry pages bound layout/AX work without silently dropping later entries.
+Rows use lossless absolute-path identifiers; category, size, age, unreadable,
+filter and mark context have text equivalents. Review pages expose all marks,
+row explanations and the selected removal mode/recoverability summary.
+This is a navigation alternative, not an expansion of the painted canvas.
+
+| Promise | Native macOS AX / keyboard observation | Harness / source evidence |
+| --- | --- | --- |
+| File data and hierarchy | PASS for inspected fixture: list, full paths, directory/file kind, byte and formatted sizes, category, age and selected state exposed; Right/Left changed the named directory | PASS: nested absolute paths and filtering regression |
+| Long / Unicode paths | PASS: full `Résumé 日本語.txt` and long-name path exposed under `documents` | PASS: 235 Unicode-named fixture files |
+| Offscreen entries and counts | PASS: `many-small-files` reports 128 entries; PageDown exposes 101–128, selects `item-000100.txt`, and includes `item-000127.txt` | PASS: page boundaries at 99/100/200; bounded row composition; source supplies set position/count |
+| Marks and review | PASS for inspected fixture: marked path, exact byte count, included/blocked/covered counts, mode and recoverability exposed; no live approval | PASS: existing removal guards and destructive harness tests; new safe-mark/navigation tests |
+| Accessible identity / state | Stable path author IDs and selection updates observed | PASS: role, name, selected flag, author ID and non-UTF-8 collision regressions |
+| Native focused item / speech | NOT VERIFIED: controller still reports the standard window as focused despite selected-state updates; no spoken-output result | Source provides a focusable list and active-descendant metadata; this is not native focus or speech evidence. PWR-31/PWR-36 remain open |
+| Windows UIA / Narrator / NVDA | BLOCKED: WindowsVM still disconnected | No Windows runtime result |
+| Linux AT-SPI / Orca | BLOCKED: dedicated VM has neither DISPLAY/WAYLAND_DISPLAY nor Orca | Linux checks are recorded separately in the PR |
+
+Fixture: `scripts/a11y-fixture.py`, 135 invented files on a disposable APFS
+disk image named **A11yFixtures**, root `/Volumes/A11yFixtures/Projects`.
+macOS 27.0.1 / 26A434, Apple Silicon, dark appearance, 1440×900 logical,
+100% UI zoom. The isolated Before/After launchers leave installed PwrDisk
+untouched. Before uses audit head `12d2bef` (unchanged production UI);
+contrived window-only before/after images are attached to the remediation PR.
+OS scaling, high contrast and spoken screen-reader output were not tested.
+
+macOS `cargo xtask lint`, `cargo xtask test` and debug build passed. Linux
+Sandboxer `sb_uihqpdf98b`, Ubuntu 24.04.5 x86_64, verified the implementation
+commit; final build/integration status is recorded in the PR. No native Linux
+result is inferred from those checks.
+
+Upstream #51 was re-evaluated narrowly: its virtual row composition and
+shared selection/marks are useful patterns, but its row-index IDs, row cap
+and absence of accessibility roles do not satisfy this issue. No upstream
+commits or theme/list redesign were imported.
+
+### PWR-30: source fields and current status
+
+Source `9729798`, debug macOS binary SHA-256
+`40b43a26cea199b307cf0b8e543de628918da262acf634b2c43aadea6e821809`,
+same contrived Projects fixture, OS and scale as PWR-29 above.
+
+| Promise | Observed native macOS AX | Harness / source |
+| --- | --- | --- |
+| Persistent source names and values | PASS: `SSH destination` and `Root directory to scan` exposed; entered `-audit-invalid` observable as the host value | Field semantics include current values and descriptions |
+| Validation context | PASS: `invalid SSH destination` exposed and included in field descriptions after Return; no SSH connection attempted | Invalid flags distinguish connection and path errors; existing invalid-host/path and discovery regressions remain green |
+| Source instructions | PASS: explicit Scan acceptance, nested-mount/symlink cautions and remote read-only context exposed | Source list has selected-root metadata and stable mount-path IDs; native mount traversal remains unverified |
+| Current state and volume | PASS: completed scan, fixture root, marked count and 506 MiB available of 512 MiB exposed | Marked plan byte totals and estimates are independently readable; no extra per-frame mark scan |
+| Progress/cancel/errors | Live progress not exercised: small fixture completes before inspection | PASS: two-second progress cache, error bypass, immediate cancel and completion regression; indeterminate progress/busy metadata; sampled paths omitted |
+| Announcements | BLOCKED for speech/cadence; exposing a polite live region is not a spoken-output pass | Source live metadata and throttling only |
+
+macOS lint, full workspace tests (including 219 app tests) and debug build
+passed. Dedicated Linux VM `sb_uihqpdf98b` at `9729798`: setup 0 (2s), lint
+0 (5s), test 0 (14s), portable build 0 (44s), isolated SSH 0 (3s), all 0.
+These are build/harness/integration results, not AT-SPI or Orca evidence.
+Native focus/modal containment, Windows UIA/AT, speech, OS scaling and high
+contrast remain open under PWR-31/PWR-36. Changes add semantic metadata;
+the visible source/status presentation is unchanged, so screenshots do not
+show the repaired names/values. No real scan or live removal was performed.

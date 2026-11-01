@@ -23,6 +23,7 @@ mod diagnostics;
 mod doc_window;
 #[cfg(target_os = "macos")]
 mod dock_icon;
+mod file_list;
 mod git;
 mod github_releases;
 mod help;
@@ -32,6 +33,7 @@ mod marks;
 mod palette;
 mod power;
 mod safety;
+mod semantics;
 mod settings;
 mod state;
 #[cfg(test)]

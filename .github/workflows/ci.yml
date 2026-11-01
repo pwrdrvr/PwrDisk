@@ -42,7 +42,7 @@ jobs:
         id: classify
         # A script/runtime failure must select full CI, too.
         continue-on-error: true
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fullCi = (reason) => {
@@ -135,7 +135,7 @@ jobs:
       # Here rather than in `cargo xtask lint`, which stays Rust-only. After
       # the classifier, so a failure turns this check red and, through the
       # job's result, still runs full CI.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The test runs the PR's own script, and this job's token is the
           # only one with pull-requests: read; keep it out of .git/config.
@@ -151,13 +151,13 @@ jobs:
       !cancelled() &&
       (needs.changes.result != 'success' || needs.changes.outputs.licenses_impacting != 'false')
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.97"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # The versioned binary cache below owns cargo-about.
           cache-bin: false
@@ -166,7 +166,7 @@ jobs:
       # the binary cache key together, as PwrRoute pins its generator too.
       - name: Cache cargo-about
         id: cargo-about
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-about
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-about-0.9.2-rust-1.97
@@ -233,7 +233,7 @@ jobs:
       !cancelled() &&
       (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # What GPUI links against: windowing (Wayland, X11), input, fonts,
       # and the Vulkan loader.
@@ -247,12 +247,12 @@ jobs:
 
       # Pinned: the lint gate denies clippy::all and ::pedantic, and a newer
       # clippy's new lints are a change to make on purpose, not by surprise.
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.97"
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Lint
         run: cargo xtask lint
@@ -277,14 +277,14 @@ jobs:
       !cancelled() &&
       (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.97"
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Lint
         run: cargo xtask lint
@@ -310,13 +310,13 @@ jobs:
       !cancelled() &&
       (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.97"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Bundle
         run: cargo xtask bundle
@@ -340,16 +340,16 @@ jobs:
       # Check out with the repository's own line endings, as on Linux.
       - run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Pinned with the Linux job, for the same reason. GPUI needs nothing
       # beyond the Windows SDK the runner already has.
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.97"
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Lint
         run: cargo xtask lint
@@ -398,7 +398,7 @@ jobs:
       - if: runner.os == 'Windows'
         run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: System libraries
         if: runner.os == 'Linux'
@@ -409,11 +409,11 @@ jobs:
             libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
             libvulkan-dev libasound2-dev libssl-dev libzstd-dev
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.97"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Test
         run: cargo xtask test
