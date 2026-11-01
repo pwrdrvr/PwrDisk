@@ -13,12 +13,26 @@ names; the status bar names the volume and its free space; the source chooser
 lists mounts and the SSH hosts from your config. So point the app at a tree
 built for the picture, never at `~` or a real volume.
 
-1. Build a contrived tree with invented names, sized so the treemap has
-   something to show. Sparse files do not work, because sizes come from
-   allocated blocks; write real bytes.
+Make them in the PwrSuiteLab headed E2E VM, never on the operator's Mac.
+Launching PwrDisk on the operator's Mac and driving it with synthetic input
+lands keys in whatever the operator is using; see
+[AGENTS.md](../AGENTS.md#testing-on-a-desktop). Everything below runs inside
+one guest job, and [headed-e2e-pwrsuitelab.md](headed-e2e-pwrsuitelab.md)
+has the job's shape and an example. Without the PwrSuiteLab Control MCP,
+stop and ask the operator.
+
+1. In the job, create a disk image with an invented name and build the tree
+   on it: `hdiutil create -ov -size 512m -fs APFS -volname Fixtures -attach
+   target/fixtures.dmg` mounts it at `/Volumes/Fixtures`. Detach it at the
+   end. The image is required in the lab: a tree anywhere else shows the
+   guest's paths, volume name and free space, which are lab details. If
+   `hdiutil` fails, stop and report it to the operator as a baseline issue.
+2. On that image, build a contrived tree with invented names, sized so the
+   treemap has something to show. Sparse files do not work, because sizes
+   come from allocated blocks; write real bytes.
 
    ```sh
-   root=/tmp/pwrdisk-shots/Projects
+   root=/Volumes/Fixtures/Projects
    mkdir -p "$root"/{atlas/build,atlas/src,beacon/node_modules,photos/2024}
    # dd, not head -c 120m: macOS's head takes no size suffix.
    fill() { dd if=/dev/urandom of="$1" bs=1048576 count="$2" 2>/dev/null; }
@@ -27,25 +41,39 @@ built for the picture, never at `~` or a real volume.
    fill "$root/photos/2024/IMG_0001.raw" 80
    ```
 
-2. To keep the real volume's name and free space out of the status bar too,
-   put the tree on a disk image with an invented name (macOS:
-   `hdiutil create -size 512m -fs APFS -volname Fixtures -attach
-   /tmp/fixtures.dmg`, then build the tree under `/Volumes/Fixtures`; Linux:
-   a small `tmpfs`). Detach it afterwards.
-3. Run `pwrdisk <that root>`: with a path it scans directly and skips the
-   chooser. Capture only the PwrDisk window, not the screen, so other windows
-   and the menu bar stay out.
-4. For "before", build `main` in a second worktree and capture the same tree
-   at the same window size.
+3. Launch `pwrdisk <that root>` in the guest, in the background: with a path
+   it scans directly and skips the chooser. Wait for its window, drive the
+   screen under test from the job's command, and capture only the PwrDisk
+   window (`screencapture -o -x -l <window id>`), not the screen. Write the
+   images to a checkout-relative directory such as `target/lab-shots/`, list
+   it in the job's `artifacts`, and quit the app.
+4. Fetch them with `lab_e2e_collect`;
+   [headed-e2e-pwrsuitelab.md](headed-e2e-pwrsuitelab.md) says where its
+   `artifact_directory` is. Copy each image to a short local name, such as
+   `./after.png`, and attach that copy; the artifact directory's own path
+   never goes in a PR. Never commit the copy, and delete it once the
+   uploaded links check out.
+5. For "before", run the same job against a clean, committed worktree of
+   `main` (`git fetch origin main && git worktree add --detach <path>
+   origin/main`), with the same tree and the same window size. Remove it
+   with `git worktree remove <path>` afterwards.
 
-If a screen can only be shown with real data (the source chooser on your own
-machine, an SSH host), **show the image to the operator and wait for approval
-before attaching it.** Crop or redact user names, host names, volume names and
-anything else that is not invented.
+Lab VMs start with clipboard sharing off. Images come back as collected
+artifacts, never through the clipboard, and the operator is never asked to
+copy one out of the guest.
 
-Say in the PR body how each image was made ("`pwrdisk` on a contrived tree on a
-disk image named Fixtures, macOS 27"). If nothing can show the change, say why
-and ask the operator before merging; a missing screenshot is not optional.
+In the guest, the source chooser lists the guest's mounts and SSH config
+hosts, which are lab details: never attach a guest capture of them. If the
+change is to the chooser, say so in the body and ask the operator. Any other
+screen that can only be shown with real data: **show the image to the
+operator and wait for approval before attaching it.** Crop or redact user
+names, host names, volume names and anything else that is not invented.
+
+Say in the PR body how each image was made ("`pwrdisk` on a contrived tree on
+a disk image named Fixtures, macOS 27, in the PwrSuiteLab VM"), without the
+VM's name or any other lab detail. If nothing can show the change, including
+a Linux or Windows window the lab cannot show, say why and ask the operator
+before merging; a missing screenshot is not optional.
 
 ## Attaching them with `gh --attach`
 

@@ -21,6 +21,7 @@ use gpui_kit::{
 };
 use gpui_omarchy::{ActiveTheme as _, ButtonVariant, button};
 
+use crate::semantics::AccessibleButton as _;
 use crate::state::Disktree;
 use crate::ui::{size, space, text};
 use crate::update_channel::Slot;
@@ -571,7 +572,7 @@ fn action_button(
     let action = action.clone();
     button(id, label, variant, cx)
         .debug_selector(move || id.into())
-        .disabled(
+        .semantic_disabled(
             matches!(action, Action::Restart { .. })
                 && !app.can_restart_to_update(),
         )

@@ -12,8 +12,9 @@ use std::rc::Rc;
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, ClipboardItem, Context, FontWeight, HighlightStyle,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    AnyElement, App, ClipboardItem, Context, FocusHandle, FontWeight,
+    HighlightStyle, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ParentElement as _, Render, Role, ScrollHandle, ScrollStrategy,
     SharedString, StatefulInteractiveElement as _, Styled as _, StyledText,
     UniformListScrollHandle, Window, WindowHandle, div, uniform_list,
 };
@@ -21,6 +22,7 @@ use gpui_omarchy::{ActiveTheme as _, ButtonVariant, Theme, button};
 
 use crate::aux_window::{self, Spec};
 use crate::chrome::Drags;
+use crate::semantics::PAGE_STEP;
 use crate::ui::{size, space, text};
 
 pub const CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
@@ -84,7 +86,11 @@ pub fn open(doc: Doc, cx: &mut App) {
 
 /// A new window for `doc`, for `open` and the tests.
 pub fn open_window(doc: Doc, cx: &mut App) -> Option<WindowHandle<DocWindow>> {
-    aux_window::open(&doc.spec(), cx, |_, _| DocWindow::new(doc))
+    aux_window::open(&doc.spec(), cx, |window, cx| {
+        let view = DocWindow::new(doc, cx);
+        window.focus(&view.focus, cx);
+        view
+    })
 }
 
 /// The window's view.
@@ -93,6 +99,9 @@ pub struct DocWindow {
     body: Body,
     copied: bool,
     strip_drag: bool,
+    pub focus: FocusHandle,
+    pub position: usize,
+    block_scroll: ScrollHandle,
 }
 
 enum Body {
@@ -108,7 +117,7 @@ impl Drags for DocWindow {
 }
 
 impl DocWindow {
-    pub fn new(doc: Doc) -> Self {
+    pub fn new(doc: Doc, cx: &Context<'_, Self>) -> Self {
         let body = match doc {
             Doc::Changelog => {
                 Body::Changelog(changelog(CHANGELOG, env!("CARGO_PKG_VERSION")))
@@ -128,7 +137,54 @@ impl DocWindow {
             body,
             copied: false,
             strip_drag: false,
+            focus: cx.focus_handle().tab_stop(true),
+            position: 0,
+            block_scroll: ScrollHandle::new(),
         }
+    }
+
+    fn key(
+        &mut self,
+        event: &KeyDownEvent,
+        _: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let key = &event.keystroke.key;
+        if (event.keystroke.modifiers.platform
+            || event.keystroke.modifiers.control)
+            && key == "c"
+        {
+            self.copy(cx);
+        } else {
+            let count = match &self.body {
+                Body::Changelog(blocks) => blocks.len(),
+                Body::Lines(lines, _) => lines.len(),
+            };
+            self.position = match key.as_str() {
+                "home" => 0,
+                "end" => count.saturating_sub(1),
+                "up" => self.position.saturating_sub(1),
+                "down" => {
+                    self.position.saturating_add(1).min(count.saturating_sub(1))
+                }
+                "pageup" => self.position.saturating_sub(PAGE_STEP),
+                "pagedown" => self
+                    .position
+                    .saturating_add(PAGE_STEP)
+                    .min(count.saturating_sub(1)),
+                _ => return,
+            };
+            match &self.body {
+                Body::Changelog(_) => {
+                    self.block_scroll.scroll_to_item(self.position);
+                }
+                Body::Lines(_, scroll) => {
+                    scroll.scroll_to_item(self.position, ScrollStrategy::Top);
+                }
+            }
+            cx.notify();
+        }
+        cx.stop_propagation();
     }
 
     fn copy(&mut self, cx: &mut Context<'_, Self>) {
@@ -149,34 +205,70 @@ impl Render for DocWindow {
         let theme = cx.omarchy().clone();
         let label = if self.copied { "Copied" } else { "Copy" };
         let copy = button(COPY_ID, label, ButtonVariant::Secondary, cx)
+            .accessibility_label(format!(
+                "{} {}",
+                if self.copied {
+                    "Copied"
+                } else {
+                    "Copy complete"
+                },
+                self.doc.title()
+            ))
             .debug_selector(|| COPY_ID.into())
             .on_click(cx.listener(|this, _, _, cx| this.copy(cx)));
+        let position = self.position;
         let body = match &self.body {
             Body::Changelog(blocks) => div()
                 .id("doc-scroll")
                 .debug_selector(|| "doc-scroll".into())
+                .role(Role::Document)
+                .aria_label(CHANGELOG_LABEL)
+                .track_focus(&self.focus)
+                .on_key_down(cx.listener(Self::key))
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
-                .child(
+                .track_scroll(&self.block_scroll)
+                .py(space::XL)
+                .flex()
+                .flex_col()
+                // Each block is a direct child, so the scroll handle can
+                // bring the current one into view; each takes the column's
+                // width and side padding the single column used to have,
+                // and the window-wide scroll area keeps its scrollbar at
+                // the window's edge.
+                .children(blocks.iter().enumerate().map(|(index, block)| {
                     div()
+                        .id(("doc-block", index))
+                        .role(if matches!(block, Block::Version { .. }) {
+                            Role::Heading
+                        } else {
+                            Role::Paragraph
+                        })
+                        .aria_label(block.label())
+                        .when(
+                            index == position,
+                            gpui_kit::StatefulInteractiveElement::aria_active_descendant,
+                        )
                         .max_w(size::DOCUMENT)
                         .px(space::XXL)
-                        .py(space::XL)
-                        .flex()
-                        .flex_col()
-                        .children(
-                            blocks
-                                .iter()
-                                .map(|block| draw_block(block, &theme)),
-                        ),
-                )
+                        .child(draw_block(block, &theme))
+                }))
                 .into_any_element(),
             Body::Lines(lines, scroll) => {
                 let rows = lines.clone();
                 let ink = theme.foreground;
                 let mono = theme.mono_font.clone();
                 div()
+                    .id("document-text")
+                    .role(Role::Document)
+                    .aria_label(format!(
+                        "{}; {} lines. {LINES_KEYS}",
+                        self.doc.title(),
+                        rows.len()
+                    ))
+                    .track_focus(&self.focus)
+                    .on_key_down(cx.listener(Self::key))
                     .flex_1()
                     .min_h_0()
                     .p(space::LG)
@@ -194,13 +286,17 @@ impl Render for DocWindow {
                                     move |range, _, _| {
                                         range
                                             .map(|index| {
-                                                div()
-                                                    .px(space::LG)
-                                                    .font_family(mono.clone())
-                                                    .text_size(text::BODY)
-                                                    .text_color(ink)
-                                                    .whitespace_nowrap()
-                                                    .child(rows[index].clone())
+                                                document_line(
+                                                    index,
+                                                    &rows[index],
+                                                    index == position,
+                                                )
+                                                .px(space::LG)
+                                                .font_family(mono.clone())
+                                                .text_size(text::BODY)
+                                                .text_color(ink)
+                                                .whitespace_nowrap()
+                                                .child(rows[index].clone())
                                             })
                                             .collect()
                                     },
@@ -214,6 +310,39 @@ impl Render for DocWindow {
         };
         aux_window::frame(&["Help", self.doc.title()], copy, body, window, cx)
     }
+}
+
+/// The keys a document reader takes, for assistive technology.
+const LINES_KEYS: &str = "Up/Down reads a line, PageUp/PageDown moves \
+     twenty lines, Home/End reaches either end, Command or Control C \
+     copies all";
+
+const CHANGELOG_LABEL: &str = "Changelog; Up/Down reads a block, \
+     PageUp/PageDown moves twenty blocks, Home/End reaches either end, \
+     Command or Control C copies all";
+
+/// One line of a plain document, named with its number; the current line
+/// is the reader's active descendant.
+fn document_line(
+    index: usize,
+    line: &SharedString,
+    current: bool,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    crate::semantics::text(
+        ("document-line", index),
+        format!("Line {}: {line}", index + 1),
+    )
+    .when(
+        current,
+        gpui_kit::StatefulInteractiveElement::aria_active_descendant,
+    )
+    .debug_selector(move || {
+        if current {
+            "document-current".into()
+        } else {
+            format!("document-line-{index}")
+        }
+    })
 }
 
 // ---- The changelog -------------------------------------------------------
@@ -232,6 +361,25 @@ pub enum Block {
     Bullet(Vec<Span>),
     /// Any other text.
     Paragraph(Vec<Span>),
+}
+
+impl Block {
+    fn label(&self) -> String {
+        match self {
+            Self::Version {
+                name,
+                date,
+                current,
+            } => format!(
+                "{name} {}{}",
+                date.as_deref().unwrap_or(""),
+                if *current { "; this copy" } else { "" }
+            ),
+            Self::Bullet(spans) | Self::Paragraph(spans) => {
+                spans.iter().map(|span| span.text.as_str()).collect()
+            }
+        }
+    }
 }
 
 /// A run of inline text.

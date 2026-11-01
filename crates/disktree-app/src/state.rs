@@ -387,7 +387,7 @@ pub struct Disktree {
     pub history_hover: Option<bool>,
     /// The pointer moved more recently than the keyboard navigated. Then the
     /// tile under the pointer is what Space, X and Enter act on; after an
-    /// arrow or Tab it is the keyboard selection again.
+    /// arrow or n it is the keyboard selection again.
     pub pointer_active: bool,
     pub view: View,
     /// The in-flight layout transition, if a level was just entered or left.
@@ -418,6 +418,10 @@ pub struct Disktree {
     pub confirm_open: bool,
     /// Focus owner for the alert dialog while it is open.
     pub confirm_focus: FocusHandle,
+    pub overlay_return: Option<FocusHandle>,
+    pub app_menu_index: usize,
+    pub menu_scroll: gpui_kit::ScrollHandle,
+    pub source_roots_focus: FocusHandle,
     /// Focus to move on the next occasion a window is in hand. Key handling
     /// has no window, and opening or closing the dialog must move focus.
     pub focus_request: Option<FocusTarget>,
@@ -480,6 +484,10 @@ pub struct Disktree {
     pub app_menu_open: bool,
     pub show_selection: bool,
     pub focus: FocusHandle,
+    /// The app is quitting: what this window holds is left to the system,
+    /// which takes a process's memory back whole when it exits.
+    quitting: bool,
+    _on_quit: gpui_kit::Subscription,
     /// A trail crumb's sibling menu, when open.
     pub crumb_menu: Option<CrumbMenu>,
 
@@ -624,7 +632,8 @@ impl Disktree {
             file_list: false,
             file_page: 0,
             file_scroll: gpui_kit::ScrollHandle::new(),
-            file_focus: cx.focus_handle(),
+            // Explicit handles own tab metadata; element styles do not override it.
+            file_focus: cx.focus_handle().tab_stop(true),
             restore_file_focus: false,
             review_page: 0,
             layout_options: LayoutOptions {
@@ -650,6 +659,10 @@ impl Disktree {
             trash_backend,
             confirm_open: false,
             confirm_focus: cx.focus_handle(),
+            overlay_return: None,
+            app_menu_index: 0,
+            menu_scroll: gpui_kit::ScrollHandle::new(),
+            source_roots_focus: cx.focus_handle().tab_stop(true),
             focus_request: None,
             window_title: String::new(),
             strip_drag: false,
@@ -710,6 +723,13 @@ impl Disktree {
             scan_elapsed: None,
             scanned_at: now_seconds(),
             agent: None,
+            quitting: false,
+            // GPUI runs quit hooks before it drops the windows, so the flag
+            // is set by the time `Drop` reads it.
+            _on_quit: cx.on_app_quit(|this, _| {
+                this.quitting = true;
+                std::future::ready(())
+            }),
         };
         if local && start {
             tree.device = device_for(&tree.root_path);
@@ -767,6 +787,8 @@ impl Disktree {
     /// Scan a different root from scratch. Marks are kept; a mark outside
     /// the new root is shown as kept back, never removed.
     pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<'_, Self>) {
+        // Accepting a new source removes its originating chooser control.
+        self.overlay_return = None;
         if self.remote.is_some() {
             self.root_path = root;
             self.remote_disk = false;
@@ -2684,7 +2706,7 @@ impl Disktree {
             let is_covered = !marked.is_empty()
                 && (1..crumbs.len())
                     .any(|length| marked.contains(&crumbs[..length]));
-            decorations.push(TileDeco {
+            let decoration = TileDeco {
                 rect: self.animated_rect(tile.rect),
                 depth: tile.depth,
                 category,
@@ -2696,7 +2718,8 @@ impl Disktree {
                 covered: is_covered,
                 hovered: hovered.as_deref() == Some(crumbs),
                 selected: selected.as_deref() == Some(crumbs),
-            });
+            };
+            decorations.push(decoration.clone());
 
             // Labels are chosen in screen space: zooming in makes room for more
             // of them, which is the point of zooming in.
@@ -2716,7 +2739,21 @@ impl Disktree {
                         continue;
                     };
                     labels.push(Label {
-                        text: node.name.to_string(),
+                        text: format!(
+                            "{}{}{}{}",
+                            if is_marked || is_covered {
+                                "[marked] "
+                            } else {
+                                ""
+                            },
+                            if node.read_error { "! " } else { "" },
+                            if filtered == Filtered::Out {
+                                "[filtered] "
+                            } else {
+                                ""
+                            },
+                            node.name
+                        ),
                         rect: self.animated_rect(tile.rect),
                         header: tile
                             .header
@@ -2725,6 +2762,7 @@ impl Disktree {
                         dim: filtered == Filtered::Out,
                         marked: is_marked || is_covered,
                         size_text: crate::widgets::short_value(node, metric),
+                        decoration: decoration.clone(),
                     });
                 }
                 TileKind::Others { count, .. } => labels.push(Label {
@@ -2735,6 +2773,7 @@ impl Disktree {
                     dim: self.matches.is_some(),
                     marked: false,
                     size_text: String::new(),
+                    decoration: decoration.clone(),
                 }),
             }
         }
@@ -2984,6 +3023,7 @@ impl Disktree {
 
     /// The alert dialog's `Delete`.
     pub fn confirm_delete(&mut self, cx: &mut Context<'_, Self>) {
+        self.overlay_return = None;
         self.confirm_open = false;
         self.focus_request = Some(FocusTarget::Root);
         self.begin_removal(cx);
@@ -3003,19 +3043,19 @@ impl Disktree {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let list_visible = self.file_list
-            && self.screen == Screen::Explore
+        let navigation_visible = self.screen == Screen::Explore
             && !self.awaiting_root
             && self.tree.is_some();
-        // The list leaves the focus tree during a rescan. Its persistent
-        // parent must own Escape until a complete list can take focus again.
-        if !list_visible && self.file_focus.is_focused(window) {
+        let list_visible = self.file_list && navigation_visible;
+        // Both navigation views leave the focus tree during a rescan. Their
+        // persistent parent must own Escape until navigation is available.
+        if !navigation_visible && self.file_focus.is_focused(window) {
             self.restore_file_focus = true;
             window.focus(&self.focus, cx);
         }
-        if !self.file_list || self.screen != Screen::Explore {
+        if self.screen != Screen::Explore {
             self.restore_file_focus = false;
-        } else if list_visible
+        } else if navigation_visible
             && std::mem::take(&mut self.restore_file_focus)
             && self.focus.is_focused(window)
             && self.focus_request.is_none()
@@ -3023,15 +3063,22 @@ impl Disktree {
             window.focus(&self.file_focus, cx);
         }
         match self.focus_request.take() {
-            Some(FocusTarget::Root) => window.focus(
-                if list_visible {
-                    &self.file_focus
-                } else {
-                    &self.focus
-                },
-                cx,
-            ),
-            Some(FocusTarget::Dialog) => window.focus(&self.confirm_focus, cx),
+            Some(FocusTarget::Root) => {
+                let target = self.overlay_return.take().unwrap_or_else(|| {
+                    if list_visible {
+                        self.file_focus.clone()
+                    } else {
+                        self.focus.clone()
+                    }
+                });
+                window.focus(&target, cx);
+            }
+            Some(FocusTarget::Dialog) => {
+                if self.overlay_return.is_none() {
+                    self.overlay_return = window.focused(cx);
+                }
+                window.focus(&self.confirm_focus, cx);
+            }
             None => {}
         }
     }
@@ -3308,6 +3355,48 @@ impl Disktree {
         self.screen == Screen::Explore
             && !self.confirm_open
             && !self.volumes_open
+            && !self.show_help
+            && !self.show_agent
+    }
+
+    pub const fn has_modal(&self) -> bool {
+        self.confirm_open
+            || self.volumes_open
+            || self.show_help
+            || self.show_agent
+    }
+
+    pub fn open_help(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.has_modal() {
+            // A modal must not leave another keyboard owner behind it.
+            self.crumb_menu = None;
+            self.power_menu = None;
+            self.app_menu_open = false;
+            self.export_menu_open = false;
+            self.show_help = true;
+            self.focus_request = Some(FocusTarget::Dialog);
+            cx.notify();
+        }
+    }
+
+    pub fn close_help(&mut self, cx: &mut Context<'_, Self>) {
+        self.show_help = false;
+        self.focus_request = Some(FocusTarget::Root);
+        cx.notify();
+    }
+
+    pub fn toggle_app_menu(&mut self, cx: &mut Context<'_, Self>) {
+        if self.has_modal() {
+            return;
+        }
+        self.app_menu_open = !self.app_menu_open;
+        self.app_menu_index = 0;
+        self.focus_request = Some(if self.app_menu_open {
+            FocusTarget::Dialog
+        } else {
+            FocusTarget::Root
+        });
+        cx.notify();
     }
 
     /// Ask for a directory and scan it: an app opened from the Dock has no
@@ -3550,6 +3639,7 @@ impl Disktree {
         if self.app_menu_open {
             if key == "escape" {
                 self.app_menu_open = false;
+                self.focus_request = Some(FocusTarget::Root);
                 cx.notify();
             }
             return;
@@ -3557,14 +3647,14 @@ impl Disktree {
 
         if self.show_help {
             if matches!(key, "escape" | "?" | "/" | "q") {
-                self.show_help = false;
-                cx.notify();
+                self.close_help(cx);
             }
             return;
         }
         if self.show_agent {
             if matches!(key, "escape" | "q") {
                 self.show_agent = false;
+                self.focus_request = Some(FocusTarget::Root);
                 cx.notify();
             }
             return;
@@ -3632,6 +3722,7 @@ impl Disktree {
     ) {
         if self.file_list && !control {
             match key {
+                "n" => self.file_step(if shift { -1 } else { 1 }, cx),
                 "up" | "k" => self.file_step(-1, cx),
                 "down" | "j" => self.file_step(1, cx),
                 "pageup" => self.file_step(-100, cx),
@@ -3659,7 +3750,7 @@ impl Disktree {
             "space"
                 | "x"
                 | "enter"
-                | "tab"
+                | "n"
                 | "left"
                 | "right"
                 | "up"
@@ -3708,7 +3799,9 @@ impl Disktree {
             }
             "space" => self.toggle_mark_selected(cx),
             "x" if !control => self.toggle_mark_selected(cx),
-            "tab" => self.cycle_sibling(if shift { -1 } else { 1 }, cx),
+            "n" if !control => {
+                self.cycle_sibling(if shift { -1 } else { 1 }, cx);
+            }
             "c" if !control => self.open_review(cx),
             "[" => self.adjust_depth(-1, cx),
             "]" => self.adjust_depth(1, cx),
@@ -3751,8 +3844,7 @@ impl Disktree {
             }
             "o" if !control => self.reveal_target(cx),
             "?" => {
-                self.show_help = true;
-                cx.notify();
+                self.open_help(cx);
             }
             // A bare letter quitting is Omarchy's habit, kept there; macOS
             // and Windows quit with ⌘Q and Alt+F4, and q would throw away
@@ -3809,8 +3901,7 @@ impl Disktree {
             "a" => self.copy_agent_prompt(cx),
             "y" => self.copy_delete_script(cx),
             "?" => {
-                self.show_help = true;
-                cx.notify();
+                self.open_help(cx);
             }
             _ => {}
         }
@@ -4061,6 +4152,8 @@ pub struct Label {
     pub dim: bool,
     pub marked: bool,
     pub size_text: String,
+    /// The exact fill state is needed for contrast after filtering/marking.
+    pub decoration: TileDeco,
 }
 
 /// How many labels one frame will shape.
@@ -4185,13 +4278,37 @@ pub fn now_seconds() -> i64 {
         })
 }
 
-/// Let go of a tree off the UI thread: freeing a disk's millions of nodes
-/// takes a good part of a second, and nothing waits on it.
-fn discard(tree: Option<Arc<Node>>) {
-    if let Some(tree) = tree {
+/// Closing the window or quitting drops the app, and with it the tree.
+/// Freed in place, a home directory's tens of millions of nodes held the
+/// main thread for seconds after Quit, long enough for macOS to call the
+/// app not responding. On quit nothing is freed at all: the process is
+/// about to exit and the system takes its memory back without walking
+/// the nodes. A window closed while the app stays hands them to a
+/// background thread. The find results (an entry per match and ancestor)
+/// and a finished scan not yet taken from its channel can be as large,
+/// so they go with the tree.
+impl Drop for Disktree {
+    fn drop(&mut self) {
+        let held = (self.tree.take(), self.matches.take(), self.scan.take());
+        if self.quitting {
+            std::mem::forget(held);
+        } else {
+            discard(Some(held));
+        }
+    }
+}
+
+/// Let go of a tree, or anything holding one, off the UI thread: freeing
+/// a disk's millions of nodes takes from a good part of a second to many,
+/// and nothing waits on it.
+fn discard<T: Send + 'static>(held: Option<T>) {
+    if let Some(held) = held {
+        #[cfg(test)]
+        crate::marks::work::DISCARDED
+            .set(crate::marks::work::DISCARDED.get() + 1);
         // When no thread can be made, the closure is dropped here instead,
         // and the tree is freed in place rather than taking the window down.
-        let _ = std::thread::Builder::new().spawn(move || drop(tree));
+        let _ = std::thread::Builder::new().spawn(move || drop(held));
     }
 }
 

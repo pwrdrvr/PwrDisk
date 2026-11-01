@@ -1,5 +1,7 @@
 //! Bounded semantic navigation over the complete scan, never its preview.
 
+use crate::semantics::AccessibleButton as _;
+
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -45,6 +47,33 @@ fn entry_semantics(
 }
 
 impl Disktree {
+    pub fn file_turn_page(&mut self, step: isize, cx: &mut Context<'_, Self>) {
+        let entries = self.filter_applied.then(|| self.file_entries());
+        let count = entries.as_ref().map_or_else(
+            || self.current().map_or(0, |node| node.children.len()),
+            Vec::len,
+        );
+        if count == 0 {
+            return;
+        }
+        let last = (count - 1) / PAGE_SIZE;
+        let page = self
+            .file_page
+            .min(last)
+            .saturating_add_signed(step)
+            .min(last);
+        let position = page * PAGE_SIZE;
+        let mut crumbs = self.crumbs.clone();
+        crumbs.push(
+            entries
+                .as_ref()
+                .map_or(position, |entries| entries[position]),
+        );
+        self.file_page = page;
+        self.file_scroll.scroll_to_item(0);
+        self.pointer_active = false;
+        self.select(Some(crumbs), cx);
+    }
     pub fn file_entries(&self) -> Vec<usize> {
         self.current().map_or_else(Vec::new, |node| {
             (0..node.children.len())
@@ -62,21 +91,31 @@ impl Disktree {
     }
 
     pub fn file_step(&mut self, step: isize, cx: &mut Context<'_, Self>) {
-        let entries = self.file_entries();
-        if entries.is_empty() {
+        let entries = self.filter_applied.then(|| self.file_entries());
+        let count = entries.as_ref().map_or_else(
+            || self.current().map_or(0, |node| node.children.len()),
+            Vec::len,
+        );
+        if count == 0 {
             return;
         }
         let current = self.selected.as_ref().and_then(|crumbs| {
             (crumbs.len() == self.crumbs.len() + 1
                 && crumbs.starts_with(&self.crumbs))
-            .then(|| entries.iter().position(|i| Some(i) == crumbs.last()))
+            .then(|| {
+                entries.as_ref().map_or_else(
+                    || crumbs.last().copied().filter(|index| *index < count),
+                    |entries| {
+                        entries.iter().position(|i| Some(i) == crumbs.last())
+                    },
+                )
+            })
             .flatten()
         });
-        let next = current.map_or(0, |i| {
-            i.saturating_add_signed(step).min(entries.len() - 1)
-        });
+        let next =
+            current.map_or(0, |i| i.saturating_add_signed(step).min(count - 1));
         let mut crumbs = self.crumbs.clone();
-        crumbs.push(entries[next]);
+        crumbs.push(entries.as_ref().map_or(next, |entries| entries[next]));
         self.pointer_active = false;
         self.file_page = next / PAGE_SIZE;
         self.file_scroll.scroll_to_item(next % PAGE_SIZE);
@@ -86,8 +125,13 @@ impl Disktree {
 
 pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     let theme = cx.omarchy();
-    let entries = app.file_entries();
-    let count = entries.len();
+    // Unfiltered navigation needs only the visible page, even in a directory
+    // with millions of zero-weight files that the mosaic cannot draw.
+    let entries = app.filter_applied.then(|| app.file_entries());
+    let count = entries.as_ref().map_or_else(
+        || app.current().map_or(0, |node| node.children.len()),
+        Vec::len,
+    );
     let page = app.file_page.min(count.saturating_sub(1) / PAGE_SIZE);
     let start = page * PAGE_SIZE;
     let end = (start + PAGE_SIZE).min(count);
@@ -105,6 +149,9 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     );
     let mut rows = div().id("file-rows").role(Role::ListBox)
         .track_focus(&app.file_focus)
+        .tab_index(0).tab_stop(true)
+        .border_2().border_color(theme.background.opacity(0.))
+        .focus_visible(|style| style.border_color(theme.accent))
         .aria_label(summary.clone())
         .aria_description("Up/Down select; Enter opens a directory; Backspace returns to its parent; Space marks; c reviews. PageUp/PageDown change pages.")
         .flex().flex_col().flex_1().min_h_0().track_scroll(&app.file_scroll).overflow_y_scroll();
@@ -118,7 +165,10 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                 .child("No entries in this directory or filter"),
         );
     }
-    for (position, &index) in entries.iter().enumerate().take(end).skip(start) {
+    for position in start..end {
+        let index = entries
+            .as_ref()
+            .map_or(position, |entries| entries[position]);
         let mut crumbs = app.crumbs.clone();
         crumbs.push(index);
         let Some(node) = app.node_at(&crumbs) else {
@@ -134,12 +184,22 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             .matches
             .as_ref()
             .is_some_and(|m| m.keep(&crumbs).is_none());
+        // Clone blocks are not what removing the entry frees; say so
+        // where the size is read, and nowhere when there are none.
+        let split = crate::views::clone_split(node);
+        let clones = split
+            .as_ref()
+            .map_or_else(String::new, |split| format!(" · {split}"));
+        let spoken = split
+            .as_ref()
+            .map_or_else(String::new, |split| format!("; {split}"));
         let label = format!(
-            "{}; {}; {} ({} bytes); {}; last written {}; {}{}{}",
+            "{}; {}; {} ({} bytes){}; {}; last written {}; {}{}{}",
             path.display(),
             if node.is_dir() { "directory" } else { "file" },
             human_bytes(node.bytes),
             node.bytes,
+            spoken,
             node.category.label(),
             crate::widgets::ago(crate::state::now_seconds(), node.modified),
             if marked {
@@ -167,7 +227,7 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             .border_color(theme.divider())
             .when(selected, |row| row.bg(theme.hover_fill()).border_l_2())
             .child(format!(
-                "{}{} · {} · {}",
+                "{}{} · {}{clones} · {}",
                 if node.is_dir() { "▸ " } else { "" },
                 node.name,
                 human_bytes(node.bytes),
@@ -213,7 +273,7 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                         ButtonVariant::Outline,
                         cx,
                     )
-                    .disabled(
+                    .semantic_disabled(
                         !app.selected
                             .as_ref()
                             .and_then(|c| app.node_at(c))
@@ -234,7 +294,7 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                         ButtonVariant::Outline,
                         cx,
                     )
-                    .disabled(app.selected.is_none())
+                    .semantic_disabled(app.selected.is_none())
                     .on_click(cx.listener(
                         |this, _, _, cx| this.toggle_mark_selected(cx),
                     )),
@@ -252,11 +312,11 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                         cx,
                     )
                     .debug_selector(|| "file-previous".into())
-                    .disabled(page == 0)
+                    .semantic_disabled(page == 0)
                     .on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.file_page = page.saturating_sub(1);
-                            cx.notify();
+                        |this, _, window, cx| {
+                            this.file_turn_page(-1, cx);
+                            window.focus(&this.file_focus, cx);
                         },
                     )),
                 )
@@ -268,11 +328,11 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                         cx,
                     )
                     .debug_selector(|| "file-next".into())
-                    .disabled(end == count)
+                    .semantic_disabled(end == count)
                     .on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.file_page = page + 1;
-                            cx.notify();
+                        |this, _, window, cx| {
+                            this.file_turn_page(1, cx);
+                            window.focus(&this.file_focus, cx);
                         },
                     )),
                 ),

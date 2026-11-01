@@ -10,6 +10,16 @@ pub fn human_bytes(bytes: u64) -> String {
     scale(bytes).format(1)
 }
 
+/// `4.0 KiB` when the bounds meet, else `0 B–12 MiB`: a scan-derived
+/// estimate, read the same in the window and by an agent.
+pub fn human_bytes_range(lower: u64, upper: u64) -> String {
+    if lower == upper {
+        human_bytes(lower)
+    } else {
+        format!("{}\u{2013}{}", human_bytes(lower), human_bytes(upper))
+    }
+}
+
 /// `1.4G`, `523M`, `12B`: for tile labels, where columns are scarce.
 pub fn human_bytes_short(bytes: u64) -> String {
     scale(bytes).format(0)

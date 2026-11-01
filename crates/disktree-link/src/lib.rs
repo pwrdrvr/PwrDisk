@@ -48,7 +48,7 @@ pub const SUPPORTED: bool = cfg!(any(unix, windows));
 
 /// Protocol version, bumped when a message changes shape. Both sides are
 /// built from one tree, so a mismatch means an old window is still open.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// Updating the GUI does not replace a process hosted by an MCP client.
 pub const RECONNECT_MCP: &str = "Updating PwrDisk's GUI does not restart its MCP server. In your MCP client, restart/reconnect the PwrDisk MCP server using `pwrdisk mcp` from the updated installation. If the GUI is outdated, quit and reopen the updated PwrDisk app.";
@@ -282,6 +282,65 @@ pub struct Entry {
     /// Newest write at or beneath it, Unix seconds; `0` when unknown.
     pub modified: i64,
     pub read_error: bool,
+    /// APFS clone sharing beneath it; absent when no file there is a clone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clones: Option<Clones>,
+}
+
+/// How an entry's listed bytes split once APFS clones are accounted for.
+/// `bytes` stays the allocated total; this only annotates it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Clones {
+    /// Listed bytes outside clone files, plus clone files' private data.
+    pub private: u64,
+    /// Clone blocks other clones may hold, inside this scan or not.
+    pub shared: u64,
+    /// Bytes listed more than once beneath it, clones of one another.
+    pub repeated: u64,
+    /// What removing this entry alone frees, before snapshots: a group is
+    /// credited only when every clone APFS counts is beneath it.
+    pub lower: u64,
+    pub upper: u64,
+    /// Some clone facts are missing, or too many groups to track.
+    pub partial: bool,
+}
+
+impl Clones {
+    /// `4.0 KiB private · 12 MiB shared with other APFS clones`, as the
+    /// window and an agent's rows both read it; `None` without clone
+    /// blocks. The refcount counts clones outside the scan too, so the
+    /// wording never says the blocks are shared only within it.
+    pub fn split(&self) -> Option<String> {
+        use disktree_core::size::human_bytes;
+        (self.shared > 0).then(|| {
+            format!(
+                "{} private \u{00b7} {} shared with other APFS clones",
+                human_bytes(self.private),
+                human_bytes(self.shared)
+            )
+        })
+    }
+
+    pub fn of(node: &Node) -> Option<Self> {
+        let sharing = node.sharing();
+        // Only clone files carry these facts: off macOS, in an apparent
+        // size scan or with clone metadata off there are none, and the
+        // entry reads exactly as it did before clones were reported.
+        if sharing.files == 0 {
+            return None;
+        }
+        let shared = sharing.shared_bytes().min(node.bytes);
+        Some(Self {
+            private: node.bytes - shared,
+            shared,
+            repeated: sharing.duplicate_bytes,
+            lower: sharing.reclaimable(node.bytes),
+            upper: sharing.possible(node.bytes),
+            partial: sharing.groups_truncated
+                || sharing.unknown_files > 0
+                || sharing.estimate.is_some_and(|estimate| estimate.partial),
+        })
+    }
 }
 
 impl Entry {
@@ -295,6 +354,7 @@ impl Entry {
             reclaim: node.reclaim.map(|reclaim| reclaim.label().to_string()),
             modified: node.modified,
             read_error: node.read_error,
+            clones: Clones::of(node),
         }
     }
 }
@@ -428,6 +488,12 @@ pub struct SelectionEstimate {
     pub on_volume: u64,
     /// A limited scan, unmeasured allocation or incomplete sharing metadata.
     pub partial: bool,
+    /// Listed bytes of the selection in APFS clone blocks that other clones
+    /// may hold; [`Sharing::shared_bytes`] summed. Zero off APFS.
+    ///
+    /// [`Sharing::shared_bytes`]: disktree_core::sharing::Sharing::shared_bytes
+    #[serde(default)]
+    pub shared: u64,
 }
 
 impl SelectionEstimate {
@@ -438,7 +504,21 @@ impl SelectionEstimate {
             upper: Some(plan.possible_bytes()),
             on_volume: plan.reclaim(),
             partial: plan.estimate_partial(),
+            shared: 0,
         }
+    }
+
+    /// Accepted targets never nest, so their shares add up.
+    #[must_use]
+    pub fn with_shared<'a>(
+        mut self,
+        nodes: impl IntoIterator<Item = &'a Node>,
+    ) -> Self {
+        self.shared = nodes
+            .into_iter()
+            .map(|node| node.sharing().shared_bytes().min(node.bytes))
+            .sum();
+        self
     }
 
     pub fn unknown(plan: &disktree_core::removal::Plan) -> Self {
@@ -586,6 +666,123 @@ mod tests {
         assert!(line.contains("\"op\":\"mark\""));
         let back: Request = decode(&line).expect("decode");
         assert_eq!(back, request);
+    }
+
+    /// A directory of `copies` files, each a clone of one group that APFS
+    /// says has `references` members.
+    fn clones(
+        copies: u64,
+        references: u32,
+        private: Option<u64>,
+    ) -> disktree_core::tree::Node {
+        use disktree_core::sharing::{Allocation, CloneInfo};
+        use disktree_core::tree::{Metric, NodeKind, aggregate};
+        let mut root = Node::directory("root");
+        for index in 0..copies {
+            let mut dir = Node::directory(format!("copy-{index}"));
+            let mut file = Node::entry("data", NodeKind::File, 1000);
+            file.allocation = Some(Box::new(Allocation {
+                bytes: 1000,
+                identity: None,
+                links: 1,
+                followed: false,
+                clone: Some(CloneInfo {
+                    device: 1,
+                    id: 7,
+                    references,
+                    private_bytes: private,
+                    data_bytes: 1000,
+                }),
+            }));
+            dir.children.push(file);
+            root.children.push(dir);
+        }
+        root.children.push(Node::entry(
+            "plain",
+            disktree_core::tree::NodeKind::File,
+            50,
+        ));
+        aggregate(&mut root, Metric::Bytes);
+        root
+    }
+
+    #[test]
+    fn a_full_clone_is_all_shared_and_frees_nothing_alone() {
+        let root = clones(3, 3, Some(0));
+        let copy = Clones::of(&root.children[0]).expect("a clone");
+        assert_eq!(
+            copy,
+            Clones {
+                private: 0,
+                shared: 1000,
+                repeated: 0,
+                lower: 0,
+                upper: 0,
+                partial: false,
+            }
+        );
+        // Every member is beneath the root, so the group is freed once.
+        let all = Clones::of(&root).expect("clones beneath");
+        assert_eq!((all.private, all.shared, all.repeated), (50, 3000, 2000));
+        assert_eq!((all.lower, all.upper), (1050, 1050));
+    }
+
+    #[test]
+    fn a_member_outside_the_scan_keeps_the_group_from_being_credited() {
+        let root = clones(3, 4, Some(0));
+        let all = Clones::of(&root).expect("clones beneath");
+        assert_eq!((all.lower, all.upper), (50, 50));
+        assert_eq!(all.repeated, 2000);
+    }
+
+    #[test]
+    fn a_modified_clone_counts_its_private_bytes_only() {
+        let root = clones(3, 3, Some(300));
+        let copy = Clones::of(&root.children[0]).expect("a clone");
+        assert_eq!((copy.private, copy.shared), (300, 700));
+        assert_eq!((copy.lower, copy.upper), (300, 1000));
+        assert!(!copy.partial);
+    }
+
+    #[test]
+    fn missing_clone_facts_are_partial() {
+        let mut root = clones(2, 0, Some(0));
+        assert!(Clones::of(&root.children[0]).expect("a clone").partial);
+        root = clones(2, 2, None);
+        let copy = Clones::of(&root.children[0]).expect("a clone");
+        assert!(copy.partial);
+        // An unknown private size is never claimed as private.
+        assert_eq!((copy.private, copy.shared, copy.lower), (0, 1000, 0));
+    }
+
+    #[test]
+    fn entries_without_clones_carry_nothing_and_old_payloads_decode() {
+        let root = clones(1, 2, Some(0));
+        let plain = Entry::of(&root.children[1]);
+        assert_eq!(plain.name, "plain");
+        assert_eq!(plain.clones, None);
+        let line = serde_json::to_string(&plain).expect("encode");
+        assert!(!line.contains("clones"), "{line}");
+        // A version 4 entry has no `clones` key at all.
+        let old: Entry = serde_json::from_str(
+            r#"{"name":"a","is_dir":true,"bytes":1,"files":1,
+                "category":"other","reclaim":null,"modified":0,
+                "read_error":false}"#,
+        )
+        .expect("decode");
+        assert_eq!(old.clones, None);
+        let clone = Entry::of(&root.children[0]);
+        assert!(clone.clones.is_some());
+        let back: Entry =
+            serde_json::from_str(&serde_json::to_string(&clone).expect("enc"))
+                .expect("dec");
+        assert_eq!(back, clone);
+        let estimate: SelectionEstimate = serde_json::from_str(
+            r#"{"paths":[],"lower":0,"upper":0,"on_volume":0,
+                "partial":false}"#,
+        )
+        .expect("decode");
+        assert_eq!(estimate.shared, 0);
     }
 
     #[test]

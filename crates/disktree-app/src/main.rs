@@ -28,6 +28,8 @@ mod git;
 mod github_releases;
 mod help;
 mod log_view;
+#[cfg(debug_assertions)]
+mod logs_fixture;
 mod logs_window;
 mod marks;
 mod palette;
@@ -127,6 +129,13 @@ fn main() -> Result<()> {
     updater::run_startup_hooks();
     #[cfg(windows)]
     console::attach();
+    // Before main.log is opened, so the fixture never writes the real one.
+    #[cfg(debug_assertions)]
+    if let Some(outcome) = logs_fixture::run_if_asked() {
+        #[cfg(windows)]
+        console::detach();
+        return outcome;
+    }
     // After the hooks, which exit at once and have nothing to say; before
     // anything else, so a failure from here on is in main.log.
     diag_log::install();

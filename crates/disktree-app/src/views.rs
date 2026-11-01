@@ -4,6 +4,8 @@
 //! always exactly what the state says — there is no second copy of anything to
 //! keep in sync.
 
+use crate::semantics::AccessibleButton as _;
+
 use std::path::Path;
 
 use disktree_core::classify::Category;
@@ -110,6 +112,17 @@ pub fn root(
         Screen::Running => running(app, cx),
         Screen::Done => done(app, cx),
     };
+    let modal = app.has_modal() || app.app_menu_open;
+    let background = div().id("application-content")
+        .role(gpui_kit::Role::Group).aria_label("Application content")
+        .a11y_synthetic_children(move |b| { if modal { b.parent_node().set_hidden(); } })
+        .flex().flex_col().flex_1().min_h_0().w_full()
+        .child(strip).child(body)
+        .children(app.is_indexing().then(|| div().id("scan-progress")
+            .role(gpui_kit::Role::ProgressIndicator)
+            .aria_label(if app.screen == Screen::Explore { "Scan in progress; indeterminate; overview is incomplete; Escape cancels" } else { "Background scan in progress; indeterminate; overview is incomplete" })
+            .a11y_synthetic_children(|b| b.parent_node().set_busy())))
+        .child(crate::semantics::status("current-status", readable_status));
 
     let mut root = div()
         .id("disktree-root")
@@ -117,6 +130,7 @@ pub fn root(
         .aria_label("Disk usage explorer")
         .debug_selector(|| "disktree-root".into())
         .track_focus(&app.focus)
+        .tab_group().tab_stop(false)
         .key_context("Disktree")
         .on_action(cx.listener(|this, _: &crate::app_menu::Rescan, _, cx| {
             // Where `r` would: not behind the confirmation, and not under
@@ -134,18 +148,18 @@ pub fn root(
         ))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ShowInFinder, _, cx| {
-                this.reveal_target(cx);
+                if !this.has_modal() { this.reveal_target(cx); }
             },
         ))
         // Only where the history buttons are: the review screen has none.
         .on_action(cx.listener(|this, _: &crate::app_menu::GoBack, _, cx| {
-            if this.screen == Screen::Explore {
+            if this.screen == Screen::Explore && !this.has_modal() {
                 this.go_back(cx);
             }
         }))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::GoForward, _, cx| {
-                if this.screen == Screen::Explore {
+                if this.screen == Screen::Explore && !this.has_modal() {
                     this.go_forward(cx);
                 }
             },
@@ -160,7 +174,7 @@ pub fn root(
         }))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ShowExplore, _, cx| {
-                if this.screen == Screen::Review {
+                if this.screen == Screen::Review && !this.has_modal() {
                     this.screen = Screen::Explore;
                     cx.notify();
                 }
@@ -168,33 +182,31 @@ pub fn root(
         ))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ShowReview, _, cx| {
-                if this.screen == Screen::Explore {
+                if this.screen == Screen::Explore && !this.has_modal() {
                     this.open_review(cx);
                 }
             },
         ))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ShowKeyboardShortcuts, _, cx| {
-                // One overlay at a time: they share element ids, and Esc
-                // would close the one underneath first.
                 this.show_agent = false;
-                this.show_help = true;
-                cx.notify();
+                this.open_help(cx);
             },
         ))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ToggleAppMenu, _, cx| {
                 if frame_has_app_menu(this.chrome_pin.as_ref()) {
-                    this.app_menu_open = !this.app_menu_open;
-                    cx.notify();
+                    this.toggle_app_menu(cx);
                 }
             },
         ))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ConnectAgent, window, cx| {
+                if this.confirm_open || this.volumes_open { return; }
                 this.show_help = false;
                 this.show_agent = true;
-                window.focus(&this.focus, cx);
+                this.focus_request = Some(crate::state::FocusTarget::Dialog);
+                this.apply_focus(window, cx);
                 cx.notify();
             },
         ))
@@ -203,10 +215,31 @@ pub fn root(
                 cx.notify();
                 return;
             }
+            if this.app_menu_open && app_menu_key(this, event, window, cx) { return; }
+            if event.keystroke.key == "tab" && !event.keystroke.modifiers.control && !event.keystroke.modifiers.platform {
+                if !this.has_modal() { this.find_open = false; }
+                let scope = (this.has_modal() || this.app_menu_open).then(|| this.confirm_focus.clone());
+                crate::semantics::advance_focus(window, cx, event.keystroke.modifiers.shift, scope.as_ref());
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
             if this.volumes_open {
                 let editing = [&this.picker_host, &this.picker_path].into_iter()
                     .flatten().any(|input| input.read(cx).focus_handle(cx).is_focused(window));
                 if editing && event.keystroke.key != "escape" { return; }
+            }
+            if event.keystroke.key == "?" && !this.has_modal() && !this.find_open {
+                this.open_help(cx); this.apply_focus(window, cx); return;
+            }
+            if event.keystroke.key == "escape" && this.screen == Screen::Explore && !this.has_modal() && this.is_indexing() {
+                // Search and menus own Escape before scan cancellation,
+                // including when a toolbar control currently has focus.
+                this.on_key_down(event, cx); this.apply_focus(window, cx); return;
+            }
+            if !this.has_modal() && !this.app_menu_open && this.screen != Screen::Running && !this.focus.is_focused(window) && !this.file_focus.is_focused(window) {
+                if event.keystroke.key == "escape" { window.focus(&this.focus, cx); cx.notify(); }
+                return;
             }
             this.on_key_down(event, cx);
             this.apply_focus(window, cx);
@@ -219,18 +252,10 @@ pub fn root(
         .text_color(theme.foreground)
         .font_family(theme.font)
         .text_size(text::BODY)
-        .child(strip)
-        .child(body)
-        .children(app.is_indexing().then(|| div().id("scan-progress")
-            .role(gpui_kit::Role::ProgressIndicator)
-            .aria_label(if app.screen == Screen::Explore { "Scan in progress; indeterminate; overview is incomplete; Escape cancels" } else { "Background scan in progress; indeterminate; overview is incomplete" })
-            .a11y_synthetic_children(|b| b.parent_node().set_busy())))
-        .child(crate::semantics::status("current-status", readable_status));
+        .child(background);
     // A modal hides the mosaic's hover card: the pointer last seen on the
     // treemap is stale while the backdrop takes the mouse, so the card would
     // otherwise sit, or drift, behind the dialog.
-    let modal =
-        app.show_help || app.show_agent || app.volumes_open || app.confirm_open;
     if !modal && let Some(tip) = cursor_tooltip(app, window, cx) {
         root = root.child(tip);
     }
@@ -242,7 +267,7 @@ pub fn root(
         root = root.child(help_overlay(app, cx));
     }
     if app.app_menu_open {
-        root = root.child(app_menu_dropdown(cx));
+        root = root.child(app_menu_dropdown(app, cx));
     }
     if app.show_agent {
         root = root.child(agent_overlay(app, cx));
@@ -254,6 +279,26 @@ pub fn root(
         root = root.child(delete_dialog(app, cx));
     }
     root
+}
+
+/// Enter resolves to the dialog's Confirm action before button key events.
+/// Consume it at the focused button so Cancel and every peer keep their
+/// own click behavior instead of falling through to the dialog default.
+fn modal_action(
+    button: gpui_omarchy::Button,
+    action: fn(&mut Disktree, &mut Window, &mut Context<'_, Disktree>),
+    cx: &Context<'_, Disktree>,
+) -> gpui_omarchy::Button {
+    button
+        .on_click(cx.listener(move |this, _, window, cx| {
+            action(this, window, cx);
+        }))
+        .on_action(cx.listener(
+            move |this, _: &gpui_kit::base::actions::Confirm, window, cx| {
+                action(this, window, cx);
+                cx.stop_propagation();
+            },
+        ))
 }
 
 /// Discovery is lightweight; a separate, explicit action starts the walk.
@@ -275,6 +320,10 @@ fn volumes_dialog(
     let mut rows = div()
         .id("volume-rows")
         .role(gpui_kit::Role::ListBox)
+        .track_focus(&app.source_roots_focus).tab_index(0).tab_stop(true)
+        .border_2().border_color(theme.background.opacity(0.))
+        .focus_visible(|style| style.border_color(theme.accent))
+        .aria_description("Up and Down select a root. Enter explicitly accepts the selected root and starts its scan.")
         .aria_label(
             "Available roots in the selected machine; listing is not a scan",
         )
@@ -401,11 +450,15 @@ fn volumes_dialog(
                         cx,
                     )
                     .debug_selector(|| "source-browse".into())
-                    .on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.browse_picker_path(cx);
-                        },
-                    )),
+                    .map(|button| {
+                        modal_action(
+                            button,
+                            |this, _, cx| {
+                                this.browse_picker_path(cx);
+                            },
+                            cx,
+                        )
+                    }),
                 )
             })
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -440,18 +493,30 @@ fn volumes_dialog(
     let cancel_button =
         dialog_button("source-cancel", "Cancel", ButtonVariant::Secondary, cx)
             .debug_selector(|| "source-cancel".into())
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.close_volumes(cx);
-                this.apply_focus(window, cx);
-            }));
+            .map(|button| {
+                modal_action(
+                    button,
+                    |this, window, cx| {
+                        this.close_volumes(cx);
+                        this.apply_focus(window, cx);
+                    },
+                    cx,
+                )
+            });
     let scan_button =
         dialog_button("source-scan", "Scan", ButtonVariant::Primary, cx)
             .debug_selector(|| "source-scan".into())
-            .disabled(!scan_ready)
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.choose_volume(cx);
-                this.apply_focus(window, cx);
-            }));
+            .semantic_disabled(!scan_ready)
+            .map(|button| {
+                modal_action(
+                    button,
+                    |this, window, cx| {
+                        this.choose_volume(cx);
+                        this.apply_focus(window, cx);
+                    },
+                    cx,
+                )
+            });
     let popup = dialog_popup(cx)
         .w_full()
         .child(crate::semantics::text(
@@ -499,11 +564,15 @@ fn volumes_dialog(
                             cx,
                         )
                         .debug_selector(|| "source-connect".into())
-                        .on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.connect_picker(cx);
-                            },
-                        )),
+                        .map(|button| {
+                            modal_action(
+                                button,
+                                |this, _, cx| {
+                                    this.connect_picker(cx);
+                                },
+                                cx,
+                            )
+                        }),
                     ),
             )
         })
@@ -539,6 +608,10 @@ fn volumes_dialog(
         ));
     let popup = div()
         .id("source-picker-scroll")
+        .role(gpui_kit::Role::Dialog)
+        .aria_label("Choose what to scan")
+        .a11y_synthetic_children(|b| b.parent_node().set_modal())
+        .tab_group()
         .debug_selector(|| "source-picker".into())
         .w(size::SOURCE_PICKER)
         .max_w(Rems(
@@ -570,7 +643,9 @@ fn volumes_dialog(
                         this.connect_picker(cx);
                     } else if path_focused {
                         this.choose_picker_path(cx);
-                    } else {
+                    } else if this.confirm_focus.is_focused(window)
+                        || this.source_roots_focus.is_focused(window)
+                    {
                         this.choose_volume(cx);
                     }
                 }
@@ -678,7 +753,8 @@ fn overlay_backdrop(
             // The click only dismisses; nothing behind or above sees it.
             cx.stop_propagation();
             close(this);
-            window.focus(&this.focus, cx);
+            this.focus_request = Some(crate::state::FocusTarget::Root);
+            this.apply_focus(window, cx);
             cx.notify();
         }))
         .child(
@@ -709,7 +785,8 @@ fn overlay_footer(
         dialog_button("overlay-done", "Done", ButtonVariant::Primary, cx)
             .on_click(cx.listener(move |this, _, window, cx| {
                 close(this);
-                window.focus(&this.focus, cx);
+                this.focus_request = Some(crate::state::FocusTarget::Root);
+                this.apply_focus(window, cx);
                 cx.notify();
             })),
     );
@@ -750,32 +827,50 @@ fn delete_dialog(
     let cancel_button =
         dialog_button("delete-cancel", "Cancel", ButtonVariant::Secondary, cx)
             .debug_selector(|| "delete-cancel".into())
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.cancel_delete(cx);
-                this.apply_focus(window, cx);
-            }));
+            .map(|button| {
+                modal_action(
+                    button,
+                    |this, window, cx| {
+                        this.cancel_delete(cx);
+                        this.apply_focus(window, cx);
+                    },
+                    cx,
+                )
+            });
     let delete_button =
         dialog_button("delete-confirm", "Delete", ButtonVariant::Danger, cx)
             .debug_selector(|| "delete-confirm".into())
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.confirm_delete(cx);
-                this.apply_focus(window, cx);
-            }));
+            .map(|button| {
+                modal_action(
+                    button,
+                    |this, window, cx| {
+                        this.confirm_delete(cx);
+                        this.apply_focus(window, cx);
+                    },
+                    cx,
+                )
+            });
     let popup = dialog_popup(cx)
-        .child(dialog_title(title, cx))
-        .child(dialog_description(body, cx))
+        .child(dialog_title(title.clone(), cx))
+        .child(dialog_description(body.clone(), cx))
         .child(dialog_footer(
             [],
             Some(cancel_button.into_any_element()),
             Some(delete_button.into_any_element()),
         ));
-    let centred = centred_popup(popup);
+    let centred = centred_popup(popup)
+        .role(gpui_kit::Role::AlertDialog)
+        .aria_label(title)
+        .aria_description(body)
+        .a11y_synthetic_children(|b| b.parent_node().set_modal());
     alert_dialog(&app.confirm_focus, cx)
         .open(true)
         .on_ok(move |_, window, cx| {
             let _ = confirm.update(cx, |this, cx| {
-                this.confirm_delete(cx);
-                this.apply_focus(window, cx);
+                if this.confirm_open && this.confirm_focus.is_focused(window) {
+                    this.confirm_delete(cx);
+                    this.apply_focus(window, cx);
+                }
             });
             false
         })
@@ -906,6 +1001,11 @@ fn explore(
                             })))
                         .child(
                             div()
+                                .id("file-navigation")
+                                .when(app.tree().is_some() && !app.file_list, |view| view
+                                    .role(gpui_kit::Role::Group).aria_label("Treemap navigation; arrows move, Space marks, n selects the next sibling; use Show accessible file list for file details")
+                                    .track_focus(&app.file_focus).tab_index(0).tab_stop(true)
+                                    .focus_visible(|style| style.border_2().border_color(theme.accent)))
                                 .flex()
                                 .flex_1()
                                 .min_h_0()
@@ -1348,7 +1448,11 @@ fn view_settings(
             check(app.options.include_hidden),
             cx,
         )
-        .tab_stop(false)
+        // gpui-omarchy's checkbox is `self_start`, made to hug its label in
+        // a column; in the strip that pins it to the top edge instead of
+        // the centre line the other controls share.
+        .self_center()
+        .tab_stop(true)
         .on_change(move |_, _, window, cx| {
             let _ = entity.update(cx, |this, cx| {
                 this.options.include_hidden = !this.options.include_hidden;
@@ -1364,7 +1468,8 @@ fn view_settings(
             check(app.options.apparent_size),
             cx,
         )
-        .tab_stop(false)
+        .self_center()
+        .tab_stop(true)
         .on_change(move |_, _, window, cx| {
             let _ = entity.update(cx, |this, cx| {
                 this.options.apparent_size = !this.options.apparent_size;
@@ -1401,8 +1506,8 @@ fn view_settings(
             .child(
                 button(id, label, ButtonVariant::Secondary, cx)
                     .accessibility_label(if back { "Go back in navigation history" } else { "Go forward in navigation history" })
-                    .tab_stop(false)
-                    .disabled(!enabled)
+                    .tab_stop(true)
+                    .semantic_disabled(!enabled)
                     // Borderless: glyphs on the bar, not controls in a
                     // frame. Hover keeps the fill but not the outline it
                     // would add.
@@ -1465,8 +1570,8 @@ fn view_settings(
             } else {
                 "Increase treemap depth"
             })
-            .tab_stop(false)
-            .disabled(if step < 0 { depth <= 1 } else { depth >= 6 })
+            .tab_stop(true)
+            .semantic_disabled(if step < 0 { depth <= 1 } else { depth >= 6 })
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.adjust_depth(step, cx);
                 window.focus(&this.focus, cx);
@@ -1548,7 +1653,7 @@ fn power_efficiency(app: &Disktree, cx: &Context<'_, Disktree>) -> Div {
             button("power-toggle", "", ButtonVariant::Secondary, cx)
                 .accessibility_label(format!("Power Efficiency: {name}"))
                 .selected(open)
-                .tab_stop(false)
+                .tab_stop(true)
                 .child(widgets::signal(
                     PowerEfficiency::signal(threads, cpus),
                     cx,
@@ -2009,6 +2114,14 @@ fn selection_section(
             cx,
         ))
         .child(widgets::bar(share, highlight, cx))
+        .when_some(clone_split(node), |this, split| {
+            this.child(
+                div()
+                    .text_size(text::CAPTION)
+                    .text_color(theme.secondary)
+                    .child(split),
+            )
+        })
         .when(node.sharing().estimate.is_some(), |this| {
             this.child(
                 div()
@@ -2120,7 +2233,7 @@ fn selection_section(
             let crumbs = target.clone();
             actions = actions.child(
                 button("open", "Open", ButtonVariant::Outline, cx)
-                    .tab_stop(false)
+                    .tab_stop(true)
                     .flex_1()
                     .justify_center()
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -2143,7 +2256,7 @@ fn selection_section(
             _ => "Mark for removal".to_string(),
         };
         let mark = button("mark", label, ButtonVariant::Primary, cx)
-            .tab_stop(false)
+            .tab_stop(true)
             .flex_1()
             .justify_center()
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -2158,12 +2271,17 @@ fn selection_section(
         let filled = !marked && covered_by.is_none();
         actions = actions.child(if filled {
             let on = palette::on_highlight(theme);
+            let hover_fill = palette::mix(theme.background, highlight, 0.85);
+            let hover_ink = palette::ink_on(on, hover_fill, 4.5);
             mark.bg(highlight)
                 .border_color(highlight)
                 .text_color(on)
                 .font_weight(FontWeight::SEMIBOLD)
                 .hover(move |style| {
-                    style.bg(highlight.opacity(0.85)).border_color(highlight)
+                    style
+                        .bg(hover_fill)
+                        .text_color(hover_ink)
+                        .border_color(highlight)
                 })
         } else {
             mark
@@ -2212,7 +2330,7 @@ fn service_guidance(
                 ButtonVariant::Outline,
                 cx,
             )
-            .tab_stop(false)
+            .tab_stop(true)
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.open_url(service.documentation());
                 window.focus(&this.focus, cx);
@@ -2642,7 +2760,7 @@ fn privacy_line(
                     ButtonVariant::Outline,
                     cx,
                 )
-                .tab_stop(false)
+                .tab_stop(true)
                 .justify_center()
                 .on_click(cx.listener(
                     |this, _, window, cx| {
@@ -2719,7 +2837,7 @@ fn administrator_line(
                     ButtonVariant::Outline,
                     cx,
                 )
-                .tab_stop(false)
+                .tab_stop(true)
                 .justify_center()
                 .on_click(cx.listener(
                     |this, _, window, cx| {
@@ -2755,7 +2873,7 @@ fn disk_section(
         .child(div().flex_1())
         .child(
             button("volumes", "Source…", ButtonVariant::Secondary, cx)
-                .tab_stop(false)
+                .tab_stop(true)
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.open_volumes(cx);
                     this.apply_focus(window, cx);
@@ -3489,10 +3607,11 @@ fn review(
                         cx,
                     )
                     .debug_selector(|| "review-previous".into())
-                    .disabled(page == 0)
+                    .semantic_disabled(page == 0)
                     .on_click(cx.listener(
-                        move |this, _, _, cx| {
+                        move |this, _, window, cx| {
                             this.review_page = page.saturating_sub(1);
+                            window.focus(&this.focus, cx);
                             cx.notify();
                         },
                     )),
@@ -3505,10 +3624,11 @@ fn review(
                         cx,
                     )
                     .debug_selector(|| "review-next".into())
-                    .disabled((page + 1) * LIST_LIMIT >= items.len())
+                    .semantic_disabled((page + 1) * LIST_LIMIT >= items.len())
                     .on_click(cx.listener(
-                        move |this, _, _, cx| {
+                        move |this, _, window, cx| {
                             this.review_page = page + 1;
+                            window.focus(&this.focus, cx);
                             cx.notify();
                         },
                     )),
@@ -3552,10 +3672,10 @@ fn review(
             chrome::Platform::current() == chrome::Platform::Linux,
             |screen| screen.child(review_hints(app, &theme, cx)),
         )
-        .child(screen_footer(
-            review_actions(app, &plan, cx),
-            &theme,
-        ))
+        .child(
+            screen_footer(review_actions(app, &plan, cx), &theme)
+                .debug_selector(|| "review-footer".into()),
+        )
 }
 
 /// One marked path. Lanes are fixed, so names, bars and sizes line up down
@@ -3673,7 +3793,7 @@ fn review_summary(
     theme: &Theme,
     window: &mut Window,
     cx: &mut Context<'_, Disktree>,
-) -> Div {
+) -> Stateful<Div> {
     // What comes back to the volume on screen, which is all its meter can
     // project; the totals below say what the removal does in full.
     let reclaiming = plan.reclaim();
@@ -3723,12 +3843,19 @@ fn review_summary(
         }
     };
 
+    // Never taller than its space above the footer: in a short window, or
+    // at a larger interface zoom, the panel scrolls instead of running
+    // under the footer.
     let mut panel = div()
+        .id("review-summary")
+        .debug_selector(|| "review-summary".into())
         .flex()
         .flex_col()
         .gap(space::XL)
         .w(size::REVIEW_SUMMARY)
         .flex_shrink_0()
+        .min_h_0()
+        .overflow_y_scroll()
         .p(space::LG)
         .border_1()
         .border_color(theme.border)
@@ -3827,7 +3954,9 @@ fn review_summary(
 
     // The panel says what will happen; the footer below does it.
     panel
-        .child(div().flex_1())
+        // Named for the test that scrolls to the panel's end: with no
+        // notice, nothing comes after it.
+        .child(div().flex_1().debug_selector(|| "review-summary-end".into()))
         .children(notice_line(app, theme, cx))
 }
 
@@ -3922,7 +4051,7 @@ fn export_menu(
         .child(
             button("export", "Export \u{25be}", ButtonVariant::Outline, cx)
             .debug_selector(|| "export".into())
-                .disabled(plan.is_empty())
+                .semantic_disabled(plan.is_empty())
                 .selected(app.export_menu_open)
                 // Capture runs before the open menu's press-outside handler
                 // closes it, so a press on the button toggles.
@@ -3953,7 +4082,7 @@ fn review_actions(
 ) -> Div {
     let unmark = button("unmark-all", "Unmark all", ButtonVariant::Outline, cx)
         .debug_selector(|| "unmark-all".into())
-        .disabled(app.marks.is_empty())
+        .semantic_disabled(app.marks.is_empty())
         .on_click(cx.listener(|this, _, window, cx| {
             this.clear_marks(cx);
             window.focus(&this.focus, cx);
@@ -3983,7 +4112,7 @@ fn review_actions(
                 && !app.trash_backend.is_available());
         button("commit", label, variant, cx)
             .debug_selector(|| "commit".into())
-            .disabled(unavailable)
+            .semantic_disabled(unavailable)
             .on_click(cx.listener(|this, _, window, cx| {
                 this.commit(cx);
                 this.apply_focus(window, cx);
@@ -4159,7 +4288,7 @@ fn running(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
                         cx,
                     )
                     .debug_selector(|| "stop-removal".into())
-                    .disabled(app.stop_requested)
+                    .semantic_disabled(app.stop_requested)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.stop_removal(cx);
                         window.focus(&this.focus, cx);
@@ -4352,9 +4481,17 @@ pub fn cursor_tooltip(
     // Placement is in pixels because the pointer is; the card's own size and
     // gaps come from the rem scale so they follow interface zoom.
     const HEIGHT_REMS: f32 = 6.5;
+    // A clone split adds a caption line: its text and the card's gap.
+    const SPLIT_REMS: f32 = text::CAPTION.0 * 1.25 + space::XS.0;
     let rem = window.rem_size().as_f32();
     let width = size::TOOLTIP.0 * rem;
-    let height = HEIGHT_REMS * rem;
+    let split = app
+        .hovered
+        .as_deref()
+        .and_then(|crumbs| app.node_at(crumbs))
+        .and_then(clone_split)
+        .is_some();
+    let height = (HEIGHT_REMS + if split { SPLIT_REMS } else { 0.0 }) * rem;
     let gap = space::MD.0 * rem;
     let edge = space::XS.0 * rem;
 
@@ -4542,7 +4679,15 @@ fn node_card(
                         ),
                         human_bytes(node.own_bytes())
                     )),
-            );
+            )
+            .when_some(clone_split(node), |this, split| {
+                this.child(
+                    div()
+                        .text_size(text::CAPTION)
+                        .text_color(theme.secondary)
+                        .child(split),
+                )
+            });
 
     let mut badges = div().flex().flex_row().gap(space::XS).flex_wrap();
     if hidden {
@@ -4605,7 +4750,11 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             "\u{2190} \u{2191} \u{2193} \u{2192}",
             "Move between tiles at this level",
         ),
-        ("tab", "Next largest sibling"),
+        (
+            "tab / shift-tab",
+            "Next or previous control; Escape returns to files",
+        ),
+        ("n / shift-n", "Next or previous largest sibling"),
         ("scroll", "Zoom toward a directory, then go into it"),
         ("shift-scroll", "Pan the magnified view"),
         ("[ / ]", "Draw fewer or more levels at once"),
@@ -4669,32 +4818,35 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
         .gap(space::SM)
         .min_h_0()
         .overflow_y_scroll();
-    for (key, label) in rows {
+    for (index, (key, label)) in rows.into_iter().enumerate() {
         if key.is_empty() && label.is_empty() {
             continue;
         }
         keys = keys.child(
-            div()
-                .flex()
-                .flex_row()
-                .gap(space::MD)
-                .items_center()
-                .child(
-                    div()
-                        .w(size::KEY_LANE)
-                        .flex_shrink_0()
-                        .text_size(text::CAPTION)
-                        .text_color(theme.accent)
-                        .child(key.to_string()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(text::BODY)
-                        .text_color(theme.foreground)
-                        .child(label.to_string()),
-                ),
+            crate::semantics::text(
+                ("help-shortcut", index),
+                format!("{key}: {label}"),
+            )
+            .flex()
+            .flex_row()
+            .gap(space::MD)
+            .items_center()
+            .child(
+                div()
+                    .w(size::KEY_LANE)
+                    .flex_shrink_0()
+                    .text_size(text::CAPTION)
+                    .text_color(theme.accent)
+                    .child(key.to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(text::BODY)
+                    .text_color(theme.foreground)
+                    .child(label.to_string()),
+            ),
         );
     }
 
@@ -4729,11 +4881,15 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                             .text_color(theme.accent),
                     )
                     .child(
-                        div()
-                            .text_size(text::TITLE)
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme.bright)
-                            .child("Keyboard and mouse"),
+                        crate::semantics::text(
+                            "help-heading",
+                            "Keyboard and mouse",
+                        )
+                        .role(gpui_kit::Role::Heading)
+                        .text_size(text::TITLE)
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.bright)
+                        .child("Keyboard and mouse"),
                     ),
             )
             .child(keys)
@@ -4741,15 +4897,25 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
         close,
         cx,
     )
+    .role(gpui_kit::Role::Dialog)
+    .aria_label("Keyboard and mouse shortcuts")
+    .aria_description("Escape closes and returns to the originating control")
+    .track_focus(&app.confirm_focus)
+    .tab_group()
+    .tab_stop(false)
+    .a11y_synthetic_children(|b| b.parent_node().set_modal())
+}
+
+/// A node's listed bytes split into private and APFS-clone-shared, as the
+/// MCP rows read; `None` without clone blocks, so other systems and other
+/// scans show nothing new. Tile weights stay the allocated bytes.
+pub fn clone_split(node: &disktree_core::tree::Node) -> Option<String> {
+    disktree_link::Clones::of(node)?.split()
 }
 
 /// Both ends are scan-derived; the meter uses the lower bound only.
 fn savings(lower: u64, upper: u64) -> String {
-    if lower == upper {
-        human_bytes(lower)
-    } else {
-        format!("{}–{}", human_bytes(lower), human_bytes(upper))
-    }
+    disktree_core::size::human_bytes_range(lower, upper)
 }
 
 // ── the menu, off macOS ─────────────────────────────────────────────────
@@ -4770,6 +4936,12 @@ fn app_menu_button(
     with_tooltip(
         div()
             .id("app-menu-button")
+            .role(gpui_kit::Role::Button)
+            .aria_label("Application menu")
+            .aria_expanded(app.app_menu_open)
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(|style| style.border_color(theme.accent))
             .debug_selector(|| "app-menu-button".into())
             .flex()
             .items_center()
@@ -4792,10 +4964,20 @@ fn app_menu_button(
             .child(
                 gpui_omarchy::icon(gpui_omarchy::IconName::Menu).size(icon::MD),
             )
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.app_menu_open = !this.app_menu_open;
-                cx.notify();
-            })),
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.toggle_app_menu(cx);
+                this.apply_focus(window, cx);
+            }))
+            .on_key_down(cx.listener(
+                |this, event: &KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                    {
+                        this.toggle_app_menu(cx);
+                        this.apply_focus(window, cx);
+                        cx.stop_propagation();
+                    }
+                },
+            )),
         "Menu \u{b7} Alt",
     )
 }
@@ -4803,13 +4985,22 @@ fn app_menu_button(
 /// The menu bar's template (`app_menu::menus`) as one dropdown, its menus
 /// as headed groups rather than cascades: one level, nothing to aim at
 /// diagonally. A row runs its action as the menu bar's would.
-fn app_menu_dropdown(cx: &Context<'_, Disktree>) -> impl IntoElement {
+fn app_menu_dropdown(
+    app: &Disktree,
+    cx: &Context<'_, Disktree>,
+) -> impl IntoElement {
     use gpui_kit::MenuItem;
     let theme = cx.omarchy().clone();
     let keymap = cx.key_bindings();
     let keymap = keymap.borrow();
     let mut list = div()
         .id("app-menu")
+        .track_scroll(&app.menu_scroll)
+        .role(gpui_kit::Role::Menu)
+        .aria_label("Application menu")
+        .track_focus(&app.confirm_focus)
+        .tab_group()
+        .tab_stop(false)
         .debug_selector(|| "app-menu".into())
         .flex()
         .flex_col()
@@ -4821,12 +5012,13 @@ fn app_menu_dropdown(cx: &Context<'_, Disktree>) -> impl IntoElement {
         .border_color(theme.border)
         .bg(theme.surface)
         .shadow_lg()
-        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-            this.app_menu_open = false;
-            cx.notify();
+        .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+            this.toggle_app_menu(cx);
+            this.apply_focus(window, cx);
         }));
     let menus = crate::app_menu::menus(crate::app_menu::Platform::Other);
     let count = menus.len();
+    let mut item_index = 0;
     for (group, menu) in menus.into_iter().enumerate() {
         list = list.child(
             div()
@@ -4856,9 +5048,14 @@ fn app_menu_dropdown(cx: &Context<'_, Disktree>) -> impl IntoElement {
                         .join(" ")
                 });
             let id = format!("app-menu-{group}-{index}");
+            let selected = item_index == app.app_menu_index;
+            item_index += 1;
             list = list.child(
                 div()
                     .id(ElementId::Name(id.clone().into()))
+                    .role(gpui_kit::Role::MenuItem).aria_label(name.clone())
+                    .when_some(shortcut.clone(), gpui_kit::StatefulInteractiveElement::aria_keyshortcuts)
+                    .when(selected, gpui_kit::StatefulInteractiveElement::aria_active_descendant)
                     .debug_selector(move || id)
                     .flex()
                     .flex_row()
@@ -4867,6 +5064,7 @@ fn app_menu_dropdown(cx: &Context<'_, Disktree>) -> impl IntoElement {
                     .px(space::MD)
                     .py(space::XXS)
                     .hover(|row| row.bg(theme.accent.opacity(0.18)))
+                    .when(selected, |row| row.bg(theme.hover_fill()))
                     .cursor_pointer()
                     .child(
                         div().flex_1().text_color(theme.foreground).child(name),
@@ -4880,6 +5078,8 @@ fn app_menu_dropdown(cx: &Context<'_, Disktree>) -> impl IntoElement {
                     }))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.app_menu_open = false;
+                        this.focus_request = Some(crate::state::FocusTarget::Root);
+            this.apply_focus(window, cx);
                         window.dispatch_action(action.boxed_clone(), cx);
                         cx.notify();
                     })),
@@ -4925,7 +5125,8 @@ fn agent_pill(
             .hover(|style| style.bg(theme.success.opacity(0.1)))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.show_agent = true;
-                window.focus(&this.focus, cx);
+                this.focus_request = Some(crate::state::FocusTarget::Dialog);
+                this.apply_focus(window, cx);
                 cx.notify();
             }))
             .child(div().text_color(theme.success).child("\u{25cf}"))
@@ -4966,7 +5167,8 @@ fn agent_line(
         .cursor_pointer()
         .on_click(cx.listener(|this, _, window, cx| {
             this.show_agent = true;
-            window.focus(&this.focus, cx);
+            this.focus_request = Some(crate::state::FocusTarget::Dialog);
+            this.apply_focus(window, cx);
             cx.notify();
         }));
     match presence {
@@ -5063,7 +5265,7 @@ fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                                 ButtonVariant::Outline,
                                 cx,
                             )
-                            .tab_stop(false)
+                            .tab_stop(true)
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
                                     this.copy_connect_text(
@@ -5071,7 +5273,7 @@ fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                                         &what,
                                         cx,
                                     );
-                                    window.focus(&this.focus, cx);
+                                    window.focus(&this.confirm_focus, cx);
                                 },
                             )),
                         ),
@@ -5097,14 +5299,14 @@ fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             )
             .child(
                 button("copy-prompt", "Copy", ButtonVariant::Outline, cx)
-                    .tab_stop(false)
+                    .tab_stop(true)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.copy_connect_text(
                             crate::agent::FIRST_PROMPT.to_string(),
                             "the prompt",
                             cx,
                         );
-                        window.focus(&this.focus, cx);
+                        window.focus(&this.confirm_focus, cx);
                     })),
             ),
     );
@@ -5151,6 +5353,72 @@ fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
         close,
         cx,
     )
+    .role(gpui_kit::Role::Dialog)
+    .aria_label("Work with an AI agent")
+    .track_focus(&app.confirm_focus)
+    .tab_group()
+    .tab_stop(false)
+    .a11y_synthetic_children(|b| b.parent_node().set_modal())
+}
+
+fn app_menu_key(
+    app: &mut Disktree,
+    event: &KeyDownEvent,
+    window: &mut Window,
+    cx: &mut Context<'_, Disktree>,
+) -> bool {
+    let actions: Vec<_> =
+        crate::app_menu::menus(crate::app_menu::Platform::Other)
+            .into_iter()
+            .flat_map(|menu| menu.items)
+            .filter_map(|item| {
+                if let gpui_kit::MenuItem::Action { action, .. } = item {
+                    Some(action)
+                } else {
+                    None
+                }
+            })
+            .collect();
+    let count = actions.len();
+    if count == 0 {
+        return false;
+    }
+    match event.keystroke.key.as_str() {
+        "down" | "j" => app.app_menu_index = (app.app_menu_index + 1) % count,
+        "up" | "k" => {
+            app.app_menu_index = (app.app_menu_index + count - 1) % count;
+        }
+        "home" => app.app_menu_index = 0,
+        "end" => app.app_menu_index = count - 1,
+        "enter" | "space" => {
+            let action =
+                actions[app.app_menu_index.min(count - 1)].boxed_clone();
+            app.app_menu_open = false;
+            app.focus_request = Some(crate::state::FocusTarget::Root);
+            app.apply_focus(window, cx);
+            window.dispatch_action(action, cx);
+        }
+        _ => return false,
+    }
+    let mut remaining = app.app_menu_index;
+    let mut row = app.app_menu_index + 1;
+    for menu in crate::app_menu::menus(crate::app_menu::Platform::Other) {
+        let count = menu
+            .items
+            .iter()
+            .filter(|item| matches!(item, gpui_kit::MenuItem::Action { .. }))
+            .count();
+        if remaining < count {
+            break;
+        }
+        remaining -= count;
+        // Each preceding group contributes a heading and a separator.
+        row += 2;
+    }
+    app.menu_scroll.scroll_to_item(row);
+    cx.stop_propagation();
+    cx.notify();
+    true
 }
 
 #[cfg(test)]

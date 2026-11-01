@@ -99,7 +99,7 @@ machine; see `crates/disktree-core/src/classify.rs`.
 ## Marking
 
 Space, X, Enter and the arrows act on the tile under the mouse if the mouse
-moved last, and on the keyboard selection after you use an arrow or Tab.
+moved last, and on the keyboard selection after you use an arrow or n.
 
 A marked tile takes the danger colour, and so does everything inside it:
 removing a directory takes its contents with it. Marking a directory absorbs
@@ -148,7 +148,8 @@ and shows how much free space was actually gained.
 | `⌫` / `esc` | go up one directory |
 | `alt ←` `alt →` | back and forward through where you have been |
 | `←` `↑` `↓` `→` | move between tiles at this level |
-| `tab` | next largest sibling |
+| `tab` / `shift-tab` | next / previous control; Escape returns to files |
+| `n` / `shift-n` | next / previous largest sibling |
 | scroll | zoom toward a directory, then go into it |
 | `shift`-scroll | pan the magnified view |
 | `[` `]` | draw fewer or more levels at once |
@@ -511,6 +512,14 @@ What is different from Linux:
 - **Cloned files** (copies APFS shares blocks between, as Finder's Duplicate
   makes) remain counted in full in the treemap. The scan line separately
   reports bytes in cloned files and estimated repeated data-fork allocation.
+  The selection panel and a tile's hover card split the listed bytes into
+  private and shared: shared bytes are clone blocks another clone, inside
+  the scan or outside it, may still hold. In `pwrdisk mcp`, every
+  `pwrdisk_scan`, `pwrdisk_ls` and `pwrdisk_find` row with clone blocks
+  reads `0 B private · 11 MiB shared with other APFS clones · frees ≈ 0 B
+  alone`, and the scan and listing headers say how much is counted again
+  and what the files take on disk. Rows without clones, and every row off
+  APFS or in an apparent-size scan, read as before.
   The selection, review and permanent-delete confirmation estimate savings
   from the accepted set of marks together. Complete clone groups credit
   shared data once; a remaining hardlink retains its file data. Unknown or

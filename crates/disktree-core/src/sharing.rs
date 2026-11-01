@@ -56,6 +56,14 @@ impl Sharing {
     pub fn possible(self, listed: u64) -> u64 {
         self.estimate.map_or(listed, |estimate| estimate.upper)
     }
+
+    /// Allocation in clone files not known to be private. Other clones,
+    /// selected or not and inside the scan or not, may hold these blocks,
+    /// so deleting this alone does not free them. An unknown private size
+    /// counts as shared: the conservative side for a saving.
+    pub const fn shared_bytes(self) -> u64 {
+        self.bytes.saturating_sub(self.private_bytes)
+    }
 }
 
 /// Leaf metadata is already retained; do not allocate another box per clone.
@@ -164,7 +172,13 @@ fn collect(node: &mut Node, limit: usize) -> (Groups, reclaim::Accumulator) {
             groups.insert(
                 (info.device, info.id),
                 Group {
-                    bytes: info.data_bytes.min(node.bytes),
+                    // A modified clone repeats only what it still shares;
+                    // its private blocks are its own. An unknown private
+                    // size keeps the whole data fork, as before.
+                    bytes: info.data_bytes.min(
+                        node.bytes
+                            .saturating_sub(info.private_bytes.unwrap_or(0)),
+                    ),
                     count: 1,
                 },
             );
@@ -279,6 +293,19 @@ mod tests {
         assert_eq!(root.sharing().reclaimable(root.bytes), 140);
         aggregate(&mut root, Metric::Files);
         assert_eq!(root.sharing().duplicate_bytes, 80);
+    }
+
+    #[test]
+    fn modified_clones_repeat_only_what_they_still_share() {
+        let mut root = Node::directory("root");
+        root.children =
+            vec![clone("a", 1, 1, Some(60)), clone("b", 1, 1, Some(60))];
+        aggregate(&mut root, Metric::Bytes);
+        // Each still shares 40 of its 100 bytes: one copy of that repeats.
+        assert_eq!(root.sharing().duplicate_bytes, 40);
+        assert!(
+            root.sharing().duplicate_bytes <= root.sharing().shared_bytes()
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@
 //! one to hide, and nothing here writes a line anywhere but the clipboard.
 //! The model, parsing and the file reads are `log_view.rs`.
 
+use crate::semantics::AccessibleButton as _;
 use disktree_core::path_style::PathStyle;
 use std::fmt::Write as _;
 use std::ops::Range;
@@ -56,6 +57,15 @@ const NOTE_FOR: Duration = Duration::from_secs(3);
 /// Rows kept above a line the window scrolls to (a match, the line Esc
 /// returns to), so what led to it shows.
 const REVEAL_ABOVE: usize = 2;
+
+/// How far Page Up and Page Down move the line selection.
+const PAGE_LINES: usize = crate::semantics::PAGE_STEP;
+
+/// What the reader is and which keys it takes, for assistive technology.
+const READER_LABEL: &str = "Logs; Tab moves through controls; Escape \
+     leaves search; Up/Down selects lines, Shift extends selection, \
+     Home/End reaches either end; Command or Control C copies selected \
+     lines";
 /// Where the view's settings are kept, in the settings folder.
 const PREFS_FILE: &str = "logs-view.json";
 
@@ -268,7 +278,7 @@ impl LogsWindow {
             prefs_path,
             search,
             query: String::new(),
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             list: ListState::new(0, ListAlignment::Top, px(240.0)),
             list_keys: Vec::new(),
             list_generation: None,
@@ -811,6 +821,42 @@ impl LogsWindow {
             }
             (true, "a") => self.select_all(cx),
             (true, "c") => self.copy_selection(cx),
+            (false, "up" | "down" | "pageup" | "pagedown" | "home" | "end") => {
+                let numbers: Vec<_> = self
+                    .view
+                    .rows()
+                    .iter()
+                    .filter_map(|row| match row {
+                        Row::Line { index, .. } => {
+                            Some(self.view.first_number + index)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(last) = numbers.len().checked_sub(1) {
+                    let at = self.selection.and_then(|(_, number)| {
+                        numbers.iter().position(|n| *n == number)
+                    });
+                    // With nothing selected yet, moving down starts at
+                    // the first line and moving up at the last, rather
+                    // than stepping past either.
+                    let next = match (keystroke.key.as_str(), at) {
+                        ("end", _) | ("up" | "pageup", None) => last,
+                        ("home", _) | (_, None) => 0,
+                        ("up", Some(at)) => at.saturating_sub(1),
+                        ("pageup", Some(at)) => at.saturating_sub(PAGE_LINES),
+                        ("pagedown", Some(at)) => (at + PAGE_LINES).min(last),
+                        (_, Some(at)) => (at + 1).min(last),
+                    };
+                    let number = numbers[next];
+                    self.click_number(number, keystroke.modifiers.shift, cx);
+                    self.live = false;
+                    if let Some(row) = self.view.row_of(number) {
+                        self.reveal_row(row);
+                    }
+                    cx.notify();
+                }
+            }
             (false, "escape") => {
                 self.selection = None;
                 self.context_open = false;
@@ -985,13 +1031,13 @@ impl Render for LogsWindow {
             .child(
                 button(COPY_PATH_ID, "Copy path", ButtonVariant::Secondary, cx)
                     .debug_selector(|| COPY_PATH_ID.into())
-                    .disabled(self.tail.is_none())
+                    .semantic_disabled(self.tail.is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.copy_path(cx))),
             )
             .child(
                 button(REVEAL_ID, "Reveal", ButtonVariant::Secondary, cx)
                     .debug_selector(|| REVEAL_ID.into())
-                    .disabled(self.tail.is_none())
+                    .semantic_disabled(self.tail.is_none())
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(tail) = &this.tail {
                             cx.reveal_path(&tail.path);
@@ -1000,7 +1046,20 @@ impl Render for LogsWindow {
             );
         let content = div()
             .id("logs-window")
+            // The search input consumes Escape itself, clearing its query,
+            // so the action is caught on the way down: an empty search
+            // hands the keys back to the reader instead.
+            .capture_action(cx.listener(
+                |this, _: &gpui_kit::base::input::Escape, window, cx| {
+                    if this.search.read(cx).value().is_empty() {
+                        window.focus(&this.focus, cx);
+                        cx.stop_propagation();
+                    }
+                },
+            ))
             .track_focus(&self.focus)
+            .role(gpui_kit::Role::Group)
+            .aria_label(READER_LABEL)
             .on_key_down(cx.listener(
                 |this, event: &KeyDownEvent, window, cx| {
                     this.key(event, window, cx);
@@ -1044,6 +1103,7 @@ impl LogsWindow {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let search = gpui_omarchy::input(SEARCH_ID, &self.search, window, cx)
+            .aria_label("Search log text").aria_description("Enter moves to the next match; Shift Enter to the previous match. Tab moves to log controls. Escape clears the query.")
             .debug_selector(|| SEARCH_ID.into())
             .prefix(
                 icon(IconName::Search)
@@ -1068,9 +1128,30 @@ impl LogsWindow {
         .into_iter()
         .fold(segmented(theme), |seg, (mode, id, label, hint)| {
             seg.child(with_tooltip(
-                segment(id, label, self.view.mode == mode, theme).on_click(
-                    cx.listener(move |this, _, _, cx| this.set_mode(mode, cx)),
-                ),
+                // One of two, so radio buttons; the levels are checkboxes.
+                segment(
+                    id,
+                    label,
+                    self.view.mode == mode,
+                    gpui_kit::Role::RadioButton,
+                    theme,
+                )
+                .on_key_down(cx.listener(
+                    move |this, event: &KeyDownEvent, _, cx| {
+                        if matches!(
+                            event.keystroke.key.as_str(),
+                            "enter" | "space"
+                        ) {
+                            this.set_mode(mode, cx);
+                            cx.stop_propagation();
+                        }
+                    },
+                ))
+                .on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.set_mode(mode, cx);
+                    },
+                )),
                 hint,
             ))
         });
@@ -1088,7 +1169,18 @@ impl LogsWindow {
                 };
                 let id = level_id(level);
                 seg.child(
-                    segment(id, label, on, theme)
+                    segment(id, label, on, gpui_kit::Role::CheckBox, theme)
+                        .on_key_down(cx.listener(
+                            move |this, event: &KeyDownEvent, _, cx| {
+                                if matches!(
+                                    event.keystroke.key.as_str(),
+                                    "enter" | "space"
+                                ) {
+                                    this.toggle_level(level, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
                         .when(on, |item| {
                             item.text_color(level_color(level, theme))
                         })
@@ -1190,7 +1282,7 @@ impl LogsWindow {
                 // search starts; trimmed, the field keeps its height.
                 .py(space::XXS)
                 .debug_selector(move || id.into())
-                .disabled(count == 0)
+                .semantic_disabled(count == 0)
                 .on_click(cx.listener(
                     move |this, _, _, cx| {
                         this.step(forward, cx);
@@ -1250,6 +1342,21 @@ impl LogsWindow {
                     div()
                         .id(id)
                         .debug_selector(move || selector.to_string())
+                        .role(gpui_kit::Role::MenuItem)
+                        .aria_label(context_label(lines))
+                        .focusable()
+                        .tab_stop(true)
+                        .on_key_down(cx.listener(
+                            move |this, event: &KeyDownEvent, _, cx| {
+                                if matches!(
+                                    event.keystroke.key.as_str(),
+                                    "enter" | "space"
+                                ) {
+                                    this.set_context(lines, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
                         .flex()
                         .flex_row()
                         .items_center()
@@ -1315,13 +1422,23 @@ impl LogsWindow {
             .bg(theme.inset)
             .overflow_hidden();
         if let Some(problem) = &self.problem {
-            return frame.child(centered(problem.clone(), theme));
+            return frame.child(
+                crate::semantics::text("logs-problem", problem.clone())
+                    .role(gpui_kit::Role::Alert)
+                    .child(centered(problem.clone(), theme)),
+            );
         }
         if self.view.lines.is_empty() {
-            return frame.child(centered("No log output yet.", theme));
+            return frame.child(
+                crate::semantics::text("logs-empty", "No log output yet.")
+                    .child(centered("No log output yet.", theme)),
+            );
         }
         if self.view.rows().is_empty() {
-            return frame.child(centered("No lines match.", theme));
+            return frame.child(
+                crate::semantics::text("logs-no-matches", "No lines match.")
+                    .child(centered("No lines match.", theme)),
+            );
         }
         let rows = list(
             self.list.clone(),
@@ -1335,6 +1452,22 @@ impl LogsWindow {
             .child(
                 div()
                     .id("logs-viewport")
+                    .role(gpui_kit::Role::ListBox)
+                    .aria_label(format!(
+                        "{}; {}; {}",
+                        self.view.summary(),
+                        if self.live {
+                            "following live"
+                        } else {
+                            "paused"
+                        },
+                        self.selected().map_or_else(
+                            || "no selection".into(),
+                            |(low, high)| format!(
+                                "selected lines {low} through {high}"
+                            )
+                        )
+                    ))
                     .size_full()
                     .on_scroll_wheel(cx.listener(
                         |this, event: &ScrollWheelEvent, window, cx| {
@@ -1468,6 +1601,17 @@ impl LogsWindow {
         div()
             .id(("log-row", number))
             .debug_selector(move || format!("log-row-{number}"))
+            .role(gpui_kit::Role::ListBoxOption)
+            .aria_label(format!(
+                "Line {number}: {}{}",
+                line.raw(),
+                if context { "; context line" } else { "" }
+            ))
+            .aria_selected(selected)
+            .when(
+                self.selection.is_some_and(|(_, end)| end == number),
+                gpui_kit::StatefulInteractiveElement::aria_active_descendant,
+            )
             .w_full()
             .flex()
             .flex_row()
@@ -1562,7 +1706,7 @@ impl LogsWindow {
                     cx,
                 )
                 .debug_selector(|| SINCE_MARK_ID.into())
-                .disabled(!since)
+                .semantic_disabled(!since)
                 .on_click(cx.listener(
                     |this, _, window, cx| {
                         this.select_since_mark(window, cx);
@@ -1692,6 +1836,28 @@ impl LogsWindow {
                         div()
                             .id(DIAGNOSTICS_ID)
                             .debug_selector(|| DIAGNOSTICS_ID.into())
+                            .role(gpui_kit::Role::CheckBox)
+                            .aria_label(
+                                "Include diagnostics in copied log selection",
+                            )
+                            .aria_toggled(if self.include_diagnostics {
+                                gpui_kit::accesskit::Toggled::True
+                            } else {
+                                gpui_kit::accesskit::Toggled::False
+                            })
+                            .focusable()
+                            .tab_stop(true)
+                            .on_key_down(cx.listener(
+                                |this, event: &KeyDownEvent, _, cx| {
+                                    if matches!(
+                                        event.keystroke.key.as_str(),
+                                        "enter" | "space"
+                                    ) {
+                                        this.toggle_diagnostics(cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .flex()
                             .flex_row()
                             .items_center()
@@ -1708,7 +1874,7 @@ impl LogsWindow {
                     .child(with_tooltip(
                         button(COPY_ID, "Copy", ButtonVariant::Primary, cx)
                             .debug_selector(|| COPY_ID.into())
-                            .disabled(indexes.is_empty())
+                            .semantic_disabled(indexes.is_empty())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.copy_selection(cx);
                             })),
@@ -1772,7 +1938,28 @@ impl LogsWindow {
             .border_color(theme.divider())
             .text_size(text::CAPTION)
             .text_color(theme.secondary)
-            .child(div().debug_selector(|| "logs-count".into()).child(summary))
+            .child(
+                crate::semantics::text(
+                    "logs-summary",
+                    format!(
+                        "{}; {}; {}",
+                        summary,
+                        if self.live {
+                            "following live"
+                        } else {
+                            "paused"
+                        },
+                        self.selected().map_or_else(
+                            || "no selection".into(),
+                            |(low, high)| format!(
+                                "selected lines {low} through {high}"
+                            )
+                        )
+                    ),
+                )
+                .debug_selector(|| "logs-count".into())
+                .child(summary),
+            )
             .children(place)
             .child(div().flex_1())
             .when_some(self.note.as_ref(), |bar, (note, _)| {
@@ -1819,11 +2006,22 @@ fn segment(
     id: &'static str,
     label: impl Into<SharedString>,
     on: bool,
+    role: gpui_kit::Role,
     theme: &Theme,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let label = label.into();
     div()
         .id(id)
         .debug_selector(move || id.into())
+        .role(role)
+        .aria_label(label.clone())
+        .aria_toggled(if on {
+            gpui_kit::accesskit::Toggled::True
+        } else {
+            gpui_kit::accesskit::Toggled::False
+        })
+        .focusable()
+        .tab_stop(true)
         .px(space::SM)
         .py(space::XS)
         .border_r_1()
@@ -1833,7 +2031,7 @@ fn segment(
         .text_color(if on { theme.bright } else { theme.secondary })
         .when(on, |item| item.bg(theme.accent.opacity(0.18)))
         .hover(|item| item.bg(theme.hover_fill()))
-        .child(label.into())
+        .child(label)
 }
 
 /// "214 lines hidden" between dashed rules; a click shows them.

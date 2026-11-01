@@ -103,16 +103,7 @@ pub fn preview(
         let Some(node) = root.resolve(tile.crumbs()) else {
             continue;
         };
-        mosaic.labels.push(Label {
-            text: node.name.to_string(),
-            rect: tile.rect,
-            header: None,
-            depth: 0,
-            dim: false,
-            marked: false,
-            size_text: crate::widgets::short_value(node, app.options.metric),
-        });
-        mosaic.tiles.push(TileDeco {
+        let decoration = TileDeco {
             rect: tile.rect,
             depth: 0,
             category: Category::Other,
@@ -124,7 +115,18 @@ pub fn preview(
             covered: false,
             hovered: false,
             selected: false,
+        };
+        mosaic.labels.push(Label {
+            text: node.name.to_string(),
+            rect: tile.rect,
+            header: None,
+            depth: 0,
+            dim: false,
+            marked: false,
+            size_text: crate::widgets::short_value(node, app.options.metric),
+            decoration: decoration.clone(),
         });
+        mosaic.tiles.push(decoration);
     }
     mosaic_inner(mosaic, app, window, cx, false)
 }
@@ -265,7 +267,7 @@ impl Colors {
                 palette::label_color(theme, 0),
                 palette::label_color(theme, 1),
             ],
-            label_dim: palette::label_color(theme, 1).opacity(0.5),
+            label_dim: theme.secondary,
             hover_border: theme.bright.opacity(0.55),
             selected_border: palette::highlight(theme),
             marked_border: theme.danger,
@@ -313,6 +315,27 @@ impl Colors {
         }
     }
 
+    fn label_inks(
+        &self,
+        tile: &TileDeco,
+        dim: bool,
+        marked: bool,
+    ) -> (Hsla, Hsla, Hsla) {
+        let fill = self.fill(tile);
+        let preferred = if marked {
+            self.marked_label
+        } else if dim {
+            self.label_dim
+        } else {
+            self.label(tile.depth)
+        };
+        (
+            fill,
+            palette::ink_on(preferred, fill, 4.5),
+            palette::ink_on(self.label_dim, fill, 4.5),
+        )
+    }
+
     const fn label(&self, depth: u32) -> Hsla {
         self.label[if depth == 0 { 0 } else { 1 }]
     }
@@ -333,6 +356,7 @@ fn paint_tiles(
     // slivers of it showing in the gaps between them.
     let mut outlines: Vec<(u8, Bounds<Pixels>, f32, Hsla)> = Vec::new();
     for tile in tiles {
+        let fill = colors.fill(tile);
         let rect = view.project(tile.rect);
         if rect.w <= 0.5 || rect.h <= 0.5 {
             continue;
@@ -344,7 +368,7 @@ fn paint_tiles(
         window.paint_quad(quad(
             quad_bounds,
             Corners::default(),
-            colors.fill(tile),
+            fill,
             none,
             colors.hover_border,
             solid,
@@ -401,26 +425,30 @@ fn paint_tiles(
                 ),
                 Size::new(px(4.), px(4.)),
             );
+            let warning = palette::boundary_on(colors.warning, fill, 3.0);
             window.paint_quad(quad(
                 mark,
                 Corners::default(),
-                colors.warning,
+                warning,
                 none,
-                colors.warning,
+                warning,
                 solid,
             ));
         }
 
         // Ranked so the most important ring is painted last, on top.
         let outline = if tile.selected {
-            Some((3, 2.0, colors.selected_border))
+            Some((3, 3.0, colors.selected_border))
         } else if tile.hovered {
             Some((2, 1.0, colors.hover_border))
         } else if tile.marked {
             Some((1, 2.0, colors.marked_border))
         } else {
             None
-        };
+        }
+        .map(|(rank, width, preferred)| {
+            (rank, width, palette::boundary_on(preferred, fill, 3.0))
+        });
         if let Some((rank, width, color)) = outline {
             outlines.push((rank, quad_bounds, width, color));
         }
@@ -497,13 +525,8 @@ fn paint_labels(
             mask.origin.x + text_padding,
             mask.origin.y + text_inset,
         );
-        let color = if label.marked {
-            colors.marked_label
-        } else if label.dim {
-            colors.label_dim
-        } else {
-            colors.label(label.depth)
-        };
+        let (fill, color, value_color) =
+            colors.label_inks(&label.decoration, label.dim, label.marked);
         // The first level is set in bold in its band: it names a region.
         let weight = if label.depth == 0 && label.header.is_some() {
             FontWeight::BOLD
@@ -518,6 +541,8 @@ fn paint_labels(
                 ..font.clone()
             },
             color,
+            // Glyph backgrounds keep hatch out of both names and values.
+            background_color: Some(fill),
             ..TextRun::default()
         };
         let line = text_system.shape_line(
@@ -546,7 +571,8 @@ fn paint_labels(
                 let size_run = TextRun {
                     len: label.size_text.len(),
                     font: font.clone(),
-                    color: colors.label_dim,
+                    color: value_color,
+                    background_color: Some(fill),
                     ..TextRun::default()
                 };
                 let size_line = text_system.shape_line(
@@ -624,6 +650,91 @@ fn rem_px(rems: f32, rem_size: Pixels) -> Pixels {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercise the production fill/ink path, including the deeper age ramp,
+    /// filtered and marked combinations the upstream diagnostic omitted.
+    #[test]
+    fn actual_tile_states_keep_text_and_boundaries_readable() {
+        let mut custom = Theme::flexoki_light();
+        custom.bright = gpui_kit::rgb(0x0088_8888).into();
+        custom.foreground = custom.bright;
+        custom.secondary = custom.bright;
+        custom.warning = custom.bright;
+        custom.danger = custom.bright;
+        for theme in [Theme::tokyo_night(), Theme::flexoki_light(), custom] {
+            let colors = Colors::new(&theme);
+            for category in CATEGORIES {
+                for age_bucket in std::iter::once(None).chain((0..5).map(Some))
+                {
+                    for depth in 0..=4 {
+                        for filtered in
+                            [Filtered::Shown, Filtered::Holds, Filtered::Out]
+                        {
+                            for (marked, covered) in
+                                [(false, false), (true, false), (false, true)]
+                            {
+                                let tile = TileDeco {
+                                    rect: Rect::new(0., 0., 300., 200.),
+                                    depth,
+                                    category,
+                                    age_bucket,
+                                    reclaimable: true,
+                                    filtered,
+                                    unreadable: true,
+                                    marked,
+                                    covered,
+                                    hovered: true,
+                                    selected: true,
+                                };
+                                let (fill, name, value) = colors.label_inks(
+                                    &tile,
+                                    filtered == Filtered::Out,
+                                    marked || covered,
+                                );
+                                for ink in [name, value] {
+                                    assert!(
+                                        palette::contrast(ink, fill) >= 4.5,
+                                        "{category:?} age {age_bucket:?} \
+                                         depth {depth} {filtered:?} marked \
+                                         {marked} covered {covered}"
+                                    );
+                                    assert!(
+                                        (ink.a - 1.0).abs() < f32::EPSILON,
+                                        "text never relies on dim alpha"
+                                    );
+                                }
+                                for preferred in [
+                                    colors.selected_border,
+                                    colors.hover_border,
+                                    colors.marked_border,
+                                    colors.warning,
+                                ] {
+                                    assert!(
+                                        palette::contrast(
+                                            palette::boundary_on(
+                                                preferred, fill, 3.0
+                                            ),
+                                            fill
+                                        ) >= 3.0
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let fill = palette::highlight(&theme);
+            assert!(
+                palette::contrast(palette::on_highlight(&theme), fill) >= 4.5
+            );
+            assert!(
+                palette::contrast(
+                    palette::ink_on(theme.secondary, theme.background, 4.5),
+                    theme.background
+                ) >= 4.5
+            );
+        }
+    }
 
     #[test]
     fn named_categories_use_their_own_paint_colors() {
