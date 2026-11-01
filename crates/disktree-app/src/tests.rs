@@ -2142,6 +2142,44 @@ fn a_view_without_flags_or_marks_still_draws(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("disktree-root").is_some());
 }
 
+/// In a short window the summary scrolls and its commitment stays in
+/// view: Back and the commit button end above the key bar, never under it.
+#[gpui_kit::test]
+fn the_review_summary_fits_a_short_window(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1100.), px(520.)));
+    update(&view, cx, |app, cx| {
+        app.marks.toggle(
+            disktree_core::removal::Target {
+                path: temp.path().join("junk"),
+                bytes: 300_000,
+                is_dir: true,
+                hidden: false,
+            },
+            app.path_style(),
+        );
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+    draw(cx);
+    let summary = cx.debug_bounds("review-summary").expect("summary");
+    let commit = cx.debug_bounds("review-commit").expect("commit row");
+    let footer = cx.debug_bounds("review-footer").expect("key bar");
+    assert!(
+        summary.bottom() <= commit.top(),
+        "{summary:?} over {commit:?}"
+    );
+    assert!(
+        commit.bottom() <= footer.top(),
+        "commit row ends at {:?}, under the key bar at {:?}",
+        commit.bottom(),
+        footer.top()
+    );
+}
+
 /// The removal mode is a choice with two independent channels: the key and the
 /// button both have to reach the same state.
 #[gpui_kit::test]

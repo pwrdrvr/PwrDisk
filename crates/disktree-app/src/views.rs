@@ -3577,16 +3577,17 @@ fn review_summary(
         }
     };
 
+    // Everything above the commitment scrolls when the window is too short
+    // for it; Back and the commit button stay pinned below.
     let mut panel = div()
+        .id("review-summary")
+        .debug_selector(|| "review-summary".into())
         .flex()
         .flex_col()
         .gap(space::XL)
-        .w(size::REVIEW_SUMMARY)
-        .flex_shrink_0()
-        .p(space::LG)
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.surface)
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
         .child(
             div()
                 .flex()
@@ -3679,11 +3680,28 @@ fn review_summary(
         );
     }
 
-    panel
-        .child(div().flex_1())
-        .children(notice_line(app, theme, cx))
-        .child(export_controls(plan, cx))
-        .children(app.remote.is_none().then(|| commit_controls(app, plan, cx)))
+    div()
+        .flex()
+        .flex_col()
+        .gap(space::XL)
+        .w(size::REVIEW_SUMMARY)
+        .flex_shrink_0()
+        .min_h_0()
+        .p(space::LG)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.surface)
+        .child(
+            panel
+                .child(div().flex_1())
+                .children(notice_line(app, theme, cx))
+                .child(export_controls(plan, cx)),
+        )
+        .children(app.remote.is_none().then(|| {
+            div()
+                .debug_selector(|| "review-commit".into())
+                .child(commit_controls(app, plan, cx))
+        }))
 }
 
 /// The list handed on instead of acted on: saved as paths, or copied as a
@@ -3801,6 +3819,7 @@ fn review_footer(app: &Disktree, theme: &Theme, cx: &App) -> Div {
         RemovalMode::Permanent => "delete\u{2026}",
     };
     div()
+        .debug_selector(|| "review-footer".into())
         .flex()
         .flex_row()
         .items_center()
