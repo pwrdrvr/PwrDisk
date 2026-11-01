@@ -454,6 +454,12 @@ pub struct Disktree {
     /// free" number rather than the sum of what was marked.
     pub space_baseline: Option<SpaceInfo>,
     pub notice: Option<(String, Status)>,
+    /// Toasts over the window's bottom right: the updater's answers.
+    pub toasts: crate::toasts::Toasts,
+    /// Wakes when the next toast runs out.
+    pub toast_timer: Option<gpui_kit::Task<()>>,
+    /// What the updater has said that the toasts have answered.
+    pub update_watch: crate::toasts::UpdateWatch,
 
     pub find: String,
     pub find_open: bool,
@@ -661,6 +667,9 @@ impl Disktree {
             space,
             space_baseline: None,
             notice: None,
+            toasts: crate::toasts::Toasts::default(),
+            toast_timer: None,
+            update_watch: crate::toasts::UpdateWatch::default(),
             find: String::new(),
             find_open: false,
             matches: None,

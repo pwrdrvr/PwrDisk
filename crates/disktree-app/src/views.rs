@@ -234,6 +234,10 @@ pub fn root(
     if !modal && let Some(tip) = cursor_tooltip(app, window, cx) {
         root = root.child(tip);
     }
+    // Under the overlays and dialogs, which take the mouse while open.
+    if let Some(toasts) = crate::toasts::stack(app, cx) {
+        root = root.child(toasts);
+    }
     if app.show_help {
         root = root.child(help_overlay(app, cx));
     }

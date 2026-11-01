@@ -162,14 +162,21 @@ pub fn install(cx: &mut App) {
         cx.defer(|cx| settings::open(settings::Pane::About, cx));
     });
     cx.on_action(|_: &CheckForUpdates, cx| {
-        // One already running is left to finish, rather than queueing a
-        // second right behind it.
-        if !crate::updater::state().checking {
-            crate::updater::check_in_background(
-                crate::updater::Trigger::Manual,
-            );
-        }
-        cx.defer(|cx| settings::open(settings::Pane::Updates, cx));
+        // The main window answers in a toast, from whichever window asked:
+        // it comes forward so the answer is seen.
+        cx.defer(|cx| {
+            let Some(main) = cx
+                .windows()
+                .into_iter()
+                .find_map(|window| window.downcast::<crate::state::Disktree>())
+            else {
+                return;
+            };
+            let _ = main.update(cx, |this, window, cx| {
+                window.activate_window();
+                this.check_for_updates(cx);
+            });
+        });
     });
     // The main window's rows (Rescan, Open Folder, Choose Source, Show in
     // Finder, the screens and the history) are handled by that window,

@@ -5583,3 +5583,166 @@ fn status_review_widening_announces_each_in_flight_root_immediately(
     draw(cx);
     assert!(inner.join("more.bin").exists());
 }
+
+/// A made-up updater state: the check that finished at `secs`, and the
+/// download held for the default channel, if any.
+fn update_state(
+    secs: u64,
+    outcome: crate::updater::Outcome,
+    held: Option<&str>,
+) -> crate::updater::State {
+    use crate::update_channel::Slot;
+    crate::updater::State {
+        checking: false,
+        last: Some((
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs),
+            outcome,
+        )),
+        releases: None,
+        held: held.map(|version| crate::updater::Held {
+            version: version.to_owned(),
+            file_name: format!("PwrDisk-{version}-full.nupkg"),
+            slot: Slot::default().key(),
+            switch_back: false,
+        }),
+    }
+}
+
+/// Check for Updates… always answers in the main window, and the toast
+/// draws: here, that this copy is the latest.
+#[gpui_kit::test]
+fn a_check_asked_for_answers_in_a_toast(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.update_watch.asked = true;
+        app.show_toast(crate::toasts::checking(Slot::default()), cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("toast-update").is_some(), "checking shows");
+
+    let state = update_state(10, Outcome::UpToDate("0.14.0".into()), None);
+    update(&view, cx, |app, cx| {
+        app.react_to_updates(&state, "0.14.0", Slot::default(), cx);
+    });
+    draw(cx);
+    let title = read(&view, cx, |app| {
+        app.toasts
+            .get(crate::toasts::UPDATE)
+            .map(|t| t.title.clone())
+    });
+    assert_eq!(title.as_deref(), Some("Up to date"), "replaced in place");
+    assert!(cx.debug_bounds("toast-release-notes").is_some());
+    assert!(cx.debug_bounds("toast-restart").is_none());
+}
+
+/// A background check says nothing unless a download is ready, and then
+/// only once per version: dismissed, it stays quiet until a newer one.
+#[gpui_kit::test]
+fn a_ready_download_is_announced_once_per_version(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let slot = Slot::default();
+
+    let quiet = update_state(10, Outcome::UpToDate("0.14.0".into()), None);
+    update(&view, cx, |app, cx| {
+        app.react_to_updates(&quiet, "0.14.0", slot, cx);
+    });
+    assert!(read(&view, cx, |app| app.toasts.is_empty()), "nothing new");
+
+    let ready =
+        update_state(20, Outcome::Downloaded("0.15.0".into()), Some("0.15.0"));
+    update(&view, cx, |app, cx| {
+        app.react_to_updates(&ready, "0.14.0", slot, cx);
+    });
+    draw(cx);
+    let dismiss = cx.debug_bounds("toast-dismiss").expect("ready toast");
+    assert!(cx.debug_bounds("toast-restart").is_some());
+    cx.simulate_click(dismiss.center(), gpui_kit::Modifiers::none());
+    draw(cx);
+    assert!(read(&view, cx, |app| app.toasts.is_empty()), "dismissed");
+
+    // The next background check finds the same download: still quiet.
+    let again =
+        update_state(30, Outcome::Pending("0.15.0".into()), Some("0.15.0"));
+    update(&view, cx, |app, cx| {
+        app.react_to_updates(&again, "0.14.0", slot, cx);
+    });
+    assert!(
+        read(&view, cx, |app| app.toasts.is_empty()),
+        "once per version"
+    );
+
+    let newer =
+        update_state(40, Outcome::Downloaded("0.15.1".into()), Some("0.15.1"));
+    update(&view, cx, |app, cx| {
+        app.react_to_updates(&newer, "0.14.0", slot, cx);
+    });
+    let body = read(&view, cx, |app| {
+        app.toasts
+            .get(crate::toasts::UPDATE)
+            .map(|t| t.body.clone())
+    });
+    assert_eq!(
+        body.as_deref(),
+        Some("Restart to update to PwrDisk 0.15.1.")
+    );
+}
+
+/// A failed check asked for by hand says why, with the log one click away.
+#[gpui_kit::test]
+fn a_failed_check_says_why(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let failed = update_state(10, Outcome::Failed("rate limited".into()), None);
+    update(&view, cx, |app, cx| {
+        app.update_watch.asked = true;
+        app.react_to_updates(&failed, "0.14.0", Slot::default(), cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("toast-open-logs").is_some());
+    assert!(cx.debug_bounds("toast-check-again").is_some());
+    let asked = read(&view, cx, |app| app.update_watch.asked);
+    assert!(!asked, "answered");
+}
+
+/// An answer leaves on its own: the window wakes when it runs out.
+#[gpui_kit::test]
+fn an_answer_leaves_on_its_own(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let up = update_state(10, Outcome::UpToDate("0.14.0".into()), None);
+    update(&view, cx, |app, cx| {
+        app.update_watch.asked = true;
+        app.react_to_updates(&up, "0.14.0", Slot::default(), cx);
+    });
+    draw(cx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(5));
+    cx.run_until_parked();
+    assert!(
+        !read(&view, cx, |app| app.toasts.is_empty()),
+        "still reading"
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(4));
+    cx.run_until_parked();
+    draw(cx);
+    assert!(
+        read(&view, cx, |app| app.toasts.is_empty()),
+        "gone after 8 s"
+    );
+    assert!(cx.debug_bounds("toast-update").is_none());
+}
