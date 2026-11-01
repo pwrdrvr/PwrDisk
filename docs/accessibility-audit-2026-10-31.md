@@ -651,7 +651,9 @@ layout:
 | About header (#55) | Version is a heading; the build line keeps its whole text as its label when the painted line is cut short |
 | Copy buttons | Diagnostics, checkout, branch or tag and commit Copy buttons carry distinct names, prefixed "Copied:" after use |
 
-The native fixture example also lists main's `toasts` module. The earlier
+The native fixture example has since become a debug build's `pwrdisk
+logs-fixture LOG` (`crates/disktree-app/src/logs_fixture.rs`), which opens
+the same Logs window with no module list to keep in step. The earlier
 native macOS AX observations above were made on the old Settings layout;
 they were not repeated on main's panes. The Settings/About part of this
 record is harness/source evidence only.
