@@ -18,7 +18,7 @@ use gpui_kit::{
     AnyElement, App, ClipboardItem, Context, Div, ElementId, FocusHandle,
     FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, WindowHandle, div,
+    Styled as _, Window, WindowHandle, div, img,
 };
 use gpui_omarchy::{
     ActiveTheme as _, ButtonVariant, ChoiceItem, Theme, button, button_group,
@@ -57,6 +57,9 @@ pub const CHECK_ID: &str = "updates-check";
 pub const RESTART_ID: &str = "updates-restart";
 pub const COPY_DIAGNOSTICS_ID: &str = "diagnostics-copy";
 pub const COPY_BUILD_ID: &str = "about-copy-build";
+/// About's header: the icon, the name and version, the build line.
+pub const ABOUT_HEADER_ID: &str = "about-header";
+pub const ABOUT_BUILD_LINE_ID: &str = "about-build-line";
 
 const SPEC: Spec = Spec {
     title: "PwrDisk Settings",
@@ -870,11 +873,47 @@ impl SettingsWindow {
 
     fn about(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
         let build = BuildInfo::current();
-        let trailing = div()
-            .flex()
+        let channel = updater::selection()
+            .resolve(&updater::installed_version())
+            .to_string();
+        let header = card_frame(theme)
+            .debug_selector(|| ABOUT_HEADER_ID.into())
             .flex_row()
             .items_center()
-            .gap(space::SM)
+            .gap(space::MD)
+            .p(space::MD)
+            .child(
+                img(crate::chrome::MARK.clone())
+                    .size(size::ABOUT_ICON)
+                    .flex_shrink_0(),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(space::XXS)
+                    .child(
+                        div()
+                            .text_size(text::HEADING)
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.bright)
+                            .child(format!("PwrDisk {}", build.version)),
+                    )
+                    // One line, as the design draws it: a long branch
+                    // name ends in an ellipsis rather than wrapping.
+                    .child(
+                        div()
+                            .debug_selector(|| ABOUT_BUILD_LINE_ID.into())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(text::CAPTION)
+                            .text_color(theme.secondary)
+                            .child(build.header_line(&channel)),
+                    ),
+            )
             .when(!build.is_release(), |row| {
                 row.child(chip("Dev build".into(), theme.warning, theme))
             })
@@ -1005,21 +1044,9 @@ impl SettingsWindow {
                 None,
                 theme,
             ))
+            .child(header)
             .child(
-                card("This copy", Some(trailing.into_any_element()), theme)
-                    .child(field(
-                        "Version",
-                        None,
-                        vec![
-                            format!("PwrDisk {}", build.version)
-                                .into_any_element(),
-                            div()
-                                .text_color(theme.secondary)
-                                .child(build.build_line())
-                                .into_any_element(),
-                        ],
-                        theme,
-                    ))
+                card("This copy", None, theme)
                     .child(field(
                         "Source",
                         Some("Read by git when this copy was built."),
