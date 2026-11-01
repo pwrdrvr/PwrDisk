@@ -2966,8 +2966,13 @@ impl Disktree {
             // still reading it gets its own copy, as before. Either way it
             // becomes a new `Arc`, so a removal preview bound to the old
             // order lapses as it did.
-            let mut tree = Arc::try_unwrap(tree)
-                .unwrap_or_else(|shared| (*shared).clone());
+            let mut tree = Arc::try_unwrap(tree).unwrap_or_else(|shared| {
+                let copy = (*shared).clone();
+                // The other reader may let go first; then this is the last
+                // reference, and it must not be freed on this thread.
+                discard(Some(shared));
+                copy
+            });
             // Totals and sharing do not depend on the metric; only the order
             // of children does.
             disktree_core::tree::reorder(&mut tree, self.options.metric);
