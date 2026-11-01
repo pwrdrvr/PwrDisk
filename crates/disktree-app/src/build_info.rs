@@ -112,7 +112,7 @@ impl BuildInfo {
     /// The date is the build's own time only when the tree had changes;
     /// a clean build records none (see `build.rs`), and is its commit, so
     /// it is dated by that. It names the tag of a release, else the
-    /// branch, else the commit.
+    /// branch, else the commit. Knowing none of that, it is the channel.
     pub fn header_line(&self, channel: &str) -> String {
         let date = self
             .built_at
@@ -128,6 +128,11 @@ impl BuildInfo {
         let source = source
             .map(|source| format!(" from {source}"))
             .unwrap_or_default();
+        // Built outside a checkout there is nothing to say but the
+        // channel, and a bare "Built" would read as a fragment.
+        if date.is_empty() && source.is_empty() {
+            return channel.to_owned();
+        }
         format!("Built{date}{source} \u{00b7} {channel}")
     }
 
@@ -344,7 +349,7 @@ mod tests {
             branch: None,
             ..BuildInfo::fixture()
         };
-        assert_eq!(bare.header_line("x"), "Built \u{00b7} x");
+        assert_eq!(bare.header_line("x"), "x");
     }
 
     #[test]

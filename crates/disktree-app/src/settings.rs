@@ -59,6 +59,7 @@ pub const COPY_DIAGNOSTICS_ID: &str = "diagnostics-copy";
 pub const COPY_BUILD_ID: &str = "about-copy-build";
 /// About's header: the icon, the name and version, the build line.
 pub const ABOUT_HEADER_ID: &str = "about-header";
+pub const ABOUT_BUILD_LINE_ID: &str = "about-build-line";
 
 const SPEC: Spec = Spec {
     title: "PwrDisk Settings",
@@ -900,8 +901,14 @@ impl SettingsWindow {
                             .text_color(theme.bright)
                             .child(format!("PwrDisk {}", build.version)),
                     )
+                    // One line, as the design draws it: a long branch
+                    // name ends in an ellipsis rather than wrapping.
                     .child(
                         div()
+                            .debug_selector(|| ABOUT_BUILD_LINE_ID.into())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
                             .text_size(text::CAPTION)
                             .text_color(theme.secondary)
                             .child(build.header_line(&channel)),

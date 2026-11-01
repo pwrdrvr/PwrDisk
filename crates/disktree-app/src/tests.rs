@@ -1574,6 +1574,11 @@ fn settings_updates_picks_a_channel_and_keeps_the_keys(
         .expect("Copy build info");
     assert!(header.contains(&copy.center()), "{header:?} {copy:?}");
     assert!(copy.center().x > header.center().x, "{header:?} {copy:?}");
+    let line = cx
+        .debug_bounds(crate::settings::ABOUT_BUILD_LINE_ID)
+        .expect("the build line");
+    assert!(header.contains(&line.center()), "{header:?} {line:?}");
+    assert!(line.right() < copy.left(), "{line:?} {copy:?}");
     let notices = cx.debug_bounds("about-notices").expect("the notices");
     assert!(header.bottom() < notices.top(), "{header:?} {notices:?}");
 
