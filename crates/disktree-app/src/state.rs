@@ -4188,10 +4188,24 @@ pub fn now_seconds() -> i64 {
         })
 }
 
+/// Closing the window or quitting drops the app, and with it the tree.
+/// Freed in place, a home directory's tens of millions of nodes held the
+/// main thread for seconds after Quit, long enough for macOS to call the
+/// app not responding. On quit the process exits before that thread is
+/// done, which is the point: the system takes the memory back whole.
+impl Drop for Disktree {
+    fn drop(&mut self) {
+        discard(self.tree.take());
+    }
+}
+
 /// Let go of a tree off the UI thread: freeing a disk's millions of nodes
-/// takes a good part of a second, and nothing waits on it.
+/// takes from a good part of a second to many, and nothing waits on it.
 fn discard(tree: Option<Arc<Node>>) {
     if let Some(tree) = tree {
+        #[cfg(test)]
+        crate::marks::work::DISCARDED
+            .set(crate::marks::work::DISCARDED.get() + 1);
         // When no thread can be made, the closure is dropped here instead,
         // and the tree is freed in place rather than taking the window down.
         let _ = std::thread::Builder::new().spawn(move || drop(tree));

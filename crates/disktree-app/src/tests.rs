@@ -5747,3 +5747,54 @@ fn an_answer_leaves_on_its_own(cx: &mut TestAppContext) {
     );
     assert!(cx.debug_bounds("toast-update").is_none());
 }
+
+/// Quitting from the review screen drops the window and its tree. Freed on
+/// the main thread, a home directory's tens of millions of nodes kept the
+/// app from exiting for seconds after Quit, and macOS called it not
+/// responding. The tree is handed to a background thread instead, and is
+/// still freed: nothing is leaked when the window closes but the app stays.
+#[gpui_kit::test]
+fn quitting_from_review_frees_the_tree_off_the_main_thread(
+    cx: &mut TestAppContext,
+) {
+    use crate::marks::work;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let tree = update(&view, cx, |app, cx| {
+        let junk = app
+            .tree()
+            .and_then(|tree| {
+                tree.children
+                    .iter()
+                    .position(|child| &*child.name == "junk")
+                    .map(|index| vec![index])
+            })
+            .expect("the junk directory");
+        app.toggle_mark(&junk, cx);
+        Arc::downgrade(app.tree.as_ref().expect("a scanned tree"))
+    });
+    press(cx, "c");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+
+    work::reset();
+    drop(view);
+    // What Quit runs on every platform: the quit hooks, then every window
+    // and the state it held is dropped, on this thread.
+    cx.cx.update(gpui_kit::App::shutdown);
+
+    assert_eq!(
+        work::DISCARDED.get(),
+        1,
+        "the tree is handed off, not freed while the app quits"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while tree.strong_count() > 0 {
+        assert!(Instant::now() < deadline, "the tree is never freed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}

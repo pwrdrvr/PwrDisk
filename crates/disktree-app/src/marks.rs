@@ -31,6 +31,7 @@ pub mod work {
         pub static REVIEW_ROWS: Cell<usize> = const { Cell::new(0) };
         pub static COVERED_ROWS: Cell<usize> = const { Cell::new(0) };
         pub static BLOCKED_ROWS: Cell<usize> = const { Cell::new(0) };
+        pub static DISCARDED: Cell<usize> = const { Cell::new(0) };
     }
 
     pub fn step() {
@@ -50,6 +51,7 @@ pub mod work {
         REVIEW_ROWS.set(0);
         COVERED_ROWS.set(0);
         BLOCKED_ROWS.set(0);
+        DISCARDED.set(0);
     }
 }
 
