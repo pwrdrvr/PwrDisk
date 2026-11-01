@@ -487,6 +487,10 @@ pub struct Disktree {
     pub app_menu_open: bool,
     pub show_selection: bool,
     pub focus: FocusHandle,
+    /// The app is quitting: what this window holds is left to the system,
+    /// which takes a process's memory back whole when it exits.
+    quitting: bool,
+    _on_quit: gpui_kit::Subscription,
     /// A trail crumb's sibling menu, when open.
     pub crumb_menu: Option<CrumbMenu>,
 
@@ -722,6 +726,13 @@ impl Disktree {
             scan_elapsed: None,
             scanned_at: now_seconds(),
             agent: None,
+            quitting: false,
+            // GPUI runs quit hooks before it drops the windows, so the flag
+            // is set by the time `Drop` reads it.
+            _on_quit: cx.on_app_quit(|this, _| {
+                this.quitting = true;
+                std::future::ready(())
+            }),
         };
         if local && start {
             tree.device = device_for(&tree.root_path);
@@ -4251,13 +4262,37 @@ pub fn now_seconds() -> i64 {
         })
 }
 
-/// Let go of a tree off the UI thread: freeing a disk's millions of nodes
-/// takes a good part of a second, and nothing waits on it.
-fn discard(tree: Option<Arc<Node>>) {
-    if let Some(tree) = tree {
+/// Closing the window or quitting drops the app, and with it the tree.
+/// Freed in place, a home directory's tens of millions of nodes held the
+/// main thread for seconds after Quit, long enough for macOS to call the
+/// app not responding. On quit nothing is freed at all: the process is
+/// about to exit and the system takes its memory back without walking
+/// the nodes. A window closed while the app stays hands them to a
+/// background thread. The find results (an entry per match and ancestor)
+/// and a finished scan not yet taken from its channel can be as large,
+/// so they go with the tree.
+impl Drop for Disktree {
+    fn drop(&mut self) {
+        let held = (self.tree.take(), self.matches.take(), self.scan.take());
+        if self.quitting {
+            std::mem::forget(held);
+        } else {
+            discard(Some(held));
+        }
+    }
+}
+
+/// Let go of a tree, or anything holding one, off the UI thread: freeing
+/// a disk's millions of nodes takes from a good part of a second to many,
+/// and nothing waits on it.
+fn discard<T: Send + 'static>(held: Option<T>) {
+    if let Some(held) = held {
+        #[cfg(test)]
+        crate::marks::work::DISCARDED
+            .set(crate::marks::work::DISCARDED.get() + 1);
         // When no thread can be made, the closure is dropped here instead,
         // and the tree is freed in place rather than taking the window down.
-        let _ = std::thread::Builder::new().spawn(move || drop(tree));
+        let _ = std::thread::Builder::new().spawn(move || drop(held));
     }
 }
 
