@@ -3947,14 +3947,13 @@ fn review_actions(
     plan: &disktree_core::removal::Plan,
     cx: &Context<'_, Disktree>,
 ) -> Div {
-    let unmark =
-        button("unmark-all", "Unmark all", ButtonVariant::Outline, cx)
-            .debug_selector(|| "unmark-all".into())
-            .disabled(app.marks.is_empty())
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.clear_marks(cx);
-                window.focus(&this.focus, cx);
-            }));
+    let unmark = button("unmark-all", "Unmark all", ButtonVariant::Outline, cx)
+        .debug_selector(|| "unmark-all".into())
+        .disabled(app.marks.is_empty())
+        .on_click(cx.listener(|this, _, window, cx| {
+            this.clear_marks(cx);
+            window.focus(&this.focus, cx);
+        }));
     let back = button("back", "Back", ButtonVariant::Outline, cx)
         .debug_selector(|| "back".into())
         .on_click(cx.listener(|this, _, window, cx| {
