@@ -493,3 +493,40 @@ captures (1496×939 logical at 2×). The initial offscreen capture had white
 clipped edges and was replaced; that capture artifact is not a layout fix.
 Before, Tab changes the selected tile; after, it focuses Size. No removal
 confirmation was activated through computer use or accessibility APIs.
+
+### PWR-31 review corrections: modal intent and foreground keys
+
+Production source `d256dff65b5f95c8cd8d02b39f9a57daac982679` corrects the
+three findings from PR #42's review at `e0f643c`. All six new
+`focus_review_` window-harness tests fail on the reviewed production code
+and pass after the correction. They use generated temporary trees only.
+
+| Promise | Reviewed behavior | Observed harness result after correction |
+| --- | --- | --- |
+| Focused modal actions | Enter on Cancel starts removal or accepts a scan root | Enter/Space on removal Cancel leave marks and files intact; source Cancel starts no scan; focused Delete removes only its marked temporary directory |
+| Foreground Escape | An indexing interception consumes Escape ahead of foreground screen commands | Running requests a removal stop while preserving the background scan; Review/Done return to Explore with the refresh intact |
+| Settings pane traversal | Focusable pane selectors are omitted from the tab order | Forward and reverse traversal reach each of the four pane selectors |
+| Application menu trigger | Focusable trigger is omitted from the tab order | Forward and reverse traversal reach the trigger; Enter opens its menu and Escape restores focus |
+
+The modal's Confirm action is handled by the focused button using the same
+callback as pointer activation. Dialog defaults apply only to their
+container, root list or input context. Scan-specific Escape interception is
+limited to Explore. Settings panes and the custom menu trigger explicitly
+register as tab stops. These corrections change keyboard behavior, without
+adding a visible layout or style; the existing contrived focus images keep
+their original build provenance.
+
+macOS 27.0.1 arm64: `cargo xtask lint`, full workspace tests (251 app passed,
+2 ignored; 233 core passed, 7 ignored), and the normal debug app build pass.
+Ubuntu 24.04.5 x86_64 Sandboxer `sb_uihqpdf98b`, same production source:
+setup 0 (1s), lint 0 (7s), tests 0 (16s), portable build 0 (45s), isolated
+SSH 0 (2s), all 0.
+
+Native AX/UIA/AT-SPI and VoiceOver/Narrator/NVDA/Orca were not rerun for
+these corrections. The Windows peer is disconnected; Windows verification
+is pending CI. Native keyboard/AT containment and OS display/text scaling,
+high contrast and speech remain separate acceptance gaps. The Running
+cancellation-routing test uses an empty removal plan to avoid a deletion
+race. Actual removal and confirmation coverage is confined to the
+contrived-filesystem harness; no computer-use or accessibility API approved
+removal.
