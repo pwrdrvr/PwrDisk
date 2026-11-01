@@ -3711,6 +3711,7 @@ fn export_controls(
     cx: &Context<'_, Disktree>,
 ) -> Div {
     div()
+        .debug_selector(|| "review-export".into())
         .flex()
         .flex_col()
         .justify_end()

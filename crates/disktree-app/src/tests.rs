@@ -2178,6 +2178,25 @@ fn the_review_summary_fits_a_short_window(cx: &mut TestAppContext) {
         commit.bottom(),
         footer.top()
     );
+    // What does not fit is reached by scrolling the summary: the export
+    // buttons start below it and the wheel brings them up into view.
+    let export = cx.debug_bounds("review-export").expect("export buttons");
+    assert!(export.bottom() > summary.bottom(), "starts out of view");
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: summary.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+            px(0.),
+            px(-2000.),
+        )),
+        ..Default::default()
+    });
+    draw(cx);
+    let scrolled = cx.debug_bounds("review-export").expect("export buttons");
+    assert!(scrolled.top() < export.top(), "{scrolled:?} did not move");
+    assert!(
+        scrolled.bottom() <= summary.bottom(),
+        "{scrolled:?} still past {summary:?}"
+    );
 }
 
 /// The removal mode is a choice with two independent channels: the key and the
