@@ -3638,6 +3638,10 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         let split = crate::views::clone_split(node).expect("a split");
         assert!(split.contains("shared with other APFS clones"), "{split}");
     });
+    // The accessible file list draws the split on its rows too.
+    update(&view, cx, |app, _| app.file_list = true);
+    draw(cx);
+    update(&view, cx, |app, _| app.file_list = false);
     update(&view, cx, |app, cx| {
         let index = app
             .tree()
