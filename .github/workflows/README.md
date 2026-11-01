@@ -41,6 +41,25 @@ file list runs it. The workflow trigger stays unfiltered so the job always
 reports a result. A stale file fails with instructions to run
 `cargo xtask licenses` and commit `THIRD_PARTY_LICENSES`.
 
+### The Rust cache
+
+Every `Swatinem/rust-cache` step saves only on `main`; a PR restores
+`main`'s entry for the same job, by key prefix when its `Cargo.lock`
+differs. The Actions cache store holds 10 GB and evicts the least recently
+used entry first. While PRs saved too, each wrote about 6 GB across the
+jobs, `main`'s entries were evicted, and the next PR compiled from scratch:
+the macOS job's lint went from under a minute to six, and its tests from
+two minutes to eight. As in PwrRoute, `scripts/ci/prune-rust-toolchains.sh`
+removes the runner image's own stable toolchain before the cache step,
+because rust-cache hashes every installed toolchain and image rollouts
+would otherwise change the key. A push to `main` never cancels the `main`
+run in progress, since a cancelled job saves nothing.
+
+Lint and test stay one job per platform. They compile separately anyway
+(clippy builds dependencies as metadata, tests as full code), so splitting
+them would only trade one runner for two and add a cache entry per
+platform to the 10 GB budget.
+
 ## preview-build.yml
 
 Applying the `build-preview` label starts a run, and later pushes to a
@@ -130,9 +149,9 @@ other.
 - **`--require-icon-catalog`.** The jobs check the bundle for `Assets.car`
   and `CFBundleIconName` instead.
 - **Winget and Homebrew audit stubs.** There is no package in either yet.
-- **The cache-sharing `typecheck`/`test` jobs.** PwrDisk's `ci.yml` has a
-  different job layout; the release lints once and tests on each platform it
-  builds.
+- **The separate `typecheck`/`build`/`test` jobs.** PwrDisk's `ci.yml`
+  lints and tests in one job per platform; the release lints once and tests
+  on each platform it builds. PwrRoute's main-only Rust cache is ported.
 - **Linux `.deb`.** PwrDisk keeps its tarball and `install.sh`.
 
 ## PR labels
