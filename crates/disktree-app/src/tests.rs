@@ -1302,6 +1302,94 @@ fn the_help_overlay_opens_and_closes(cx: &mut TestAppContext) {
     assert!(!read(&view, cx, |app| app.show_help));
 }
 
+/// No dialog draws the treemap's hover card behind it.
+#[gpui_kit::test]
+fn the_tooltip_hides_under_an_overlay(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let origin = read(&view, cx, |app| app.treemap_origin.get());
+    let at = origin + Point::new(px(40.), px(40.));
+    cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::default());
+    draw(cx);
+    assert!(cx.debug_bounds("cursor-tooltip").is_some(), "a tooltip");
+
+    // The overlays' backdrop takes the mouse, so the treemap drops its
+    // hover; the volumes and delete dialogs leave it, and rely on the rule.
+    let dialogs: [OpenOverlay; 2] =
+        [|app| app.show_help = true, |app| app.volumes_open = true];
+    for open in dialogs {
+        update(&view, cx, |app, cx| {
+            open(app);
+            cx.notify();
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("cursor-tooltip").is_none(), "hidden");
+        update(&view, cx, |app, cx| {
+            app.show_help = false;
+            app.volumes_open = false;
+            cx.notify();
+        });
+        cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("cursor-tooltip").is_some(), "back");
+    }
+}
+
+/// The menu opens one overlay at a time: the other one closes.
+#[gpui_kit::test]
+fn the_menu_shows_one_overlay_at_a_time(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    cx.dispatch_action(crate::app_menu::ConnectAgent);
+    cx.dispatch_action(crate::app_menu::ShowKeyboardShortcuts);
+    draw(cx);
+    assert!(read(&view, cx, |app| app.show_help && !app.show_agent));
+    cx.dispatch_action(crate::app_menu::ConnectAgent);
+    draw(cx);
+    assert!(read(&view, cx, |app| app.show_agent && !app.show_help));
+}
+
+/// Opens one overlay, for the cases of `overlays_fit_a_short_window`.
+type OpenOverlay = fn(&mut Disktree);
+
+/// A window shorter than an overlay keeps the card, and its Done, inside
+/// the window: the list scrolls instead of spilling past the bottom.
+#[gpui_kit::test]
+fn overlays_fit_a_short_window(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(900.), px(420.)));
+    let cases: [(&str, OpenOverlay); 2] = [
+        ("help-overlay", |app| app.show_help = true),
+        ("agent-overlay", |app| app.show_agent = true),
+    ];
+    for (card, open) in cases {
+        update(&view, cx, |app, cx| {
+            app.show_help = false;
+            app.show_agent = false;
+            open(app);
+            cx.notify();
+        });
+        draw(cx);
+        draw(cx);
+        let window = cx.update(|window, _| window.viewport_size());
+        let bounds = cx.debug_bounds(card).expect("card drawn");
+        let done = cx.debug_bounds("overlay-done").expect("Done drawn");
+        assert!(
+            bounds.bottom() <= window.height,
+            "{card} ends at {:?}, past {:?}",
+            bounds.bottom(),
+            window.height
+        );
+        assert!(done.bottom() <= bounds.bottom(), "{card}: Done inside");
+    }
+}
+
 #[gpui_kit::test]
 fn audit_help_contains_navigation_and_restores_keyboard_operation(
     cx: &mut TestAppContext,
@@ -4715,6 +4803,31 @@ fn the_agent_overlay_opens_and_closes(cx: &mut TestAppContext) {
     assert!(!read(&view, cx, |app| app.show_agent));
     assert!(cx.debug_bounds("agent-overlay").is_none());
 
+    // Done closes it, and so does a click outside the card; a click on the
+    // card itself does not.
+    update(&view, cx, |app, cx| {
+        app.show_agent = true;
+        cx.notify();
+    });
+    draw(cx);
+    click_on(cx, "overlay-done");
+    draw(cx);
+    assert!(!read(&view, cx, |app| app.show_agent), "Done closes");
+
+    update(&view, cx, |app, cx| {
+        app.show_agent = true;
+        cx.notify();
+    });
+    draw(cx);
+    click_on(cx, "agent-overlay");
+    draw(cx);
+    assert!(read(&view, cx, |app| app.show_agent), "card click stays");
+    let card = cx.debug_bounds("agent-overlay").expect("card");
+    let outside = card.origin - gpui_kit::point(px(8.), px(8.));
+    cx.simulate_click(outside, gpui_kit::Modifiers::none());
+    draw(cx);
+    assert!(!read(&view, cx, |app| app.show_agent), "outside closes");
+
     // The Help menu opens the same overlay.
     cx.dispatch_action(crate::app_menu::ConnectAgent);
     draw(cx);
@@ -4955,4 +5068,243 @@ fn desktop_mcp_reconnect_keeps_the_tree_and_marks(cx: &mut TestAppContext) {
     });
     assert!(root.join("junk/blob.bin").exists());
     draw(cx);
+}
+
+#[gpui_kit::test]
+fn accessible_file_pages_reach_every_entry_and_share_safe_marks(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = tempfile::tempdir().expect("tempdir");
+    for i in 0..235 {
+        std::fs::write(
+            temp.path().join(format!("Résumé 日本語-{i:03}.txt")),
+            b"fixture",
+        )
+        .expect("file");
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        app.selected = None;
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("file-row-99").is_some());
+    assert!(cx.debug_bounds("file-row-100").is_none());
+    press(cx, "down pagedown pagedown");
+    assert!(cx.debug_bounds("file-row-200").is_some());
+    assert!(cx.debug_bounds("file-row-199").is_none());
+    read(&view, cx, |app| {
+        assert_eq!(app.file_entries().len(), 235);
+        assert_eq!(app.selected.as_deref(), Some([200].as_slice()));
+    });
+    press(cx, "space c");
+    read(&view, cx, |app| {
+        assert_eq!(app.screen, Screen::Review);
+        assert_eq!(app.marks.len(), 1);
+        assert!(
+            app.marks.items()[0]
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("200")
+        );
+    });
+    press(cx, "escape");
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 235);
+}
+
+#[gpui_kit::test]
+fn accessible_file_navigation_uses_absolute_paths_and_filter(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        app.selected = Some(child_crumbs(app, &[], "junk"));
+        cx.notify();
+    });
+    press(cx, "right down space");
+    read(&view, cx, |app| {
+        assert_eq!(app.current_path(), temp.path().join("junk"));
+        assert!(
+            app.marks.items()[0]
+                .path
+                .starts_with(temp.path().join("junk"))
+        );
+    });
+    press(cx, "left / k e e p enter");
+    read(&view, cx, |app| {
+        assert_eq!(app.file_entries().len(), 1);
+    });
+}
+
+fn paginated_fixture(count: usize) -> tempfile::TempDir {
+    let temp = tempfile::tempdir().expect("tempdir");
+    for index in 0..count {
+        let prefix = if index < 150 { "match" } else { "other" };
+        std::fs::write(
+            temp.path().join(format!("{prefix}-{index:06}.txt")),
+            b"fixture",
+        )
+        .expect("file");
+    }
+    temp
+}
+
+fn focus_file_list(view: &Entity<Disktree>, cx: &mut Window) {
+    update(view, cx, |app, cx| {
+        app.file_list = true;
+        cx.notify();
+    });
+    draw(cx);
+    let focus = view.read_with(cx, |app, _| app.file_focus.clone());
+    cx.update(|window, cx| window.focus(&focus, cx));
+}
+
+#[gpui_kit::test]
+fn accessible_list_review_rescan_preserves_keyboard_focus(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    focus_file_list(&view, cx);
+    press(cx, "r");
+    assert!(cx.debug_bounds("file-list").is_none());
+    let root_focused =
+        cx.update(|window, cx| view.read(cx).focus.is_focused(window));
+    press(cx, "escape");
+    assert!(read(&view, cx, |app| app.scan.is_none()), "Escape cancels");
+    assert!(root_focused, "the persistent root owns scan keys");
+
+    press(cx, "r");
+    finish_scan(&view, cx);
+    draw(cx);
+    assert!(cx.debug_bounds("file-list").is_some());
+    assert!(
+        cx.update(|window, cx| { view.read(cx).file_focus.is_focused(window) })
+    );
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+#[gpui_kit::test]
+fn accessible_list_review_sibling_navigation_tracks_page(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = paginated_fixture(235);
+    let (view, cx) = view_over(temp.path(), cx);
+    focus_file_list(&view, cx);
+    update(&view, cx, |app, cx| app.select(Some(vec![99]), cx));
+    press(cx, "tab");
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), Some(vec![100]));
+    assert_eq!(read(&view, cx, |app| app.file_page), 1);
+    assert!(cx.debug_bounds("file-row-100").is_some());
+    assert!(cx.debug_bounds("file-row-99").is_none());
+    let marked = read(&view, cx, |app| app.path_at(&[100]).unwrap());
+    press(cx, "space shift-tab");
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), Some(vec![99]));
+    assert_eq!(read(&view, cx, |app| app.file_page), 0);
+    assert!(cx.debug_bounds("file-row-99").is_some());
+    assert!(read(&view, cx, |app| {
+        app.marks.contains(&marked, app.path_style())
+    }));
+    assert!(marked.exists(), "marking never removes the file");
+}
+
+#[gpui_kit::test]
+fn accessible_list_review_previous_uses_filtered_page(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = paginated_fixture(450);
+    let (view, cx) = view_over(temp.path(), cx);
+    focus_file_list(&view, cx);
+    press(cx, "down pagedown pagedown pagedown pagedown");
+    assert_eq!(read(&view, cx, |app| app.file_page), 4);
+    press(cx, "/");
+    cx.simulate_input("match");
+    cx.run_until_parked();
+    press(cx, "enter");
+    assert_eq!(read(&view, cx, |app| app.file_entries().len()), 150);
+    assert!(cx.debug_bounds("file-row-100").is_some());
+    click_on(cx, "file-previous");
+    assert_eq!(read(&view, cx, |app| app.file_page), 0);
+    assert!(cx.debug_bounds("file-row-0").is_some());
+    assert!(cx.debug_bounds("file-row-100").is_none());
+}
+
+#[gpui_kit::test]
+fn accessible_list_review_previous_uses_shrunken_marks_page(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = paginated_fixture(4801);
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        for index in 0..4801 {
+            let target = app.target_at(&[index]).expect("file");
+            app.marks.toggle(target, app.path_style());
+        }
+        app.review_page = 4;
+        app.open_review(cx);
+    });
+    draw(cx);
+    // Removing marks leaves one row on the effective last page, so the
+    // real Previous button remains visible without scrolling 1,200 rows.
+    update(&view, cx, |app, cx| {
+        let keep = app.marks.items()[..1201].to_vec();
+        app.marks.clear();
+        for target in keep {
+            app.marks.toggle(target, app.path_style());
+        }
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.marks.len()), 1201);
+    click_on(cx, "review-previous");
+    assert_eq!(read(&view, cx, |app| app.review_page), 0);
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 4801);
+}
+
+#[gpui_kit::test]
+fn accessible_list_review_noop_navigation_preserves_page(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = paginated_fixture(235);
+    std::fs::create_dir(temp.path().join("nested")).expect("directory");
+    std::fs::write(temp.path().join("nested/child.txt"), b"x").expect("file");
+    let (view, cx) = view_over(temp.path(), cx);
+    focus_file_list(&view, cx);
+    let selected = update(&view, cx, |app, cx| {
+        let selected = child_crumbs(app, &[], "other-000150.txt");
+        assert_eq!(selected, [150]);
+        app.file_page = 1;
+        app.select(Some(selected.clone()), cx);
+        selected
+    });
+    for key in ["enter", "right", "left", "backspace", "u"] {
+        press(cx, key);
+        assert_eq!(read(&view, cx, |app| app.file_page), 1, "{key}");
+        assert_eq!(
+            read(&view, cx, |app| app.selected.clone()),
+            Some(selected.clone()),
+            "{key}"
+        );
+        assert!(cx.debug_bounds("file-row-150").is_some(), "{key}");
+    }
+    update(&view, cx, |app, cx| {
+        let nested = child_crumbs(app, &[], "nested");
+        app.go_to(nested, cx);
+    });
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.file_page), 0);
+    assert_eq!(
+        read(&view, cx, Disktree::current_path),
+        temp.path().join("nested")
+    );
 }

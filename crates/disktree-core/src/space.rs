@@ -124,10 +124,9 @@ pub fn device_in(table: &str, path: &Path) -> Option<String> {
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
-            let device = fields.next()?;
+            let device = unescape_octal(fields.next()?);
             let mount = unescape_octal(fields.next()?);
-            path.starts_with(&mount)
-                .then(|| (mount.len(), device.to_string()))
+            path.starts_with(&mount).then_some((mount.len(), device))
         })
         .max_by_key(|(length, _)| *length)
         .map(|(_, device)| device)
@@ -149,7 +148,8 @@ pub fn parse_mounts(table: &str) -> Vec<Mount> {
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
-            let source = fields.next()?.to_string();
+            // Escaped as in mountinfo: space, tab, newline and backslash.
+            let source = unescape_octal(fields.next()?);
             let point = PathBuf::from(unescape_octal(fields.next()?));
             let fstype = fields.next()?.to_string();
             let options = fields.next().unwrap_or_default().to_string();
@@ -895,15 +895,27 @@ fn is_volume_candidate(mount: &Mount) -> bool {
     {
         return false;
     }
+    // Sub-mounts under `/proc`, `/sys` and `/dev` (such as
+    // `/proc/sys/fs/binfmt_misc` or `/sys/fs/bpf`) are kernel and device
+    // interfaces, not storage volumes to offer for a scan.
+    if mount.point.starts_with("/proc")
+        || mount.point.starts_with("/sys")
+        || mount.point.starts_with("/dev")
+    {
+        return false;
+    }
     !matches!(
         mount.fstype.as_str(),
         "autofs"
+            | "binfmt_misc"
+            | "bpf"
             | "cgroup"
             | "cgroup2"
             | "configfs"
             | "debugfs"
             | "devpts"
             | "devtmpfs"
+            | "efivarfs"
             | "fuse.portal"
             | "fusectl"
             | "hugetlbfs"
@@ -912,6 +924,7 @@ fn is_volume_candidate(mount: &Mount) -> bool {
             | "overlay"
             | "proc"
             | "pstore"
+            | "ramfs"
             | "securityfs"
             | "sysfs"
             | "tmpfs"
@@ -1142,6 +1155,40 @@ portal /run/user/1000/doc fuse.portal rw 0 0
     }
 
     #[test]
+    fn mounts_escapes_are_decoded_once() {
+        let table = "/dev/sda1 /media/My\\040Disk\\134040 ext4 rw 0 0\n\
+                     //nas/My\\040Share /mnt/tab\\011name cifs rw 0 0\n";
+        let mounts = parse_mounts(table);
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[0].point, Path::new("/media/My Disk\\040"));
+        assert_eq!(mounts[1].point, Path::new("/mnt/tab\tname"));
+        assert_eq!(mounts[1].source, "//nas/My Share");
+        assert_eq!(
+            device_in(table, Path::new("/media/My Disk\\040/a")).as_deref(),
+            Some("/dev/sda1")
+        );
+        assert_eq!(
+            device_in(table, Path::new("/mnt/tab\tname/a")).as_deref(),
+            Some("//nas/My Share")
+        );
+    }
+
+    #[test]
+    fn mount_sources_decode_tabs_newlines_and_literal_escape_text_once() {
+        let source = "//nas/My Share\ttab\nline\\040";
+        let table = "//nas/My\\040Share\\011tab\\012line\\134040 /mnt/share cifs rw 0 0\n";
+        let mounts = parse_mounts(table);
+        assert_eq!(mounts[0].source, source);
+        assert_eq!(
+            device_in(table, Path::new("/mnt/share/child")).as_deref(),
+            Some(source)
+        );
+        assert_eq!(device_in(table, Path::new("/mnt/share-other")), None);
+        let info = "1 0 0:1 / /mnt/share rw - cifs //nas/My\\040Share\\011tab\\012line\\134040 rw\n";
+        assert_eq!(parse_mountinfo(info)[0].source, mounts[0].source);
+    }
+
+    #[test]
     fn volumes_with_least_space_come_first_and_unknowns_last() {
         let volume = |name: &str, available: Option<u64>| Volume {
             point: PathBuf::from(name),
@@ -1232,6 +1279,60 @@ portal /run/user/1000/doc fuse.portal rw 0 0
         assert!(points.contains(&PathBuf::from("/boot")), "{points:?}");
         assert!(points.contains(&PathBuf::from("/home")), "{points:?}");
         assert!(points.contains(&PathBuf::from("/var/log")), "{points:?}");
+    }
+
+    #[test]
+    fn kernel_pseudo_filesystems_are_excluded_from_volume_candidates() {
+        let table = "\
+/dev/sda1 / ext4 rw 0 0
+/dev/sdb1 /home ext4 rw 0 0
+proc /proc proc rw 0 0
+binfmt_misc /proc/sys/fs/binfmt_misc binfmt_misc rw 0 0
+sysfs /sys sysfs rw 0 0
+bpf /sys/fs/bpf bpf rw 0 0
+efivarfs /sys/firmware/efi/efivars efivarfs rw 0 0
+devtmpfs /dev devtmpfs rw 0 0
+devpts /dev/pts devpts rw 0 0
+none /mnt/ramdisk ramfs rw 0 0
+";
+        let volumes = volume_roots_in(&parse_mounts(table));
+        assert!(volumes.iter().all(|volume| volume.space.is_none()));
+        let points: Vec<_> = volumes
+            .iter()
+            .map(|volume| volume.point.as_path())
+            .collect();
+        assert_eq!(
+            points,
+            [Path::new("/"), Path::new("/home")],
+            "only real storage disks remain as volume candidates"
+        );
+    }
+
+    #[test]
+    fn discovery_filters_types_and_whole_kernel_path_components() {
+        let mounts = parse_mounts(
+            "unknown /proc/unknown unknown rw 0 0\n\
+             unknown /sys/unknown unknown rw 0 0\n\
+             unknown /dev/unknown unknown rw 0 0\n\
+             none /mnt/binfmt binfmt_misc rw 0 0\n\
+             none /mnt/bpf bpf rw 0 0\n\
+             none /mnt/efi efivarfs rw 0 0\n\
+             none /mnt/ram ramfs rw 0 0\n\
+             /dev/a /process ext4 rw 0 0\n\
+             /dev/b /system btrfs rw 0 0\n\
+             nas:/disk /device nfs rw 0 0\n",
+        );
+        let roots = volume_roots_in(&mounts);
+        let points: Vec<_> = roots.iter().map(|v| v.point.as_path()).collect();
+        assert_eq!(
+            points,
+            [
+                Path::new("/device"),
+                Path::new("/process"),
+                Path::new("/system")
+            ]
+        );
+        assert!(roots.iter().all(|v| v.space.is_none()));
     }
 
     #[test]

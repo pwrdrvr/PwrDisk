@@ -47,7 +47,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -67,7 +67,7 @@ jobs:
     outputs:
       signing-input-sha256: ${{ steps.archive.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -108,7 +108,7 @@ jobs:
           echo "sha256=$(shasum -a 256 "$tarball" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Upload pack input
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-preview-input
           path: ${{ runner.temp }}/macos-preview-input.tgz
@@ -200,7 +200,7 @@ jobs:
           test -f "$mount/.VolumeIcon.icns"
 
       - name: Upload macOS preview
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: PwrDisk-${{ needs.version.outputs.version }}-preview-macos
           path: dist/*
@@ -227,7 +227,7 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -259,7 +259,7 @@ jobs:
           "sha256-$env:ARCH=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Upload pack input
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-preview-input-${{ matrix.arch }}
           path: ${{ runner.temp }}/windows-preview-input-${{ matrix.arch }}.tgz
@@ -330,7 +330,7 @@ jobs:
           }
 
       - name: Upload Windows preview
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: PwrDisk-${{ needs.version.outputs.version }}-preview-windows
           path: dist/*

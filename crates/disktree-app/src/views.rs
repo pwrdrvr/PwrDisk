@@ -112,6 +112,8 @@ pub fn root(
 
     let mut root = div()
         .id("disktree-root")
+        .role(gpui_kit::Role::Group)
+        .aria_label("Disk usage explorer")
         .debug_selector(|| "disktree-root".into())
         .track_focus(&app.focus)
         .key_context("Disktree")
@@ -169,6 +171,9 @@ pub fn root(
         ))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ShowKeyboardShortcuts, _, cx| {
+                // One overlay at a time: they share element ids, and Esc
+                // would close the one underneath first.
+                this.show_agent = false;
                 this.show_help = true;
                 cx.notify();
             },
@@ -183,6 +188,7 @@ pub fn root(
         ))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ConnectAgent, window, cx| {
+                this.show_help = false;
                 this.show_agent = true;
                 window.focus(&this.focus, cx);
                 cx.notify();
@@ -211,7 +217,12 @@ pub fn root(
         .text_size(text::BODY)
         .child(strip)
         .child(body);
-    if let Some(tip) = cursor_tooltip(app, window, cx) {
+    // A modal hides the mosaic's hover card: the pointer last seen on the
+    // treemap is stale while the backdrop takes the mouse, so the card would
+    // otherwise sit, or drift, behind the dialog.
+    let modal =
+        app.show_help || app.show_agent || app.volumes_open || app.confirm_open;
+    if !modal && let Some(tip) = cursor_tooltip(app, window, cx) {
         root = root.child(tip);
     }
     if app.show_help {
@@ -433,6 +444,95 @@ fn centred_popup(
         )
 }
 
+/// Clears an overlay's flag; one value serves its Done and its backdrop.
+type CloseOverlay = fn(&mut Disktree);
+
+/// The backdrop of an overlay that only shows something: it dims the
+/// window, takes every mouse event so nothing behind it hovers or clicks,
+/// and closes the overlay on a click outside the card. The card is never
+/// taller than the window: give it `min_h_0` and let its middle scroll.
+fn overlay_backdrop(
+    id: &'static str,
+    card: impl IntoElement,
+    close: CloseOverlay,
+    cx: &Context<'_, Disktree>,
+) -> Stateful<Div> {
+    let theme = cx.omarchy();
+    div()
+        .id(id)
+        .absolute()
+        .inset_0()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme.background.opacity(0.86))
+        // Room on every side, so a card taller than a short window still
+        // reads as a dialog instead of a page.
+        .p(space::LG)
+        .on_any_mouse_down(cx.listener(move |this, _, window, cx| {
+            // The click only dismisses; nothing behind or above sees it.
+            cx.stop_propagation();
+            close(this);
+            window.focus(&this.focus, cx);
+            cx.notify();
+        }))
+        .child(
+            div()
+                .id("overlay-card")
+                .occlude()
+                .flex()
+                .flex_col()
+                .max_h_full()
+                .on_any_mouse_down(
+                    |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+                        cx.stop_propagation();
+                    },
+                )
+                .child(card),
+        )
+}
+
+/// An overlay's footer: what it says on the left, Done where a dialog's
+/// default button sits, on the right.
+fn overlay_footer(
+    note: String,
+    close: CloseOverlay,
+    cx: &Context<'_, Disktree>,
+) -> Div {
+    let theme = cx.omarchy();
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(space::MD)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(note),
+        )
+        .child(
+            div().debug_selector(|| "overlay-done".into()).child(
+                dialog_button(
+                    "overlay-done",
+                    "Done",
+                    ButtonVariant::Primary,
+                    cx,
+                )
+                .on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        close(this);
+                        window.focus(&this.focus, cx);
+                        cx.notify();
+                    },
+                )),
+            ),
+        )
+}
+
 /// The one question disktree asks: a permanent deletion cannot be undone, so
 /// it is an alert dialog that names what goes and what comes back. The trash is
 /// reversible and needs no dialog.
@@ -579,7 +679,11 @@ fn explore(
             scanning_panel(app, &theme, cx).into_any_element()
         }
     } else {
-        treemap_view::mosaic(mosaic, app, window, cx).into_any_element()
+        if app.file_list {
+            crate::file_list::list(app, cx).into_any_element()
+        } else {
+            treemap_view::mosaic(mosaic, app, window, cx).into_any_element()
+        }
     };
 
     div()
@@ -621,6 +725,13 @@ fn explore(
                         .min_w_0()
                         .min_h_0()
                         .child(trail_and_legend(app, &theme, cx))
+                        .child(button("file-view", if app.file_list { "Show treemap" } else { "Show accessible file list" }, ButtonVariant::Outline, cx)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.file_list = !this.file_list;
+                                this.pointer_active = false;
+                                window.focus(if this.file_list { &this.file_focus } else { &this.focus }, cx);
+                                cx.notify();
+                            })))
                         .child(
                             div()
                                 .flex()
@@ -3122,6 +3233,15 @@ fn review(
 
     let mut list = div()
         .id("marked-list")
+        .role(gpui_kit::Role::List)
+        .aria_label(format!(
+            "{} marked paths; page {} of {}",
+            items.len(),
+            app.review_page
+                .min(items.len().saturating_sub(1) / LIST_LIMIT)
+                + 1,
+            items.len().div_ceil(LIST_LIMIT).max(1)
+        ))
         .flex()
         .flex_col()
         .flex_1()
@@ -3140,7 +3260,15 @@ fn review(
         );
     }
 
-    for (index, item) in items.iter().take(LIST_LIMIT).enumerate() {
+    let page = app
+        .review_page
+        .min(items.len().saturating_sub(1) / LIST_LIMIT);
+    for (index, item) in items
+        .iter()
+        .enumerate()
+        .skip(page * LIST_LIMIT)
+        .take(LIST_LIMIT)
+    {
         let is_covered = status.covered(&item.path);
         let blocked_reason = status.blocked(&item.path).map(str::to_owned);
         #[cfg(test)]
@@ -3171,10 +3299,38 @@ fn review(
                 .py(space::SM)
                 .text_size(text::CAPTION)
                 .text_color(theme.secondary)
-                .child(format!(
-                    "{} more are marked and will be removed too. Unmark them in the treemap.",
-                    items.len() - LIST_LIMIT
-                )),
+                .child(
+                    button(
+                        "review-previous",
+                        "Previous marked paths",
+                        ButtonVariant::Outline,
+                        cx,
+                    )
+                    .debug_selector(|| "review-previous".into())
+                    .disabled(page == 0)
+                    .on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.review_page = page.saturating_sub(1);
+                            cx.notify();
+                        },
+                    )),
+                )
+                .child(
+                    button(
+                        "review-next",
+                        "Next marked paths",
+                        ButtonVariant::Outline,
+                        cx,
+                    )
+                    .debug_selector(|| "review-next".into())
+                    .disabled((page + 1) * LIST_LIMIT >= items.len())
+                    .on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.review_page = page + 1;
+                            cx.notify();
+                        },
+                    )),
+                ),
         );
     }
 
@@ -3194,6 +3350,11 @@ fn review(
             &theme,
             cx,
         ))
+        .child(div().id("review-readable-summary").role(gpui_kit::Role::Label)
+            .aria_label(format!("Review: {} marked paths; {} included; {} blocked; {} covered by another mark. Mode: {}. Estimated reclaimable: {}. Marking does not authorize removal.",
+                items.len(), plan.targets.len(), plan.blocked.len(), plan.covered.len(),
+                if app.removal_mode == RemovalMode::Trash { "Move to trash; recoverable until emptied" } else { "Permanent deletion; not recoverable" },
+                savings(plan.reclaimable_bytes(), plan.possible_bytes()))))
         .child(
             div()
                 .flex()
@@ -3218,7 +3379,7 @@ fn mark_row(
     app: &Disktree,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
-) -> Div {
+) -> Stateful<Div> {
     let root_value = app.tree().map_or(0, |tree| tree.bytes);
     let path_text = app.display_path(&item.path);
     let color = if blocked.is_some() || covered {
@@ -3226,7 +3387,19 @@ fn mark_row(
     } else {
         theme.foreground
     };
+    let explanation = blocked.as_deref().unwrap_or(if covered {
+        "inside a marked directory"
+    } else {
+        "included in removal plan"
+    });
     div()
+        .id(crate::file_list::path_id(&item.path))
+        .role(gpui_kit::Role::ListItem)
+        .aria_label(format!(
+            "{}; {} bytes; marked; {explanation}",
+            item.path.display(),
+            item.bytes
+        ))
         .flex()
         .flex_row()
         .items_center()
@@ -3297,6 +3470,7 @@ fn mark_row(
                 ButtonVariant::Outline,
                 cx,
             )
+            .accessibility_label(format!("Unmark {}", item.path.display()))
             .on_click(cx.listener({
                 let path = item.path.clone();
                 move |this, _, _, cx| this.unmark(&path.clone(), cx)
@@ -4167,7 +4341,7 @@ const MODIFIER_OPEN: &str = if cfg!(target_os = "macos") {
     "ctrl-o"
 };
 
-fn help_overlay(app: &Disktree, cx: &gpui_kit::App) -> Div {
+fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     let theme = cx.omarchy();
     // Sentence case, and the tile a key acts on is always the one under the
     // pointer if the pointer moved last, else the keyboard selection.
@@ -4228,7 +4402,16 @@ fn help_overlay(app: &Disktree, cx: &gpui_kit::App) -> Div {
         ("", "A permanent deletion always asks first"),
     ];
 
-    let mut keys = div().flex().flex_col().gap(space::SM);
+    // The list scrolls inside the card when the window is too short for
+    // it; the title and Done stay in view.
+    let mut keys = div()
+        .id("help-keys")
+        .debug_selector(|| "help-keys".into())
+        .flex()
+        .flex_col()
+        .gap(space::SM)
+        .min_h_0()
+        .overflow_y_scroll();
     for (key, label) in rows {
         if key.is_empty() && label.is_empty() {
             continue;
@@ -4249,6 +4432,8 @@ fn help_overlay(app: &Disktree, cx: &gpui_kit::App) -> Div {
                 )
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
                         .text_size(text::BODY)
                         .text_color(theme.foreground)
                         .child(label.to_string()),
@@ -4256,56 +4441,49 @@ fn help_overlay(app: &Disktree, cx: &gpui_kit::App) -> Div {
         );
     }
 
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme.background.opacity(0.86))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(space::MD)
-                .w(size::HELP)
-                .p(space::XL)
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface)
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(space::SM)
-                        .child(
-                            gpui_omarchy::icon(
-                                gpui_omarchy::IconName::Keyboard,
-                            )
+    let close: CloseOverlay = |this| this.show_help = false;
+    let note = format!(
+        "? or esc closes \u{00b7} {} \u{00b7} {}",
+        app.root_path.display(),
+        app.options.metric.label()
+    );
+    overlay_backdrop(
+        "help-backdrop",
+        div()
+            .debug_selector(|| "help-overlay".into())
+            .flex()
+            .flex_col()
+            .gap(space::MD)
+            .w(size::HELP)
+            .min_h_0()
+            .p(space::XL)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(space::SM)
+                    .child(
+                        gpui_omarchy::icon(gpui_omarchy::IconName::Keyboard)
                             .size(icon::MD)
                             .text_color(theme.accent),
-                        )
-                        .child(
-                            div()
-                                .text_size(text::TITLE)
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(theme.bright)
-                                .child("Keyboard and mouse"),
-                        ),
-                )
-                .child(keys)
-                .child(
-                    div()
-                        .text_size(text::CAPTION)
-                        .text_color(theme.secondary)
-                        .child(format!(
-                            "? or esc closes \u{00b7} {} \u{00b7} {}",
-                            app.root_path.display(),
-                            app.options.metric.label()
-                        )),
-                ),
-        )
+                    )
+                    .child(
+                        div()
+                            .text_size(text::TITLE)
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.bright)
+                            .child("Keyboard and mouse"),
+                    ),
+            )
+            .child(keys)
+            .child(overlay_footer(note, close, cx)),
+        close,
+        cx,
+    )
 }
 
 /// Both ends are scan-derived; the meter uses the lower bound only.
@@ -4565,11 +4743,18 @@ fn agent_line(
 
 /// How to connect an agent, and what it may do once it is: look, mark,
 /// and open the review screen. Removing stays with the person.
-fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Div {
+fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     let theme = cx.omarchy().clone();
     let exe = std::env::current_exe()
         .unwrap_or_else(|_| std::path::PathBuf::from("pwrdisk"));
-    let mut body = div().flex().flex_col().gap(space::MD);
+    // Scrolls inside the card when the window is too short for it.
+    let mut body = div()
+        .id("agent-body")
+        .flex()
+        .flex_col()
+        .gap(space::MD)
+        .min_h_0()
+        .overflow_y_scroll();
     body = body.child(
         div()
             .text_size(text::BODY)
@@ -4678,40 +4863,37 @@ fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Div {
                  and marks on its own."
             .to_string(),
     };
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme.background.opacity(0.86))
-        .child(
-            div()
-                .id("agent-overlay")
-                .debug_selector(|| "agent-overlay".into())
-                .flex()
-                .flex_col()
-                .gap(space::LG)
-                .w(size::HELP)
-                .p(space::XL)
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface)
-                .child(
-                    div()
-                        .text_size(text::TITLE)
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(theme.bright)
-                        .child("Work with an AI agent"),
-                )
-                .child(body)
-                .child(
-                    div()
-                        .text_size(text::CAPTION)
-                        .text_color(theme.secondary)
-                        .child(format!("{status} \u{00b7} esc closes")),
-                ),
-        )
+    let close: CloseOverlay = |this| this.show_agent = false;
+    overlay_backdrop(
+        "agent-backdrop",
+        div()
+            .id("agent-overlay")
+            .debug_selector(|| "agent-overlay".into())
+            .flex()
+            .flex_col()
+            .gap(space::LG)
+            .w(size::HELP)
+            .min_h_0()
+            .p(space::XL)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .child(
+                div()
+                    .text_size(text::TITLE)
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme.bright)
+                    .child("Work with an AI agent"),
+            )
+            .child(body)
+            .child(overlay_footer(
+                format!("{status} \u{00b7} esc closes"),
+                close,
+                cx,
+            )),
+        close,
+        cx,
+    )
 }
 
 #[cfg(test)]
