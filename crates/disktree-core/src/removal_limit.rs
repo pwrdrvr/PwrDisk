@@ -1,7 +1,7 @@
 //! A per-operation capacity limit, independent of projected savings.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +18,44 @@ impl Default for Limit {
     fn default() -> Self {
         Self(DEFAULT_PERCENT)
     }
+}
+
+/// The shared desktop and terminal settings location, never the scan root.
+pub fn settings_dir() -> Option<PathBuf> {
+    let home = std::env::home_dir();
+    let base = if cfg!(target_os = "macos") {
+        home.map(|home| home.join("Library/Application Support"))
+    } else if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| home.map(|home| home.join(".config")))
+    };
+    base.map(|base| base.join("pwrdisk"))
+}
+
+/// Load the user's limit for each removal; invalid configuration fails closed.
+pub fn load_settings(dir: Option<&Path>) -> Result<Limit, String> {
+    let Some(dir) = dir else {
+        return Ok(Limit::default());
+    };
+    let text = match std::fs::read_to_string(dir.join("removal-limit-percent"))
+    {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Limit::default());
+        }
+        Err(error) => {
+            return Err(format!("Cannot read removal limit: {error}"));
+        }
+    };
+    let percent = text
+        .trim()
+        .parse::<u8>()
+        .map_err(|_| "Invalid removal limit in Settings > Safety")?;
+    Limit::new(percent)
 }
 
 /// One volume's contribution to a proposed operation, before clone savings.
@@ -192,6 +230,35 @@ mod tests {
         );
         assert!(Limit::new(0).is_err());
         assert!(Limit::new(101).is_err());
+    }
+
+    #[test]
+    fn individual_files_use_the_containing_volume_capacity() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("selected");
+        std::fs::write(&path, b"keep").expect("fixture file");
+        let targets = [Target {
+            path: path.clone(),
+            bytes: 4,
+            is_dir: false,
+            hidden: false,
+        }];
+        let limit = Limit::default();
+        let budget = limit.check(&targets).expect("file preview");
+        assert_eq!(budget.len(), 1);
+        assert_eq!(
+            budget[0].volume,
+            crate::space::device_for(temp.path()).expect("parent volume")
+        );
+        assert_eq!(
+            budget[0].capacity,
+            crate::space::space_info(temp.path())
+                .expect("capacity")
+                .total
+        );
+        let fresh = measured(&targets).expect("file measurement");
+        limit.check(&fresh).expect("file worker preflight");
+        assert_eq!(std::fs::read(path).expect("file untouched"), b"keep");
     }
 
     #[test]

@@ -209,3 +209,53 @@ your own Mac build, and how to work on the code.
 
 MIT. See [LICENSE](LICENSE) and
 [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
+
+## In the terminal
+
+The standalone terminal executable uses the shared scanning core without
+GPUI or desktop libraries:
+
+```sh
+pwrdisk-tui ~/src                  # inspect an explicit directory
+pwrdisk-tui --disk ~/src           # inspect that directory's volume
+pwrdisk-tui --apparent-size ~/src   # measure file lengths
+```
+
+`make install` installs both executables. To build and install only the
+terminal on a server with Rust installed, use `make install-tui`; this does
+not build the desktop. Linux release tarballs carry a static-musl
+`pwrdisk-tui`, also available in terminal-only
+[x64](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-tui-x86_64-linux.tar.gz)
+and [ARM64](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-tui-aarch64-linux.tar.gz)
+tarballs starting with the next release. macOS carries it in
+`PwrDisk.app/Contents/MacOS`, and Windows
+includes `pwrdisk-tui.exe` beside the desktop executable. For development,
+run `cargo run --release -p disktree-tui -- PATH`.
+
+At 120 columns it shows the mosaic, inspector, findings and free-space bar;
+around 80 it keeps the map, and at 45 it becomes a scrolling list. The list
+also exposes empty directories that have no treemap area. Omarchy colours
+are followed when available, with dark/light fallbacks.
+
+**h/j/k/l** or the arrows select, **Enter** opens a directory,
+**Backspace** goes up, **Space** marks, and **c** reviews. **t** rotates
+Size/Files/Age, **i** toggles hidden entries, **d** toggles allocated/apparent
+sizes, **[** and **]** change depth, **v** selects the list, **V** chooses a
+volume, and **?** lists all keys. Hidden and measurement changes rescan;
+metric and colour changes reuse the tree and retain paths.
+
+Review can export an agent prompt (**a**) or save it (**s**). Local removal
+uses the same guards and configured per-operation capacity limit as the
+window, including fresh measurement before any path is removed. **m** selects
+Trash, **p** permanent deletion; permanent deletion requires confirmation.
+SSH terminal sessions permit inspection, marking and export only.
+
+This is an independent interactive session with its own tree and marks.
+It does not host or connect to desktop MCP. Normal `pwrdisk mcp` ownership
+and its desktop connection follow the MCP interface's own configuration.
+On macOS, a TUI started by Terminal uses that terminal's filesystem access;
+it does not borrow the running desktop's permissions.
+
+Scans stay in memory for the session. Neither interface currently saves
+or loads a complete scan; the exported agent prompt contains the reviewed
+paths. Opening the TUI starts its own scan.

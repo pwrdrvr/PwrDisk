@@ -6,6 +6,7 @@ members = [
     "crates/disktree-link",
     "crates/disktree-mcp",
     "crates/disktree-scan",
+    "crates/disktree-tui",
     "xtask",
 ]
 

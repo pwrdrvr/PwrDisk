@@ -101,3 +101,8 @@ never approve its buttons or confirmation keys through computer use.
 Capacity checks charge a symbolic link or junction to its containing
 volume, not its destination. Individual sparse and compressed files use
 the same allocated size as directory scans.
+
+`pwrdisk tui PATH` is a separate interactive terminal session. Its tree and
+marks are not the linked desktop's state. MCP does not attach to that TUI.
+SSH terminal sessions permit inspection and export, never removal; local
+terminal removal enforces the same configured capacity limit and guards.

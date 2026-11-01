@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use disktree_core::access::file_table_readable;
 use disktree_core::filter::{Keep, Matches, filter};
-use disktree_core::insights::{Candidate, worth_a_look};
+use disktree_core::insights::{Candidate, INSIGHT_LIMIT, worth_a_look};
 use disktree_core::path_style::PathStyle;
 use disktree_core::removal::{
     Plan, RemovalEvent, RemovalHandle, RemovalMode, Target, TrashBackend,
@@ -100,9 +100,6 @@ pub fn panel_width(pointer_x: f32, viewport: f32, rem: f32) -> f32 {
         (viewport / rem - PANEL_MIN_REMS).clamp(PANEL_MIN_REMS, PANEL_MAX_REMS);
     width.clamp(PANEL_MIN_REMS, max)
 }
-
-/// How many "worth a look" findings the panel lists.
-const INSIGHT_LIMIT: usize = 6;
 
 /// The menu bar's Undo, as each system spells it; `u` works everywhere.
 pub const UNDO_KEYS: &str = if cfg!(target_os = "macos") {

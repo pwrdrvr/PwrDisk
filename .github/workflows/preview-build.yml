@@ -246,7 +246,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build (unsigned)
-        run: cargo build --release --locked -p disktree-app
+        run: |
+          cargo build --release --locked -p disktree-app
+          cargo build --release --locked -p disktree-tui
 
       - name: Stage and archive pack input
         id: archive
@@ -256,7 +258,7 @@ jobs:
         run: |
           $stage = Join-Path $env:RUNNER_TEMP "windows-input"
           New-Item -ItemType Directory -Force "$stage/app" | Out-Null
-          Copy-Item target/release/pwrdisk.exe, README.md, LICENSE "$stage/app/"
+          Copy-Item target/release/pwrdisk.exe, target/release/pwrdisk-tui.exe, README.md, LICENSE "$stage/app/"
           Copy-Item licenses/velopack.txt "$stage/app/VELOPACK-NOTICES.txt"
           Copy-Item scripts/release/install-vpk.sh, scripts/release/vpk-pack-windows.ps1, assets/disktree.ico "$stage/"
           $name = "windows-preview-input-$env:ARCH.tgz"
@@ -331,7 +333,7 @@ jobs:
             $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "$out/PwrDisk-$channel-Portable.zip").Path)
             $names = $zip.Entries | ForEach-Object { $_.FullName }
             $zip.Dispose()
-            foreach ($expected in "Update.exe", "current/pwrdisk.exe", "current/VELOPACK-NOTICES.txt") {
+            foreach ($expected in "Update.exe", "current/pwrdisk.exe", "current/pwrdisk-tui.exe", "current/VELOPACK-NOTICES.txt") {
               if ($names -notcontains $expected) { throw "$arch portable zip has no $expected" }
             }
             Copy-Item "$out/PwrDisk-$channel-Setup.exe", "$out/PwrDisk-$channel.msi", "$out/PwrDisk-$channel-Portable.zip" dist/ -ErrorAction Stop

@@ -20,6 +20,47 @@ use gpui_omarchy::Theme;
 
 use crate::state::{Disktree, Screen};
 
+#[gpui_kit::test]
+fn a_live_empty_match_keeps_its_drawn_ancestors_readable(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = tempfile::tempdir().expect("fixture");
+    let parent_path = temp.path().join("parent");
+    std::fs::create_dir_all(parent_path.join("empty-match"))
+        .expect("empty directory");
+    std::fs::write(parent_path.join("unrelated.bin"), vec![b'x'; 100_000])
+        .expect("positive-size sibling");
+    std::fs::write(temp.path().join("other.bin"), vec![b'x'; 100_000])
+        .expect("another tile");
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
+    draw(cx);
+    press(cx, "/");
+    cx.simulate_input("empty-match");
+    cx.run_until_parked();
+    draw(cx);
+    update(&view, cx, |app, _| {
+        let parent = app.crumbs_for_path(&parent_path).expect("parent");
+        let index = app
+            .layout()
+            .expect("layout")
+            .iter()
+            .position(|tile| tile.crumbs() == parent)
+            .expect("positive-size ancestor is drawn");
+        let mosaic = app.prepare();
+        let state = mosaic.tiles[index].filtered;
+        let dim = mosaic
+            .labels
+            .iter()
+            .find(|label| label.text == "parent")
+            .expect("ancestor label")
+            .dim;
+        assert_eq!(state, crate::state::Filtered::Holds);
+        assert!(!dim);
+    });
+}
+
 /// Native filesystem callbacks cannot run on GPUI's deterministic scheduler.
 fn init(cx: &mut gpui_kit::App) {
     gpui_omarchy::init(cx);
@@ -4769,7 +4810,7 @@ fn the_tooltip_follows_the_pointer_inside_a_client_side_frame(
 fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     use disktree_link::{Link, MarkRequest, Request, Response};
 
-    cx.update(gpui_omarchy::init);
+    cx.update(init);
     let temp = fixture();
     let root = temp.path().to_path_buf();
     let (view, cx) = view_over(temp.path(), cx);
