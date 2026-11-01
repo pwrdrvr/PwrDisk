@@ -18,6 +18,7 @@
 //! one to hide, and nothing here writes a line anywhere but the clipboard.
 //! The model, parsing and the file reads are `log_view.rs`.
 
+use crate::semantics::AccessibleButton as _;
 use disktree_core::path_style::PathStyle;
 use std::fmt::Write as _;
 use std::ops::Range;
@@ -985,13 +986,13 @@ impl Render for LogsWindow {
             .child(
                 button(COPY_PATH_ID, "Copy path", ButtonVariant::Secondary, cx)
                     .debug_selector(|| COPY_PATH_ID.into())
-                    .disabled(self.tail.is_none())
+                    .semantic_disabled(self.tail.is_none())
                     .on_click(cx.listener(|this, _, _, cx| this.copy_path(cx))),
             )
             .child(
                 button(REVEAL_ID, "Reveal", ButtonVariant::Secondary, cx)
                     .debug_selector(|| REVEAL_ID.into())
-                    .disabled(self.tail.is_none())
+                    .semantic_disabled(self.tail.is_none())
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(tail) = &this.tail {
                             cx.reveal_path(&tail.path);
@@ -1190,7 +1191,7 @@ impl LogsWindow {
                 // search starts; trimmed, the field keeps its height.
                 .py(space::XXS)
                 .debug_selector(move || id.into())
-                .disabled(count == 0)
+                .semantic_disabled(count == 0)
                 .on_click(cx.listener(
                     move |this, _, _, cx| {
                         this.step(forward, cx);
@@ -1562,7 +1563,7 @@ impl LogsWindow {
                     cx,
                 )
                 .debug_selector(|| SINCE_MARK_ID.into())
-                .disabled(!since)
+                .semantic_disabled(!since)
                 .on_click(cx.listener(
                     |this, _, window, cx| {
                         this.select_since_mark(window, cx);
@@ -1708,7 +1709,7 @@ impl LogsWindow {
                     .child(with_tooltip(
                         button(COPY_ID, "Copy", ButtonVariant::Primary, cx)
                             .debug_selector(|| COPY_ID.into())
-                            .disabled(indexes.is_empty())
+                            .semantic_disabled(indexes.is_empty())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.copy_selection(cx);
                             })),
