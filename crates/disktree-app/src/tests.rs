@@ -1564,8 +1564,18 @@ fn settings_updates_picks_a_channel_and_keeps_the_keys(
     );
     press(cx, "tab");
     assert_eq!(view.read_with(cx, |settings, _| settings.pane), Pane::About);
-    assert!(cx.debug_bounds(crate::settings::COPY_BUILD_ID).is_some());
-    assert!(cx.debug_bounds("about-notices").is_some());
+    // The header leads the pane, and its Copy build info sits at the
+    // right of the same card.
+    let header = cx
+        .debug_bounds(crate::settings::ABOUT_HEADER_ID)
+        .expect("About's header");
+    let copy = cx
+        .debug_bounds(crate::settings::COPY_BUILD_ID)
+        .expect("Copy build info");
+    assert!(header.contains(&copy.center()), "{header:?} {copy:?}");
+    assert!(copy.center().x > header.center().x, "{header:?} {copy:?}");
+    let notices = cx.debug_bounds("about-notices").expect("the notices");
+    assert!(header.bottom() < notices.top(), "{header:?} {notices:?}");
 
     // The selection is process-wide; leave the default for other tests.
     let _ = crate::updater::set_selection(UpdateSettings::default(), None);

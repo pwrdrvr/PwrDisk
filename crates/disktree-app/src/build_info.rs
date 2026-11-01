@@ -106,9 +106,29 @@ impl BuildInfo {
         })
     }
 
-    /// "debug build for aarch64".
-    pub fn build_line(&self) -> String {
-        format!("{} build for {}", self.profile, self.arch)
+    /// About's header: "Built 2026-10-28 from v0.14.0 · Stable · Latest",
+    /// with the release channel in force passed in.
+    ///
+    /// The date is the build's own time only when the tree had changes;
+    /// a clean build records none (see `build.rs`), and is its commit, so
+    /// it is dated by that. It names the tag of a release, else the
+    /// branch, else the commit.
+    pub fn header_line(&self, channel: &str) -> String {
+        let date = self
+            .built_at
+            .or(self.commit_time)
+            .and_then(local)
+            .map(|time| format!(" {}", time.format("%Y-%m-%d")))
+            .unwrap_or_default();
+        let source = match (&self.tag, &self.branch) {
+            (Some(tag), _) if self.is_release() => Some(tag.clone()),
+            (_, Some(branch)) => Some(branch.clone()),
+            _ => self.short_commit().map(str::to_owned),
+        };
+        let source = source
+            .map(|source| format!(" from {source}"))
+            .unwrap_or_default();
+        format!("Built{date}{source} \u{00b7} {channel}")
     }
 
     /// "“show which build is running” · committed Oct 28 14:02".
@@ -291,6 +311,40 @@ mod tests {
         assert!(report.contains("\nBuilt:    20"), "{report}");
         assert!(build.changes_line().is_some());
         assert_eq!(BuildInfo::fixture().changes_line(), None);
+    }
+
+    #[test]
+    fn the_header_names_the_date_the_source_and_the_channel() {
+        // Dates are local, so check the shape around them.
+        let release = release().header_line("Stable \u{00b7} Latest");
+        assert!(release.starts_with("Built 20"), "{release}");
+        assert!(
+            release.ends_with(" from v0.5.0 \u{00b7} Stable \u{00b7} Latest"),
+            "{release}"
+        );
+        let branch = BuildInfo::fixture().header_line("Beta \u{00b7} Latest");
+        assert!(
+            branch.ends_with(
+                " from feat/build-identity \u{00b7} Beta \u{00b7} Latest"
+            ),
+            "{branch}"
+        );
+        let detached = BuildInfo {
+            branch: None,
+            ..BuildInfo::fixture()
+        };
+        assert!(
+            detached
+                .header_line("x")
+                .ends_with(" from 5e1c07a2 \u{00b7} x")
+        );
+        let bare = BuildInfo {
+            commit: None,
+            commit_time: None,
+            branch: None,
+            ..BuildInfo::fixture()
+        };
+        assert_eq!(bare.header_line("x"), "Built \u{00b7} x");
     }
 
     #[test]

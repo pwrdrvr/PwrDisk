@@ -212,7 +212,9 @@ impl Frame {
 
 /// The app icon, from the same file the Dock, the desktop entry and the
 /// installer use, so the window shows the mark people already know.
-static MARK: LazyLock<Arc<Image>> = LazyLock::new(|| {
+/// Settings › About draws it too. An SVG, so it is sharp at any size and
+/// loads the same on macOS, Windows and Linux.
+pub static MARK: LazyLock<Arc<Image>> = LazyLock::new(|| {
     Arc::new(Image::from_bytes(
         ImageFormat::Svg,
         include_bytes!("../../../assets/disktree.svg").to_vec(),
