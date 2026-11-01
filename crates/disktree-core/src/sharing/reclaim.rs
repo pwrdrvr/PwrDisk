@@ -23,7 +23,7 @@ struct Group {
 }
 
 impl Group {
-    /// One file's membership, as [`Accumulator::member`] would add it.
+    /// One file's membership of its clone group.
     fn member(info: CloneInfo, allocated: u64) -> Self {
         Self {
             members: 1,
@@ -103,9 +103,10 @@ impl Accumulator {
         acc
     }
 
-    /// The same as merging [`Self::leaf`], without a leaf's own maps: a
-    /// tree of millions of clones would allocate, merge and free one for
-    /// every file.
+    /// Add one file: its private and possible bytes, its clone group, or
+    /// its name among a hardlink's. This is what merging a file's own
+    /// accumulator did, without making one: a tree of millions of clones
+    /// allocated, merged and freed a set of maps for every file.
     pub(super) fn add_leaf(&mut self, node: &Node) {
         let Some(allocation) = node.allocation.as_deref() else {
             self.base.lower = self.base.lower.saturating_add(node.bytes);
@@ -197,12 +198,11 @@ impl Accumulator {
             ..Group::default()
         });
         let before = group.credit();
-        adjust(&mut group.members, 1, add);
-        group.references = group.references.max(info.references);
-        group.shared = group.shared.min(info.data_bytes.min(
-            allocated.saturating_sub(info.private_bytes.unwrap_or(allocated)),
-        ));
-        group.all_zero_private &= info.private_bytes == Some(0);
+        let file = Group::member(info, allocated);
+        adjust(&mut group.members, file.members, add);
+        group.references = group.references.max(file.references);
+        group.shared = group.shared.min(file.shared);
+        group.all_zero_private &= file.all_zero_private;
         replace(&mut self.credit, before, group.credit());
     }
 

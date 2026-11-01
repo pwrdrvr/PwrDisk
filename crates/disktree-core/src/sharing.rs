@@ -76,12 +76,7 @@ pub(crate) fn leaf_summary(node: &Node) -> Sharing {
         estimate: Some(allocation.estimate()),
         ..Sharing::default()
     };
-    if let Some(info) = allocation.clone.filter(|_| node.bytes > 0) {
-        summary.files = 1;
-        summary.bytes = node.bytes;
-        summary.private_bytes = info.private_bytes.unwrap_or(0).min(node.bytes);
-        summary.unknown_files = u64::from(info.private_bytes.is_none());
-    }
+    own(node, &mut summary);
     summary
 }
 
@@ -168,7 +163,11 @@ fn fold_leaf(
     allocation: &mut reclaim::Accumulator,
     summary: &mut Sharing,
 ) {
-    leaf.set_sharing(None);
+    // Only a directory keeps figures; clear a file's only if it has some,
+    // so a pass reads its millions of files without writing to them.
+    if leaf.sharing.is_some() {
+        leaf.set_sharing(None);
+    }
     allocation.add_leaf(leaf);
     if let Some((key, group)) = own(leaf, summary) {
         join(groups, key, group, limit, summary);
@@ -238,6 +237,69 @@ thread_local! {
     static VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// A directory's figures while its children are added: what [`collect`]
+/// returns, with the sums its children contribute.
+struct Part {
+    groups: Groups,
+    allocation: reclaim::Accumulator,
+    summary: Sharing,
+}
+
+impl Part {
+    fn new(limit: usize) -> Self {
+        Self {
+            groups: Groups::default(),
+            allocation: reclaim::Accumulator::new(limit),
+            summary: Sharing::default(),
+        }
+    }
+
+    /// Add one child: a file folded straight into these maps, or a
+    /// directory collected and then merged.
+    fn add(&mut self, child: &mut NodeMut<'_>, limit: usize, depth: usize) {
+        if !child.is_dir() {
+            fold_leaf(
+                child,
+                limit,
+                &mut self.groups,
+                &mut self.allocation,
+                &mut self.summary,
+            );
+            return;
+        }
+        let (groups, allocation) = collect_at(child, limit, depth + 1);
+        let summary = child.sharing();
+        self.merge(
+            Self {
+                groups,
+                allocation,
+                summary,
+            },
+            limit,
+        );
+    }
+
+    /// Merge the figures of children that follow these.
+    fn merge(&mut self, mut other: Self, limit: usize) {
+        self.allocation.merge(other.allocation);
+        let (mine, theirs) = (&mut self.summary, other.summary);
+        mine.duplicate_bytes =
+            mine.duplicate_bytes.saturating_add(theirs.duplicate_bytes);
+        mine.groups_truncated |= theirs.groups_truncated;
+        mine.files += theirs.files;
+        mine.bytes = mine.bytes.saturating_add(theirs.bytes);
+        mine.private_bytes =
+            mine.private_bytes.saturating_add(theirs.private_bytes);
+        mine.unknown_files += theirs.unknown_files;
+        if self.groups.len() < other.groups.len() {
+            std::mem::swap(&mut self.groups, &mut other.groups);
+        }
+        for (key, group) in other.groups {
+            join(&mut self.groups, key, group, limit, &mut self.summary);
+        }
+    }
+}
+
 fn collect_at(
     node: &mut NodeMut<'_>,
     limit: usize,
@@ -245,63 +307,53 @@ fn collect_at(
 ) -> (Groups, reclaim::Accumulator) {
     #[cfg(test)]
     VISITS.set(VISITS.get() + 1);
-    let mut groups = Groups::default();
-    let mut summary = Sharing::default();
-    let mut allocation = reclaim::Accumulator::new(limit);
+    let mut part = Part::new(limit);
     if !node.is_dir() {
-        fold_leaf(node, limit, &mut groups, &mut allocation, &mut summary);
-        return (groups, allocation);
+        fold_leaf(
+            node,
+            limit,
+            &mut part.groups,
+            &mut part.allocation,
+            &mut part.summary,
+        );
+        return (part.groups, part.allocation);
     }
-    if let Some((key, group)) = own(node, &mut summary) {
-        groups.insert(key, group);
+    if let Some((key, group)) = own(node, &mut part.summary) {
+        part.groups.insert(key, group);
     }
-    // Subdirectories near the top are independent work, as in the totals
-    // pass. Their results still merge in child order below, so a truncated
-    // group set keeps the same groups it always did.
-    let mut parts: Vec<_> = if depth < crate::tree::PARALLEL_LEVELS {
-        node.par_children_mut()
-            .map(|mut child| {
-                child
-                    .is_dir()
-                    .then(|| collect_at(&mut child, limit, depth + 1))
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    for (index, mut child) in node.children_mut().enumerate() {
-        if !child.is_dir() {
-            fold_leaf(
-                &mut child,
-                limit,
-                &mut groups,
-                &mut allocation,
-                &mut summary,
+    if depth < crate::tree::PARALLEL_LEVELS {
+        // Subdirectories near the top are independent work, as in the
+        // totals pass. Each worker folds a run of children into one set of
+        // maps and runs are merged as they finish, in child order, so only
+        // a few sets are held at once and a truncated group set keeps the
+        // groups the one-thread pass kept.
+        let children = node
+            .par_children_mut()
+            .fold(
+                || Part::new(limit),
+                |mut part, mut child| {
+                    part.add(&mut child, limit, depth);
+                    part
+                },
+            )
+            .reduce(
+                || Part::new(limit),
+                |mut left, right| {
+                    left.merge(right, limit);
+                    left
+                },
             );
-            continue;
-        }
-        let (mut child_groups, child_allocation) = parts
-            .get_mut(index)
-            .and_then(Option::take)
-            .unwrap_or_else(|| collect_at(&mut child, limit, depth + 1));
-        allocation.merge(child_allocation);
-        let sharing = child.sharing();
-        summary.duplicate_bytes = summary
-            .duplicate_bytes
-            .saturating_add(sharing.duplicate_bytes);
-        summary.groups_truncated |= sharing.groups_truncated;
-        summary.files += sharing.files;
-        summary.bytes = summary.bytes.saturating_add(sharing.bytes);
-        summary.private_bytes =
-            summary.private_bytes.saturating_add(sharing.private_bytes);
-        summary.unknown_files += sharing.unknown_files;
-        if groups.len() < child_groups.len() {
-            std::mem::swap(&mut groups, &mut child_groups);
-        }
-        for (key, group) in child_groups {
-            join(&mut groups, key, group, limit, &mut summary);
+        part.merge(children, limit);
+    } else {
+        for mut child in node.children_mut() {
+            part.add(&mut child, limit, depth);
         }
     }
+    let Part {
+        groups,
+        mut allocation,
+        mut summary,
+    } = part;
     if node.allocation.as_deref().is_some_and(|info| info.followed) {
         allocation = reclaim::Accumulator::new(limit);
     }
