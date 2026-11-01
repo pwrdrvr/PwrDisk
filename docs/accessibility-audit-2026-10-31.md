@@ -721,3 +721,24 @@ or WCAG certification. Upstream #58 was used narrowly to compare the
 contrast calculation/test pattern; no commits, theme picker, persistence,
 font or independent layout redesign were imported. Windows/Linux native
 rendering, high contrast and actual AT results remain explicit gaps.
+
+### PWR-33 review corrections: theme rings and highlight ink
+
+Source `e02dd98`, rebased onto main `7cfb099`. A review found that the
+first pass changed more of main's look than contrast required:
+
+| Finding | Correction and evidence |
+| --- | --- |
+| Highlighted text ink | `on_highlight` keeps main's choice (background ink on dark themes, bright on light) and falls back only when that fails 4.5:1. Native dark capture: the highlighted Mark for removal button keeps its dark text |
+| Ring translucency | Rings went through the text rule, which forces alpha to 1. `palette::boundary_on` keeps the themed ring, translucency included, when it already meets 3:1 over the fill, and falls back to `ink_on` otherwise. The 8,910-combination regression checks the colour actually painted |
+| Text cue coverage | Harness test: marking `junk` labels it `[marked] junk`, and every covered tile's label starts with `[marked] ` |
+| Label prefix density | Not changed. Repeating `[marked]`/`[filtered]` on covered and filtered tiles is a design question; the operator holds a to-do card to mock alternatives in Claude Design |
+
+macOS 27 arm64: lint, workspace tests (276 app passed, 2 ignored; the
+link test passed alone, as above) and debug build passed. Native default
+dark before (`7cfb099`) and after (`e02dd98`) captures use the same
+135-file contrived tree with `cache` marked and `.hidden` selected; no
+removal was approved or performed. Light, custom and high-contrast native
+rendering and AT results remain the PWR-36 gaps listed above.
+Ubuntu 24.04.5 x86_64 Sandboxer at `e02dd98`: setup 0 (2s), lint 0
+(12s), test 0 (24s), portable build 0 (83s), isolated SSH 0 (3s), all 0.
