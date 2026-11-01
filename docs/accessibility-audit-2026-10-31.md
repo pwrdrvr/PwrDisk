@@ -796,3 +796,36 @@ VoiceOver/Narrator/NVDA/Orca, OS display/text scaling and high contrast remain
 unverified. UI zoom and a 2× capture backing scale do not establish those
 OS/AT results. No removal approval was performed through native APIs or
 computer use.
+
+### PWR-34 rebase and review corrections
+
+Source `d5990e3` and later, rebased onto main after #45 (contrast), #60 and
+#61. Main's Settings redesign (grouped panes with an accent bar) landed
+after this work was written, so the narrow-window rules were carried onto
+it: below `ui::COMPACT_WINDOW_REMS` (50 rem) the panes wrap in a row above
+the content and the group headings step out; Tab stays with
+`aux_window::frame`, which now also takes interface zoom for every
+auxiliary window. The fixed 20-line Page Up/Down step (`PAGE_STEP`) is gone:
+documents page by the measured view and Logs scrolls within wrapped lines.
+
+#60 replaced the `a11y-fixture` example with a debug build's
+`pwrdisk logs-fixture LOG`, so the example's `--tree`/`--light` mode cited
+above no longer exists. Its earlier observations stand as recorded at
+`16f7570`; a contrived tree now opens with plain `pwrdisk ROOT`. After #61,
+on-screen macOS checks run in the PwrSuiteLab headed E2E VM, never on the
+operator's desktop.
+
+| Review finding | Correction |
+| --- | --- |
+| Review scroll keys ran before the strip's app menu | An open menu takes its keys first, so its arrows move through rows instead of scrolling the review behind it (Linux, Windows) |
+| Compact "Mark / unmark" not in its accessible name | Visible text is "Mark or unmark", inside "Mark or unmark selected path" (WCAG 2.5.3) |
+| Notices re-wrapped on every pixel of a resize | Wrapping is keyed on whole monospace columns |
+| Scrolling guidance appended under Hyprland | Moved under Keys in `docs/guide.md` |
+| Duplicate compact threshold and checks | One named token; view settings decide inline once; the compact space line is built only when shown |
+
+macOS arm64 (headless gate): lint, workspace tests (289 app passed, 2
+ignored; 234 core passed, 7 ignored). The GPUI theme-watcher abort described
+above also struck `the_agent_overlay_opens_and_closes`; it and the link test
+pass alone. Ubuntu 24.04.5 x86_64 Sandboxer at `d5990e3`: setup 0 (8s),
+lint 0 (17s), test 0 (17s), portable build 0 (49s), isolated SSH 0 (2s),
+all 0. Native AT, OS scaling and high contrast remain the PWR-36 gaps above.
