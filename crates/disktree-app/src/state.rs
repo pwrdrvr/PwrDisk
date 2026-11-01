@@ -2960,7 +2960,9 @@ impl Disktree {
         self.options.metric = self.options.metric.toggled();
         if let Some(tree) = &self.tree {
             let mut tree = (**tree).clone();
-            disktree_core::tree::aggregate(&mut tree, self.options.metric);
+            // Totals and sharing do not depend on the metric; only the order
+            // of children does.
+            disktree_core::tree::reorder(&mut tree, self.options.metric);
             discard(self.tree.replace(Arc::new(tree)));
             let metric = self.options.metric;
             let style = self.path_style();
