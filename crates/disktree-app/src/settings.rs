@@ -21,14 +21,16 @@ use gpui_kit::{
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
     Styled as _, Window, WindowHandle, div,
 };
-use gpui_omarchy::{ActiveTheme as _, ButtonVariant, Theme, button};
+use gpui_omarchy::{
+    ActiveTheme as _, ButtonVariant, ChoiceItem, Theme, button, button_group,
+};
 
 use crate::aux_window::{self, Spec};
 use crate::build_info::BuildInfo;
 use crate::chrome::Drags;
 use crate::diagnostics::{self, Diagnostics};
 use crate::state::Disktree;
-use crate::ui::{icon, size, space, text};
+use crate::ui::{size, space, text};
 use crate::update_channel::{Slot, UpdateSettings};
 use crate::updater;
 
@@ -83,6 +85,15 @@ impl Pane {
             Self::Diagnostics => "Diagnostics",
             Self::Safety => "Safety",
             Self::About => "About",
+        }
+    }
+
+    /// The nav's heading above this pane, as the family's Settings group
+    /// them: what PwrDisk does, then help with it.
+    pub const fn group(self) -> &'static str {
+        match self {
+            Self::Updates | Self::Safety => "App",
+            Self::Diagnostics | Self::About => "Support",
         }
     }
 
@@ -267,12 +278,15 @@ impl SettingsWindow {
         let rows = Slot::ALL.len();
         match keystroke.key.as_str() {
             _ if self.pane != Pane::Updates => {}
-            "down" | "j" => {
-                self.updates_row = (self.updates_row + 1) % rows;
+            // The channels are a grid, Stable over Beta and Latest beside
+            // Prerelease: up and down change the train, left and right the
+            // track.
+            "down" | "j" | "up" | "k" => {
+                self.updates_row = (self.updates_row + 2) % rows;
                 cx.notify();
             }
-            "up" | "k" => {
-                self.updates_row = (self.updates_row + rows - 1) % rows;
+            "right" | "l" | "left" | "h" => {
+                self.updates_row ^= 1;
                 cx.notify();
             }
             "enter" | "space" => self.pick(Slot::ALL[self.updates_row], cx),
@@ -300,68 +314,82 @@ impl Render for SettingsWindow {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let theme = cx.omarchy().clone();
-        let nav = Pane::ALL.iter().fold(
-            div()
-                .id("settings-panes")
-                .role(gpui_kit::Role::TabList)
-                .aria_label("Settings panes")
-                .flex()
-                .flex_col()
-                .gap(space::XXS)
-                .w(size::SETTINGS_NAV)
-                .flex_shrink_0()
-                .p(space::SM)
-                .border_r_1()
-                .border_color(theme.divider())
-                .bg(theme.inset),
-            |nav, &pane| {
-                let on = pane == self.pane;
-                nav.child(
+        // Grouped, with the pane shown marked by an accent bar, as the
+        // family's Settings windows have it; square, as Omarchy draws.
+        let mut nav = div()
+            .id("settings-panes")
+            .role(gpui_kit::Role::TabList)
+            .aria_label("Settings panes")
+            .flex()
+            .flex_col()
+            .gap(space::XXS)
+            .w(size::SETTINGS_NAV)
+            .flex_shrink_0()
+            .px(space::SM)
+            .pb(space::SM)
+            .border_r_1()
+            .border_color(theme.divider())
+            .bg(theme.inset);
+        let mut group = "";
+        for &pane in &Pane::ALL {
+            if pane.group() != group {
+                group = pane.group();
+                nav = nav.child(
                     div()
-                        .id(pane.nav_id())
-                        .role(gpui_kit::Role::Tab)
-                        .aria_label(pane.label())
-                        .aria_selected(on)
-                        .focusable()
-                        .tab_stop(true)
-                        .focus_visible(|style| style.border_color(theme.accent))
-                        .debug_selector(move || pane.nav_id().into())
-                        .px(space::MD)
-                        .py(space::SM)
-                        .border_1()
-                        .border_color(if on {
-                            theme.border
-                        } else {
-                            theme.inset
-                        })
-                        .when(on, |item| {
-                            item.bg(theme.accent.opacity(0.18))
-                                .text_color(theme.bright)
-                        })
-                        .hover(|item| item.bg(theme.hover_fill()))
-                        .cursor_pointer()
-                        .child(pane.label())
-                        .on_key_down(cx.listener(
-                            move |this, event: &KeyDownEvent, _, cx| {
-                                if matches!(
-                                    event.keystroke.key.as_str(),
-                                    "enter" | "space"
-                                ) {
-                                    this.show(pane, cx);
-                                    cx.stop_propagation();
-                                }
-                            },
-                        ))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.show(pane, cx);
-                        })),
-                )
-            },
-        );
+                        .px(space::SM)
+                        .pt(space::MD)
+                        .pb(space::XXS)
+                        .font_family(theme.mono_font.clone())
+                        .text_size(text::CAPTION)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.secondary)
+                        .child(SharedString::from(group.to_uppercase())),
+                );
+            }
+            let on = pane == self.pane;
+            nav = nav.child(
+                div()
+                    .id(pane.nav_id())
+                    .role(gpui_kit::Role::Tab)
+                    .aria_label(pane.label())
+                    .aria_selected(on)
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|style| style.border_color(theme.accent))
+                    .debug_selector(move || pane.nav_id().into())
+                    .flex()
+                    .items_center()
+                    .h(size::SETTINGS_NAV_ROW)
+                    .px(space::SM)
+                    .border_l_2()
+                    .border_color(if on { theme.accent } else { theme.inset })
+                    .when(on, |item| {
+                        item.bg(theme.accent.opacity(0.14))
+                            .text_color(theme.bright)
+                    })
+                    .hover(|item| item.bg(theme.hover_fill()))
+                    .cursor_pointer()
+                    .child(pane.label())
+                    .on_key_down(cx.listener(
+                        move |this, event: &KeyDownEvent, _, cx| {
+                            if matches!(
+                                event.keystroke.key.as_str(),
+                                "enter" | "space"
+                            ) {
+                                this.show(pane, cx);
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.show(pane, cx);
+                    })),
+            );
+        }
         let pane = match self.pane {
             Pane::Updates => self.updates(&theme, cx),
             Pane::Diagnostics => self.diagnostics_pane(&theme, cx),
-            Pane::Safety => self.safety_pane(&theme, cx),
+            Pane::Safety => self.safety_pane(&theme, window, cx),
             Pane::About => self.about(&theme, cx),
         };
         let body = div()
@@ -411,35 +439,49 @@ impl Render for SettingsWindow {
     }
 }
 
+/// The removal limits Settings › Safety offers, in percent of a volume.
+const LIMITS: [u8; 6] = [1, 5, 10, 25, 50, 100];
+
 // ── panes ───────────────────────────────────────────────────────────────
 
 impl SettingsWindow {
-    fn safety_pane(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
+    fn safety_pane(
+        &self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Div {
         let current = crate::safety::load(self.updates_dir.as_deref());
-        let mut rows = div().flex().flex_col().gap(space::SM);
-        for percent in [1, 5, 10, 25, 50, 100] {
-            let picked = current
-                .as_ref()
-                .is_ok_and(|limit| limit.percent() == percent);
-            rows = rows.child(
-                button(
-                    ElementId::Name(format!("safety-limit-{percent}").into()),
-                    format!(
-                        "{percent}%{}",
-                        if picked { " (selected)" } else { "" }
-                    ),
-                    if picked {
-                        ButtonVariant::Primary
-                    } else {
-                        ButtonVariant::Secondary
-                    },
-                    cx,
-                )
-                .debug_selector(move || format!("safety-limit-{percent}"))
-                .on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.note =
-                            disktree_core::removal_limit::Limit::new(percent)
+        // One choice of six, so one control: the segments the review
+        // screen uses for Trash or permanent, saved as soon as one is
+        // picked. Six buttons read as six commands.
+        let picked = current.as_ref().ok().and_then(|limit| {
+            LIMITS
+                .iter()
+                .position(|&percent| percent == limit.percent())
+        });
+        let entity = cx.entity().downgrade();
+        let rows =
+            div()
+                .debug_selector(|| "safety-limit".into())
+                .child(button_group(
+                    "safety-limit",
+                    LIMITS
+                        .iter()
+                        .map(|percent| {
+                            ChoiceItem::new(
+                                percent.to_string(),
+                                format!("{percent}%"),
+                            )
+                        })
+                        .collect(),
+                    picked,
+                    move |index, window, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            this.note =
+                                disktree_core::removal_limit::Limit::new(
+                                    LIMITS[index],
+                                )
                                 .and_then(|limit| {
                                     crate::safety::save(
                                         this.updates_dir.as_deref(),
@@ -447,17 +489,57 @@ impl SettingsWindow {
                                     )
                                 })
                                 .err();
-                        window.focus(&this.focus, cx);
-                        cx.notify();
+                            // Back to the window, as the other panes'
+                            // controls do, so Tab keeps walking panes.
+                            window.focus(&this.focus, cx);
+                            cx.notify();
+                        });
                     },
-                )),
+                    window,
+                    cx,
+                ));
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap(space::LG)
+            .child(head(
+                "Safety",
+                "Removal limit",
+                "Each operation is re-measured before anything is removed, \
+                 from the window and from an agent over MCP.",
+                None,
+                theme,
+            ))
+            .child(
+                card_plain(theme)
+                    .child(field(
+                        "Per operation",
+                        Some(
+                            "Measured data, as a share of each volume's \
+                             capacity. The default is 5%.",
+                        ),
+                        vec![rows.into_any_element()],
+                        theme,
+                    ))
+                    .child(field(
+                        "Applies to",
+                        Some("Trash and permanent deletion."),
+                        vec![
+                            div()
+                                .text_color(theme.foreground)
+                                .child(
+                                    "Trash may be recoverable until it is \
+                                     emptied; restoring is not guaranteed. A \
+                                     permanent deletion cannot be undone \
+                                     through PwrDisk. An agent must have the \
+                                     exact paths and mode confirmed every \
+                                     time.",
+                                )
+                                .into_any_element(),
+                        ],
+                        theme,
+                    )),
             );
-        }
-        let mut body = div().flex().flex_col().gap(space::MD)
-            .child(div().text_size(text::TITLE).child("Removal limit"))
-            .child("Maximum measured data per operation, as a percentage of each volume's capacity. Applies to both Trash and permanent deletion, from the window and MCP. The default is 5%. Each operation is re-measured before anything is removed.")
-            .child("Trash may be recoverable until emptied; restoration is not guaranteed. Permanent deletion cannot be undone through PwrDisk. MCP requires confirmation of the exact paths and mode for every operation.")
-            .child(rows);
         if let Err(reason) = current {
             body = body.child(div().text_color(theme.warning).child(reason));
         }
@@ -476,11 +558,18 @@ impl SettingsWindow {
         let slot = selection.resolve(&installed);
         let state = updater::state();
         let ready = updater::ready(&state, &installed, slot);
-        let lede = match updater::installation() {
+        let installation = updater::installation();
+        // Only a copy Velopack installed checks on its own.
+        let on_its_own = match installation {
+            Installation::Velopack { .. } => "PwrDisk also checks on its own.",
+            Installation::NotInstalled { .. } => {
+                "This copy never checks on its own."
+            }
+        };
+        let lede = match installation {
             Installation::Velopack { .. } => {
-                "Checks GitHub Releases at startup and every six hours, and \
-                 downloads what it finds. A download installs when you \
-                 restart or quit."
+                "Checks GitHub Releases at startup and every six hours. A \
+                 download installs when you restart or quit."
             }
             Installation::NotInstalled { .. } => {
                 "Not installed from the DMG, Setup.exe or the MSI, so this \
@@ -489,88 +578,82 @@ impl SettingsWindow {
             }
         };
 
-        let mut rows = div().flex().flex_col();
-        for (index, choice) in Slot::ALL.into_iter().enumerate() {
-            let current = choice == slot;
-            let note = match (current, selection.is_inferred()) {
-                (true, true) => " \u{b7} follows this build",
-                (true, false) => " \u{b7} picked",
-                _ => "",
-            };
-            rows = rows.child(
-                div()
-                    .id(ElementId::Name(format!("update-slot-{index}").into()))
-                    .debug_selector(move || format!("update-slot-{index}"))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(space::MD)
-                    .px(space::MD)
-                    .py(space::SM)
-                    .when(index == self.updates_row, |row| {
-                        row.bg(theme.accent.opacity(0.18))
-                    })
-                    .hover(|row| row.bg(theme.accent.opacity(0.1)))
-                    .cursor_pointer()
-                    .child(div().w(icon::MD).flex_shrink_0().when(
-                        current,
-                        |mark| {
-                            mark.child(
-                                gpui_omarchy::icon(
-                                    gpui_omarchy::IconName::Check,
-                                )
-                                .size(icon::MD)
-                                .text_color(theme.accent),
-                            )
-                        },
-                    ))
-                    .child(
-                        div()
-                            .w(size::UPDATE_SLOT)
-                            .flex_shrink_0()
-                            .text_color(if current {
-                                theme.bright
-                            } else {
-                                theme.foreground
-                            })
-                            .child(choice.to_string()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(text::CAPTION)
-                            .text_color(theme.secondary)
-                            .child(format!("{}{note}", slot_purpose(choice))),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.pick(choice, cx);
-                    })),
-            );
+        // Stable over Beta, Latest beside Prerelease: the grid the family's
+        // Updates panes use.
+        let mut grid = div()
+            .flex()
+            .flex_col()
+            .gap(space::XS)
+            .px(space::MD)
+            .pt(space::SM)
+            .pb(space::SM)
+            .border_t_1()
+            .border_color(theme.divider());
+        for (train, pair) in Slot::ALL.chunks(2).enumerate() {
+            let mut row = div().flex().flex_row().gap(space::XS);
+            for (track, &choice) in pair.iter().enumerate() {
+                let index = train * 2 + track;
+                row = row.child(self.slot_tile(index, choice, slot, theme, cx));
+            }
+            grid = grid.child(row);
         }
+        let follows = if selection.is_inferred() {
+            "Follows this build until you pick one."
+        } else {
+            "Picked, and saved with the other settings."
+        };
+        let channel = card(
+            "Release channel",
+            Some(
+                div()
+                    .text_size(text::CAPTION)
+                    .text_color(theme.secondary)
+                    .child("Which releases a check reads")
+                    .into_any_element(),
+            ),
+            theme,
+        )
+        .child(grid)
+        .child(
+            div()
+                .px(space::MD)
+                .pb(space::SM)
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(follows),
+        );
+
         let chip = ready.as_ref().map(|held| {
             chip(format!("{} ready", held.version), theme.warning, theme)
                 .into_any_element()
         });
-
-        let status = if state.checking {
-            "Checking\u{2026}".to_owned()
+        let checked = if state.checking {
+            "Checking now".to_owned()
         } else {
-            match &state.last {
-                Some((when, outcome)) => {
+            state.last.as_ref().map_or_else(
+                || "Not checked yet this session".to_owned(),
+                |(when, _)| {
                     let then = when
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |since| {
                             i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
                         });
-                    let ago =
-                        crate::widgets::ago(crate::state::now_seconds(), then);
-                    format!("{ago}: {outcome}")
-                }
-                None => "Not checked yet this session.".to_owned(),
-            }
+                    format!(
+                        "Checked {}",
+                        crate::widgets::ago(crate::state::now_seconds(), then)
+                    )
+                },
+            )
         };
-        let mut actions = div().flex().flex_row().gap(space::SM);
+        let mut actions = div().flex().flex_row().gap(space::SM).child(
+            button(CHECK_ID, "Check now", ButtonVariant::Outline, cx)
+                .debug_selector(|| CHECK_ID.into())
+                .semantic_disabled(state.checking)
+                .on_click(cx.listener(|_, _, _, cx| {
+                    updater::check_in_background(updater::Trigger::Manual);
+                    cx.notify();
+                })),
+        );
         if let Some(held) = &ready {
             let verb = if held.switch_back { "switch" } else { "update" };
             actions = actions.child(
@@ -587,49 +670,116 @@ impl SettingsWindow {
                 .on_click(|_, _, cx| cx.defer(Self::restart)),
             );
         }
-        actions = actions.child(
-            button(CHECK_ID, "Check now", ButtonVariant::Secondary, cx)
-                .debug_selector(|| CHECK_ID.into())
-                .semantic_disabled(state.checking)
-                .on_click(cx.listener(|_, _, _, cx| {
-                    updater::check_in_background(updater::Trigger::Manual);
-                    cx.notify();
-                })),
-        );
+        let this_copy = card("This copy", chip, theme)
+            .child(field_with(
+                "Status",
+                Some(checked.into()),
+                vec![
+                    div()
+                        .debug_selector(|| "updates-status".into())
+                        .child(status_line(&state, ready.as_ref()))
+                        .into_any_element(),
+                ],
+                theme,
+            ))
+            .child(field(
+                "Check now",
+                Some(on_its_own),
+                vec![actions.into_any_element()],
+                theme,
+            ));
 
         let mut pane = div()
             .flex()
             .flex_col()
             .gap(space::LG)
             .child(head(
-                &format!("PwrDisk {installed}"),
                 "Updates",
+                &format!("PwrDisk {installed}"),
                 lede,
                 None,
                 theme,
             ))
-            .child(card("Release channel", chip, theme).child(rows))
-            .child(card_plain(theme).child(field(
-                "Last check",
-                None,
-                vec![
-                    div()
-                        .debug_selector(|| "updates-status".into())
-                        .child(status)
-                        .into_any_element(),
-                    actions.into_any_element(),
-                ],
-                theme,
-            )));
+            .child(channel)
+            .child(this_copy);
         if let Some(note) = &self.note {
             pane =
                 pane.child(div().text_color(theme.warning).child(note.clone()));
         }
-        pane.child(hint(
-            "\u{2191}\u{2193} and enter pick a channel \u{b7} c checks \u{b7} \
-             r restarts into a download \u{b7} Ctrl+PageUp/PageDown switches panes",
-            theme,
-        ))
+        // Omarchy's apps list their keys; on macOS and Windows the keys
+        // still work, and the help overlay names them.
+        if crate::chrome::Platform::current() == crate::chrome::Platform::Linux
+        {
+            pane = pane.child(hint(
+                "\u{2191}\u{2193}\u{2190}\u{2192} and enter pick a channel \
+                 \u{b7} c checks \u{b7} r restarts into a download \u{b7} \
+                 Ctrl+PageUp/PageDown switches panes",
+                theme,
+            ));
+        }
+        pane
+    }
+
+    /// One channel in the grid: picked, under the keys, or neither.
+    fn slot_tile(
+        &self,
+        index: usize,
+        choice: Slot,
+        current: Slot,
+        theme: &Theme,
+        cx: &Context<'_, Self>,
+    ) -> gpui_kit::Stateful<Div> {
+        let picked = choice == current;
+        let keyed = index == self.updates_row;
+        div()
+            .id(ElementId::Name(format!("update-slot-{index}").into()))
+            .debug_selector(move || format!("update-slot-{index}"))
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(space::XXS)
+            .px(space::MD)
+            .py(space::SM)
+            .border_1()
+            .border_color(if picked {
+                theme.accent
+            } else if keyed {
+                theme.border
+            } else {
+                theme.divider()
+            })
+            .when(picked, |tile| tile.bg(theme.accent.opacity(0.10)))
+            .when(keyed && !picked, |tile| tile.bg(theme.hover_fill()))
+            .hover(|tile| tile.bg(theme.hover_fill()))
+            .cursor_pointer()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(space::SM)
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.bright)
+                            .child(choice.to_string()),
+                    )
+                    .when(picked, |name| {
+                        name.child(chip("Selected".into(), theme.accent, theme))
+                    }),
+            )
+            .child(
+                div()
+                    .text_size(text::CAPTION)
+                    .text_color(theme.secondary)
+                    .child(slot_purpose(choice)),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.updates_row = index;
+                this.pick(choice, cx);
+            }))
     }
 
     fn diagnostics_pane(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
@@ -977,6 +1127,40 @@ impl SettingsWindow {
 }
 
 /// What each release channel slot is for, in the family's words.
+/// The answer to Check now, in the family's words: "You're up to date
+/// (0.14.0).", "Update ready: 0.15.0. Restart to install."
+fn status_line(
+    state: &updater::State,
+    ready: Option<&updater::Held>,
+) -> String {
+    use crate::updater::Outcome;
+    if state.checking {
+        return "Checking\u{2026}".to_owned();
+    }
+    match (&state.last, ready) {
+        (None, _) => "Not checked yet.".to_owned(),
+        (_, Some(held)) if held.switch_back => {
+            format!("{} is downloaded. Restart to switch.", held.version)
+        }
+        (_, Some(held)) => {
+            format!("Update ready: {}. Restart to install.", held.version)
+        }
+        (Some((_, outcome)), None) => match outcome {
+            Outcome::UpToDate(version) => {
+                format!("You're up to date ({version}).")
+            }
+            Outcome::Failed(why) => format!("Update check failed: {why}"),
+            Outcome::NotInstalled(_) => {
+                "This copy doesn't update itself.".to_owned()
+            }
+            Outcome::NothingPublished(slot) => {
+                format!("Nothing is published on {slot} yet.")
+            }
+            other => other.to_string(),
+        },
+    }
+}
+
 const fn slot_purpose(slot: Slot) -> &'static str {
     use crate::update_channel::{Track, Train};
     match (slot.train, slot.track) {
@@ -993,7 +1177,7 @@ const fn slot_purpose(slot: Slot) -> &'static str {
 /// action at the end.
 fn head(
     eyebrow: &str,
-    title: &'static str,
+    title: &str,
     lede: &'static str,
     action: Option<AnyElement>,
     theme: &Theme,
@@ -1001,7 +1185,7 @@ fn head(
     div()
         .flex()
         .flex_col()
-        .gap(space::SM)
+        .gap(space::XS)
         .child(
             div()
                 .flex()
@@ -1013,11 +1197,13 @@ fn head(
                         .flex()
                         .flex_col()
                         .flex_1()
+                        .gap(space::XXS)
                         .child(
                             div()
                                 .font_family(theme.mono_font.clone())
                                 .text_size(text::CAPTION)
-                                .text_color(theme.secondary)
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme.accent)
                                 .child(SharedString::from(
                                     eyebrow.to_uppercase(),
                                 )),
@@ -1027,21 +1213,27 @@ fn head(
                                 .text_size(text::HEADING)
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(theme.bright)
-                                .child(title),
+                                .child(SharedString::from(title.to_owned())),
                         ),
                 )
                 .children(action),
         )
-        .child(div().text_color(theme.foreground).child(lede))
+        .child(
+            div()
+                .max_w(size::SETTINGS_LEDE)
+                .text_color(theme.secondary)
+                .child(lede),
+        )
 }
 
-/// A card: a heading row with something at its end, then rows.
+/// A card: a raised heading strip with something at its end, then rows,
+/// each of which draws the rule above it.
 fn card(
     title: &'static str,
     trailing: Option<AnyElement>,
     theme: &Theme,
 ) -> Div {
-    card_plain(theme).child(
+    card_frame(theme).child(
         div()
             .flex()
             .flex_row()
@@ -1049,8 +1241,7 @@ fn card(
             .gap(space::MD)
             .px(space::MD)
             .py(space::SM)
-            .border_b_1()
-            .border_color(theme.divider())
+            .bg(theme.surface)
             .child(
                 div()
                     .flex_1()
@@ -1062,30 +1253,46 @@ fn card(
     )
 }
 
+/// A card with no heading strip: its first row's rule is the card's top
+/// edge, so the card draws none of its own.
 fn card_plain(theme: &Theme) -> Div {
+    card_frame(theme).border_t_0()
+}
+
+fn card_frame(theme: &Theme) -> Div {
     div()
         .flex()
         .flex_col()
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.divider())
         .bg(theme.inset)
 }
 
-/// A labelled row: the label and what it is for on the left, values on the
-/// right, one under the other.
+/// A labelled row: the label and what it is for on the left, the values
+/// at the right, one under the other, as the family's Settings rows sit.
 fn field(
     label: &'static str,
     sub: Option<&'static str>,
     values: Vec<AnyElement>,
     theme: &Theme,
 ) -> Div {
+    field_with(label, sub.map(SharedString::from), values, theme)
+}
+
+fn field_with(
+    label: &'static str,
+    sub: Option<SharedString>,
+    values: Vec<AnyElement>,
+    theme: &Theme,
+) -> Div {
     div()
         .flex()
         .flex_row()
+        .items_center()
         .gap(space::LG)
         .px(space::MD)
         .py(space::SM)
-        .border_b_1()
+        .border_t_1()
         .border_color(theme.divider())
         .child(
             div()
@@ -1112,10 +1319,11 @@ fn field(
                 .flex()
                 .flex_col()
                 // Buttons keep their own width; a command box spans it.
-                .items_start()
+                .items_end()
                 .gap(space::SM)
                 .flex_1()
                 .min_w_0()
+                .text_color(theme.bright)
                 .children(values),
         )
 }
