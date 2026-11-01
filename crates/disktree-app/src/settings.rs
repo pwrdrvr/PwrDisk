@@ -347,6 +347,10 @@ impl Render for SettingsWindow {
                 );
             }
             let on = pane == self.pane;
+            // The accent bar marks the pane shown, so focus gets the
+            // app's full outline on a wrapper instead: recolouring the
+            // bar would hide focus on the shown pane and make any other
+            // focused row look shown too.
             nav = nav.child(
                 div()
                     .id(pane.nav_id())
@@ -355,21 +359,31 @@ impl Render for SettingsWindow {
                     .aria_selected(on)
                     .focusable()
                     .tab_stop(true)
+                    .h(size::SETTINGS_NAV_ROW)
+                    .border_1()
+                    .border_color(theme.inset)
                     .focus_visible(|style| style.border_color(theme.accent))
                     .debug_selector(move || pane.nav_id().into())
-                    .flex()
-                    .items_center()
-                    .h(size::SETTINGS_NAV_ROW)
-                    .px(space::SM)
-                    .border_l_2()
-                    .border_color(if on { theme.accent } else { theme.inset })
-                    .when(on, |item| {
-                        item.bg(theme.accent.opacity(0.14))
-                            .text_color(theme.bright)
-                    })
-                    .hover(|item| item.bg(theme.hover_fill()))
                     .cursor_pointer()
-                    .child(pane.label())
+                    .child(
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .px(space::SM)
+                            .border_l_2()
+                            .border_color(if on {
+                                theme.accent
+                            } else {
+                                theme.inset
+                            })
+                            .when(on, |item| {
+                                item.bg(theme.accent.opacity(0.14))
+                                    .text_color(theme.bright)
+                            })
+                            .hover(|item| item.bg(theme.hover_fill()))
+                            .child(pane.label()),
+                    )
                     .on_key_down(cx.listener(
                         move |this, event: &KeyDownEvent, _, cx| {
                             if matches!(
