@@ -6588,3 +6588,79 @@ fn aux_review_document_tab_leaves_the_title_strip(cx: &mut TestAppContext) {
     cycle_back_to_focus(cx, &reader, "tab");
     cycle_back_to_focus(cx, &copy, "shift-tab");
 }
+
+/// Three 10 GiB worktrees sharing all but 100 MiB each, marked one by one
+/// in the window: the meter and the review button project each one's own
+/// 100 MiB until the last clone of the group is marked, then the shared
+/// data once. Synthetic clone facts, so it runs on every system.
+#[gpui_kit::test]
+fn marking_a_worktree_trio_one_by_one_frees_one_copy_at_the_end(
+    cx: &mut TestAppContext,
+) {
+    use disktree_core::sharing::{Allocation, CloneInfo};
+    use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+    const MIB: u64 = 1024 * 1024;
+
+    cx.update(init);
+    let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+        .expect("tempdir in the checkout");
+    let root_path = std::fs::canonicalize(temp.path()).expect("root");
+    let mut root = Node::directory("fixture");
+    for name in ["wt-a", "wt-b", "wt-c"] {
+        std::fs::create_dir(root_path.join(name)).expect("mkdir");
+        let mut dir = Node::directory(name);
+        let mut file = Node::entry("objects", NodeKind::File, 10_140 * MIB);
+        file.allocation = Some(Box::new(Allocation {
+            bytes: 10_140 * MIB,
+            identity: None,
+            links: 1,
+            followed: false,
+            clone: Some(CloneInfo {
+                device: 1,
+                id: 77,
+                references: 3,
+                private_bytes: Some(0),
+                data_bytes: 10_140 * MIB,
+            }),
+        }));
+        dir.children.push(file);
+        dir.children
+            .push(Node::entry("own", NodeKind::File, 100 * MIB));
+        root.children.push(dir);
+    }
+    aggregate(&mut root, Metric::Bytes);
+    let path = root_path.clone();
+    let (view, cx) = cx.add_window_view(move |_, cx| {
+        // Allocated sizes: the helper's apparent sizes project nothing.
+        Disktree::with_tree(path.clone(), root, ScanOptions::default(), 3, cx)
+    });
+    draw(cx);
+    let mut seen = Vec::new();
+    for name in ["wt-a", "wt-b", "wt-c"] {
+        update(&view, cx, |app, cx| {
+            let crumbs = app
+                .crumbs_for_path(&root_path.join(name))
+                .expect("in the tree");
+            app.toggle_mark(&crumbs, cx);
+        });
+        draw(cx);
+        seen.push(read(&view, cx, |app| {
+            let plan = app.plan();
+            let linked = app.agent_state().estimate.expect("an estimate");
+            assert_eq!(linked.lower, plan.reclaimable_bytes());
+            (
+                plan.reclaimable_bytes(),
+                plan.possible_bytes(),
+                plan.reclaim(),
+            )
+        }));
+    }
+    assert_eq!(
+        seen,
+        [
+            (100 * MIB, 100 * MIB, 100 * MIB),
+            (200 * MIB, 200 * MIB, 200 * MIB),
+            (10_440 * MIB, 10_440 * MIB, 10_440 * MIB),
+        ]
+    );
+}
