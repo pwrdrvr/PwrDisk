@@ -5180,3 +5180,132 @@ fn accessible_list_review_noop_navigation_preserves_page(
         temp.path().join("nested")
     );
 }
+
+#[gpui_kit::test]
+fn readable_progress_is_throttled_but_errors_and_completion_are_immediate(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.start_scan(cx);
+        app.progress.files = 100;
+        let first = app.accessibility_status();
+        assert!(first.contains("100 files") && first.contains("indeterminate"));
+        app.progress.files = 200;
+        assert_eq!(app.accessibility_status(), first);
+        app.accessible_progress.as_mut().unwrap().0 = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(3))
+            .expect("test clock");
+        assert!(app.accessibility_status().contains("200 files"));
+        app.scan_error = Some("contrived scan error".into());
+        assert!(app.accessibility_status().contains("contrived scan error"));
+        app.cancel_scan(cx);
+        assert!(app.scan.is_none() && app.progress.cancelled);
+        app.scan_error = None;
+        assert!(app.accessibility_status().contains("Scan cancelled"));
+        app.progress.cancelled = false;
+        app.progress.finished = true;
+        assert!(app.accessibility_status().contains("Scan complete"));
+    });
+}
+
+#[gpui_kit::test]
+fn status_review_cancelled_widening_does_not_hide_the_active_screen(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(&temp.path().join("junk"), cx);
+    update(&view, cx, |app, cx| {
+        app.widen_to(temp.path().to_path_buf(), cx);
+        app.cancel_scan(cx);
+        app.open_review(cx);
+        for (screen, phase) in [
+            (Screen::Review, "Review marked paths"),
+            (Screen::Running, "Removal running"),
+            (Screen::Done, "Removal finished"),
+        ] {
+            app.screen = screen;
+            let label = app.accessibility_status();
+            assert!(label.starts_with(phase), "{label}");
+            assert!(label.contains("Previous scan cancelled"), "{label}");
+            app.scan_error = Some("contrived widening error".into());
+            let label = app.accessibility_status();
+            assert!(label.starts_with(phase), "{label}");
+            assert!(label.contains("contrived widening error"), "{label}");
+            app.scan_error = None;
+        }
+    });
+    draw(cx);
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn status_review_removal_completion_survives_its_background_rescan(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let epoch = update(&view, cx, |app, cx| {
+        let keep = child_crumbs(app, &[], "keep");
+        let notes = child_crumbs(app, &keep, "notes.txt");
+        app.toggle_mark(&notes, cx);
+        app.removal_mode = RemovalMode::Permanent;
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice);
+        app.run_epoch
+    });
+    let mut status = None;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        status = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            (app.screen == Screen::Done).then(|| {
+                assert!(app.is_indexing(), "completion starts a refresh");
+                app.accessibility_status()
+            })
+        });
+        if status.is_some() {
+            break;
+        }
+    }
+    let status = status.expect("removal completes");
+    assert!(status.starts_with("Removal finished"), "{status}");
+    assert!(status.contains("Background scan"), "{status}");
+    assert!(!status.contains("Escape cancels"), "{status}");
+    finish_scan(&view, cx);
+    draw(cx);
+    assert!(!temp.path().join("keep/notes.txt").exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn status_review_widening_announces_each_in_flight_root_immediately(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let inner = temp.path().join("junk/deeper");
+    let (view, cx) = view_over(&inner, cx);
+    update(&view, cx, |app, cx| {
+        for target in [temp.path().join("junk"), temp.path().to_path_buf()] {
+            app.widen_to(target.clone(), cx);
+            assert_eq!(app.root_path, inner, "the old tree stays usable");
+            assert_eq!(app.scan_root, target);
+            let status = app.accessibility_status();
+            assert!(
+                status.starts_with(&format!("Scanning {}.", target.display())),
+                "{status}"
+            );
+            app.progress.files = 500;
+            assert_eq!(app.accessibility_status(), status, "counts sampled");
+        }
+        app.cancel_scan(cx);
+        assert!(app.accessibility_status().starts_with("Scan cancelled"));
+    });
+    draw(cx);
+    assert!(inner.join("more.bin").exists());
+}

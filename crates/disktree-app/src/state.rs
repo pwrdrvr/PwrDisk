@@ -360,6 +360,9 @@ pub struct Disktree {
     pub scan: Option<ScanHandle>,
     pub scan_epoch: u64,
     pub progress: ScanSnapshot,
+    /// Sampled progress is announced at most once every two seconds. Errors
+    /// and phase changes bypass this cache; sampled paths are never announced.
+    pub accessible_progress: Option<(Instant, String)>,
     pub scan_error: Option<String>,
 
     pub screen: Screen,
@@ -584,6 +587,7 @@ impl Disktree {
             scan: None,
             scan_epoch: 0,
             progress: ScanSnapshot::default(),
+            accessible_progress: None,
             scan_error: None,
             screen: Screen::Explore,
             crumbs: Vec::new(),
@@ -767,6 +771,8 @@ impl Disktree {
         if !self.root_path.starts_with(&above) || self.root_path == above {
             return;
         }
+        // The worker's root changes immediately, even within a sampled report.
+        self.accessible_progress = None;
         if let Some(scan) = &self.scan {
             scan.cancel();
         }
@@ -1171,6 +1177,7 @@ impl Disktree {
     /// were the whole one: a first scan leaves the panel saying it stopped,
     /// and a widening scan leaves the tree it started from on screen.
     pub fn cancel_scan(&mut self, cx: &mut Context<'_, Self>) {
+        self.accessible_progress = None;
         self.scan_preview = None;
         if self.remote_scan.take().is_some() {
             self.scan_epoch += 1;
@@ -1187,6 +1194,8 @@ impl Disktree {
         // The poller stops at its next tick instead of taking the result.
         self.scan_epoch += 1;
         self.progress = scan.progress.snapshot();
+        self.progress.cancelled = true;
+        self.progress.finished = true;
         self.scan_elapsed = self.scan_started.map(|started| started.elapsed());
         self.scan_root.clone_from(&self.root_path);
         cx.notify();
@@ -1357,6 +1366,7 @@ impl Disktree {
 
     /// Start a fresh scan, abandoning any walk still in progress.
     pub fn start_scan(&mut self, cx: &mut Context<'_, Self>) {
+        self.accessible_progress = None;
         if self.awaiting_root {
             self.open_volumes(cx);
             return;
