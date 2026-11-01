@@ -9,7 +9,9 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use disktree_core::size::{human_bytes, human_count, share, share_bar};
+use disktree_core::size::{
+    human_bytes, human_bytes_range, human_count, share, share_bar,
+};
 use disktree_link::{Clones, Entry, Found, Listing};
 
 /// Width of the share bar on a row.
@@ -48,8 +50,8 @@ pub fn describe(entry: &Entry, now: i64) -> String {
     if entry.is_dir {
         parts.push(format!("{} files", human_count(entry.files)));
     }
-    if let Some(clones) = entry.clones.filter(|clones| clones.shared > 0) {
-        parts.push(clone_split(&clones));
+    if let Some(split) = entry.clones.as_ref().and_then(clone_split) {
+        parts.push(split);
     }
     if entry.category != "other" {
         parts.push(entry.category.clone());
@@ -64,27 +66,15 @@ pub fn describe(entry: &Entry, now: i64) -> String {
     parts.join(" \u{00b7} ")
 }
 
-/// Allocated bytes overstate what goes when blocks are APFS clones. The
-/// refcount behind `lower` counts clones outside the scan too, so the
-/// wording never says the blocks are shared only within it.
-fn clone_split(clones: &Clones) -> String {
-    format!(
-        "{} private \u{00b7} {} shared with other APFS clones \u{00b7} \
-         frees \u{2248} {} alone{}",
-        human_bytes(clones.private),
-        human_bytes(clones.shared),
-        bounds(clones.lower, clones.upper),
+/// The split, then what removing the entry alone frees; `None` without
+/// clone blocks.
+fn clone_split(clones: &Clones) -> Option<String> {
+    let split = clones.split()?;
+    Some(format!(
+        "{split} \u{00b7} frees \u{2248} {} alone{}",
+        human_bytes_range(clones.lower, clones.upper),
         if clones.partial { " (partial)" } else { "" },
-    )
-}
-
-/// `lower` alone when the bounds meet, else `lower–upper`.
-fn bounds(lower: u64, upper: u64) -> String {
-    if lower == upper {
-        human_bytes(lower)
-    } else {
-        format!("{}\u{2013}{}", human_bytes(lower), human_bytes(upper))
-    }
+    ))
 }
 
 /// A line for a header: how much of `entry` is clone blocks, and how much

@@ -1646,6 +1646,7 @@ impl Session {
                 .unwrap_or_else(|| SelectionEstimate::unknown(plan));
         }
         let mut unmeasured = false;
+        let mut selected: Option<Vec<&Node>> = None;
         plan.estimate_selection(|targets| {
             let mut nodes = Vec::with_capacity(targets.len());
             let mut unknown = Estimate::default();
@@ -1669,6 +1670,11 @@ impl Session {
                     unknown.partial = true;
                 }
             }
+            // The first call covers every target: keep its nodes for the
+            // shared total instead of locating each mark again.
+            if selected.is_none() {
+                selected = Some(nodes.clone());
+            }
             let measured = sharing::estimate(nodes);
             Estimate {
                 lower: measured.lower,
@@ -1676,14 +1682,8 @@ impl Session {
                 partial: measured.partial || unknown.partial,
             }
         });
-        let measured: Vec<&Node> = plan
-            .targets
-            .iter()
-            .filter_map(|target| self.locate(&target.path).ok())
-            .filter(|found| !found.scan.options.apparent_size)
-            .map(|found| found.node)
-            .collect();
-        let mut estimate = SelectionEstimate::of(plan).with_shared(measured);
+        let mut estimate = SelectionEstimate::of(plan)
+            .with_shared(selected.unwrap_or_default());
         if unmeasured {
             estimate.upper = None;
         }

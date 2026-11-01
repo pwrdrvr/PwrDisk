@@ -306,6 +306,21 @@ pub struct Clones {
 }
 
 impl Clones {
+    /// `4.0 KiB private · 12 MiB shared with other APFS clones`, as the
+    /// window and an agent's rows both read it; `None` without clone
+    /// blocks. The refcount counts clones outside the scan too, so the
+    /// wording never says the blocks are shared only within it.
+    pub fn split(&self) -> Option<String> {
+        use disktree_core::size::human_bytes;
+        (self.shared > 0).then(|| {
+            format!(
+                "{} private \u{00b7} {} shared with other APFS clones",
+                human_bytes(self.private),
+                human_bytes(self.shared)
+            )
+        })
+    }
+
     pub fn of(node: &Node) -> Option<Self> {
         let sharing = node.sharing();
         // Only clone files carry these facts: off macOS, in an apparent

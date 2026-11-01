@@ -4360,9 +4360,17 @@ pub fn cursor_tooltip(
     // Placement is in pixels because the pointer is; the card's own size and
     // gaps come from the rem scale so they follow interface zoom.
     const HEIGHT_REMS: f32 = 6.5;
+    // A clone split adds a caption line: its text and the card's gap.
+    const SPLIT_REMS: f32 = text::CAPTION.0 * 1.25 + space::XS.0;
     let rem = window.rem_size().as_f32();
     let width = size::TOOLTIP.0 * rem;
-    let height = HEIGHT_REMS * rem;
+    let split = app
+        .hovered
+        .as_deref()
+        .and_then(|crumbs| app.node_at(crumbs))
+        .and_then(clone_split)
+        .is_some();
+    let height = (HEIGHT_REMS + if split { SPLIT_REMS } else { 0.0 }) * rem;
     let gap = space::MD.0 * rem;
     let edge = space::XS.0 * rem;
 
@@ -4763,23 +4771,12 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
 /// MCP rows read; `None` without clone blocks, so other systems and other
 /// scans show nothing new. Tile weights stay the allocated bytes.
 pub fn clone_split(node: &disktree_core::tree::Node) -> Option<String> {
-    let clones = disktree_link::Clones::of(node)?;
-    (clones.shared > 0).then(|| {
-        format!(
-            "{} private · {} shared with other APFS clones",
-            human_bytes(clones.private),
-            human_bytes(clones.shared)
-        )
-    })
+    disktree_link::Clones::of(node)?.split()
 }
 
 /// Both ends are scan-derived; the meter uses the lower bound only.
 fn savings(lower: u64, upper: u64) -> String {
-    if lower == upper {
-        human_bytes(lower)
-    } else {
-        format!("{}–{}", human_bytes(lower), human_bytes(upper))
-    }
+    disktree_core::size::human_bytes_range(lower, upper)
 }
 
 // ── the menu, off macOS ─────────────────────────────────────────────────
