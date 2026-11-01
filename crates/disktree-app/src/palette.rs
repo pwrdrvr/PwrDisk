@@ -132,13 +132,15 @@ pub const fn highlight(theme: &Theme) -> Hsla {
     theme.warning
 }
 
-/// Text on a filled highlight.
-pub const fn on_highlight(theme: &Theme) -> Hsla {
-    if dark(theme) {
+/// Text on a filled highlight: dark on dark themes and light on light
+/// ones, as before, unless that ink fails on this theme's highlight.
+pub fn on_highlight(theme: &Theme) -> Hsla {
+    let preferred = if dark(theme) {
         theme.background
     } else {
         theme.bright
-    }
+    };
+    ink_on(preferred, highlight(theme), 4.5)
 }
 
 /// The diagonal hatch over reclaimable space: quiet enough to leave the hue
@@ -185,29 +187,60 @@ pub fn label_color(theme: &Theme, depth: u32) -> Hsla {
     if depth == 0 { base } else { base.opacity(0.88) }
 }
 
+/// WCAG contrast after alpha compositing in sRGB, then linearizing.
+pub fn contrast(ink: Hsla, surface: Hsla) -> f32 {
+    let luminance = |color: Hsla| {
+        let rgb = color.to_rgb();
+        let linear = |channel: f32| {
+            if channel <= 0.040_45 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.0722_f32.mul_add(
+            linear(rgb.b),
+            0.7152_f32.mul_add(linear(rgb.g), 0.2126 * linear(rgb.r)),
+        )
+    };
+    let shown = mix(surface, Hsla { a: 1.0, ..ink }, ink.a);
+    let (a, b) = (luminance(shown), luminance(surface));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// Keep the theme's ink when it passes; otherwise choose an opaque neutral.
+/// One of black/white always exceeds 4.5:1 on an opaque flat surface.
+pub fn ink_on(preferred: Hsla, surface: Hsla, minimum: f32) -> Hsla {
+    let preferred = Hsla {
+        a: 1.0,
+        ..preferred
+    };
+    if contrast(preferred, surface) >= minimum {
+        return preferred;
+    }
+    let black: Hsla = gpui_kit::rgb(0x0000_0000).into();
+    let white: Hsla = gpui_kit::rgb(0x00ff_ffff).into();
+    if contrast(black, surface) >= contrast(white, surface) {
+        black
+    } else {
+        white
+    }
+}
+
+/// A ring or mark keeps the theme's colour, translucency included, when it
+/// passes over `surface`; otherwise it falls back to `ink_on`. Unlike text,
+/// a painted quad's alpha composites once, so it can be measured as is.
+pub fn boundary_on(preferred: Hsla, surface: Hsla, minimum: f32) -> Hsla {
+    if contrast(preferred, surface) >= minimum {
+        preferred
+    } else {
+        ink_on(preferred, surface, minimum)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn contrast(ink: Hsla, surface: Hsla) -> f32 {
-        let luminance = |color: Hsla| {
-            let rgb = color.to_rgb();
-            let linear = |channel: f32| {
-                if channel <= 0.040_45 {
-                    channel / 12.92
-                } else {
-                    ((channel + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            0.0722_f32.mul_add(
-                linear(rgb.b),
-                0.7152_f32.mul_add(linear(rgb.g), 0.2126 * linear(rgb.r)),
-            )
-        };
-        let shown = mix(surface, ink.opacity(1.0), ink.a);
-        let (a, b) = (luminance(shown), luminance(surface));
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    }
 
     #[test]
     fn audit_contrast_composites_alpha_before_linearizing() {
@@ -218,8 +251,8 @@ mod tests {
         assert!((contrast(white.opacity(0.5), black) - 5.281).abs() < 0.01);
     }
 
-    /// A diagnostic with known failures, separate from the regression gate.
-    /// These are flat fills; hatch intersections need additional inspection.
+    /// Legacy baseline formulas, retained to reproduce the original audit.
+    /// Production tile-state thresholds live in `treemap_view` tests.
     #[test]
     #[ignore = "prints audit measurements; does not certify contrast"]
     fn audit_contrast_report() {
@@ -281,7 +314,14 @@ mod tests {
                 ),
                 (
                     "highlight-button",
-                    contrast(on_highlight(&theme), highlight(&theme)),
+                    contrast(
+                        if dark(&theme) {
+                            theme.background
+                        } else {
+                            theme.bright
+                        },
+                        highlight(&theme),
+                    ),
                     4.5,
                 ),
             ] {

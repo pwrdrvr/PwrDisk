@@ -2709,7 +2709,7 @@ impl Disktree {
             let is_covered = !marked.is_empty()
                 && (1..crumbs.len())
                     .any(|length| marked.contains(&crumbs[..length]));
-            decorations.push(TileDeco {
+            let decoration = TileDeco {
                 rect: self.animated_rect(tile.rect),
                 depth: tile.depth,
                 category,
@@ -2721,7 +2721,8 @@ impl Disktree {
                 covered: is_covered,
                 hovered: hovered.as_deref() == Some(crumbs),
                 selected: selected.as_deref() == Some(crumbs),
-            });
+            };
+            decorations.push(decoration.clone());
 
             // Labels are chosen in screen space: zooming in makes room for more
             // of them, which is the point of zooming in.
@@ -2741,7 +2742,21 @@ impl Disktree {
                         continue;
                     };
                     labels.push(Label {
-                        text: node.name.to_string(),
+                        text: format!(
+                            "{}{}{}{}",
+                            if is_marked || is_covered {
+                                "[marked] "
+                            } else {
+                                ""
+                            },
+                            if node.read_error { "! " } else { "" },
+                            if filtered == Filtered::Out {
+                                "[filtered] "
+                            } else {
+                                ""
+                            },
+                            node.name
+                        ),
                         rect: self.animated_rect(tile.rect),
                         header: tile
                             .header
@@ -2750,6 +2765,7 @@ impl Disktree {
                         dim: filtered == Filtered::Out,
                         marked: is_marked || is_covered,
                         size_text: crate::widgets::short_value(node, metric),
+                        decoration: decoration.clone(),
                     });
                 }
                 TileKind::Others { count, .. } => labels.push(Label {
@@ -2760,6 +2776,7 @@ impl Disktree {
                     dim: self.matches.is_some(),
                     marked: false,
                     size_text: String::new(),
+                    decoration: decoration.clone(),
                 }),
             }
         }
@@ -4138,6 +4155,8 @@ pub struct Label {
     pub dim: bool,
     pub marked: bool,
     pub size_text: String,
+    /// The exact fill state is needed for contrast after filtering/marking.
+    pub decoration: TileDeco,
 }
 
 /// How many labels one frame will shape.

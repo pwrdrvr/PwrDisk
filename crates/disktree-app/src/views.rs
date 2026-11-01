@@ -2271,12 +2271,17 @@ fn selection_section(
         let filled = !marked && covered_by.is_none();
         actions = actions.child(if filled {
             let on = palette::on_highlight(theme);
+            let hover_fill = palette::mix(theme.background, highlight, 0.85);
+            let hover_ink = palette::ink_on(on, hover_fill, 4.5);
             mark.bg(highlight)
                 .border_color(highlight)
                 .text_color(on)
                 .font_weight(FontWeight::SEMIBOLD)
                 .hover(move |style| {
-                    style.bg(highlight.opacity(0.85)).border_color(highlight)
+                    style
+                        .bg(hover_fill)
+                        .text_color(hover_ink)
+                        .border_color(highlight)
                 })
         } else {
             mark

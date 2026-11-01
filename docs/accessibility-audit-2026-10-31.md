@@ -689,3 +689,56 @@ alone three times. In full runs on this Mac it now aborts when
 gpui-omarchy's theme-file watcher wakes inside it, and does so on the
 unreviewed `dd9f2f9` too, which passed earlier the same day. Native AX and
 screen readers were not rerun for these corrections.
+
+### PWR-33: contrast and non-color state cues
+
+Source `08402c3`, macOS binary SHA-256
+`5f963423d6a1d56f17f4d451f2906a4cecffa990f1faa3af65f43cf80fa3d782`.
+Production label colors now use the exact category/age/depth/filter/marked
+fill. A passing theme ink is retained; otherwise an opaque black or white
+ink is chosen. Name and value runs carry the same opaque tile background,
+so hatch cannot become a different text surface. Marked/covered, filtered
+and unreadable labels also have text cues; selection has a thicker ring.
+Age and category retain readable equivalents in the file list/sidebar.
+
+| Check | Observed result |
+| --- | --- |
+| Production tile-state regression | PASS: 8,910 combinations across all 11 categories, six age choices (category plus five buckets), depths 0–4, three filter states and three marked/covered states, using default dark/light and deliberately low-contrast synthetic custom colors. Names/values >=4.5:1; selection/hover/mark/unreadable boundary inks >=3:1 against the actual fill |
+| Captions / highlighted action | PASS numeric regression: opaque caption ink and highlighted-action text >=4.5:1; hover computes its own composited ground and ink |
+| Alpha behavior | Regression initially failed: GPUI `opacity(1)` multiplies the existing alpha. Final code explicitly resets alpha; the opacity/contrast regression passes |
+| Native default dark | PASS inspected rendering: matched contrived cache mark, explicit `[marked]` labels, brighter size values and thicker selected ring, fitted 2992×1878 captures at 100% UI zoom |
+| Native light / custom / high contrast | NOT VERIFIED here. The synthetic custom-color regression is not a native custom-theme or OS high-contrast result |
+| Hatch / filter / unreadable rendering | Production color and background paths covered by source/threshold checks; native intersections and all combined visual states still need the PWR-36 matrix |
+
+macOS lint, full workspace tests (235 app tests) and debug build passed.
+Ubuntu 24.04.5 x86_64 Sandboxer at this source: setup 0 (1s), lint 0 (4s),
+test 0 (11s), portable build 0 (43s), isolated SSH 0 (3s), all 0. An earlier
+run at `944d042` correctly failed the alpha regression; it is superseded.
+
+The ignored audit diagnostic retains the legacy formulas to reproduce the
+baseline. The production state regression is the threshold gate, not an AT
+or WCAG certification. Upstream #58 was used narrowly to compare the
+contrast calculation/test pattern; no commits, theme picker, persistence,
+font or independent layout redesign were imported. Windows/Linux native
+rendering, high contrast and actual AT results remain explicit gaps.
+
+### PWR-33 review corrections: theme rings and highlight ink
+
+Source `e02dd98`, rebased onto main `7cfb099`. A review found that the
+first pass changed more of main's look than contrast required:
+
+| Finding | Correction and evidence |
+| --- | --- |
+| Highlighted text ink | `on_highlight` keeps main's choice (background ink on dark themes, bright on light) and falls back only when that fails 4.5:1. Native dark capture: the highlighted Mark for removal button keeps its dark text |
+| Ring translucency | Rings went through the text rule, which forces alpha to 1. `palette::boundary_on` keeps the themed ring, translucency included, when it already meets 3:1 over the fill, and falls back to `ink_on` otherwise. The 8,910-combination regression checks the colour actually painted |
+| Text cue coverage | Harness test: marking `junk` labels it `[marked] junk`, and every covered tile's label starts with `[marked] ` |
+| Label prefix density | Not changed. Repeating `[marked]`/`[filtered]` on covered and filtered tiles is a design question; the operator holds a to-do card to mock alternatives in Claude Design |
+
+macOS 27 arm64: lint, workspace tests (276 app passed, 2 ignored; the
+link test passed alone, as above) and debug build passed. Native default
+dark before (`7cfb099`) and after (`e02dd98`) captures use the same
+135-file contrived tree with `cache` marked and `.hidden` selected; no
+removal was approved or performed. Light, custom and high-contrast native
+rendering and AT results remain the PWR-36 gaps listed above.
+Ubuntu 24.04.5 x86_64 Sandboxer at `e02dd98`: setup 0 (2s), lint 0
+(12s), test 0 (24s), portable build 0 (83s), isolated SSH 0 (3s), all 0.
