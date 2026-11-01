@@ -211,6 +211,7 @@ fn join(
     limit: usize,
     summary: &mut Sharing,
 ) {
+    reclaim::work();
     if groups.len() >= limit && !groups.contains_key(&key) {
         summary.groups_truncated = true;
         return;
@@ -231,11 +232,19 @@ fn join(
         .or_insert(group);
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Calls of `collect_at`, each of which makes a node's maps.
+    static VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn collect_at(
     node: &mut NodeMut<'_>,
     limit: usize,
     depth: usize,
 ) -> (Groups, reclaim::Accumulator) {
+    #[cfg(test)]
+    VISITS.set(VISITS.get() + 1);
     let mut groups = Groups::default();
     let mut summary = Sharing::default();
     let mut allocation = reclaim::Accumulator::new(limit);
@@ -413,6 +422,77 @@ mod tests {
         assert_eq!(root.sharing().files, 1);
         assert_eq!(root.sharing().bytes, 100);
         assert_eq!(root.sharing().duplicate_bytes, 0);
+    }
+
+    /// `copies` worktrees nested six levels deep, below the parallel ones,
+    /// each holding a clone of the same `files` files, as a directory of
+    /// agent worktrees does.
+    fn worktrees(copies: u64, files: u64) -> Tree {
+        let mut root = Draft::directory("worktrees");
+        for copy in 0..copies {
+            let mut tree = Draft::directory(format!("w{copy}"));
+            for file in 0..files {
+                let mut node = clone(&format!("f{file}"), 1, file + 1, Some(0));
+                if let Some(info) = node
+                    .allocation
+                    .as_mut()
+                    .and_then(|allocation| allocation.clone.as_mut())
+                {
+                    info.references = u32::try_from(copies).expect("copies");
+                }
+                tree.children.push(node);
+            }
+            for level in 0..6 {
+                let mut dir = Draft::directory(format!("w{copy}-{level}"));
+                dir.children.push(tree);
+                tree = dir;
+            }
+            root.children.push(tree);
+        }
+        let mut root = Tree::from(root);
+        aggregate(&mut root, Metric::Bytes);
+        root
+    }
+
+    /// On one thread, so the thread-local counters see all of the pass.
+    fn refresh_work(tree: &mut Tree) -> (u64, u64) {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("pool")
+            .install(|| {
+                VISITS.set(0);
+                reclaim::WORK.set(0);
+                refresh(&mut tree.root_mut());
+                (VISITS.get(), reclaim::WORK.get())
+            })
+    }
+
+    /// The pass once took 11 s on 20 million nodes, most of it making,
+    /// merging and freeing two maps for every file. Hold it to maps per
+    /// directory and to work that grows with the files, not faster.
+    #[test]
+    fn refresh_work_grows_with_files_and_makes_no_map_per_file() {
+        let mut counts = Vec::new();
+        for (copies, files) in [(8, 64), (64, 512)] {
+            let mut tree = worktrees(copies, files);
+            let duplicates = tree.sharing().duplicate_bytes;
+            assert_eq!(duplicates, 80 * (copies - 1) * files);
+            let (visits, work) = refresh_work(&mut tree);
+            assert_eq!(tree.sharing().duplicate_bytes, duplicates);
+            assert_eq!(
+                visits,
+                u64::from(tree.dirs),
+                "maps are made per directory, never per file"
+            );
+            // Each file is added to its directory's two maps, and its
+            // group moves into the root's two maps once per other copy:
+            // fewer than four steps a file however many there are.
+            let budget = 4 * copies * files;
+            assert!(work <= budget, "{copies}x{files}: {work} > {budget}");
+            counts.push((work, copies * files));
+        }
+        eprintln!("refresh map steps (work, files): {counts:?}");
     }
 
     #[test]

@@ -3497,6 +3497,54 @@ fn switching_the_metric_keeps_the_directory_and_the_selection(
     assert_eq!(read(&view, cx, Disktree::current_path), root.join("big"));
 }
 
+/// The size/files toggle reorders the window's tree where it lies rather
+/// than copying it, yet still hands out a new tree; a tree another task is
+/// reading is copied and left in its old order.
+#[gpui_kit::test]
+fn toggling_the_metric_reorders_without_copying_the_tree(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("big")).expect("mkdir");
+    std::fs::write(root.join("big/one.bin"), vec![b'x'; 500_000])
+        .expect("write");
+    for index in 0..5 {
+        let file = root.join(format!("many/{index}.txt"));
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&file, b"x").expect("write");
+    }
+    let (view, cx) = view_over(root, cx);
+    draw(cx);
+    let first = |app: &Disktree| {
+        app.tree.as_ref().expect("tree").children[0]
+            .name
+            .to_string()
+    };
+
+    let (tree, children) = read(&view, cx, |app| {
+        let tree = app.tree.as_ref().expect("tree");
+        (std::sync::Arc::as_ptr(tree), tree.children.as_ptr())
+    });
+    assert_eq!(read(&view, cx, first), "big");
+    update(&view, cx, Disktree::toggle_metric);
+    draw(cx);
+    assert_eq!(read(&view, cx, first), "many", "most files first");
+    let (after, children_after) = read(&view, cx, |app| {
+        let tree = app.tree.as_ref().expect("tree");
+        (std::sync::Arc::as_ptr(tree), tree.children.as_ptr())
+    });
+    assert_eq!(children_after, children, "the nodes were not copied");
+    assert_ne!(after, tree, "but the tree is a new one");
+
+    let held = read(&view, cx, |app| app.tree.clone().expect("tree"));
+    update(&view, cx, Disktree::toggle_metric);
+    draw(cx);
+    assert_eq!(read(&view, cx, first), "big");
+    assert_eq!(&*held.children[0].name, "many", "a reader keeps its order");
+}
+
 /// Escape stops a first scan. What the walk found so far is not shown as a
 /// tree, a late result is ignored, and `r` starts over.
 #[gpui_kit::test]
