@@ -17,7 +17,7 @@ use crate::scan::ScanOptions;
 #[cfg(not(unix))]
 use crate::scan::scan;
 use crate::space::{SpaceInfo, space_info, volume_root_for};
-use crate::tree::{Node, NodeKind, aggregate};
+use crate::tree::{Built, Facts, NodeKind, Tree, aggregate};
 use std::time::Instant;
 
 const VERSION: u32 = 1;
@@ -131,7 +131,7 @@ pub struct Header {
 #[derive(Debug)]
 pub struct Snapshot {
     pub header: Header,
-    pub tree: Node,
+    pub tree: Tree,
 }
 
 // Children are already on the receiver's stack; counts preserve empty dirs
@@ -291,7 +291,7 @@ fn serve_request_with_progress(
         live_tree,
     )?;
     #[cfg(not(unix))]
-    write_node(out, &scan(&root, request.options)?)?;
+    write_node(out, scan(&root, request.options)?.root())?;
     // An explicit terminator distinguishes a complete scan from a severed SSH
     // connection after any otherwise valid prefix of the postorder stream.
     send(out, &"done")?;
@@ -299,7 +299,10 @@ fn serve_request_with_progress(
 }
 
 #[cfg(not(unix))]
-fn write_node(out: &mut impl Write, node: &Node) -> io::Result<()> {
+fn write_node(
+    out: &mut impl Write,
+    node: &crate::tree::Node,
+) -> io::Result<()> {
     for child in &node.children {
         write_node(out, child)?;
     }
@@ -360,148 +363,162 @@ fn read_snapshot_with_progress(
     };
     *shared.lock().expect("remote progress lock") = progress.clone();
     let mut published = Instant::now();
-    let mut stack = Vec::<Node>::new();
-    let mut line = String::new();
-    let seen = crate::tree::Seen::new();
-    let mut preview = crate::scan_preview::Builder::default();
-    let mut ancestors = Vec::<String>::new();
-    let mut preview_published = Instant::now();
-    loop {
-        receive_line(input, &mut line)?;
-        let text = line.trim_start();
-        // The common path is a typed tuple, not a heap-allocated JSON DOM
-        // followed by another deserialization. Reuse the line allocation.
-        let record: Record = if text.starts_with('[') {
-            serde_json::from_str(text).map_err(json_error)?
-        } else if text.starts_with('{') {
-            let control: Control =
-                serde_json::from_str(text).map_err(json_error)?;
-            if let Some(name) = control.enter {
-                if !(name.is_empty() && ancestors.is_empty())
-                    && (name.is_empty()
-                        || name == "."
-                        || name == ".."
-                        || name.contains(['/', '\0']))
-                {
-                    return Err(io::Error::other("invalid preview directory"));
+    let mut tree = Tree::try_build(|herd| {
+        let member = herd.get();
+        let mut stack = Vec::<Built<'_>>::new();
+        let mut line = String::new();
+        let seen = crate::tree::Seen::new();
+        let mut preview = crate::scan_preview::Builder::default();
+        let mut ancestors = Vec::<String>::new();
+        let mut preview_published = Instant::now();
+        loop {
+            receive_line(input, &mut line)?;
+            let text = line.trim_start();
+            // The common path is a typed tuple, not a heap-allocated JSON DOM
+            // followed by another deserialization. Reuse the line allocation.
+            let record: Record = if text.starts_with('[') {
+                serde_json::from_str(text).map_err(json_error)?
+            } else if text.starts_with('{') {
+                let control: Control =
+                    serde_json::from_str(text).map_err(json_error)?;
+                if let Some(name) = control.enter {
+                    if !(name.is_empty() && ancestors.is_empty())
+                        && (name.is_empty()
+                            || name == "."
+                            || name == ".."
+                            || name.contains(['/', '\0']))
+                    {
+                        return Err(io::Error::other(
+                            "invalid preview directory",
+                        ));
+                    }
+                    ancestors.push(name);
+                    continue;
                 }
-                ancestors.push(name);
-                continue;
+                if let Some(directory) = control.directory {
+                    progress.directory = Some(directory);
+                    progress.updated = Some(Instant::now());
+                    *shared.lock().expect("remote progress lock") =
+                        progress.clone();
+                    published = Instant::now();
+                    continue;
+                }
+                let mut entry = control.entry.ok_or_else(|| {
+                    io::Error::other("invalid remote control record")
+                })?;
+                let identity = control.link.ok_or_else(|| {
+                    io::Error::other("missing remote hardlink identity")
+                })?;
+                if entry.1 != 1 || entry.6 != 0 {
+                    return Err(io::Error::other(
+                        "invalid remote hardlink entry",
+                    ));
+                }
+                if entry.2 > 0 && !seen.insert(identity) {
+                    entry.2 = 0;
+                }
+                entry
+            } else if serde_json::from_str::<String>(text)
+                .map_err(json_error)?
+                == "done"
+            {
+                break;
+            } else {
+                return Err(io::Error::other("invalid remote stream marker"));
+            };
+            let Record(name, kind, bytes, files, modified, read_error, count) =
+                record;
+            // Names must remain single components when joined to marked paths.
+            // Remote paths are joined as POSIX paths on every client, so `\` and
+            // `:` are ordinary characters in a name, as they are on the host.
+            if name.is_empty()
+                || name == "."
+                || name == ".."
+                || name.contains(['/', '\0'])
+            {
+                return Err(io::Error::other(format!(
+                    "remote name cannot be represented safely: {name:?}"
+                )));
             }
-            if let Some(directory) = control.directory {
-                progress.directory = Some(directory);
+            if count > stack.len() {
+                return Err(io::Error::other(format!(
+                    "incomplete remote directory {name:?}: \
+                 expected {count} children, received {}",
+                    stack.len(),
+                )));
+            }
+            let kind = match kind {
+                0 => NodeKind::Directory,
+                1 => NodeKind::File,
+                2 => NodeKind::Symlink,
+                3 => NodeKind::Other,
+                _ => return Err(io::Error::other("invalid remote node kind")),
+            };
+            if !kind.is_dir() && count != 0 {
+                return Err(io::Error::other("remote leaf has children"));
+            }
+            // The final root often owns every stacked node. Take the stack
+            // whole instead of copying a wide tree's nodes out of it first.
+            let children = if count == stack.len() {
+                std::mem::take(&mut stack)
+            } else {
+                stack.split_off(stack.len() - count)
+            };
+            let facts = Facts {
+                files,
+                read_error,
+                modified,
+                ..Facts::entry(kind, bytes)
+            };
+            stack.push(member.directory(&name, facts, None, children));
+            let mut preview_changed = false;
+            if !ancestors.is_empty() {
+                if kind.is_dir() {
+                    ancestors.pop();
+                } else {
+                    preview.add(
+                        ancestors.get(1).map(String::as_str),
+                        bytes,
+                        files,
+                    );
+                    if progress.preview.is_none() {
+                        progress.preview = Some(Arc::new(preview.snapshot()));
+                        preview_changed = true;
+                    }
+                }
+            }
+            progress.dirs += u64::from(kind.is_dir());
+            // Legacy helpers include direct totals in directory records too.
+            // Count each leaf once, never charge its parent's totals again.
+            if !kind.is_dir() {
+                progress.files += files;
+                progress.bytes += bytes;
+            }
+            progress.errors += u64::from(read_error);
+            if published.elapsed() >= INTERVAL || preview_changed {
+                if progress.preview.is_some()
+                    && preview_published.elapsed().as_secs() >= 1
+                {
+                    progress.preview = Some(Arc::new(preview.snapshot()));
+                    preview_published = Instant::now();
+                }
                 progress.updated = Some(Instant::now());
                 *shared.lock().expect("remote progress lock") =
                     progress.clone();
                 published = Instant::now();
-                continue;
-            }
-            let mut entry = control.entry.ok_or_else(|| {
-                io::Error::other("invalid remote control record")
-            })?;
-            let identity = control.link.ok_or_else(|| {
-                io::Error::other("missing remote hardlink identity")
-            })?;
-            if entry.1 != 1 || entry.6 != 0 {
-                return Err(io::Error::other("invalid remote hardlink entry"));
-            }
-            if entry.2 > 0 && !seen.insert(identity) {
-                entry.2 = 0;
-            }
-            entry
-        } else if serde_json::from_str::<String>(text).map_err(json_error)?
-            == "done"
-        {
-            break;
-        } else {
-            return Err(io::Error::other("invalid remote stream marker"));
-        };
-        let Record(name, kind, bytes, files, modified, read_error, count) =
-            record;
-        // Names must remain single components when joined to marked paths.
-        // Remote paths are joined as POSIX paths on every client, so `\` and
-        // `:` are ordinary characters in a name, as they are on the host.
-        if name.is_empty()
-            || name == "."
-            || name == ".."
-            || name.contains(['/', '\0'])
-        {
-            return Err(io::Error::other(format!(
-                "remote name cannot be represented safely: {name:?}"
-            )));
-        }
-        if count > stack.len() {
-            return Err(io::Error::other(format!(
-                "incomplete remote directory {name:?}: \
-                 expected {count} children, received {}",
-                stack.len(),
-            )));
-        }
-        let kind = match kind {
-            0 => NodeKind::Directory,
-            1 => NodeKind::File,
-            2 => NodeKind::Symlink,
-            3 => NodeKind::Other,
-            _ => return Err(io::Error::other("invalid remote node kind")),
-        };
-        if !kind.is_dir() && count != 0 {
-            return Err(io::Error::other("remote leaf has children"));
-        }
-        // The final root often owns every stacked node. Transfer that
-        // allocation instead of briefly duplicating a wide tree's storage.
-        let children = if count == stack.len() {
-            std::mem::take(&mut stack)
-        } else {
-            stack.split_off(stack.len() - count)
-        };
-        let mut node = Node::entry(name, kind, bytes);
-        node.files = files;
-        node.modified = modified;
-        node.read_error = read_error;
-        node.children = children;
-        stack.push(node);
-        let mut preview_changed = false;
-        if !ancestors.is_empty() {
-            if kind.is_dir() {
-                ancestors.pop();
-            } else {
-                preview.add(ancestors.get(1).map(String::as_str), bytes, files);
-                if progress.preview.is_none() {
-                    progress.preview = Some(Arc::new(preview.snapshot()));
-                    preview_changed = true;
-                }
             }
         }
-        progress.dirs += u64::from(kind.is_dir());
-        // Legacy helpers include direct totals in directory records too.
-        // Count each leaf once, never charge its parent's totals again.
-        if !kind.is_dir() {
-            progress.files += files;
-            progress.bytes += bytes;
+        if progress.preview.is_some() {
+            progress.preview = Some(Arc::new(preview.snapshot()));
         }
-        progress.errors += u64::from(read_error);
-        if published.elapsed() >= INTERVAL || preview_changed {
-            if progress.preview.is_some()
-                && preview_published.elapsed().as_secs() >= 1
-            {
-                progress.preview = Some(Arc::new(preview.snapshot()));
-                preview_published = Instant::now();
-            }
-            progress.updated = Some(Instant::now());
-            *shared.lock().expect("remote progress lock") = progress.clone();
-            published = Instant::now();
+        progress.stage = Stage::Finalizing;
+        progress.updated = Some(Instant::now());
+        *shared.lock().expect("remote progress lock") = progress;
+        if stack.len() != 1 {
+            return Err(io::Error::other("incomplete remote tree"));
         }
-    }
-    if progress.preview.is_some() {
-        progress.preview = Some(Arc::new(preview.snapshot()));
-    }
-    progress.stage = Stage::Finalizing;
-    progress.updated = Some(Instant::now());
-    *shared.lock().expect("remote progress lock") = progress;
-    if stack.len() != 1 {
-        return Err(io::Error::other("incomplete remote tree"));
-    }
-    let mut tree = stack.pop().expect("one root checked above");
+        Ok(stack.pop().expect("one root checked above"))
+    })?;
     aggregate(&mut tree, crate::tree::Metric::Bytes);
     crate::classify::classify(&mut tree);
     Ok(Snapshot { header, tree })

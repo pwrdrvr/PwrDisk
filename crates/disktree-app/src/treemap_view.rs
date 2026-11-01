@@ -76,16 +76,24 @@ pub fn preview(
     window: &Window,
     cx: &Context<'_, Disktree>,
 ) -> impl IntoElement {
-    use disktree_core::tree::{Node, NodeKind};
+    use disktree_core::tree::{Facts, NodeKind, Tree};
     use disktree_core::treemap::{LayoutOptions, layout};
-    let mut root = Node::directory("preview");
     // These are display buckets, never exposed through state.tree/path_at.
-    for entry in &preview.entries {
-        let mut node =
-            Node::entry(entry.name.as_str(), NodeKind::File, entry.bytes);
-        node.files = entry.files;
-        root.children.push(node);
-    }
+    let root = Tree::build(|herd| {
+        let member = herd.get();
+        let buckets = preview
+            .entries
+            .iter()
+            .map(|entry| {
+                let facts = Facts {
+                    files: entry.files,
+                    ..Facts::entry(NodeKind::File, entry.bytes)
+                };
+                member.leaf(entry.name.as_str(), facts, None)
+            })
+            .collect();
+        member.directory("preview", Facts::directory(), None, buckets)
+    });
     let area = app.treemap_size.get();
     let tiles = layout(
         &root,

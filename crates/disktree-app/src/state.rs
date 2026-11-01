@@ -22,7 +22,7 @@ use disktree_core::scan::{Known, ScanHandle, ScanOptions, ScanSnapshot};
 use disktree_core::space::{
     SpaceInfo, device_for, space_info, volume_root_for,
 };
-use disktree_core::tree::{Metric, Node, path_of};
+use disktree_core::tree::{Metric, Node, Tree, path_of};
 use disktree_core::treemap::{
     LayoutOptions, Rect, Tile, TileKind, hit, layout_filtered,
 };
@@ -333,7 +333,7 @@ pub struct RunSummary {
 /// Scan-derived display estimates; never cached removal authorization.
 #[derive(Default)]
 struct AccountingCache {
-    tree: Weak<Node>,
+    tree: Weak<Tree>,
     root: PathBuf,
     // Total and scanned-volume subsets only: bounded by the current marks.
     estimates: Vec<(Vec<PathBuf>, disktree_core::sharing::Estimate)>,
@@ -363,7 +363,7 @@ pub struct Disktree {
     /// to toggle, not a press outside the menu that closes it first.
     pub power_hover: bool,
     pub cpu_threads: usize,
-    pub tree: Option<Arc<Node>>,
+    pub tree: Option<Arc<Tree>>,
     pub scan: Option<ScanHandle>,
     pub scan_epoch: u64,
     pub progress: ScanSnapshot,
@@ -763,7 +763,7 @@ impl Disktree {
     #[cfg(test)]
     pub fn with_tree(
         root_path: PathBuf,
-        tree: Node,
+        tree: Tree,
         options: ScanOptions,
         depth: u32,
         cx: &mut Context<'_, Self>,
@@ -1800,7 +1800,7 @@ impl Disktree {
     }
 
     pub fn tree(&self) -> Option<&Node> {
-        self.tree.as_deref()
+        self.tree.as_deref().map(Tree::root)
     }
 
     /// The node the treemap is currently rooted at.

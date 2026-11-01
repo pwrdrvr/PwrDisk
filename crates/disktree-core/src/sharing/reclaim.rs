@@ -318,6 +318,7 @@ fn work() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::{Draft, Tree};
     use crate::tree::{Metric, NodeKind, Seen, aggregate_deduped};
 
     fn file(
@@ -325,8 +326,8 @@ mod tests {
         inode: u64,
         links: u64,
         clone: Option<CloneInfo>,
-    ) -> Node {
-        let mut node = Node::entry(name, NodeKind::File, 4096);
+    ) -> Draft {
+        let mut node = Draft::entry(name, NodeKind::File, 4096);
         node.inode =
             Some((1, std::num::NonZeroU64::new(inode).expect("inode")));
         node.allocation = Some(Box::new(Allocation {
@@ -353,9 +354,9 @@ mod tests {
     fn ten_worktrees_with_external_clones_free_only_their_private_files() {
         const MIB: u64 = 1024 * 1024;
         const LISTED: u64 = 10 * 1024 * MIB;
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         for inode in 1..=11 {
-            let mut dir = Node::directory(format!("worktree-{inode}"));
+            let mut dir = Draft::directory(format!("worktree-{inode}"));
             let mut shared = file(
                 "shared",
                 inode,
@@ -371,7 +372,7 @@ mod tests {
                 shared.bytes;
             dir.children.push(shared);
             if inode <= 10 {
-                dir.children.push(Node::entry(
+                dir.children.push(Draft::entry(
                     "private",
                     NodeKind::File,
                     50 * MIB,
@@ -379,6 +380,7 @@ mod tests {
             }
             root.children.push(dir);
         }
+        let mut root = Tree::from(root);
         aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
         let selected = &root.children[..10];
         assert_eq!(
@@ -404,21 +406,28 @@ mod tests {
         let mut info = clone_info();
         info.references = 3;
         let b = file("b", 2, 1, Some(info));
-        assert_eq!(estimate([&a, &b]).lower, 0);
+        assert_eq!(
+            estimate([Tree::from(&a).root(), Tree::from(&b).root()]).lower,
+            0
+        );
         info.device = 2;
         info.references = 2;
         let c = file("c", 3, 1, Some(info));
-        assert_eq!(estimate([&a, &c]).lower, 0);
+        assert_eq!(
+            estimate([Tree::from(&a).root(), Tree::from(&c).root()]).lower,
+            0
+        );
     }
 
     #[test]
     fn selected_aliases_free_nothing_until_the_last_real_name_is_selected() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         for name in ["a", "b"] {
-            let mut dir = Node::directory(name);
+            let mut dir = Draft::directory(name);
             dir.children.push(file("file", 1, 2, None));
             root.children.push(dir);
         }
+        let mut root = Tree::from(root);
         aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
         assert_eq!(root.bytes, 4096);
         for child in &root.children {
@@ -431,13 +440,14 @@ mod tests {
 
     #[test]
     fn hardlinks_are_one_clone_reference_even_across_marked_directories() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         for (name, inode, links) in [("a", 1, 2), ("b", 1, 2), ("c", 2, 1)] {
-            let mut dir = Node::directory(name);
+            let mut dir = Draft::directory(name);
             dir.children
                 .push(file("file", inode, links, Some(clone_info())));
             root.children.push(dir);
         }
+        let mut root = Tree::from(root);
         aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
         assert_eq!(root.bytes, 8192);
         assert_eq!(root.sharing().duplicate_bytes, 4096);
@@ -459,7 +469,8 @@ mod tests {
             }
             let a = file("a", 1, 1, Some(info));
             let b = file("b", 2, 1, Some(info));
-            let estimate = estimate([&a, &b]);
+            let estimate =
+                estimate([Tree::from(&a).root(), Tree::from(&b).root()]);
             assert_eq!(estimate.lower, 0, "{missing}");
             assert_eq!(estimate.upper, 8192, "{missing}");
             assert!(estimate.partial, "{missing}");
@@ -472,10 +483,16 @@ mod tests {
         info.private_bytes = Some(1024);
         let a = file("a", 1, 1, Some(info));
         let b = file("b", 2, 1, Some(info));
-        assert_eq!(estimate([&a]).lower, 1024);
-        assert_eq!(estimate([&a]).upper, 4096);
-        assert_eq!(estimate([&a, &b]).lower, 5120);
-        assert_eq!(estimate([&a, &b]).upper, 8192);
+        assert_eq!(estimate([Tree::from(&a).root()]).lower, 1024);
+        assert_eq!(estimate([Tree::from(&a).root()]).upper, 4096);
+        assert_eq!(
+            estimate([Tree::from(&a).root(), Tree::from(&b).root()]).lower,
+            5120
+        );
+        assert_eq!(
+            estimate([Tree::from(&a).root(), Tree::from(&b).root()]).upper,
+            8192
+        );
     }
 
     #[test]
@@ -483,11 +500,15 @@ mod tests {
         let mut link = file("link", 1, 1, Some(clone_info()));
         link.allocation.as_mut().expect("allocation").followed = true;
         let real = file("real", 2, 1, Some(clone_info()));
-        let mut directory_link = Node::directory("directory-link");
+        let mut directory_link = Draft::directory("directory-link");
         directory_link.allocation = link.allocation.clone();
         directory_link.children.push(real.clone());
-        assert_eq!(estimate([&link, &real]).lower, 0);
-        assert_eq!(estimate([&directory_link]).lower, 0);
+        assert_eq!(
+            estimate([Tree::from(&link).root(), Tree::from(&real).root()])
+                .lower,
+            0
+        );
+        assert_eq!(estimate([Tree::from(&directory_link).root()]).lower, 0);
     }
 
     #[test]
@@ -499,7 +520,7 @@ mod tests {
                 info.id = group;
                 info.private_bytes = Some(1024);
                 total.merge(Accumulator::leaf(
-                    &file("f", inode, 1, Some(info)),
+                    &Tree::from(file("f", inode, 1, Some(info))),
                     1,
                 ));
             }
@@ -518,7 +539,7 @@ mod tests {
             let mut nodes = Vec::new();
             for group in 1..=n {
                 for alias in [0, 1] {
-                    let mut dir = Node::directory(format!("g{group}-{alias}"));
+                    let mut dir = Draft::directory(format!("g{group}-{alias}"));
                     let mut info = clone_info();
                     info.id = group;
                     for member in [1, 2] {
@@ -529,12 +550,13 @@ mod tests {
                             Some(info),
                         ));
                     }
+                    let mut dir = Tree::from(dir);
                     aggregate_deduped(&mut dir, Metric::Bytes, &Seen::new());
                     nodes.push(dir);
                 }
             }
             WORK.set(0);
-            let value = estimate(&nodes);
+            let value = estimate(nodes.iter().map(Tree::root));
             assert_eq!(value.lower, n * 4096);
             let work = WORK.get();
             assert!(work < n * 40, "absolute work budget: {n}: {work}");

@@ -146,33 +146,36 @@ pub fn usage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::{Draft, Tree};
     use crate::tree::{Metric, NodeKind, aggregate};
 
     #[test]
     fn unavailable_is_not_zero_and_descendant_failures_are_incomplete() {
         let path = Path::new("/volume/.Spotlight-V100");
-        let mut tree = Node::directory("volume");
+        let mut volume = Draft::directory("volume");
         let options = ScanOptions::default();
         assert_eq!(
-            usage(Path::new("/volume"), &tree, &options, path),
+            usage(Path::new("/volume"), &Tree::from(&volume), &options, path),
             Usage::Unavailable
         );
-        let mut store = Node::directory(".Spotlight-V100");
+        let mut store = Draft::directory(".Spotlight-V100");
         store.read_error = true;
-        tree.children.push(store);
+        volume.children.push(store);
+        let mut tree = Tree::from(&volume);
         aggregate(&mut tree, Metric::Bytes);
         assert_eq!(
             usage(Path::new("/volume"), &tree, &options, path),
             Usage::Unavailable
         );
-        let store = &mut tree.children[0];
+        let store = &mut volume.children[0];
         store
             .children
-            .push(Node::entry("index", NodeKind::File, 4096));
-        let mut locked = Node::directory("locked");
+            .push(Draft::entry("index", NodeKind::File, 4096));
+        let mut locked = Draft::directory("locked");
         locked.read_error = true;
         store.read_error = false;
         store.children.push(locked);
+        let mut tree = Tree::from(&volume);
         aggregate(&mut tree, Metric::Bytes);
         assert_eq!(
             usage(Path::new("/volume"), &tree, &options, path),
@@ -182,7 +185,7 @@ mod tests {
 
     #[test]
     fn readable_empty_store_is_measured_but_filtered_contents_are_unknown() {
-        let tree = Node::directory(".fseventsd");
+        let tree = Tree::from(Draft::directory(".fseventsd"));
         let path = Path::new("/volume/.fseventsd");
         let mut options = ScanOptions::default();
         assert_eq!(usage(path, &tree, &options, path), Usage::Measured(0));

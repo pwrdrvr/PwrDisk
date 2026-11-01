@@ -7,9 +7,10 @@
 //! * every directory is a `PendingDir` with an atomic completion counter and a
 //!   `+1` sentinel, so a directory is only built once its own scan *and* all of
 //!   its subdirectory tasks have finished,
-//! * children are handed to the parent as finished `Node`s and sizes are
-//!   aggregated bottom-up in one pass over the finished tree, which is also
-//!   where hardlinks are de-duplicated.
+//! * children are handed to the parent as finished nodes, made in the tree's
+//!   arenas (see [`crate::arena`]), and sizes are aggregated bottom-up in
+//!   one pass over the finished tree, which is also where hardlinks are
+//!   de-duplicated.
 //!
 //! What is added on top of dust's approach: live progress counters the UI can
 //! poll without locking, and cooperative cancellation so a re-scan can abandon
@@ -30,7 +31,10 @@ use rayon::Scope;
 use rustc_hash::FxHashSet;
 
 use crate::scan_threads::{Admission, ControllerGuard, ScanThreads};
-use crate::tree::{Metric, Node, NodeKind, Seen, aggregate, aggregate_deduped};
+use crate::tree::{
+    Built, Herd, Member, Metric, Node, NodeKind, Seen, Tree, aggregate,
+    aggregate_deduped,
+};
 
 /// Errors kept verbatim before the list is truncated; the count keeps rising.
 const MAX_ERROR_DETAIL: usize = 50;
@@ -242,7 +246,7 @@ impl ScanProgress {
 #[derive(Debug)]
 pub struct ScanHandle {
     pub progress: Arc<ScanProgress>,
-    result: Receiver<io::Result<Node>>,
+    result: Receiver<io::Result<Tree>>,
 }
 
 /// A subtree already measured, reused by a wider scan instead of walked
@@ -252,7 +256,7 @@ pub struct Known {
     /// Where it is. Compared with the walk's own paths, so give it in the
     /// same form as the root (both canonical).
     pub path: PathBuf,
-    pub tree: Arc<Node>,
+    pub tree: Arc<Tree>,
 }
 
 impl ScanHandle {
@@ -278,7 +282,6 @@ impl ScanHandle {
             data_services: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
-            root: Mutex::new(None),
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
@@ -303,7 +306,7 @@ impl ScanHandle {
     }
 
     /// Take the finished tree, if the walk is done.
-    pub fn poll(&self) -> Option<io::Result<Node>> {
+    pub fn poll(&self) -> Option<io::Result<Tree>> {
         match self.result.try_recv() {
             Ok(outcome) => Some(outcome),
             Err(TryRecvError::Empty) => None,
@@ -320,7 +323,7 @@ impl ScanHandle {
 }
 
 /// Walk `root` and return the aggregated tree. Blocking.
-pub fn scan(root: &Path, options: ScanOptions) -> io::Result<Node> {
+pub fn scan(root: &Path, options: ScanOptions) -> io::Result<Tree> {
     let progress = Arc::new(ScanProgress::default());
     let context = Arc::new(WalkContext {
         known: None,
@@ -332,7 +335,6 @@ pub fn scan(root: &Path, options: ScanOptions) -> io::Result<Node> {
         data_services: OnceLock::new(),
         data_device: OnceLock::new(),
         visited_dirs: Mutex::new(FxHashSet::default()),
-        root: Mutex::new(None),
         volume: OnceLock::new(),
         #[cfg(target_os = "macos")]
         clone_cache: crate::clone_cache::Cache::default(),
@@ -361,8 +363,6 @@ struct WalkContext {
     data_device: OnceLock<Option<u64>>,
     /// Directories already entered, so followed symlinks cannot loop.
     visited_dirs: Mutex<FxHashSet<(u64, u64)>>,
-    /// Set by the root's `complete`, read after the scope joins.
-    root: Mutex<Option<Node>>,
     /// Serial number of the root's volume, on Windows, for a walk that
     /// cannot leave it: every listing takes it instead of asking. See
     /// [`crate::windows::walk_volume`].
@@ -390,7 +390,7 @@ impl WalkContext {
     ///
     /// The entry's path is built only where it is used: most entries are
     /// files, and a disk has millions of them. The name is moved out of
-    /// the entry last, so nothing copies it.
+    /// the entry last, so it is copied only once, into the tree's arena.
     fn classify(&self, dir: &Path, entry: &mut impl Listed) -> Classified {
         let listing = match entry.listing() {
             Ok(listing) => listing,
@@ -474,9 +474,7 @@ impl WalkContext {
         if let Some(known) = &self.known
             && known.path == path
         {
-            let mut tree = (*known.tree).clone();
-            tree.name = entry.take_name();
-            return Classified::Entry(tree);
+            return Classified::Known(entry.take_name());
         }
         if self.options.one_filesystem && self.foreign_mounts.get().is_none() {
             let device = if let Some(data) = self
@@ -895,7 +893,9 @@ enum Classified {
         followed: bool,
     },
     /// A leaf that contributes size.
-    Entry(Node),
+    Entry(Leaf),
+    /// The directory [`Known`] holds, copied in under this name.
+    Known(Box<str>),
     /// Filtered out, or a symlink we chose not to follow.
     Skipped,
     /// Collection failed, rather than an intentional filter.
@@ -904,14 +904,14 @@ enum Classified {
 
 /// One directory being walked, plus the counter that decides when it is done.
 #[derive(Debug)]
-struct PendingDir {
+struct PendingDir<'h> {
     path: PathBuf,
     parent: Option<Arc<Self>>,
     /// Starts at 1 for the directory itself; one more per subdirectory task.
     /// When it reaches zero the directory is complete.
     pending: AtomicUsize,
     /// The node so far, moved out whole once the directory is complete.
-    partial: Mutex<Partial>,
+    partial: Mutex<Partial<'h>>,
     read_error: AtomicBool,
     depth: usize,
     followed: bool,
@@ -921,12 +921,12 @@ struct PendingDir {
 /// listing gave it, and the files found directly in it plus the finished
 /// subdirectories handed back up.
 #[derive(Debug, Default)]
-struct Partial {
+struct Partial<'h> {
     name: Box<str>,
-    children: Vec<Node>,
+    children: Vec<Built<'h>>,
 }
 
-impl PendingDir {
+impl<'h> PendingDir<'h> {
     const fn new(
         path: PathBuf,
         name: Box<str>,
@@ -953,35 +953,32 @@ impl PendingDir {
     /// `bytes` is left at zero on purpose: the walk cannot know the
     /// aggregate, and [`crate::tree::aggregate`] derives it from the children
     /// once every child is present.
-    fn build(&self) -> Node {
+    fn build(&self, member: &Member<'h>) -> Built<'h> {
         let partial = std::mem::take(&mut *lock(&self.partial));
-        Node {
-            name: partial.name,
-            kind: NodeKind::Directory,
-            bytes: 0,
-            files: 0,
-            dirs: 1,
-            inode: None,
-            allocation: self.followed.then(|| {
-                Box::new(crate::sharing::Allocation {
-                    bytes: 0,
-                    identity: None,
-                    links: 1,
-                    followed: true,
-                    clone: None,
-                })
-            }),
-            sharing: None,
+        let facts = crate::tree::Facts {
             read_error: self.read_error.load(Ordering::Relaxed),
-            modified: 0,
-            category: crate::classify::Category::Other,
-            reclaim: None,
-            children: partial.children,
-        }
+            ..crate::tree::Facts::directory()
+        };
+        let allocation = self.followed.then_some(crate::sharing::Allocation {
+            bytes: 0,
+            identity: None,
+            links: 1,
+            followed: true,
+            clone: None,
+        });
+        member.directory(&partial.name, facts, allocation, partial.children)
     }
 }
 
-fn scan_blocking(root: &Path, context: &Arc<WalkContext>) -> io::Result<Node> {
+/// Where the walk's finished nodes go: the arenas they are made in, and
+/// the root once the last directory completes.
+struct Sink<'h> {
+    herd: &'h Herd,
+    /// Set by the root's `signal_done`, read after the scope joins.
+    root: Mutex<Option<Built<'h>>>,
+}
+
+fn scan_blocking(root: &Path, context: &Arc<WalkContext>) -> io::Result<Tree> {
     let _ = context.progress.preview_root.set(root.to_path_buf());
     let owned = fixed_pool(context.options.threads)?;
     let pool = owned.as_ref().unwrap_or_else(|| &WALK_POOL);
@@ -1008,7 +1005,7 @@ fn scan_on_pool(
     root: &Path,
     context: &Arc<WalkContext>,
     pool: &rayon::ThreadPool,
-) -> io::Result<Node> {
+) -> io::Result<Tree> {
     let root_meta = fs::metadata(root)?;
     if !root_meta.is_dir() {
         return Err(io::Error::new(
@@ -1090,13 +1087,35 @@ fn scan_on_pool(
         lock(&context.visited_dirs).insert(key);
     }
 
+    let context: &WalkContext = context;
+    let tree = Tree::try_build(|herd| {
+        let sink = Sink {
+            herd,
+            root: Mutex::new(None),
+        };
+        walk_tree(root, context, pool, &sink)?;
+        let node = lock(&sink.root).take();
+        node.ok_or_else(|| {
+            io::Error::other(format!("{} produced no tree", root.display()))
+        })
+    })?;
+    context.progress.finalizing.store(true, Ordering::Relaxed);
+    Ok(finish_tree(tree, &context.options, pool))
+}
+
+/// Walk from `root` on `pool`, leaving the finished root in `sink`.
+fn walk_tree(
+    root: &Path,
+    context: &WalkContext,
+    pool: &rayon::ThreadPool,
+    sink: &Sink<'_>,
+) -> io::Result<()> {
     let root_dir = Arc::new(PendingDir::new(
         root.to_path_buf(),
         file_name(root),
         None,
         0,
     ));
-    let context: &WalkContext = context;
     pool.install(|| {
         let mut threads = context.options.threads.normalized();
         threads.max_threads =
@@ -1119,31 +1138,34 @@ fn scan_on_pool(
             // Pool-sized fixed scans need no admission lock or ready queue. Keep
             // existing core callers on Rayon's direct scheduling path.
             rayon::scope(|scope| {
-                dispatch_fixed(scope, &root_dir, context);
+                dispatch_fixed(scope, &root_dir, context, sink);
             });
         } else {
             let admission =
                 Arc::new(Admission::new(root_dir, threads.max_threads));
             // The controller owns no Rayon worker and is joined before finishing
             // the tree, where entry throughput no longer describes useful work.
-            let _controller = ControllerGuard::spawn(
-                threads,
-                Arc::clone(&admission),
-                Arc::clone(&context.progress),
-            )?;
-            rayon::scope(|scope| {
-                dispatch(scope, admission.start(), context, &admission);
-            });
+            thread::scope(|controller| {
+                let _controller = ControllerGuard::spawn(
+                    controller,
+                    threads,
+                    Arc::clone(&admission),
+                    Arc::clone(&context.progress),
+                )?;
+                rayon::scope(|scope| {
+                    dispatch(
+                        scope,
+                        admission.start(),
+                        context,
+                        &admission,
+                        sink,
+                    );
+                });
+                Ok::<(), io::Error>(())
+            })?;
         }
-        Ok::<(), io::Error>(())
-    })?;
-
-    let node = lock(&context.root).take();
-    let node = node.ok_or_else(|| {
-        io::Error::other(format!("{} produced no tree", root.display()))
-    })?;
-    context.progress.finalizing.store(true, Ordering::Relaxed);
-    Ok(finish_tree(node, &context.options, pool))
+        Ok(())
+    })
 }
 
 /// The walk's workers, and the file table reader's. Listing directories
@@ -1183,7 +1205,8 @@ struct Tally {
 
 impl Tally {
     const fn add(&mut self, node: &Node) {
-        if node.is_dir() {
+        let node = node.facts();
+        if node.kind.is_dir() {
             // A subtree taken whole from an earlier scan.
             self.files += node.files;
             self.dirs += node.dirs as u64;
@@ -1205,14 +1228,15 @@ impl Tally {
 /// Read one directory, spawn a task per subdirectory, then report completion.
 ///
 /// Flat tasks inside the scope: the worker stack never grows with tree depth.
-fn dispatch_fixed<'scope>(
+fn dispatch_fixed<'scope, 'h: 'scope>(
     scope: &Scope<'scope>,
-    dir: &Arc<PendingDir>,
+    dir: &Arc<PendingDir<'h>>,
     context: &'scope WalkContext,
+    sink: &'scope Sink<'h>,
 ) {
-    for child in walk(dir, context) {
+    for child in walk(dir, context, sink) {
         scope.spawn(move |scope| {
-            dispatch_fixed(scope, &child, context);
+            dispatch_fixed(scope, &child, context, sink);
         });
     }
 }
@@ -1220,37 +1244,45 @@ fn dispatch_fixed<'scope>(
 /// Read one directory, spawn a task per subdirectory, then report completion.
 ///
 /// Flat tasks inside the scope: the worker stack never grows with tree depth.
-fn dispatch<'scope>(
+fn dispatch<'scope, 'h: 'scope>(
     scope: &Scope<'scope>,
-    jobs: Vec<Arc<PendingDir>>,
+    jobs: Vec<Arc<PendingDir<'h>>>,
     context: &'scope WalkContext,
-    admission: &Arc<Admission<Arc<PendingDir>>>,
+    admission: &Arc<Admission<Arc<PendingDir<'h>>>>,
+    sink: &'scope Sink<'h>,
 ) {
     for dir in jobs {
         let admission = Arc::clone(admission);
         scope.spawn(move |scope| {
             let mut next = Some(dir);
             while let Some(dir) = next.take() {
-                let children = walk(&dir, context);
+                let children = walk(&dir, context, sink);
                 let mut jobs = admission.complete(children);
                 // Continue locally into one ready descendant; only surplus
                 // jobs are offered to other workers. A running directory is
                 // never split, and a retirement returns from this loop.
                 next = jobs.pop();
-                dispatch(scope, jobs, context, &admission);
+                dispatch(scope, jobs, context, &admission, sink);
             }
         });
     }
 }
 
-fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
+fn walk<'h>(
+    dir: &Arc<PendingDir<'h>>,
+    context: &WalkContext,
+    sink: &Sink<'h>,
+) -> Vec<Arc<PendingDir<'h>>> {
+    // One arena for the whole listing, and for the directories it
+    // completes on the way up.
+    let member = sink.herd.get();
     if context.cancelled() {
         // Queued jobs still own a pending token even when no I/O is needed.
-        signal_done(dir, context);
+        signal_done(dir, sink, &member);
         return Vec::new();
     }
-    let mut subdirs: Vec<Arc<PendingDir>> = Vec::new();
-    let mut leaves: Vec<Node> = Vec::new();
+    let mut subdirs: Vec<Arc<PendingDir<'h>>> = Vec::new();
+    let mut leaves: Vec<Built<'h>> = Vec::new();
     let mut tally = Tally::default();
 
     match list(
@@ -1288,7 +1320,18 @@ fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
                                 child.followed = followed;
                                 subdirs.push(Arc::new(child));
                             }
-                            Classified::Entry(node) => {
+                            Classified::Entry(leaf) => {
+                                let node = leaf.build(&member);
+                                tally.add(&node);
+                                leaves.push(node);
+                            }
+                            Classified::Known(name) => {
+                                let known = context
+                                    .known
+                                    .as_ref()
+                                    .expect("only a known path is reused");
+                                let node =
+                                    member.copy_named(&known.tree, &name);
                                 tally.add(&node);
                                 leaves.push(node);
                             }
@@ -1345,7 +1388,7 @@ fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
         }
     }
 
-    signal_done(dir, context);
+    signal_done(dir, sink, &member);
     children
 }
 
@@ -1355,36 +1398,40 @@ fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
 /// This is the whole reason for the `+1` sentinel: a directory is only built
 /// once its own scan *and* every subdirectory task has finished, no matter
 /// which of them lands last.
-fn signal_done(dir: &Arc<PendingDir>, context: &WalkContext) {
+fn signal_done<'h>(
+    dir: &Arc<PendingDir<'h>>,
+    sink: &Sink<'h>,
+    member: &Member<'h>,
+) {
     if dir.pending.fetch_sub(1, Ordering::AcqRel) != 1 {
         return;
     }
-    let node = dir.build();
+    let node = dir.build(member);
     let Some(parent) = &dir.parent else {
-        *lock(&context.root) = Some(node);
+        *lock(&sink.root) = Some(node);
         return;
     };
     lock(&parent.partial).children.push(node);
-    signal_done(parent, context);
+    signal_done(parent, sink, member);
 }
 
 /// Charge a hardlinked file once, derive every aggregate from the result,
 /// then classify. On the walk's pool: the UI's own work on the global pool
 /// must not queue behind a scan finishing.
 fn finish_tree(
-    mut node: Node,
+    mut tree: Tree,
     options: &ScanOptions,
     pool: &rayon::ThreadPool,
-) -> Node {
+) -> Tree {
     pool.install(|| {
         if options.dedup_hardlinks {
-            aggregate_deduped(&mut node, options.metric, &Seen::new());
+            aggregate_deduped(&mut tree, options.metric, &Seen::new());
         } else {
-            aggregate(&mut node, options.metric);
+            aggregate(&mut tree, options.metric);
         }
-        crate::classify::classify(&mut node);
+        crate::classify::classify(&mut tree);
     });
-    node
+    tree
 }
 
 /// A leaf. Its identity is kept only when `track` says the walk could meet
@@ -1395,28 +1442,43 @@ fn leaf_node(
     kind: NodeKind,
     facts: Facts,
     track: bool,
-) -> Node {
-    let mut node = Node::entry(name, kind, facts.size);
+) -> Leaf {
+    let mut node = crate::tree::Facts::entry(kind, facts.size);
     if track {
         node.inode = facts
             .identity
             .and_then(|(device, file)| Some((device, NonZeroU64::new(file)?)));
     }
     node.modified = facts.modified;
-    if facts.clone_info.is_some()
+    let allocation = (facts.clone_info.is_some()
         || facts.links > 1
         || facts.followed
-        || (track && cfg!(unix))
-    {
-        node.allocation = Some(Box::new(crate::sharing::Allocation {
-            bytes: facts.size,
-            identity: facts.identity,
-            links: facts.links,
-            followed: facts.followed,
-            clone: facts.clone_info,
-        }));
+        || (track && cfg!(unix)))
+    .then_some(crate::sharing::Allocation {
+        bytes: facts.size,
+        identity: facts.identity,
+        links: facts.links,
+        followed: facts.followed,
+        clone: facts.clone_info,
+    });
+    Leaf {
+        name,
+        facts: node,
+        allocation,
     }
-    node
+}
+
+/// A leaf as the listing found it, before it goes into the walk's arena.
+struct Leaf {
+    name: Box<str>,
+    facts: crate::tree::Facts,
+    allocation: Option<crate::sharing::Allocation>,
+}
+
+impl Leaf {
+    fn build<'h>(self, member: &Member<'h>) -> Built<'h> {
+        member.leaf(&self.name, self.facts, self.allocation)
+    }
 }
 
 /// Last write time in Unix seconds, from the metadata the walk already has:
@@ -1626,7 +1688,7 @@ mod tests {
         assert!(!disabled.apfs_clone_metadata);
     }
 
-    fn scan_dir(root: &Path, options: &ScanOptions) -> Node {
+    fn scan_dir(root: &Path, options: &ScanOptions) -> Tree {
         scan(root, options.clone()).expect("scan")
     }
 
@@ -1668,7 +1730,6 @@ mod tests {
             data_services: OnceLock::from(data),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
-            root: Mutex::new(None),
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
@@ -1752,25 +1813,31 @@ mod tests {
             data_services: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
-            root: Mutex::new(None),
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
         });
-        let root = Arc::new(PendingDir::new(
-            temp.path().to_path_buf(),
-            file_name(temp.path()),
-            None,
-            0,
-        ));
-        let queued = walk(&root, &context);
-        assert_eq!(queued.len(), 128);
-        assert!(lock(&context.root).is_none());
-        progress.cancel();
-        for dir in queued {
-            assert!(walk(&dir, &context).is_empty());
-        }
-        let tree = lock(&context.root).take().expect("root completed");
+        let tree = Tree::build(|herd| {
+            let sink = Sink {
+                herd,
+                root: Mutex::new(None),
+            };
+            let root = Arc::new(PendingDir::new(
+                temp.path().to_path_buf(),
+                file_name(temp.path()),
+                None,
+                0,
+            ));
+            let queued = walk(&root, &context, &sink);
+            assert_eq!(queued.len(), 128);
+            assert!(lock(&sink.root).is_none());
+            progress.cancel();
+            for dir in queued {
+                assert!(walk(&dir, &context, &sink).is_empty());
+            }
+            let root = lock(&sink.root).take();
+            root.expect("root completed")
+        });
         assert_eq!(tree.children.len(), 128);
         assert!(tree.children.iter().all(|child| child.children.is_empty()));
     }
@@ -2043,7 +2110,6 @@ mod tests {
             data_services: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
-            root: Mutex::new(None),
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),

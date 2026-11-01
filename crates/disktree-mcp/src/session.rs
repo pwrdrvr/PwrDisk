@@ -27,7 +27,7 @@ use disktree_core::size::{human_bytes, human_count, share};
 use disktree_core::space::{
     SpaceInfo, device_for, space_info, volume_root_for, volumes,
 };
-use disktree_core::tree::{Node, path_of};
+use disktree_core::tree::{Node, Tree, path_of};
 use disktree_link::{
     ConfirmedRemoval, FindRequest, FoundList, Insight, Link, Listing,
     MarkRequest, RemovalChoice, RemovalPreview, Request, Response,
@@ -125,7 +125,7 @@ pub type Launcher = Box<dyn Fn(&Path) -> io::Result<()> + Send>;
 #[derive(Debug)]
 pub struct Scan {
     pub root: PathBuf,
-    pub tree: Arc<Node>,
+    pub tree: Arc<Tree>,
     pub options: ScanOptions,
     /// Unix seconds when the tree landed.
     pub at: i64,
@@ -834,7 +834,7 @@ impl Session {
                             && scan.root.starts_with(&outer.root)
                     })
                 })
-                .map(|scan| (scan.root.clone(), &*scan.tree))
+                .map(|scan| (scan.root.clone(), scan.tree.root()))
                 .collect()
         };
         let mut all = FoundList::default();
@@ -2173,6 +2173,7 @@ pub fn run_scan(root: PathBuf, options: ScanOptions) -> Result<Scan, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use disktree_core::tree::Draft;
     #[cfg(any(unix, windows))]
     use disktree_link::{Incoming, Listener, Mark, Refused, Removal};
     #[cfg(any(unix, windows))]
@@ -2249,13 +2250,13 @@ mod tests {
         use disktree_core::sharing::{Allocation, CloneInfo};
         use disktree_core::tree::{Metric, NodeKind, aggregate};
         const MIB: u64 = 1024 * 1024;
-        let mut tree = Node::directory("fixture");
+        let mut tree = Draft::directory("fixture");
         for index in 0..11 {
             let name = format!("worktree-{index:02}");
             std::fs::create_dir(root.join(&name)).expect("fixture directory");
-            let mut dir = Node::directory(name);
+            let mut dir = Draft::directory(name);
             let bytes = 10 * 1024 * MIB - 50 * MIB;
-            let mut clone = Node::entry("shared", NodeKind::File, bytes);
+            let mut clone = Draft::entry("shared", NodeKind::File, bytes);
             clone.allocation = Some(Box::new(Allocation {
                 bytes,
                 identity: None,
@@ -2270,10 +2271,14 @@ mod tests {
                 }),
             }));
             dir.children.push(clone);
-            dir.children
-                .push(Node::entry("private", NodeKind::File, 50 * MIB));
+            dir.children.push(Draft::entry(
+                "private",
+                NodeKind::File,
+                50 * MIB,
+            ));
             tree.children.push(dir);
         }
+        let mut tree = Tree::from(tree);
         aggregate(&mut tree, Metric::Bytes);
         Scan {
             root: root.into(),
@@ -2316,7 +2321,7 @@ mod tests {
             paths.push(root.join("shared"));
             session.store_scan(Scan {
                 root,
-                tree: Arc::new(node.clone()),
+                tree: Arc::new(Tree::copy_of(node)),
                 options: ScanOptions::default(),
                 at: now(),
                 elapsed: Duration::ZERO,
@@ -2576,7 +2581,7 @@ mod tests {
     struct FakeTree {
         protocol: u32,
         root: PathBuf,
-        tree: Arc<Node>,
+        tree: Arc<Tree>,
         marks: Vec<Mark>,
         /// The SSH host the window shows, as a window on one answers.
         remote: Option<String>,
@@ -2861,10 +2866,11 @@ mod tests {
         let mut session = Session::detached(socket, None);
         // The agent's old scan has no sharing facts; the window owns truth.
         let mut stale = scan;
-        let mut tree = (*stale.tree).clone();
-        for dir in &mut tree.children {
+        let mut draft = stale.tree.to_draft();
+        for dir in &mut draft.children {
             dir.children[0].allocation = None;
         }
+        let mut tree = Tree::from(draft);
         disktree_core::tree::aggregate(
             &mut tree,
             disktree_core::tree::Metric::Bytes,
@@ -3062,13 +3068,14 @@ mod tests {
             tree::{Metric, NodeKind, aggregate},
         };
         // Only a synthetic tree represents /; no scan, write or mark of real data.
-        let mut root = Node::directory("/");
-        let mut private = Node::directory("private");
-        let mut tmp = Node::directory("tmp");
+        let mut root = Draft::directory("/");
+        let mut private = Draft::directory("private");
+        let mut tmp = Draft::directory("tmp");
         tmp.children
-            .push(Node::entry("fixture", NodeKind::File, 123));
+            .push(Draft::entry("fixture", NodeKind::File, 123));
         private.children.push(tmp);
         root.children.push(private);
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         classify(&mut root);
         let tree = Arc::new(root);
@@ -3158,11 +3165,11 @@ mod tests {
         use disktree_core::sharing::{Allocation, CloneInfo};
         use disktree_core::tree::{Metric, NodeKind, aggregate};
         const MIB: u64 = 1024 * 1024;
-        let mut tree = Node::directory("fixture");
+        let mut tree = Draft::directory("fixture");
         for name in ["copy-a", "copy-b", "copy-c", "plain"] {
             std::fs::create_dir(root.join(name)).expect("fixture directory");
-            let mut dir = Node::directory(name);
-            let mut file = Node::entry("data", NodeKind::File, 12 * MIB);
+            let mut dir = Draft::directory(name);
+            let mut file = Draft::entry("data", NodeKind::File, 12 * MIB);
             if name != "plain" {
                 file.allocation = Some(Box::new(Allocation {
                     bytes: 12 * MIB,
@@ -3181,6 +3188,7 @@ mod tests {
             dir.children.push(file);
             tree.children.push(dir);
         }
+        let mut tree = Tree::from(tree);
         aggregate(&mut tree, Metric::Bytes);
         Scan {
             root: root.into(),
@@ -3278,16 +3286,16 @@ mod tests {
         use disktree_core::sharing::{Allocation, CloneInfo};
         use disktree_core::tree::{Metric, NodeKind, aggregate};
         const MIB: u64 = 1024 * 1024;
-        let mut tree = Node::directory("fixture");
+        let mut tree = Draft::directory("fixture");
         for name in ["wt-a", "wt-b", "wt-c"] {
             std::fs::create_dir(root.join(name)).expect("fixture directory");
-            let mut dir = Node::directory(name);
+            let mut dir = Draft::directory(name);
             let (bytes, private) = if modified {
                 (10_240 * MIB, 100 * MIB)
             } else {
                 (10_140 * MIB, 0)
             };
-            let mut file = Node::entry("objects", NodeKind::File, bytes);
+            let mut file = Draft::entry("objects", NodeKind::File, bytes);
             file.allocation = Some(Box::new(Allocation {
                 bytes,
                 identity: None,
@@ -3303,7 +3311,7 @@ mod tests {
             }));
             dir.children.push(file);
             if !modified {
-                dir.children.push(Node::entry(
+                dir.children.push(Draft::entry(
                     "own",
                     NodeKind::File,
                     100 * MIB,
@@ -3311,6 +3319,7 @@ mod tests {
             }
             tree.children.push(dir);
         }
+        let mut tree = Tree::from(tree);
         aggregate(&mut tree, Metric::Bytes);
         Scan {
             root: root.into(),

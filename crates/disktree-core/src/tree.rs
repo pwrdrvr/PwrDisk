@@ -63,66 +63,35 @@ impl Metric {
     }
 }
 
-/// One entry in the scanned tree.
-///
-/// `bytes` and `files` are the subtree totals the treemap draws; what sits
-/// directly in a directory is [`Self::own_bytes`] and [`Self::own_files`],
-/// read from its children when the selection line asks. A disk holds tens
-/// of millions of nodes, so every field is paid that many times: the size
-/// is held by a test.
+pub use crate::arena::{
+    ArenaBytes, Boxed, Built, Children, Facts, Herd, Member, Name, Node,
+    NodeMut, Tree,
+};
+
+/// A node and everything beneath it, owned and on the heap: how tests and
+/// small trees are written before they become a [`Tree`]. A scan builds
+/// its tree in arenas directly, through [`Tree::build`].
 #[derive(Clone, Debug)]
-pub struct Node {
+pub struct Draft {
     pub name: Box<str>,
     pub kind: NodeKind,
-    /// Subtree total: direct contents plus every descendant. A file's own
-    /// size, or nothing for a second name of a file already charged.
     pub bytes: u64,
-    /// Files at or beneath this node; `1` for a file.
     pub files: u64,
-    /// Directories at or beneath this node; `1` for a directory. Four
-    /// billion is more than any volume holds.
     pub dirs: u32,
-    /// `(device, inode)` for files, used to de-duplicate hardlinks. No file
-    /// has inode zero, which lets `None` cost nothing.
     pub inode: Option<(u64, NonZeroU64)>,
     pub allocation: Option<Box<crate::sharing::Allocation>>,
     pub sharing: Option<Box<crate::sharing::Sharing>>,
-    /// Some entries here or below could not be read; totals are incomplete.
     pub read_error: bool,
-    /// Newest write time at or beneath this node, in Unix seconds; `0` when
-    /// unknown. Derived for directories by [`aggregate`].
     pub modified: i64,
-    /// What kind of data this is, for colour. Set by [`crate::classify`].
     pub category: Category,
-    /// Why this space can be had back, if it can. Set by
-    /// [`crate::classify`]; inherited by everything beneath.
     pub reclaim: Option<Reclaim>,
-    /// Children, ordered by [`Metric`] value, descending.
     pub children: Vec<Self>,
 }
 
-impl Node {
+impl Draft {
     /// A directory with no children yet.
-    #[allow(
-        clippy::missing_const_for_fn,
-        reason = "`impl Into<Box<str>>` cannot be called in a const fn"
-    )]
     pub fn directory(name: impl Into<Box<str>>) -> Self {
-        Self {
-            name: name.into(),
-            kind: NodeKind::Directory,
-            bytes: 0,
-            files: 0,
-            dirs: 1,
-            inode: None,
-            allocation: None,
-            sharing: None,
-            read_error: false,
-            modified: 0,
-            category: Category::Other,
-            reclaim: None,
-            children: Vec::new(),
-        }
+        Self::of(name, Facts::directory())
     }
 
     /// A leaf entry.
@@ -131,21 +100,51 @@ impl Node {
         kind: NodeKind,
         bytes: u64,
     ) -> Self {
+        Self::of(name, Facts::entry(kind, bytes))
+    }
+
+    fn of(name: impl Into<Box<str>>, facts: Facts) -> Self {
         Self {
             name: name.into(),
-            kind,
-            bytes,
-            files: u64::from(kind == NodeKind::File),
-            dirs: 0,
-            inode: None,
+            kind: facts.kind,
+            bytes: facts.bytes,
+            files: facts.files,
+            dirs: facts.dirs,
+            inode: facts.inode,
             allocation: None,
             sharing: None,
-            read_error: false,
-            modified: 0,
-            category: Category::Other,
-            reclaim: None,
+            read_error: facts.read_error,
+            modified: facts.modified,
+            category: facts.category,
+            reclaim: facts.reclaim,
             children: Vec::new(),
         }
+    }
+
+    pub const fn facts(&self) -> Facts {
+        Facts {
+            kind: self.kind,
+            bytes: self.bytes,
+            files: self.files,
+            dirs: self.dirs,
+            inode: self.inode,
+            read_error: self.read_error,
+            modified: self.modified,
+            category: self.category,
+            reclaim: self.reclaim,
+        }
+    }
+}
+
+impl Node {
+    /// This node and everything beneath it as a [`Draft`], to change its
+    /// shape and build again.
+    pub fn to_draft(&self) -> Draft {
+        let mut draft = Draft::of(&*self.name, **self);
+        draft.allocation = self.allocation.as_deref().copied().map(Box::new);
+        draft.sharing = self.sharing.as_deref().copied().map(Box::new);
+        draft.children = self.children.iter().map(Self::to_draft).collect();
+        draft
     }
 
     /// Sparse: ordinary files do not pay for five additional byte counters.
@@ -157,7 +156,7 @@ impl Node {
     }
 
     pub const fn is_dir(&self) -> bool {
-        self.kind.is_dir()
+        self.facts().kind.is_dir()
     }
 
     /// Bytes of the leaf entries directly in this directory, or this file's
@@ -192,8 +191,8 @@ impl Node {
     /// The value a treemap should weight this node by.
     pub const fn value(&self, metric: Metric) -> u64 {
         match metric {
-            Metric::Bytes => self.bytes,
-            Metric::Files => self.files,
+            Metric::Bytes => self.facts().bytes,
+            Metric::Files => self.facts().files,
         }
     }
 
@@ -251,7 +250,7 @@ impl Node {
     }
 
     /// Index of the largest child, used to pick a useful descent target.
-    pub const fn largest_child(&self) -> Option<usize> {
+    pub fn largest_child(&self) -> Option<usize> {
         if self.children.is_empty() {
             None
         } else {
@@ -305,18 +304,18 @@ impl Node {
 /// and [`Node::own_files`]. Deriving them is what keeps them consistent:
 /// hardlink de-duplication rewrites a leaf's weight, and every total above
 /// it follows without a second pass.
-pub fn aggregate(node: &mut Node, metric: Metric) {
-    aggregate_at(node, metric, 0, None);
-    crate::sharing::refresh(node);
+pub fn aggregate(tree: &mut Tree, metric: Metric) {
+    aggregate_at(&mut tree.root_mut(), metric, 0, None);
+    crate::sharing::refresh(&mut tree.root_mut());
 }
 
 /// [`aggregate`], charging a hardlinked file once: a leaf whose identity
 /// `seen` already holds weighs nothing. Which of a file's names is charged
 /// is whichever a worker reaches first, so two scans of an unchanged tree
 /// can split it differently between folders; the totals are the same.
-pub(crate) fn aggregate_deduped(node: &mut Node, metric: Metric, seen: &Seen) {
-    aggregate_at(node, metric, 0, Some(seen));
-    crate::sharing::refresh(node);
+pub(crate) fn aggregate_deduped(tree: &mut Tree, metric: Metric, seen: &Seen) {
+    aggregate_at(&mut tree.root_mut(), metric, 0, Some(seen));
+    crate::sharing::refresh(&mut tree.root_mut());
 }
 
 /// Identities a finish pass has met.
@@ -391,7 +390,7 @@ impl Seen {
 pub(crate) const PARALLEL_LEVELS: usize = 4;
 
 fn aggregate_at(
-    node: &mut Node,
+    node: &mut NodeMut<'_>,
     metric: Metric,
     depth: usize,
     seen: Option<&Seen>,
@@ -404,43 +403,46 @@ fn aggregate_at(
             && let Some(key) = node.identity()
             && !seen.insert(key)
         {
-            node.bytes = 0;
+            node.facts_mut().bytes = 0;
         }
         return;
     }
 
+    if depth < PARALLEL_LEVELS {
+        node.par_children_mut().for_each(|mut child| {
+            aggregate_at(&mut child, metric, depth + 1, seen);
+        });
+    } else {
+        for mut child in node.children_mut() {
+            aggregate_at(&mut child, metric, depth + 1, seen);
+        }
+    }
     let mut bytes = 0;
     let mut files = 0;
     let mut dirs: u32 = 1;
     let mut modified = 0;
-    if depth < PARALLEL_LEVELS {
-        node.children
-            .par_iter_mut()
-            .for_each(|child| aggregate_at(child, metric, depth + 1, seen));
-    } else {
-        for child in &mut node.children {
-            aggregate_at(child, metric, depth + 1, seen);
-        }
-    }
+    let mut read_error = node.read_error;
     for child in &node.children {
-        node.read_error |= child.read_error;
+        read_error |= child.read_error;
         modified = modified.max(child.modified);
         // Saturating: a corrupt volume's file table can claim any size.
         bytes = child.bytes.saturating_add(bytes);
         files += child.files;
         dirs += child.dirs;
     }
-    node.bytes = bytes;
-    node.files = files;
-    node.dirs = dirs;
-    node.modified = modified;
+    let facts = node.facts_mut();
+    facts.read_error = read_error;
+    facts.bytes = bytes;
+    facts.files = files;
+    facts.dirs = dirs;
+    facts.modified = modified;
 
     // Largest first: a treemap lays out big tiles best, and the order is what
     // makes "descend into the largest child" meaningful. Unstable: names in
     // one directory are distinct, and the only ties are names that decoded
     // to the same lossy text, whose order does not matter, so the stable
     // sort's scratch allocation buys nothing.
-    node.children.sort_unstable_by(|left, right| {
+    node.sort_children_by(|left, right| {
         right
             .value(metric)
             .cmp(&left.value(metric))
@@ -474,17 +476,8 @@ pub fn path_of(
 mod tests {
     use super::*;
 
-    fn leaf(name: &str, bytes: u64) -> Node {
-        Node::entry(name, NodeKind::File, bytes)
-    }
-
-    /// A home directory is tens of millions of nodes: every byte here is
-    /// tens of megabytes there.
-    #[test]
-    #[cfg(target_pointer_width = "64")]
-    fn a_node_stays_small() {
-        // Two optional pointers keep clone data sparse on ordinary nodes.
-        assert_eq!(size_of::<Node>(), 104);
+    fn leaf(name: &str, bytes: u64) -> Draft {
+        Draft::entry(name, NodeKind::File, bytes)
     }
 
     #[test]
@@ -509,7 +502,7 @@ mod tests {
         // name of the newer one.
         let older = (7, (1 << 48) | 0x2A);
         let newer = (7, (2 << 48) | 0x2A);
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         for (name, bytes, key) in [
             ("older", 4096, older),
             ("newer", 8192, newer),
@@ -519,19 +512,21 @@ mod tests {
             file.inode = Some((key.0, NonZeroU64::new(key.1).unwrap()));
             root.children.push(file);
         }
+        let mut root = Tree::from(root);
         aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
         assert_eq!(root.bytes, 4096 + 8192);
     }
 
     #[test]
     fn aggregate_derives_totals_and_orders_children() {
-        let mut root = Node::directory("root");
-        let mut nested = Node::directory("child");
+        let mut root = Draft::directory("root");
+        let mut nested = Draft::directory("child");
         nested.children.push(leaf("deep", 7));
         root.children.push(nested);
         root.children.push(leaf("direct", 5));
         root.children.push(leaf("small", 9));
 
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         assert_eq!(root.own_bytes(), 5 + 9, "direct leaves only");
         assert_eq!(root.bytes, 5 + 9 + 7);
@@ -543,7 +538,7 @@ mod tests {
         assert_eq!(&*root.children[2].name, "direct");
 
         // A file's own size is what it weighs; aggregates never invent more.
-        let mut single = leaf("solo", 3);
+        let mut single = Tree::from(leaf("solo", 3));
         aggregate(&mut single, Metric::Bytes);
         assert_eq!(single.bytes, 3);
         assert_eq!(single.own_bytes(), 3);
@@ -560,14 +555,15 @@ mod tests {
 
     #[test]
     fn aggregate_can_rank_by_file_count() {
-        let mut root = Node::directory("root");
-        let mut many = Node::directory("many");
+        let mut root = Draft::directory("root");
+        let mut many = Draft::directory("many");
         for index in 0..5 {
             many.children.push(leaf(&format!("f{index}"), 1));
         }
         root.children.push(many);
         root.children.push(leaf("huge", 10_000));
 
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         assert_eq!(&*root.children[0].name, "huge");
         aggregate(&mut root, Metric::Files);
@@ -577,10 +573,11 @@ mod tests {
 
     #[test]
     fn resolve_walks_child_indices() {
-        let mut root = Node::directory("root");
-        let mut nested = Node::directory("child");
+        let mut root = Draft::directory("root");
+        let mut nested = Draft::directory("child");
         nested.children.push(leaf("deep", 1));
         root.children.push(nested);
+        let root = Tree::from(root);
 
         assert!(root.resolve(&[]).is_some());
         assert_eq!(root.resolve(&[0, 0]).map(|n| &*n.name), Some("deep"));
@@ -590,10 +587,11 @@ mod tests {
 
     #[test]
     fn path_of_joins_names_beneath_the_root() {
-        let mut root = Node::directory("root");
-        let mut nested = Node::directory("child");
+        let mut root = Draft::directory("root");
+        let mut nested = Draft::directory("child");
         nested.children.push(leaf("deep", 1));
         root.children.push(nested);
+        let root = Tree::from(root);
 
         let path =
             path_of(Path::new("/home/tobi"), &root, &[0, 0], PathStyle::Native);
@@ -606,19 +604,20 @@ mod tests {
 
     #[test]
     fn largest_child_is_the_first_child_because_children_are_sorted() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children.push(leaf("big", 10));
         root.children.push(leaf("small", 1));
-        assert_eq!(root.largest_child(), Some(0));
-        assert_eq!(Node::directory("empty").largest_child(), None);
+        assert_eq!(Tree::from(root).largest_child(), Some(0));
+        assert_eq!(Tree::from(Draft::directory("empty")).largest_child(), None);
     }
 
     #[test]
     fn find_reports_crumbs_and_is_case_insensitive() {
-        let mut root = Node::directory("root");
-        let mut target = Node::directory("target");
+        let mut root = Draft::directory("root");
+        let mut target = Draft::directory("target");
         target.children.push(leaf("needle-file", 1));
         root.children.push(target);
+        let root = Tree::from(root);
 
         let (crumbs, found) = root.find("NEEDLE").expect("found");
         assert_eq!(crumbs, vec![0, 0]);
@@ -629,11 +628,11 @@ mod tests {
 
     #[test]
     fn depth_counts_edges() {
-        let mut root = Node::directory("root");
-        let mut nested = Node::directory("child");
+        let mut root = Draft::directory("root");
+        let mut nested = Draft::directory("child");
         nested.children.push(leaf("deep", 1));
         root.children.push(nested);
-        assert_eq!(root.depth(), 2);
-        assert_eq!(leaf("x", 0).depth(), 0);
+        assert_eq!(Tree::from(root).depth(), 2);
+        assert_eq!(Tree::from(leaf("x", 0)).depth(), 0);
     }
 }

@@ -11,7 +11,7 @@ use std::sync::{Arc, Weak};
 
 use disktree_core::path_style::PathStyle;
 use disktree_core::removal::Target;
-use disktree_core::tree::{Metric, Node};
+use disktree_core::tree::{Metric, Node, Tree};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 #[cfg(test)]
@@ -70,7 +70,7 @@ pub struct Marks {
 /// alive while a new one is being displayed.
 #[derive(Debug)]
 struct ResolvedMarks {
-    tree: Weak<Node>,
+    tree: Weak<Tree>,
     root_path: PathBuf,
     metric: Metric,
     style: PathStyle,
@@ -274,7 +274,7 @@ impl Marks {
     pub fn crumbs(
         &mut self,
         root_path: &Path,
-        tree: &Arc<Node>,
+        tree: &Arc<Tree>,
         metric: Metric,
         style: PathStyle,
     ) -> Arc<FxHashSet<Vec<usize>>> {
@@ -389,18 +389,23 @@ pub fn display_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use disktree_core::tree::{NodeKind, aggregate};
+    use disktree_core::tree::{Draft, NodeKind, aggregate};
 
-    fn file(name: &str, bytes: u64) -> Node {
-        Node::entry(name, NodeKind::File, bytes)
+    fn file(name: &str, bytes: u64) -> Draft {
+        Draft::entry(name, NodeKind::File, bytes)
     }
 
-    fn tree() -> Node {
-        let mut root = Node::directory("home");
-        let mut cache = Node::directory(".cache");
+    fn draft() -> Draft {
+        let mut root = Draft::directory("home");
+        let mut cache = Draft::directory(".cache");
         cache.children.push(file("blob.bin", 900));
         root.children.push(cache);
         root.children.push(file("notes.bin", 100));
+        root
+    }
+
+    fn tree() -> Tree {
+        let mut root = Tree::from(draft());
         aggregate(&mut root, Metric::Bytes);
         root
     }
@@ -418,11 +423,11 @@ mod tests {
     fn refresh_resolution_budget() {
         let measure = |count| {
             let root_path = std::env::temp_dir().join("marks-budget");
-            let mut root = Node::directory("root");
+            let mut root = Draft::directory("root");
             let mut marks = Marks::default();
             for index in 0..count {
                 let name = format!("folder-{index:05}");
-                let mut dir = Node::directory(name.as_str());
+                let mut dir = Draft::directory(name.as_str());
                 dir.children.push(file("payload", 1));
                 root.children.push(dir);
                 marks.toggle(
@@ -435,6 +440,7 @@ mod tests {
                     PathStyle::Native,
                 );
             }
+            let root = Tree::from(root);
             work::reset();
             let start = std::time::Instant::now();
             for _ in 0..4 {
@@ -539,16 +545,19 @@ mod tests {
         );
 
         let old_tree = Arc::downgrade(&root);
-        let mut replacement = (*root).clone();
+        // A tree's child lists are fixed once built: reorder a copy's draft.
+        let mut replacement = root.to_draft();
         replacement.children.reverse();
-        root = Arc::new(replacement);
+        root = Arc::new(Tree::from(replacement));
         assert!(old_tree.upgrade().is_none(), "old scan is released");
         assert!(
             marks
                 .crumbs(root_path, &root, Metric::Files, PathStyle::Native)
                 .contains(&vec![0])
         );
-        Arc::make_mut(&mut root).children.clear();
+        let mut emptied = root.to_draft();
+        emptied.children.clear();
+        root = Arc::new(Tree::from(emptied));
         assert!(
             marks
                 .crumbs(root_path, &root, Metric::Files, PathStyle::Native)
@@ -559,8 +568,15 @@ mod tests {
     #[test]
     fn resolver_preserves_scan_name_semantics() {
         let root_path = Path::new("/home/tobi");
-        let mut root = tree();
+        // A second entry of the same name after aggregation, as a scan
+        // that decoded two names to one lossy text would leave it.
+        let mut root = {
+            let mut tree = Tree::from(draft());
+            aggregate(&mut tree, Metric::Bytes);
+            tree.to_draft()
+        };
         root.children.push(file("notes.bin", 200));
+        let root = Tree::from(root);
         let mut resolver = Resolver::new(root_path, &root, PathStyle::Native);
         let (crumbs, node) = resolver
             .resolve(&root_path.join("notes.bin"))
@@ -583,8 +599,9 @@ mod tests {
         use std::os::unix::ffi::OsStrExt as _;
         let root_path = Path::new("/synthetic");
         let name = std::ffi::OsStr::from_bytes(b"file-\xff");
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children.push(file(&name.to_string_lossy(), 1));
+        let root = Tree::from(root);
         let mut resolver = Resolver::new(root_path, &root, PathStyle::Native);
         assert_eq!(
             resolver
@@ -852,19 +869,19 @@ mod tests {
                        depth: usize,
                        repeats: usize| {
             let root_path = std::env::temp_dir().join("marks-dimensions");
-            let mut root = Node::directory("root");
+            let mut root = Draft::directory("root");
             let mut marks = Marks::default();
             for index in 0..folders {
                 let name = format!("folder-{index:05}");
                 let mut child = file("payload", 1);
                 let mut relative = PathBuf::from(&name);
                 for _ in 1..depth {
-                    let mut parent = Node::directory("nested");
+                    let mut parent = Draft::directory("nested");
                     parent.children.push(child);
                     child = parent;
                     relative.push("nested");
                 }
-                let mut folder = Node::directory(name);
+                let mut folder = Draft::directory(name);
                 folder.children.push(child);
                 root.children.push(folder);
                 relative.push("payload");
@@ -880,6 +897,7 @@ mod tests {
                     );
                 }
             }
+            let root = Tree::from(root);
             work::reset();
             let start = std::time::Instant::now();
             for _ in 0..repeats {
@@ -924,8 +942,9 @@ mod tests {
             display_path(Path::new("/home/tobix"), Some(home), posix),
             "/home/tobix"
         );
-        let mut root = Node::directory("home");
+        let mut root = Draft::directory("home");
         root.children.push(file(r"a\b", 7));
+        let root = Tree::from(root);
         assert!(
             Resolver::new(home, &root, posix)
                 .resolve(Path::new(r"/home/tobi/a\b"))
@@ -993,14 +1012,15 @@ mod tests {
     fn posix_refresh_and_crumb_cache_keep_ambiguous_windows_names_distinct() {
         let style = PathStyle::Posix;
         let root_path = Path::new("/srv");
-        let mut root = Node::directory("srv");
-        let mut literal = Node::directory(r"logs\old");
+        let mut root = Draft::directory("srv");
+        let mut literal = Draft::directory(r"logs\old");
         literal.children.push(file("a:b", 7));
-        let mut nested = Node::directory("logs");
-        let mut old = Node::directory("old");
+        let mut nested = Draft::directory("logs");
+        let mut old = Draft::directory("old");
         old.children.push(file("a:b", 9));
         nested.children.push(old);
         root.children.extend([literal, nested]);
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         let root = Arc::new(root);
         let mut marks = Marks::default();
@@ -1041,9 +1061,9 @@ mod tests {
     fn posix_crumb_cache_compares_root_text_in_the_host_namespace() {
         let style = PathStyle::Posix;
         let root_path = Path::new(r"/srv/a\b");
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children.push(file("payload", 7));
-        let root = Arc::new(root);
+        let root = Arc::new(Tree::from(root));
         let mut marks = Marks::default();
         marks.toggle(target(r"/srv/a\b/payload", 7), style);
         assert_eq!(

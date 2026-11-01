@@ -7,7 +7,7 @@
 
 use rustc_hash::FxHashMap;
 
-use crate::tree::Node;
+use crate::tree::{Node, NodeMut};
 
 mod reclaim;
 pub use reclaim::{Estimate, estimate};
@@ -146,11 +146,14 @@ const MAX_CLONE_GROUPS: usize = 1_000_000;
 
 /// Small-to-large merging avoids walking every subtree for every ancestor.
 /// Hardlink duplicates already have zero weight when this pass runs.
-pub(crate) fn refresh(node: &mut Node) {
+pub(crate) fn refresh(node: &mut NodeMut<'_>) {
     collect(node, MAX_CLONE_GROUPS);
 }
 
-fn collect(node: &mut Node, limit: usize) -> (Groups, reclaim::Accumulator) {
+fn collect(
+    node: &mut NodeMut<'_>,
+    limit: usize,
+) -> (Groups, reclaim::Accumulator) {
     let mut allocation = if node.is_dir() {
         reclaim::Accumulator::new(limit)
     } else {
@@ -184,8 +187,8 @@ fn collect(node: &mut Node, limit: usize) -> (Groups, reclaim::Accumulator) {
             );
         }
     }
-    for child in &mut node.children {
-        let (mut child_groups, child_allocation) = collect(child, limit);
+    for mut child in node.children_mut() {
+        let (mut child_groups, child_allocation) = collect(&mut child, limit);
         allocation.merge(child_allocation);
         summary.duplicate_bytes = summary
             .duplicate_bytes
@@ -226,23 +229,24 @@ fn collect(node: &mut Node, limit: usize) -> (Groups, reclaim::Accumulator) {
         allocation = reclaim::Accumulator::new(limit);
     }
     summary.estimate = Some(allocation.estimate());
-    node.sharing = (node.is_dir()
+    let kept = node.is_dir()
         && (summary.files > 0
             || node.allocation.is_some()
             || allocation.needs_selection()
             || summary.reclaimable(node.bytes) != node.bytes
-            || summary.possible(node.bytes) != node.bytes))
-        .then(|| Box::new(summary));
+            || summary.possible(node.bytes) != node.bytes);
+    node.set_sharing(kept.then_some(summary));
     (groups, allocation)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::{Draft, Tree};
     use crate::tree::{Metric, NodeKind, Seen, aggregate, aggregate_deduped};
 
-    fn clone(name: &str, device: u64, id: u64, private: Option<u64>) -> Node {
-        let mut node = Node::entry(name, NodeKind::File, 100);
+    fn clone(name: &str, device: u64, id: u64, private: Option<u64>) -> Draft {
+        let mut node = Draft::entry(name, NodeKind::File, 100);
         node.allocation = Some(Box::new(Allocation {
             bytes: node.bytes,
             identity: None,
@@ -261,32 +265,35 @@ mod tests {
 
     #[test]
     fn selecting_a_complete_clone_group_reclaims_its_data_once() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children =
             vec![clone("a", 1, 1, Some(0)), clone("b", 1, 1, Some(0))];
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         assert_eq!(root.sharing().reclaimable(root.bytes), 80);
     }
 
     #[test]
     fn group_limit_marks_the_summary_partial_without_losing_private_bytes() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children =
             vec![clone("a", 1, 1, Some(20)), clone("b", 1, 2, Some(20))];
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
-        collect(&mut root, 1);
+        collect(&mut root.root_mut(), 1);
         assert!(root.sharing().groups_truncated);
         assert_eq!(root.sharing().private_bytes, 40);
     }
 
     #[test]
     fn groups_are_volume_scoped_and_only_data_forks_are_duplicated() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children = vec![
             clone("a", 1, 42, Some(20)),
             clone("b", 1, 42, Some(20)),
             clone("c", 2, 42, Some(20)),
         ];
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         assert_eq!(root.bytes, 300);
         assert_eq!(root.sharing().duplicate_bytes, 80);
@@ -297,9 +304,10 @@ mod tests {
 
     #[test]
     fn modified_clones_repeat_only_what_they_still_share() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children =
             vec![clone("a", 1, 1, Some(60)), clone("b", 1, 1, Some(60))];
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         // Each still shares 40 of its 100 bytes: one copy of that repeats.
         assert_eq!(root.sharing().duplicate_bytes, 40);
@@ -310,12 +318,13 @@ mod tests {
 
     #[test]
     fn unknown_and_oversized_private_values_stay_conservative() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children = vec![
             clone("a", 1, 1, None),
             clone("b", 1, 2, Some(200)),
-            Node::entry("ordinary", NodeKind::File, 30),
+            Draft::entry("ordinary", NodeKind::File, 30),
         ];
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         assert_eq!(root.sharing().unknown_files, 1);
         assert_eq!(root.sharing().reclaimable(root.bytes), 130);
@@ -323,13 +332,14 @@ mod tests {
 
     #[test]
     fn deduplicated_hardlinks_do_not_inflate_sharing() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children =
             vec![clone("a", 1, 1, Some(0)), clone("b", 1, 1, Some(0))];
         for node in &mut root.children {
             node.inode =
                 Some((1, std::num::NonZeroU64::new(123).expect("inode")));
         }
+        let mut root = Tree::from(root);
         aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
         assert_eq!(root.sharing().files, 1);
         assert_eq!(root.sharing().bytes, 100);
@@ -338,16 +348,20 @@ mod tests {
 
     #[test]
     fn clone_groups_merge_across_directories_and_refresh_after_removal() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         for name in ["a", "b"] {
-            let mut dir = Node::directory(name);
+            let mut dir = Draft::directory(name);
             dir.children.push(clone("file", 1, 1, Some(0)));
             root.children.push(dir);
         }
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         assert_eq!(root.sharing().duplicate_bytes, 80);
         assert_eq!(root.children[0].sharing().duplicate_bytes, 0);
-        root.children.pop();
+        // Removing a directory is a rescan into a new tree.
+        let mut draft = root.to_draft();
+        draft.children.pop();
+        let mut root = Tree::from(draft);
         aggregate(&mut root, Metric::Bytes);
         assert_eq!(root.sharing().duplicate_bytes, 0);
         assert_eq!(root.sharing().files, 1);
