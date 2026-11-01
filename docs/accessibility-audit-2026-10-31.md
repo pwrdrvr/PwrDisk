@@ -895,7 +895,7 @@ the PRs remain drafts while native acceptance is incomplete.
 | Issue / focused PR | Source and harness | Native evidence | Remaining acceptance |
 | --- | --- | --- | --- |
 | PWR-29 / [#38](https://github.com/pwrdrvr/PwrDisk/pull/38) | Paged file reader, raw path IDs, full metadata, selection, marks, review summaries; large-list, guard and PR #38 focus/pagination regressions | macOS AX file/page/Unicode/selected/review subset observed. Linux X11 AT-SPI file names, roles, metadata, selection and advertised actions observed in this pass | Actual AT reading/action/focus, review on Windows/Linux; removal approval remains human/harness only |
-| PWR-30 / [#40](https://github.com/pwrdrvr/PwrDisk/pull/40) | Source inputs, validation, polite sampled progress, cancellation, volume/mark status | macOS AX host/root value, error/completion/volume subset; Linux final status and volume names observed | Native live announcements/throttling, SSH success/failure and cancellation across readers |
+| PWR-30 / [#40](https://github.com/pwrdrvr/PwrDisk/pull/40) | Source inputs, validation, value-backed polite status, foreground phases, in-flight roots and sampled counters; five PR #40 review regressions | Earlier macOS AX host/root value, error/completion/volume subset; earlier Linux final status and volume names observed | Native live announcements/throttling, SSH success/failure and cancellation across readers; corrected announcement values have source/harness evidence only |
 | PWR-31 / [#42](https://github.com/pwrdrvr/PwrDisk/pull/42) | Tab order, modal containment/restoration, disabled controls, menu keys | macOS AX modal boundaries and keyboard subset; Linux advertised menu/button actions read without invoking them | AT focus/activation; Windows/Linux custom menus; Linux disabled-state mapping discrepancy below |
 | PWR-32 / [#43](https://github.com/pwrdrvr/PwrDisk/pull/43) | Settings/Help/document text, original-source Copy, log navigation/search/selection | macOS AX readable auxiliary subset; native Logs End/search/selection at 200% in this pass | AT reading order/actions and native platforms; final native search value `299` observed after controller recovery |
 | PWR-33 / [#45](https://github.com/pwrdrvr/PwrDisk/pull/45) | Production tile-state contrast thresholds across 8,910 combinations; text backing and non-color cues | Contrived default dark rendering and later explicit light preset inspected | OS high contrast, real custom themes, remaining control/caption contexts and Windows/Linux appearance; no whole-window contrast certification |
@@ -945,7 +945,7 @@ the native result below.
 | Layer | Result and conditions |
 | --- | --- |
 | macOS AX | PASS subsets documented per issue, under macOS 27.0.1 build 26A434 arm64. The controller continues to identify the window as focused; this does not establish VoiceOver focus. Final Logs value `299` and one matching line observed at `2cef5c5` after controller recovery; static-label values are scoped to Linux to preserve macOS metadata |
-| VoiceOver | BLOCKED: baseline launch failed; current System Settings reports off. Automatic approval review rejected enabling VoiceOver without explicit setting-change authorization. Permission requested; it was left off. No spoken output claimed |
+| VoiceOver | NOT RUN: baseline launch failed. Temporary enablement was subsequently authorized, but the native UI tool reports its application session stopped. The setting was left unchanged; no speech or announcement-cadence result is claimed |
 | Windows native build/UIA | BLOCKED: Windows 11 build 26200 x64 peer remains disconnected on recheck |
 | Narrator/NVDA | BLOCKED with the Windows peer; neither version nor speech was observed |
 | Linux native AT-SPI | Native GPUI X11 fixture under Xvfb and an isolated session/AT-SPI bus; Mesa llvmpipe software Vulkan. File-list/status observations and remaining state issue below. This is not the window harness |
@@ -1078,3 +1078,52 @@ native matrix remain open; no harness result replaces them. No removal
 confirmation was activated through computer use or accessibility APIs.
 The task-owned test windows were closed and the disposable APFS image was
 detached. Existing native acceptance work remains tracked separately.
+
+### PR #40 review corrections: live values and active status
+
+Reviewed source `d3941b1` supplied labels without values on both live
+status nodes. The pinned `accesskit_macos` 0.26.3 event generator queues
+live announcements only when the consumer node has a value, and reads the
+announcement text from that value. This was confirmed in the local
+dependency source; it is not a native speech observation.
+
+Fix `3640f6821162780a441559e6941161590cf267bb` routes both
+`current-status` and `marked-summary` through one read-only polite status
+helper with matching labels and values. It resolves the foreground screen
+before applying scan context. Widening names the worker's `scan_root` and
+clears sampled text immediately on a new root, while file/byte counters
+remain sampled at two seconds. Background scan metadata does not advertise
+the foreground Escape-cancels instruction.
+
+| Contrived regression | Before | Observed source/harness correction |
+| --- | --- | --- |
+| Current progress, error and completion status | Live value absent | Value matches the label |
+| Marked-path summary | Live value absent | Same shared value-backed status helper |
+| Cancel widening, then Review/Running/Done, including a previous scan error | Old scan state hides the active phase | Active phase leads; previous scan state remains separate |
+| Harness removal completes and immediately starts a refresh | Indexing hides removal completion and advertises Escape cancellation | Removal completion remains primary; refresh is background context |
+| Consecutive widening roots within two seconds | Old subtree or cached root is announced | Each in-flight root is named immediately; counters remain sampled |
+
+All five regressions fail before and pass after. At `3640f68`, macOS
+27.0.1 arm64 lint, full workspace tests (236 app passed, two ignored;
+232 core passed, seven ignored) and normal app build PASS. Ubuntu
+24.04.5 x86_64 Sandboxer `sb_uihqpdf98b`: setup 0 (1s), lint 0 (7s),
+tests 0 (17s), portable build 0 (45s), isolated SSH 0 (2s), all 0.
+
+The complete restacked production source
+`10cff5159935359b9ba04539c7715398a18aebac` passes macOS lint, full
+workspace tests (255 app passed, two ignored; 232 core passed, seven
+ignored) and normal app build. Final Linux verification: setup 0 (1s), lint 0 (8s), tests 0 (19s), portable build 0 (49s), isolated SSH 0 (3s), all 0.
+
+These are semantic metadata and status-string changes; the visible layout
+does not change. No new before/after image can establish an announcement
+value or spoken result.
+
+Native evidence remains separate. The operator subsequently authorized
+temporary VoiceOver enablement, but the native UI tool reports the
+application session stopped, so no setting was changed and no VoiceOver
+delivery/cadence result is claimed. The Windows peer remains disconnected
+on recheck. Native AX live notifications, UIA, AT-SPI, VoiceOver,
+Narrator/NVDA/Orca, OS display/text scaling and high-contrast checks remain
+explicitly unverified for this correction. No removal was approved through
+computer use or accessibility APIs; the destructive regression operates
+only on contrived temporary-tree harness files.
