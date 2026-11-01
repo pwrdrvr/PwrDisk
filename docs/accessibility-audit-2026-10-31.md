@@ -563,3 +563,37 @@ speech remain separate acceptance gaps. No native removal confirmation or
 accessibility action was performed. These routing corrections add no new
 layout or styling; the earlier contrived focus images keep their original
 build provenance.
+
+### PWR-31 integration with main's dialog, toast and Settings changes
+
+Merge `4c71496866c9162b363c305eafdacf21dac3ec05` brings PR #42 onto main at
+`cb3565d` (#50 platform footers and source switch, #51 update toasts, #52
+grouped Settings). It keeps main's layout and reapplies this PR's modal
+actions, conditional dialog defaults, disabled metadata, tab stops and
+focus restoration to it. Two follow-ups apply the PR's own rules to what
+main added:
+
+| Promise | Integrated behavior before follow-up | After |
+| --- | --- | --- |
+| Disabled metadata | The update toast's held "Restart after the removal" used the pinned button's `disabled`, which omits the native flag | `semantic_disabled`, like every other disabled button (`133183a`) |
+| Visible Settings focus | Main marks the shown pane with a left accent bar; focus recoloured that bar, so focus on the shown pane was invisible and a focused pane looked shown | Focus draws the app's full accent outline on a wrapper; the bar stays the selection (`0ea7fe8`) |
+
+Contrived images: `pwrdisk` debug builds of main `cb3565d` and `0ea7fe8`,
+scanning Projects on the APFS image A11yFixtures, macOS 27.0.1, Settings
+window 1000×681 logical (2000×1362 capture), dark, 100% UI zoom. Before,
+one Tab in a fresh Settings switches to Safety with no focus mark; after,
+two Tabs focus the Safety tab with an outline while Updates stays shown.
+Keys were sent with System Events; nothing was removed or confirmed.
+
+macOS 27.0.1 arm64 at `0ea7fe8`: `cargo xtask lint`, full workspace tests
+(268 app passed, 2 ignored; 233 core passed, 7 ignored) and the debug app
+build pass. One test run aborted when gpui-omarchy's theme-file watcher
+thread woke inside `an_agent_marks_shows_and_reviews_over_the_link`; the
+unchanged rerun passed. Ubuntu 24.04.5 x86_64 Sandboxer `sb_uihqpdf98b`,
+same source: setup 0 (1s), lint 0 (5s), tests 0 (12s; 264 app, 221 core),
+portable build 0 (44s), isolated SSH 0 (2s), all 0; stopped afterward.
+
+The Settings outline was observed in the native macOS window only. Native
+AX/UIA/AT-SPI and VoiceOver/Narrator/NVDA/Orca were not rerun for the
+integration; Windows is verified by CI. The native acceptance gaps above
+remain open.
