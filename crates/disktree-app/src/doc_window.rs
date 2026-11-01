@@ -160,11 +160,16 @@ impl DocWindow {
             .map_or(font_size * 0.6, |size| size.width);
         // Body and row padding plus border clearance. A 100-column ceiling
         // keeps wide windows readable without imposing it on narrow ones.
-        let width = (window.viewport_size().width - rem * 5.0)
+        let room = (window.viewport_size().width - rem * 5.0)
             .max(advance * 8.0)
             .min(advance * WRAP_COLUMNS as f32);
+        // Monospace text wraps the same until a whole column is gained or
+        // lost, so a live resize re-wraps the megabyte of notices once per
+        // column rather than once per pixel.
+        let columns = (room / advance).floor();
+        let width = advance * columns;
         let key = (
-            width.as_f32().to_bits(),
+            columns.to_bits(),
             rem.as_f32().to_bits(),
             theme.mono_font.clone(),
         );

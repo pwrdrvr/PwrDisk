@@ -340,7 +340,9 @@ pub fn list(
                             button(
                                 "file-mark",
                                 if compact {
-                                    "Mark / unmark"
+                                    // Visible words stay inside the
+                                    // accessible name, for voice control.
+                                    "Mark or unmark"
                                 } else {
                                     "Mark or unmark selected path"
                                 },

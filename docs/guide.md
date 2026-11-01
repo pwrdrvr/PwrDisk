@@ -187,6 +187,12 @@ first (git work that exists nowhere else, a tool's own clean command) and
 touching nothing else. A name holding a newline is left out of the list and
 escaped in the prompt, so it cannot pass for another path.
 
+Help keeps its heading and Close button visible while the shortcut list
+scrolls. Use arrows, PageUp/PageDown and Home/End to read it. Settings panes
+scroll with PageUp/PageDown and Home/End; Ctrl+PageUp/PageDown still switches
+panes. Documents wrap to the window and scale. Logs uses PageUp/PageDown to
+scroll within long wrapped lines, while Up/Down selects lines for copying.
+
 ## What it measures
 
 - **Disk usage** by default: `st_blocks × 512`, the number `du` reports and the
@@ -670,10 +676,3 @@ class is `pwrdisk`.
 windowrule = float, class:^(pwrdisk)$
 windowrule = size 1400 900, class:^(pwrdisk)$
 ```
-
-
-Help keeps its heading and Close button visible while the shortcut list
-scrolls. Use arrows, PageUp/PageDown and Home/End to read it. Settings panes
-scroll with PageUp/PageDown and Home/End; Ctrl+PageUp/PageDown still switches
-panes. Documents wrap to the window and scale. Logs uses PageUp/PageDown to
-scroll within long wrapped lines, while Up/Down selects lines for copying.

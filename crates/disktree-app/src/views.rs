@@ -224,9 +224,10 @@ pub fn root(
                 cx.notify();
                 return;
             }
+            // An open menu owns the arrows before the page behind it scrolls.
+            if this.app_menu_open && app_menu_key(this, event, window, cx) { return; }
             if !this.has_modal() && this.screen == Screen::Review && crate::ui::scroll_key(&event.keystroke.key, &this.review_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
             if this.show_help && crate::ui::scroll_key(&event.keystroke.key, &this.help_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
-            if this.app_menu_open && app_menu_key(this, event, window, cx) { return; }
             if event.keystroke.key == "tab" && !event.keystroke.modifiers.control && !event.keystroke.modifiers.platform {
                 if !this.has_modal() { this.find_open = false; }
                 let scope = (this.has_modal() || this.app_menu_open).then(|| this.confirm_focus.clone());
@@ -898,6 +899,21 @@ fn delete_dialog(
 
 // ── explore ─────────────────────────────────────────────────────────────
 
+/// The volume's space, for the row that stands in for the hidden panel.
+fn compact_space(app: &Disktree) -> String {
+    app.space.map_or_else(
+        || "Volume space unavailable".to_owned(),
+        |space| {
+            format!(
+                "{} available of {}; {} marked",
+                human_bytes(space.available),
+                human_bytes(space.total),
+                app.marks.len()
+            )
+        },
+    )
+}
+
 fn explore(
     app: &mut Disktree,
     window: &Window,
@@ -937,17 +953,6 @@ fn explore(
                 )),
             );
     }
-    let compact_space = app.space.map_or_else(
-        || "Volume space unavailable".to_owned(),
-        |space| {
-            format!(
-                "{} available of {}; {} marked",
-                human_bytes(space.available),
-                human_bytes(space.total),
-                app.marks.len()
-            )
-        },
-    );
     let mosaic: Mosaic = app.prepare();
     let width_rems = window.viewport_size().width.as_f32() / app.rem;
     // The panel is where the selection, the marks and the disk live; it
@@ -1046,7 +1051,7 @@ fn explore(
                 .child(indexing_compact(app, &theme, cx))
         }))
         .children((!panel).then(|| div().flex().flex_row().flex_wrap().items_center().gap(space::SM).px(space::LG).py(space::XS)
-            .child(crate::semantics::text("compact-space", compact_space.clone()).child(compact_space.clone()))
+            .child({ let space = compact_space(app); crate::semantics::text("compact-space", space.clone()).child(space) })
             .child(button("compact-source", "Source…", ButtonVariant::Secondary, cx).on_click(cx.listener(|this, _, window, cx| { this.open_volumes(cx); this.apply_focus(window, cx); })))))
         .child(key_bar(app, &theme, cx))
 }
@@ -1626,21 +1631,20 @@ fn view_settings(
         "Levels drawn at once \u{00b7} [ and ]",
     );
 
+    let inline =
+        window.viewport_size().width.as_f32() / app.rem >= INLINE_SETTINGS_REMS;
     div()
         .flex()
         .flex_row()
         .items_center()
         .gap(space::SM)
-        .when(
-            window.viewport_size().width.as_f32() / app.rem
-                < INLINE_SETTINGS_REMS,
-            |row| row.flex_wrap().min_w_0(),
-        )
-        .when(
-            window.viewport_size().width.as_f32() / app.rem
-                >= INLINE_SETTINGS_REMS,
-            gpui_kit::Styled::flex_shrink_0,
-        )
+        .map(|row| {
+            if inline {
+                row.flex_shrink_0()
+            } else {
+                row.flex_wrap().min_w_0()
+            }
+        })
         .child(history)
         .child(mode)
         .child(hidden)

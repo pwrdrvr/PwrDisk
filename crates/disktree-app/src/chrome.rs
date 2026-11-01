@@ -29,7 +29,7 @@ use gpui_omarchy::{ActiveTheme as _, IconName, Theme, with_tooltip};
 
 use crate::palette;
 use crate::state::Disktree;
-use crate::ui::{chrome, space};
+use crate::ui::{self, chrome, space};
 
 /// Which system the window is on, as far as its frame is concerned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -407,7 +407,7 @@ pub fn aux_strip<V: Drags>(
                 .child(brand(
                     window.viewport_size().width.as_f32()
                         / window.rem_size().as_f32()
-                        >= 50.0,
+                        >= ui::COMPACT_WINDOW_REMS,
                     &theme,
                 ))
                 .child(trail),

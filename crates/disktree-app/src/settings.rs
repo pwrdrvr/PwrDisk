@@ -321,12 +321,12 @@ impl Render for SettingsWindow {
     ) -> impl IntoElement {
         crate::ui::sync_scale(window, cx);
         let theme = cx.omarchy().clone();
-        // Below 50 rem (a narrow window, or 200% zoom) the panes wrap in a
-        // row above the content instead of taking a column beside it, and
-        // the group headings, which only make sense in a column, step out.
+        // When compact the panes wrap in a row above the content instead of
+        // taking a column beside it, and the group headings, which only
+        // make sense in a column, step out.
         let compact = window.viewport_size().width.as_f32()
             / window.rem_size().as_f32()
-            < 50.0;
+            < crate::ui::COMPACT_WINDOW_REMS;
         // Grouped, with the pane shown marked by an accent bar, as the
         // family's Settings windows have it; square, as Omarchy draws.
         let mut nav = div()

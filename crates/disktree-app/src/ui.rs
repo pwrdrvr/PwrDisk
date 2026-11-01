@@ -205,6 +205,11 @@ pub const ZOOM_STEPS: [f32; 8] =
 /// The default rem, in pixels.
 pub const BASE_REM: f32 = 16.0;
 
+/// Below this many rems across (a narrow window, or 200% zoom of a normal
+/// one) an auxiliary window drops its wordmark and Settings stacks its panes
+/// above the content: a side column and the content no longer both fit.
+pub const COMPACT_WINDOW_REMS: f32 = 50.0;
+
 /// A session-wide scale: existing and newly opened auxiliary windows agree.
 /// It is not persisted and never changes an operating-system preference.
 struct InterfaceScale(f32);
