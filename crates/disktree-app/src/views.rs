@@ -220,9 +220,9 @@ pub fn root(
         .child(body)
         .children(app.is_indexing().then(|| div().id("scan-progress")
             .role(gpui_kit::Role::ProgressIndicator)
-            .aria_label("Scan in progress; indeterminate; overview is incomplete; Escape cancels")
+            .aria_label(if app.screen == Screen::Explore { "Scan in progress; indeterminate; overview is incomplete; Escape cancels" } else { "Background scan in progress; indeterminate; overview is incomplete" })
             .a11y_synthetic_children(|b| b.parent_node().set_busy())))
-        .child(crate::semantics::status(readable_status));
+        .child(crate::semantics::status("current-status", readable_status));
     // A modal hides the mosaic's hover card: the pointer last seen on the
     // treemap is stale while the backdrop takes the mouse, so the card would
     // otherwise sit, or drift, behind the dialog.
@@ -2346,9 +2346,8 @@ fn marked_section(
             )
         });
     let mut section = div().flex().flex_col().gap(space::XS)
-        .child(crate::semantics::text("marked-summary", format!("{} marked paths; {} listed bytes; {} included, {} blocked, {} covered. Estimated reclaimable: {}. Projections use only the measured volume.",
-            count, plan.bytes(), plan.targets.len(), plan.blocked.len(), plan.covered.len(), savings(plan.reclaimable_bytes(), plan.possible_bytes())))
-            .role(gpui_kit::Role::Status).a11y_synthetic_children(|b| { b.parent_node().set_live(gpui_kit::accesskit::Live::Polite); }))
+        .child(crate::semantics::status("marked-summary", format!("{} marked paths; {} listed bytes; {} included, {} blocked, {} covered. Estimated reclaimable: {}. Projections use only the measured volume.",
+            count, plan.bytes(), plan.targets.len(), plan.blocked.len(), plan.covered.len(), savings(plan.reclaimable_bytes(), plan.possible_bytes()))))
         .child(header);
     if count == 0 {
         return section.child(

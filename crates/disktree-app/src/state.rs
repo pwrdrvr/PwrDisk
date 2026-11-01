@@ -771,6 +771,8 @@ impl Disktree {
         if !self.root_path.starts_with(&above) || self.root_path == above {
             return;
         }
+        // The worker's root changes immediately, even within a sampled report.
+        self.accessible_progress = None;
         if let Some(scan) = &self.scan {
             scan.cancel();
         }
