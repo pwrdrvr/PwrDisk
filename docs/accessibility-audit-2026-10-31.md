@@ -530,3 +530,36 @@ cancellation-routing test uses an empty removal plan to avoid a deletion
 race. Actual removal and confirmation coverage is confined to the
 contrived-filesystem harness; no computer-use or accessibility API approved
 removal.
+
+### PWR-31 review corrections: foreground Escape and Help menus
+
+Production source `471fbf02fe0bbc07e9a5b48782c65c4c22818975` corrects the
+two keyboard-routing findings from PR #42's review at `040e68a`. Three new
+`routing_review_` window-harness tests fail on that reviewed source and
+pass after the correction. Every scan uses a generated temporary tree.
+
+| Promise | Reviewed behavior | Observed harness result after correction |
+| --- | --- | --- |
+| Search Escape during widening | Cancels the background scan and leaves search open | Clears search in treemap and file-list views without changing the scan epoch or cancelling; the next Escape cancels the scan |
+| Menu Escape during widening | Cancels the scan before dismissing the foreground menu | Breadcrumb, power and application menus dismiss while the scan continues; a subsequent Escape cancels |
+| Help owns keyboard navigation | Existing menus remain active behind Help | Both `?` and the keyboard-shortcuts action close all three menu types before Help opens; Down/Enter cannot navigate the underlying directory or change marks |
+
+The root handler delegates scan-time Escape to the existing dispatcher,
+which already gives menus, search and applied filters precedence over scan
+cancellation. `open_help` clears menu state for both shortcut and action
+entry points. The focused tests retain the existing tree and verify the
+contrived files remain present. No removal is requested by these tests.
+
+macOS 27.0.1 arm64: `cargo xtask lint`, full workspace tests (254 app passed,
+2 ignored; 233 core passed, 7 ignored), and the normal debug app build pass.
+Ubuntu 24.04.5 x86_64 Sandboxer `sb_uihqpdf98b`, same production source:
+setup 0 (1s), lint 0 (14s), tests 0 (23s), portable build 0 (43s), isolated
+SSH 0 (2s), all 0. The sandbox was stopped after verification.
+
+These are harness/source results. Native AX/UIA/AT-SPI and
+VoiceOver/Narrator/NVDA/Orca were not rerun; Windows verification awaits CI.
+Native menu/AT containment, OS display/text scaling, high contrast and
+speech remain separate acceptance gaps. No native removal confirmation or
+accessibility action was performed. These routing corrections add no new
+layout or styling; the earlier contrived focus images keep their original
+build provenance.
