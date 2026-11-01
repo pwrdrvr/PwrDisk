@@ -353,10 +353,14 @@ jobs:
       - name: Test
         run: cargo xtask test
 
+      # A debug build: build.rs embeds the icon in every profile, and Test
+      # has already compiled everything but the binary. A release build
+      # (thin LTO, one codegen unit) took over three minutes even with a
+      # warm cache; preview-build.yml and release.yml build that one.
       - name: Check embedded executable icon
         shell: pwsh
         run: |
-          cargo build --release --locked -p disktree-app
+          cargo build --locked -p disktree-app
           Add-Type @'
           using System;
           using System.Runtime.InteropServices;
@@ -366,7 +370,7 @@ jobs:
                   string file, int index, IntPtr[] large, IntPtr[] small, uint count);
           }
           '@
-          $exe = (Resolve-Path target/release/pwrdisk.exe).Path
+          $exe = (Resolve-Path target/debug/pwrdisk.exe).Path
           if ([ExecutableIcons]::ExtractIconEx($exe, -1, $null, $null, 0) -lt 1) {
             throw "pwrdisk.exe has no embedded icon"
           }
