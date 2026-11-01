@@ -229,7 +229,7 @@ pub fn root(
             if event.keystroke.key == "?" && !this.has_modal() && !this.find_open {
                 this.open_help(cx); this.apply_focus(window, cx); return;
             }
-            if event.keystroke.key == "escape" && !this.has_modal() && this.is_indexing() {
+            if event.keystroke.key == "escape" && this.screen == Screen::Explore && !this.has_modal() && this.is_indexing() {
                 this.cancel_scan(cx); window.focus(&this.focus, cx); return;
             }
             if !this.has_modal() && !this.app_menu_open && this.screen != Screen::Running && !this.focus.is_focused(window) && !this.file_focus.is_focused(window) {
@@ -270,6 +270,26 @@ pub fn root(
         root = root.child(delete_dialog(app, cx));
     }
     root
+}
+
+/// Enter resolves to the dialog's Confirm action before button key events.
+/// Consume it at the focused button so Cancel and every peer keep their
+/// own click behavior instead of falling through to the dialog default.
+fn modal_action(
+    button: gpui_omarchy::Button,
+    action: fn(&mut Disktree, &mut Window, &mut Context<'_, Disktree>),
+    cx: &Context<'_, Disktree>,
+) -> gpui_omarchy::Button {
+    button
+        .on_click(cx.listener(move |this, _, window, cx| {
+            action(this, window, cx);
+        }))
+        .on_action(cx.listener(
+            move |this, _: &gpui_kit::base::actions::Confirm, window, cx| {
+                action(this, window, cx);
+                cx.stop_propagation();
+            },
+        ))
 }
 
 /// Discovery is lightweight; a separate, explicit action starts the walk.
@@ -373,7 +393,7 @@ fn volumes_dialog(
             cx))
         .child(div().flex().flex_row().gap(space::SM)
             .child(button("source-local", "This computer", ButtonVariant::Secondary, cx)
-                .on_click(cx.listener(|this, _, window, cx| this.choose_local_source(window, cx))))
+                .map(|button| modal_action(button, Disktree::choose_local_source, cx)))
             .child(gpui_omarchy::input("source-host", host, window, cx)
                 .aria_label("SSH destination")
                 .aria_value(host.read(cx).value())
@@ -381,7 +401,7 @@ fn volumes_dialog(
                 .aria_description(format!("SSH alias or user@host; blank uses this computer. {}", source_error.map_or("", String::as_str)))
                 .debug_selector(|| "source-host".into()).flex_1())
             .child(button("source-connect", "Connect SSH", ButtonVariant::Secondary, cx)
-                .on_click(cx.listener(|this, _, _, cx| this.connect_picker(cx)))))
+                .map(|button| modal_action(button, |this, _, cx| this.connect_picker(cx), cx))))
         .child(crate::semantics::text("selected-source", source.clone()).text_color(theme.bright).child(source))
         .child(rows)
         .child(dialog_description(
@@ -395,18 +415,18 @@ fn volumes_dialog(
                 .debug_selector(|| "source-path".into()).flex_1())
             .child(button("source-scan-path", "Scan directory", ButtonVariant::Secondary, cx)
                 .semantic_disabled(!source_ready || app.volumes_loading || app.volumes_error.is_some())
-                .on_click(cx.listener(|this, _, _, cx| this.choose_picker_path(cx)))))
+                .map(|button| modal_action(button, |this, _, cx| this.choose_picker_path(cx), cx))))
         .children(app.picker_error.as_ref().map(|error| div().id("source-error").role(gpui_kit::Role::Alert).aria_label(error.clone()).text_color(theme.danger).child(error.clone())))
         .child(div().flex().flex_row().justify_end().gap(space::SM)
             .child(dialog_button("source-cancel", "Cancel", ButtonVariant::Secondary, cx)
-                .on_click(cx.listener(|this, _, window, cx| {
+                .map(|button| modal_action(button, |this, window, cx| {
                     this.close_volumes(cx); this.apply_focus(window, cx);
-                })))
+                }, cx)))
             .child(dialog_button("source-scan", "Scan selected root", ButtonVariant::Primary, cx)
                 .semantic_disabled(!source_ready || app.volumes_loading || app.volumes_error.is_some() || app.volumes.is_empty())
-                .on_click(cx.listener(|this, _, window, cx| {
+                .map(|button| modal_action(button, |this, window, cx| {
                     this.choose_volume(cx); this.apply_focus(window, cx);
-                }))));
+                }, cx))));
     let popup = div()
         .id("source-picker-scroll")
         .role(gpui_kit::Role::Dialog)
@@ -452,7 +472,9 @@ fn volumes_dialog(
                         this.connect_picker(cx);
                     } else if path_focused {
                         this.choose_picker_path(cx);
-                    } else {
+                    } else if this.confirm_focus.is_focused(window)
+                        || this.source_roots_focus.is_focused(window)
+                    {
                         this.choose_volume(cx);
                     }
                 }
@@ -633,10 +655,16 @@ fn delete_dialog(
                 ButtonVariant::Secondary,
                 cx,
             )
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.cancel_delete(cx);
-                this.apply_focus(window, cx);
-            })),
+            .map(|button| {
+                modal_action(
+                    button,
+                    |this, window, cx| {
+                        this.cancel_delete(cx);
+                        this.apply_focus(window, cx);
+                    },
+                    cx,
+                )
+            }),
         )
         .child(
             dialog_button(
@@ -645,10 +673,16 @@ fn delete_dialog(
                 ButtonVariant::Danger,
                 cx,
             )
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.confirm_delete(cx);
-                this.apply_focus(window, cx);
-            })),
+            .map(|button| {
+                modal_action(
+                    button,
+                    |this, window, cx| {
+                        this.confirm_delete(cx);
+                        this.apply_focus(window, cx);
+                    },
+                    cx,
+                )
+            }),
         );
     let popup = dialog_popup(cx)
         .child(dialog_title(title.clone(), cx))
@@ -674,8 +708,10 @@ fn delete_dialog(
         .open(true)
         .on_ok(move |_, window, cx| {
             let _ = confirm.update(cx, |this, cx| {
-                this.confirm_delete(cx);
-                this.apply_focus(window, cx);
+                if this.confirm_open && this.confirm_focus.is_focused(window) {
+                    this.confirm_delete(cx);
+                    this.apply_focus(window, cx);
+                }
             });
             false
         })
@@ -4617,6 +4653,7 @@ fn app_menu_button(
             .aria_label("Application menu")
             .aria_expanded(app.app_menu_open)
             .focusable()
+            .tab_stop(true)
             .focus_visible(|style| style.border_color(theme.accent))
             .debug_selector(|| "app-menu-button".into())
             .flex()

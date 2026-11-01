@@ -323,6 +323,7 @@ impl Render for SettingsWindow {
                         .aria_label(pane.label())
                         .aria_selected(on)
                         .focusable()
+                        .tab_stop(true)
                         .focus_visible(|style| style.border_color(theme.accent))
                         .debug_selector(move || pane.nav_id().into())
                         .px(space::MD)

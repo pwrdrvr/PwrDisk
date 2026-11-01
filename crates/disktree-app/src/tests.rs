@@ -5492,3 +5492,213 @@ fn tab_reaches_file_navigation_without_changing_selection(
     assert!(reached, "file navigation participates in the tab order");
     assert_eq!(read(&view, cx, |app| app.selected.clone()), selected);
 }
+
+/// Keyboard activation of Cancel must never authorize the marked removal.
+#[gpui_kit::test]
+fn focus_review_delete_cancel_enter_preserves_the_fixture(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.removal_mode = RemovalMode::Permanent;
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+        app.open_review(cx);
+    });
+    draw(cx);
+    for activation in ["enter", "space"] {
+        press(cx, "enter");
+        press(cx, "tab");
+        let keystroke = gpui_kit::Keystroke::parse(activation).unwrap();
+        cx.simulate_event(gpui_kit::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui_kit::KeyUpEvent { keystroke });
+        draw(cx);
+        read(&view, cx, |app| {
+            assert!(!app.confirm_open, "Cancel {activation} closes the alert");
+            assert!(app.run.is_none(), "Cancel never starts removal");
+            assert_eq!(app.screen, Screen::Review);
+            assert_eq!(app.marks.len(), 1);
+        });
+        assert!(temp.path().join("junk/blob.bin").exists());
+        assert!(temp.path().join("keep/notes.txt").exists());
+    }
+    press(cx, "enter");
+    press(cx, "tab");
+    press(cx, "tab");
+    press(cx, "enter");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Running);
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut finished = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        finished = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if finished {
+            break;
+        }
+    }
+    assert!(finished, "focused Delete completes the contrived removal");
+    assert!(!temp.path().join("junk").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+    finish_scan(&view, cx);
+}
+
+#[gpui_kit::test]
+fn focus_review_source_cancel_enter_does_not_scan(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let epoch = read(&view, cx, |app| app.scan_epoch);
+    // Supply only a contrived root, without starting host discovery.
+    update(&view, cx, |app, cx| {
+        app.volumes_open = true;
+        app.volumes_loading = false;
+        app.volumes = vec![Volume {
+            point: temp.path().into(),
+            device: None,
+            space: None,
+        }];
+        app.focus_request = Some(crate::state::FocusTarget::Dialog);
+        cx.notify();
+    });
+    draw(cx);
+    press(cx, "shift-tab shift-tab enter");
+    read(&view, cx, |app| {
+        assert!(!app.volumes_open, "Cancel closes the picker");
+        assert!(app.scan.is_none());
+        assert_eq!(app.scan_epoch, epoch, "Cancel does not accept a root");
+        assert_eq!(app.root_path, temp.path());
+    });
+}
+
+#[gpui_kit::test]
+fn focus_review_escape_cancels_removal_before_background_scan(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(&temp.path().join("junk"), cx);
+    update(&view, cx, |app, cx| {
+        app.widen_to(temp.path().into(), cx);
+        app.screen = Screen::Running;
+        // No paths are removed: this checks delivery of the cancellation
+        // request while a real, contrived widening scan is still active.
+        app.run = Some(disktree_core::removal::spawn(
+            disktree_core::removal::Plan::default(),
+            RemovalMode::Permanent,
+        ));
+        cx.notify();
+    });
+    draw(cx);
+    press(cx, "escape");
+    read(&view, cx, |app| {
+        assert!(app.scan.is_some(), "foreground Escape preserves the scan");
+        assert!(
+            app.notice.as_ref().is_some_and(
+                |(text, _)| text == "stopping after the current item"
+            )
+        );
+    });
+    update(&view, cx, |app, cx| {
+        app.run = None;
+        app.cancel_scan(cx);
+    });
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn focus_review_escape_leaves_review_and_done_with_refresh_intact(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(&temp.path().join("junk"), cx);
+    for screen in [Screen::Review, Screen::Done] {
+        update(&view, cx, |app, cx| {
+            app.widen_to(temp.path().into(), cx);
+            app.screen = screen;
+            cx.notify();
+        });
+        draw(cx);
+        press(cx, "escape");
+        read(&view, cx, |app| {
+            assert_eq!(app.screen, Screen::Explore);
+            assert!(
+                app.scan.is_some(),
+                "foreground Escape preserves the refresh"
+            );
+        });
+        update(&view, cx, Disktree::cancel_scan);
+    }
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+fn cycle_back_to_focus(
+    cx: &mut Window,
+    target: &gpui_kit::FocusHandle,
+    key: &str,
+) {
+    press(cx, key);
+    for _ in 0..60 {
+        if cx.update(|window, _| target.is_focused(window)) {
+            return;
+        }
+        press(cx, key);
+    }
+    panic!("{key} traversal did not reach the navigation control");
+}
+
+#[gpui_kit::test]
+fn focus_review_settings_panes_are_forward_and_reverse_tab_stops(
+    cx: &mut TestAppContext,
+) {
+    use crate::settings::{Pane, SettingsWindow};
+    cx.update(init);
+    let (_view, cx) =
+        cx.add_window_view(|_, cx| SettingsWindow::new(Pane::About, cx));
+    draw(cx);
+    for pane in Pane::ALL {
+        click_on(cx, pane.nav_id());
+        let target = cx
+            .update(|window, cx| window.focused(cx))
+            .expect("pane focus");
+        cycle_back_to_focus(cx, &target, "tab");
+        cycle_back_to_focus(cx, &target, "shift-tab");
+    }
+}
+
+#[gpui_kit::test]
+fn focus_review_application_menu_is_a_forward_and_reverse_tab_stop(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.chrome_pin = window_frames()
+            .into_iter()
+            .find(|(name, _)| *name == "GNOME, controls right")
+            .map(|(_, frame)| frame);
+        cx.notify();
+    });
+    draw(cx);
+    click_on(cx, "app-menu-button");
+    press(cx, "escape");
+    let target = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("menu trigger focus");
+    cycle_back_to_focus(cx, &target, "tab");
+    cycle_back_to_focus(cx, &target, "shift-tab");
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.app_menu_open));
+    press(cx, "escape");
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
