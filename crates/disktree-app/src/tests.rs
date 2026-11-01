@@ -1527,7 +1527,8 @@ fn settings_updates_picks_a_channel_and_keeps_the_keys(
     let slot = cx.debug_bounds("update-slot-0").expect("first row");
     cx.simulate_click(slot.center(), gpui_kit::Modifiers::none());
     draw(cx);
-    press(cx, "down");
+    // Latest sits beside Prerelease in the grid.
+    press(cx, "right");
     press(cx, "enter");
     assert_eq!(
         crate::updater::selection().resolve("0.12.0"),
