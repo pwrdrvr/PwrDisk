@@ -124,6 +124,9 @@ pub mod size {
     pub const SETTINGS_LEDE: Rems = Rems(36.0);
     /// A Settings nav row: the family's 28 to 30 px.
     pub const SETTINGS_NAV_ROW: Rems = Rems(1.75);
+    /// The app icon in About's header: the family's 44 px, two lines of
+    /// the name and build line beside it.
+    pub const ABOUT_ICON: Rems = Rems(2.75);
     /// Logs: the search field's least width, so a query still reads
     /// beside its match count and chevrons.
     pub const LOG_FILTER: Rems = Rems(16.25);

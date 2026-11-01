@@ -457,3 +457,143 @@ Native focus/modal containment, Windows UIA/AT, speech, OS scaling and high
 contrast remain open under PWR-31/PWR-36. Changes add semantic metadata;
 the visible source/status presentation is unchanged, so screenshots do not
 show the repaired names/values. No real scan or live removal was performed.
+
+### PWR-31: focus, modal boundaries and menus
+
+Source `08a2b7f865d76db375b38cb5693ac1727cfa6186`, debug macOS binary
+SHA-256 `d4e7b7c11f5b21314dff6a9edfc7f5ea6c08769d2655bad04b5ae866ddbf6d1a`.
+Tab/Shift-Tab traverse controls and composite navigation; n/Shift-n retain
+sibling stepping. Escape returns to file navigation. Modal traversal stays
+inside its scope and dismissal restores the invoking focus handle. Explicit
+tracked handles carry their own tab metadata: element styles alone did not
+make the root/file lists reachable; strengthened regressions caught this.
+
+| Promise | Native macOS result | Harness / source |
+| --- | --- | --- |
+| Visible traversal | PASS inspected case: Tab adds a visible focus edge to Size while retaining file selection | PASS: Tab reaches file navigation without changing selection; 50,000 empty files remain reachable in bounded pages |
+| Source fields / root list | PASS keyboard: Tab reaches host and path inputs; keystrokes appear as values `a` and `b`; no acceptance or SSH connection | PASS: forward/reverse traversal reaches both inputs and the root list, stays in modal and restores originating control |
+| Help / source AX boundaries | PASS inspected trees: named dialogs exposed and application background controls absent from full AX snapshots | PASS: modal background shortcuts contained, safe Escape cancellation; opaque overlays contain pointer input |
+| Disabled actions | PASS: history and unconnected Scan buttons report disabled in native AX | Supported synthetic parent metadata supplies the flag omitted by the pinned button; Click remains removed by the base control |
+| Settings navigation | PASS: named Settings panes tab group and four tab states; Tab leaves Updates selected; Ctrl+PageDown selects Safety without changing a preference | PASS: pane navigation and control traversal regressions; Ctrl+PageUp/PageDown replace pane-cycling Tab |
+| Custom menu | NOT TESTED natively on Windows/Linux | PASS: arrows, Escape and Enter on the safe Keyboard Shortcuts action; menu/item/shortcut metadata and scroll-follow |
+| Removal alert | NOT TESTED natively by design | PASS: named alert metadata, keyboard containment and Escape retain files; destructive coverage remains harness-only |
+| AT focus / speech | Controller still reports the standard window as focused; no speech/navigation result | GPUI focus and active-descendant metadata do not establish VoiceOver/UIA/AT-SPI behavior |
+
+macOS lint, full workspace tests (225 app tests) and debug build passed.
+Linux `sb_uihqpdf98b` at this commit: setup 0 (1s), lint 0 (5s), test 0
+(12s), portable build 0 (43s), isolated SSH 0 (2s), all 0. Native Windows,
+Linux desktop/Orca, speech, native menu operation and OS scaling/high-contrast
+remain unverified under PWR-36. Help content/reflow findings remain tracked
+under PWR-32/PWR-34.
+
+Contrived before/after focus images use PWR-30 head `21ae8fe` and this commit,
+the same Projects/APFS fixture, default dark appearance and 100% UI zoom.
+Both windows were fitted with macOS's window Zoom action: 2992×1878 pixel
+captures (1496×939 logical at 2×). The initial offscreen capture had white
+clipped edges and was replaced; that capture artifact is not a layout fix.
+Before, Tab changes the selected tile; after, it focuses Size. No removal
+confirmation was activated through computer use or accessibility APIs.
+
+### PWR-31 review corrections: modal intent and foreground keys
+
+Production source `d256dff65b5f95c8cd8d02b39f9a57daac982679` corrects the
+three findings from PR #42's review at `e0f643c`. All six new
+`focus_review_` window-harness tests fail on the reviewed production code
+and pass after the correction. They use generated temporary trees only.
+
+| Promise | Reviewed behavior | Observed harness result after correction |
+| --- | --- | --- |
+| Focused modal actions | Enter on Cancel starts removal or accepts a scan root | Enter/Space on removal Cancel leave marks and files intact; source Cancel starts no scan; focused Delete removes only its marked temporary directory |
+| Foreground Escape | An indexing interception consumes Escape ahead of foreground screen commands | Running requests a removal stop while preserving the background scan; Review/Done return to Explore with the refresh intact |
+| Settings pane traversal | Focusable pane selectors are omitted from the tab order | Forward and reverse traversal reach each of the four pane selectors |
+| Application menu trigger | Focusable trigger is omitted from the tab order | Forward and reverse traversal reach the trigger; Enter opens its menu and Escape restores focus |
+
+The modal's Confirm action is handled by the focused button using the same
+callback as pointer activation. Dialog defaults apply only to their
+container, root list or input context. Scan-specific Escape interception is
+limited to Explore. Settings panes and the custom menu trigger explicitly
+register as tab stops. These corrections change keyboard behavior, without
+adding a visible layout or style; the existing contrived focus images keep
+their original build provenance.
+
+macOS 27.0.1 arm64: `cargo xtask lint`, full workspace tests (251 app passed,
+2 ignored; 233 core passed, 7 ignored), and the normal debug app build pass.
+Ubuntu 24.04.5 x86_64 Sandboxer `sb_uihqpdf98b`, same production source:
+setup 0 (1s), lint 0 (7s), tests 0 (16s), portable build 0 (45s), isolated
+SSH 0 (2s), all 0.
+
+Native AX/UIA/AT-SPI and VoiceOver/Narrator/NVDA/Orca were not rerun for
+these corrections. The Windows peer is disconnected; Windows verification
+is pending CI. Native keyboard/AT containment and OS display/text scaling,
+high contrast and speech remain separate acceptance gaps. The Running
+cancellation-routing test uses an empty removal plan to avoid a deletion
+race. Actual removal and confirmation coverage is confined to the
+contrived-filesystem harness; no computer-use or accessibility API approved
+removal.
+
+### PWR-31 review corrections: foreground Escape and Help menus
+
+Production source `471fbf02fe0bbc07e9a5b48782c65c4c22818975` corrects the
+two keyboard-routing findings from PR #42's review at `040e68a`. Three new
+`routing_review_` window-harness tests fail on that reviewed source and
+pass after the correction. Every scan uses a generated temporary tree.
+
+| Promise | Reviewed behavior | Observed harness result after correction |
+| --- | --- | --- |
+| Search Escape during widening | Cancels the background scan and leaves search open | Clears search in treemap and file-list views without changing the scan epoch or cancelling; the next Escape cancels the scan |
+| Menu Escape during widening | Cancels the scan before dismissing the foreground menu | Breadcrumb, power and application menus dismiss while the scan continues; a subsequent Escape cancels |
+| Help owns keyboard navigation | Existing menus remain active behind Help | Both `?` and the keyboard-shortcuts action close all three menu types before Help opens; Down/Enter cannot navigate the underlying directory or change marks |
+
+The root handler delegates scan-time Escape to the existing dispatcher,
+which already gives menus, search and applied filters precedence over scan
+cancellation. `open_help` clears menu state for both shortcut and action
+entry points. The focused tests retain the existing tree and verify the
+contrived files remain present. No removal is requested by these tests.
+
+macOS 27.0.1 arm64: `cargo xtask lint`, full workspace tests (254 app passed,
+2 ignored; 233 core passed, 7 ignored), and the normal debug app build pass.
+Ubuntu 24.04.5 x86_64 Sandboxer `sb_uihqpdf98b`, same production source:
+setup 0 (1s), lint 0 (14s), tests 0 (23s), portable build 0 (43s), isolated
+SSH 0 (2s), all 0. The sandbox was stopped after verification.
+
+These are harness/source results. Native AX/UIA/AT-SPI and
+VoiceOver/Narrator/NVDA/Orca were not rerun; Windows verification awaits CI.
+Native menu/AT containment, OS display/text scaling, high contrast and
+speech remain separate acceptance gaps. No native removal confirmation or
+accessibility action was performed. These routing corrections add no new
+layout or styling; the earlier contrived focus images keep their original
+build provenance.
+
+### PWR-31 integration with main's dialog, toast and Settings changes
+
+Merge `4c71496866c9162b363c305eafdacf21dac3ec05` brings PR #42 onto main at
+`cb3565d` (#50 platform footers and source switch, #51 update toasts, #52
+grouped Settings). It keeps main's layout and reapplies this PR's modal
+actions, conditional dialog defaults, disabled metadata, tab stops and
+focus restoration to it. Two follow-ups apply the PR's own rules to what
+main added:
+
+| Promise | Integrated behavior before follow-up | After |
+| --- | --- | --- |
+| Disabled metadata | The update toast's held "Restart after the removal" used the pinned button's `disabled`, which omits the native flag | `semantic_disabled`, like every other disabled button (`133183a`) |
+| Visible Settings focus | Main marks the shown pane with a left accent bar; focus recoloured that bar, so focus on the shown pane was invisible and a focused pane looked shown | Focus draws the app's full accent outline on a wrapper; the bar stays the selection (`0ea7fe8`) |
+
+Contrived images: `pwrdisk` debug builds of main `cb3565d` and `0ea7fe8`,
+scanning Projects on the APFS image A11yFixtures, macOS 27.0.1, Settings
+window 1000×681 logical (2000×1362 capture), dark, 100% UI zoom. Before,
+one Tab in a fresh Settings switches to Safety with no focus mark; after,
+two Tabs focus the Safety tab with an outline while Updates stays shown.
+Keys were sent with System Events; nothing was removed or confirmed.
+
+macOS 27.0.1 arm64 at `0ea7fe8`: `cargo xtask lint`, full workspace tests
+(268 app passed, 2 ignored; 233 core passed, 7 ignored) and the debug app
+build pass. One test run aborted when gpui-omarchy's theme-file watcher
+thread woke inside `an_agent_marks_shows_and_reviews_over_the_link`; the
+unchanged rerun passed. Ubuntu 24.04.5 x86_64 Sandboxer `sb_uihqpdf98b`,
+same source: setup 0 (1s), lint 0 (5s), tests 0 (12s; 264 app, 221 core),
+portable build 0 (44s), isolated SSH 0 (2s), all 0; stopped afterward.
+
+The Settings outline was observed in the native macOS window only. Native
+AX/UIA/AT-SPI and VoiceOver/Narrator/NVDA/Orca were not rerun for the
+integration; Windows is verified by CI. The native acceptance gaps above
+remain open.

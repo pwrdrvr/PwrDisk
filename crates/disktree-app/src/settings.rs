@@ -10,6 +10,7 @@
 //! restarts). Restart to update goes through the main window, which knows
 //! whether a removal is running and refuses to cut one short.
 
+use crate::semantics::AccessibleButton as _;
 use disktree_core::path_style::PathStyle;
 use std::path::PathBuf;
 
@@ -18,7 +19,7 @@ use gpui_kit::{
     AnyElement, App, ClipboardItem, Context, Div, ElementId, FocusHandle,
     FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, WindowHandle, div,
+    Styled as _, Window, WindowHandle, div, img,
 };
 use gpui_omarchy::{
     ActiveTheme as _, ButtonVariant, ChoiceItem, Theme, button, button_group,
@@ -57,6 +58,9 @@ pub const CHECK_ID: &str = "updates-check";
 pub const RESTART_ID: &str = "updates-restart";
 pub const COPY_DIAGNOSTICS_ID: &str = "diagnostics-copy";
 pub const COPY_BUILD_ID: &str = "about-copy-build";
+/// About's header: the icon, the name and version, the build line.
+pub const ABOUT_HEADER_ID: &str = "about-header";
+pub const ABOUT_BUILD_LINE_ID: &str = "about-build-line";
 
 const SPEC: Spec = Spec {
     title: "PwrDisk Settings",
@@ -256,23 +260,26 @@ impl SettingsWindow {
 
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<'_, Self>) {
         let keystroke = &event.keystroke;
+        if keystroke.modifiers.control
+            && matches!(keystroke.key.as_str(), "pageup" | "pagedown")
+        {
+            let index = Pane::ALL
+                .iter()
+                .position(|pane| *pane == self.pane)
+                .unwrap_or(0);
+            let step = if keystroke.key == "pageup" {
+                Pane::ALL.len() - 1
+            } else {
+                1
+            };
+            self.show(Pane::ALL[(index + step) % Pane::ALL.len()], cx);
+            return;
+        }
         if keystroke.modifiers.platform || keystroke.modifiers.control {
             return;
         }
         let rows = Slot::ALL.len();
         match keystroke.key.as_str() {
-            "tab" => {
-                let index = Pane::ALL
-                    .iter()
-                    .position(|pane| *pane == self.pane)
-                    .unwrap_or(0);
-                let step = if keystroke.modifiers.shift {
-                    Pane::ALL.len() - 1
-                } else {
-                    1
-                };
-                self.show(Pane::ALL[(index + step) % Pane::ALL.len()], cx);
-            }
             _ if self.pane != Pane::Updates => {}
             // The channels are a grid, Stable over Beta and Latest beside
             // Prerelease: up and down change the train, left and right the
@@ -313,6 +320,9 @@ impl Render for SettingsWindow {
         // Grouped, with the pane shown marked by an accent bar, as the
         // family's Settings windows have it; square, as Omarchy draws.
         let mut nav = div()
+            .id("settings-panes")
+            .role(gpui_kit::Role::TabList)
+            .aria_label("Settings panes")
             .flex()
             .flex_col()
             .gap(space::XXS)
@@ -340,23 +350,54 @@ impl Render for SettingsWindow {
                 );
             }
             let on = pane == self.pane;
+            // The accent bar marks the pane shown, so focus gets the
+            // app's full outline on a wrapper instead: recolouring the
+            // bar would hide focus on the shown pane and make any other
+            // focused row look shown too.
             nav = nav.child(
                 div()
                     .id(pane.nav_id())
-                    .debug_selector(move || pane.nav_id().into())
-                    .flex()
-                    .items_center()
+                    .role(gpui_kit::Role::Tab)
+                    .aria_label(pane.label())
+                    .aria_selected(on)
+                    .focusable()
+                    .tab_stop(true)
                     .h(size::SETTINGS_NAV_ROW)
-                    .px(space::SM)
-                    .border_l_2()
-                    .border_color(if on { theme.accent } else { theme.inset })
-                    .when(on, |item| {
-                        item.bg(theme.accent.opacity(0.14))
-                            .text_color(theme.bright)
-                    })
-                    .hover(|item| item.bg(theme.hover_fill()))
+                    .border_1()
+                    .border_color(theme.inset)
+                    .focus_visible(|style| style.border_color(theme.accent))
+                    .debug_selector(move || pane.nav_id().into())
                     .cursor_pointer()
-                    .child(pane.label())
+                    .child(
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .px(space::SM)
+                            .border_l_2()
+                            .border_color(if on {
+                                theme.accent
+                            } else {
+                                theme.inset
+                            })
+                            .when(on, |item| {
+                                item.bg(theme.accent.opacity(0.14))
+                                    .text_color(theme.bright)
+                            })
+                            .hover(|item| item.bg(theme.hover_fill()))
+                            .child(pane.label()),
+                    )
+                    .on_key_down(cx.listener(
+                        move |this, event: &KeyDownEvent, _, cx| {
+                            if matches!(
+                                event.keystroke.key.as_str(),
+                                "enter" | "space"
+                            ) {
+                                this.show(pane, cx);
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.show(pane, cx);
                     })),
@@ -372,9 +413,23 @@ impl Render for SettingsWindow {
             .id(ROOT_ID)
             .debug_selector(|| ROOT_ID.into())
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                this.on_key(event, cx);
-            }))
+            .tab_group()
+            .tab_stop(false)
+            .on_key_down(cx.listener(
+                |this, event: &KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "tab" {
+                        crate::semantics::advance_focus(
+                            window,
+                            cx,
+                            event.keystroke.modifiers.shift,
+                            None,
+                        );
+                        cx.stop_propagation();
+                        return;
+                    }
+                    this.on_key(event, cx);
+                },
+            ))
             .flex()
             .flex_row()
             .flex_1()
@@ -610,7 +665,7 @@ impl SettingsWindow {
         let mut actions = div().flex().flex_row().gap(space::SM).child(
             button(CHECK_ID, "Check now", ButtonVariant::Outline, cx)
                 .debug_selector(|| CHECK_ID.into())
-                .disabled(state.checking)
+                .semantic_disabled(state.checking)
                 .on_click(cx.listener(|_, _, _, cx| {
                     updater::check_in_background(updater::Trigger::Manual);
                     cx.notify();
@@ -628,7 +683,7 @@ impl SettingsWindow {
                 .debug_selector(|| RESTART_ID.into())
                 // As the panel had it: never while a removal runs, which an
                 // exit would stop partway through the marked list.
-                .disabled(!Self::can_restart(cx))
+                .semantic_disabled(!Self::can_restart(cx))
                 .on_click(|_, _, cx| cx.defer(Self::restart)),
             );
         }
@@ -675,7 +730,7 @@ impl SettingsWindow {
             pane = pane.child(hint(
                 "\u{2191}\u{2193}\u{2190}\u{2192} and enter pick a channel \
                  \u{b7} c checks \u{b7} r restarts into a download \u{b7} \
-                 tab switches panes",
+                 Ctrl+PageUp/PageDown switches panes",
                 theme,
             ));
         }
@@ -810,7 +865,7 @@ impl SettingsWindow {
                             cx,
                         )
                         .debug_selector(|| "diagnostics-open-settings".into())
-                        .disabled(
+                        .semantic_disabled(
                             !settings_dir
                                 .as_deref()
                                 .is_some_and(std::path::Path::exists),
@@ -839,7 +894,7 @@ impl SettingsWindow {
                             cx,
                         )
                         .debug_selector(|| "diagnostics-open-logs".into())
-                        .disabled(log.is_none())
+                        .semantic_disabled(log.is_none())
                         .on_click(|_, _, cx| {
                             cx.defer(crate::logs_window::open);
                         })
@@ -870,11 +925,47 @@ impl SettingsWindow {
 
     fn about(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
         let build = BuildInfo::current();
-        let trailing = div()
-            .flex()
+        let channel = updater::selection()
+            .resolve(&updater::installed_version())
+            .to_string();
+        let header = card_frame(theme)
+            .debug_selector(|| ABOUT_HEADER_ID.into())
             .flex_row()
             .items_center()
-            .gap(space::SM)
+            .gap(space::MD)
+            .p(space::MD)
+            .child(
+                img(crate::chrome::MARK.clone())
+                    .size(size::ABOUT_ICON)
+                    .flex_shrink_0(),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(space::XXS)
+                    .child(
+                        div()
+                            .text_size(text::HEADING)
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.bright)
+                            .child(format!("PwrDisk {}", build.version)),
+                    )
+                    // One line, as the design draws it: a long branch
+                    // name ends in an ellipsis rather than wrapping.
+                    .child(
+                        div()
+                            .debug_selector(|| ABOUT_BUILD_LINE_ID.into())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(text::CAPTION)
+                            .text_color(theme.secondary)
+                            .child(build.header_line(&channel)),
+                    ),
+            )
             .when(!build.is_release(), |row| {
                 row.child(chip("Dev build".into(), theme.warning, theme))
             })
@@ -1005,21 +1096,9 @@ impl SettingsWindow {
                 None,
                 theme,
             ))
+            .child(header)
             .child(
-                card("This copy", Some(trailing.into_any_element()), theme)
-                    .child(field(
-                        "Version",
-                        None,
-                        vec![
-                            format!("PwrDisk {}", build.version)
-                                .into_any_element(),
-                            div()
-                                .text_color(theme.secondary)
-                                .child(build.build_line())
-                                .into_any_element(),
-                        ],
-                        theme,
-                    ))
+                card("This copy", None, theme)
                     .child(field(
                         "Source",
                         Some("Read by git when this copy was built."),
