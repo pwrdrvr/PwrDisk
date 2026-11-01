@@ -2153,8 +2153,9 @@ fn a_view_without_flags_or_marks_still_draws(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("disktree-root").is_some());
 }
 
-/// In a short window the summary ends above the footer, never under it,
-/// and what does not fit is reached by scrolling the summary.
+/// In a short window what does not fit in the summary is reached by
+/// scrolling it. Its box ended above the footer even before the fix; its
+/// content painted past the box, so the wheel checks are the guard.
 #[gpui_kit::test]
 fn the_review_summary_fits_a_short_window(cx: &mut TestAppContext) {
     cx.update(init);
@@ -2185,7 +2186,8 @@ fn the_review_summary_fits_a_short_window(cx: &mut TestAppContext) {
         footer.top()
     );
     // The panel's end starts below its bottom edge, and the wheel brings
-    // it up into view.
+    // it up into view. Without scrolling it stays put and paints over the
+    // footer.
     let end = cx.debug_bounds("review-summary-end").expect("summary end");
     assert!(end.bottom() > summary.bottom(), "starts out of view");
     cx.simulate_event(gpui_kit::ScrollWheelEvent {

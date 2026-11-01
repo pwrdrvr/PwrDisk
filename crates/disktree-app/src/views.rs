@@ -3834,10 +3834,10 @@ fn review_summary(
 
     // The panel says what will happen; the footer below does it.
     panel
-        .child(div().flex_1())
+        // Named for the test that scrolls to the panel's end: with no
+        // notice, nothing comes after it.
+        .child(div().flex_1().debug_selector(|| "review-summary-end".into()))
         .children(notice_line(app, theme, cx))
-        // Where the panel ends, for the test that scrolls to it.
-        .child(div().debug_selector(|| "review-summary-end".into()))
 }
 
 /// The list handed on instead of acted on: saved as paths, or copied as a
