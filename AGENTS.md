@@ -156,7 +156,7 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
    children when asked. Hardlink de-duplication zeroes a duplicate leaf's
    `bytes` while that pass runs; anything that patches a directory's `bytes`
    directly will be overwritten. `Node` is paid for tens of millions of
-   times, so `a_node_stays_small` holds its size.
+   times, so `a_node_stays_small` in `arena.rs` holds its size.
 3. **A directory is only built when its own scan *and* every subdirectory task
    has finished.** That is the `+1` sentinel in `PendingDir::pending`. Building
    early silently drops whole subtrees — it has happened once.
@@ -227,6 +227,14 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
     the guards refuse, what removal does, or what a system hides from a
     scan updates the matching `references/<system>.md` in the same PR.
 
+15. **A tree owns its arenas.** Names, child lists and clone boxes live in
+    bump arenas the `Tree` owns, so dropping a tree releases a few hundred
+    chunks instead of freeing tens of millions of allocations one by one.
+    Nodes are reached only through their tree. Build one with `Tree::build`
+    (a `Draft` for tests and small trees), change facts and the order of
+    children through `NodeMut`, and move a subtree to another tree only as
+    a copy. The types enforce this; keep every `unsafe` in `arena.rs`.
+
 ## Where changes belong
 
 | change | where |
@@ -236,6 +244,7 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
 | joining, splitting or comparing a scanned path | `crates/disktree-core/src/path_style.rs` |
 | measurement, filtering, parallelism | `crates/disktree-core/src/scan.rs` |
 | what a node is, or a derived total | `crates/disktree-core/src/tree.rs` |
+| how a tree is held in memory, its arenas | `crates/disktree-core/src/arena.rs` — isolated `unsafe` |
 | tile geometry, nesting, the merged tail | `crates/disktree-core/src/treemap.rs` |
 | anything that deletes, or refuses to | `crates/disktree-core/src/removal.rs` |
 | free space and projections | `crates/disktree-core/src/space.rs` |

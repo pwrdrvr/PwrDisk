@@ -14,7 +14,7 @@ use std::borrow::Cow;
 
 use rayon::prelude::*;
 
-use crate::tree::Node;
+use crate::tree::{Node, NodeMut, Tree};
 
 /// A kind of data, for colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -267,24 +267,26 @@ pub fn reclaim_of(
 ///
 /// Top-down: a node's own name wins, otherwise it inherits. Reclaimable
 /// space is inherited too, so everything under a cache is hatched.
-pub fn classify(root: &mut Node) {
+pub fn classify(tree: &mut Tree) {
+    let mut root = tree.root_mut();
     if let Some(category) = category_of_name(&root.name)
         && matches!(category, Category::FilesystemEvents | Category::Spotlight)
     {
-        classify_below(root, category, None, 0);
+        classify_below(&mut root, category, None, 0);
         return;
     }
-    if is_pnpm_store(root) {
+    if is_pnpm_store(&root) {
         classify_below(
-            root,
+            &mut root,
             Category::Toolchain,
             Some(Reclaim::PackageStore),
             0,
         );
         return;
     }
-    root.category = Category::Other;
-    root.reclaim = None;
+    let facts = root.facts_mut();
+    facts.category = Category::Other;
+    facts.reclaim = None;
     for index in 0..root.children.len() {
         let siblings = &root.children;
         let has_sibling =
@@ -303,24 +305,28 @@ pub fn classify(root: &mut Node) {
                 )
             })
             .flatten();
-        classify_below(&mut root.children[index], category, reclaim, 1);
+        if let Some(mut child) = root.child_mut(index) {
+            classify_below(&mut child, category, reclaim, 1);
+        }
     }
 }
 
 fn classify_below(
-    node: &mut Node,
+    node: &mut NodeMut<'_>,
     category: Category,
     reclaim: Option<Reclaim>,
     depth: usize,
 ) {
-    node.category = category;
-    node.reclaim = reclaim;
+    let facts = node.facts_mut();
+    facts.category = category;
+    facts.reclaim = reclaim;
     // Most directories hold only files, which take this one's kind as
     // they are: no list of kinds to build, no call per file.
     if !node.children.iter().any(Node::is_dir) {
-        for child in &mut node.children {
-            child.category = category;
-            child.reclaim = reclaim;
+        for mut child in node.children_mut() {
+            let facts = child.facts_mut();
+            facts.category = category;
+            facts.reclaim = reclaim;
         }
         return;
     }
@@ -331,21 +337,18 @@ fn classify_below(
         let kinds: Vec<(Category, Option<Reclaim>)> = (0..node.children.len())
             .map(|index| kind_of(&node.children, index, category, reclaim))
             .collect();
-        node.children.par_iter_mut().zip(kinds).for_each(
-            |(child, (category, reclaim))| {
-                classify_below(child, category, reclaim, depth + 1);
+        node.par_children_mut().zip(kinds).for_each(
+            |(mut child, (category, reclaim))| {
+                classify_below(&mut child, category, reclaim, depth + 1);
             },
         );
     } else {
         for index in 0..node.children.len() {
             let (category, reclaim) =
                 kind_of(&node.children, index, category, reclaim);
-            classify_below(
-                &mut node.children[index],
-                category,
-                reclaim,
-                depth + 1,
-            );
+            if let Some(mut child) = node.child_mut(index) {
+                classify_below(&mut child, category, reclaim, depth + 1);
+            }
         }
     }
 }
@@ -414,20 +417,21 @@ pub fn is_git_store(node: &Node) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::{Draft, Tree};
     use crate::tree::{Metric, NodeKind, aggregate};
 
-    fn file(name: &str, bytes: u64) -> Node {
-        Node::entry(name, NodeKind::File, bytes)
+    fn file(name: &str, bytes: u64) -> Draft {
+        Draft::entry(name, NodeKind::File, bytes)
     }
 
-    fn dir(name: &str, children: Vec<Node>) -> Node {
-        let mut node = Node::directory(name);
+    fn dir(name: &str, children: Vec<Draft>) -> Draft {
+        let mut node = Draft::directory(name);
         node.children = children;
         node
     }
 
-    fn home() -> Node {
-        let mut home = dir(
+    fn home() -> Tree {
+        let home = dir(
             "tobi",
             vec![
                 dir(
@@ -478,6 +482,7 @@ mod tests {
                 ),
             ],
         );
+        let mut home = Tree::from(home);
         aggregate(&mut home, Metric::Bytes);
         classify(&mut home);
         home
@@ -500,7 +505,7 @@ mod tests {
     /// as cache.
     #[test]
     fn a_steam_library_on_another_drive_is_media_not_its_temp_folder() {
-        let mut root = dir(
+        let root = dir(
             "data",
             vec![dir(
                 "SteamLibrary",
@@ -513,6 +518,7 @@ mod tests {
                 )],
             )],
         );
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         classify(&mut root);
         let library = &root.children[0];
@@ -582,7 +588,7 @@ mod tests {
                 )],
             )
         };
-        let mut root = dir(
+        let root = dir(
             "Library",
             vec![
                 dir(
@@ -597,6 +603,7 @@ mod tests {
                 dir(".pnpm-store", vec![file("unverified", 4)]),
             ],
         );
+        let mut root = Tree::from(root);
         classify(&mut root);
         for path in [
             vec!["pnpm"],
@@ -614,6 +621,7 @@ mod tests {
         );
         let mut standalone = store();
         standalone.name = ".pnpm-store".into();
+        let mut standalone = Tree::from(standalone);
         classify(&mut standalone);
         assert_eq!(standalone.reclaim, Some(Reclaim::PackageStore));
         assert_eq!(reclaim_of("pnpm", Category::Toolchain, |_| false), None);
@@ -623,7 +631,8 @@ mod tests {
             dir("v3-backup", vec![dir("files", vec![])]),
             dir("v3", vec![file("files", 1)]),
         ] {
-            let mut unverified = dir(".pnpm-store", vec![contents]);
+            let unverified = dir(".pnpm-store", vec![contents]);
+            let mut unverified = Tree::from(unverified);
             classify(&mut unverified);
             assert_eq!(unverified.reclaim, None);
             assert_eq!(unverified.children[0].reclaim, None);
@@ -634,7 +643,7 @@ mod tests {
     fn a_whole_root_scan_keeps_categories_and_filters_local_to_evidence() {
         use crate::query::{Filter, find};
         use std::path::Path;
-        let mut root = dir(
+        let root = dir(
             "/",
             vec![dir(
                 "Users",
@@ -663,6 +672,7 @@ mod tests {
                 )],
             )],
         );
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         classify(&mut root);
         for path in [
@@ -841,8 +851,8 @@ mod tests {
             (".fseventsd", Category::FilesystemEvents),
             (".Spotlight-V100", Category::Spotlight),
         ] {
-            let mut store =
-                dir(name, vec![dir("cache", vec![file("blob", 123)])]);
+            let store = dir(name, vec![dir("cache", vec![file("blob", 123)])]);
+            let mut store = Tree::from(store);
             aggregate(&mut store, Metric::Bytes);
             classify(&mut store);
             assert_eq!(store.category, category);
@@ -850,8 +860,9 @@ mod tests {
             assert_eq!(store.children[0].children[0].category, category);
             assert_eq!(store.children[0].reclaim, None);
             assert_eq!(store.bytes, 123);
-            let mut volume =
-                dir("volume", vec![store, dir("ordinary", vec![])]);
+            let volume =
+                dir("volume", vec![store.to_draft(), dir("ordinary", vec![])]);
+            let mut volume = Tree::from(volume);
             classify(&mut volume);
             assert_eq!(volume.children[0].category, category);
             assert_eq!(volume.children[1].category, Category::Other);

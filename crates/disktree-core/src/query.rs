@@ -136,30 +136,32 @@ pub fn find<'a>(
 mod tests {
     use super::*;
     use crate::classify::Reclaim;
+    use crate::tree::{Draft, Tree};
     use crate::tree::{Metric, aggregate};
 
-    fn tree() -> Node {
-        let mut root = Node::directory("r");
-        let mut cache = Node::directory(".cache");
+    fn tree() -> Tree {
+        let mut root = Draft::directory("r");
+        let mut cache = Draft::directory(".cache");
         cache.reclaim = Some(Reclaim::Regenerable);
         cache.category = Category::Cache;
-        let mut blob = Node::entry("blob.bin", NodeKind::File, 400);
+        let mut blob = Draft::entry("blob.bin", NodeKind::File, 400);
         blob.modified = 1_000;
         cache.children.push(blob);
-        let mut src = Node::directory("src");
-        let mut target = Node::directory("target");
+        let mut src = Draft::directory("src");
+        let mut target = Draft::directory("target");
         target.reclaim = Some(Reclaim::BuildOutput);
         target
             .children
-            .push(Node::entry("app", NodeKind::File, 300));
+            .push(Draft::entry("app", NodeKind::File, 300));
         src.children.push(target);
-        let mut main = Node::entry("main.rs", NodeKind::File, 20);
+        let mut main = Draft::entry("main.rs", NodeKind::File, 20);
         main.modified = 5_000;
         src.children.push(main);
         root.children.push(cache);
         root.children.push(src);
         root.children
-            .push(Node::entry("Movie.iso", NodeKind::File, 250));
+            .push(Draft::entry("Movie.iso", NodeKind::File, 250));
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         root
     }

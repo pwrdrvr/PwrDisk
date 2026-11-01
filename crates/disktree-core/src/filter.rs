@@ -144,20 +144,21 @@ fn contains_ignoring_case(haystack: &str, lower_needle: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::{Draft, Tree};
     use crate::tree::{NodeKind, aggregate};
 
-    fn file(name: &str, bytes: u64) -> Node {
-        Node::entry(name, NodeKind::File, bytes)
+    fn file(name: &str, bytes: u64) -> Draft {
+        Draft::entry(name, NodeKind::File, bytes)
     }
 
-    fn dir(name: &str, children: Vec<Node>) -> Node {
-        let mut node = Node::directory(name);
+    fn dir(name: &str, children: Vec<Draft>) -> Draft {
+        let mut node = Draft::directory(name);
         node.children = children;
         node
     }
 
-    fn tree() -> Node {
-        let mut root = dir(
+    fn tree() -> Tree {
+        let root = dir(
             "root",
             vec![
                 dir(
@@ -174,6 +175,7 @@ mod tests {
                 file("readme", 1),
             ],
         );
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         root
     }
@@ -244,13 +246,14 @@ mod tests {
 
     #[test]
     fn a_nested_empty_directory_keeps_its_ancestors() {
-        let mut root = dir(
+        let root = dir(
             "root",
             vec![
                 dir("parent", vec![dir("empty-match", vec![])]),
                 file("unrelated", 10),
             ],
         );
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         let found = filter(&root, &[], "empty-match").expect("needle");
         let parent = crumbs_of(&root, &["parent"]);

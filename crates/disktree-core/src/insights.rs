@@ -151,30 +151,32 @@ fn visit(
 mod tests {
     use super::*;
     use crate::classify::classify;
+    use crate::tree::{Draft, Tree};
     use crate::tree::{Metric, NodeKind, aggregate};
 
     const GIB: u64 = 1024 * 1024 * 1024;
     const NOW: i64 = 1_800_000_000;
 
-    fn file(name: &str, bytes: u64, days_old: i64) -> Node {
-        let mut node = Node::entry(name, NodeKind::File, bytes);
+    fn file(name: &str, bytes: u64, days_old: i64) -> Draft {
+        let mut node = Draft::entry(name, NodeKind::File, bytes);
         node.modified = NOW - days_old * DAY;
         node
     }
 
-    fn dir(name: &str, children: Vec<Node>) -> Node {
-        let mut node = Node::directory(name);
+    fn dir(name: &str, children: Vec<Draft>) -> Draft {
+        let mut node = Draft::directory(name);
         node.children = children;
         node
     }
 
-    fn scan(mut root: Node) -> Node {
+    fn scan(root: Draft) -> Tree {
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         classify(&mut root);
         root
     }
 
-    fn home() -> Node {
+    fn home() -> Tree {
         scan(dir(
             "tobi",
             vec![

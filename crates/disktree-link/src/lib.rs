@@ -674,13 +674,13 @@ mod tests {
         copies: u64,
         references: u32,
         private: Option<u64>,
-    ) -> disktree_core::tree::Node {
+    ) -> disktree_core::tree::Tree {
         use disktree_core::sharing::{Allocation, CloneInfo};
-        use disktree_core::tree::{Metric, NodeKind, aggregate};
-        let mut root = Node::directory("root");
+        use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+        let mut root = Draft::directory("root");
         for index in 0..copies {
-            let mut dir = Node::directory(format!("copy-{index}"));
-            let mut file = Node::entry("data", NodeKind::File, 1000);
+            let mut dir = Draft::directory(format!("copy-{index}"));
+            let mut file = Draft::entry("data", NodeKind::File, 1000);
             file.allocation = Some(Box::new(Allocation {
                 bytes: 1000,
                 identity: None,
@@ -697,11 +697,12 @@ mod tests {
             dir.children.push(file);
             root.children.push(dir);
         }
-        root.children.push(Node::entry(
+        root.children.push(Draft::entry(
             "plain",
             disktree_core::tree::NodeKind::File,
             50,
         ));
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         root
     }

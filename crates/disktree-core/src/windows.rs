@@ -108,7 +108,7 @@ impl Entry {
         &self.name
     }
 
-    /// The name, moved out: the tree keeps it, so nothing copies it. The
+    /// The name, moved out: it is copied once, into the tree's arena. The
     /// entry's other accessors keep working; `name`, `file_name` and
     /// `path` do not.
     pub fn take_name(&mut self) -> Box<str> {

@@ -33,7 +33,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 use crate::scan::{ScanOptions, ScanProgress};
-use crate::tree::{Node, NodeKind};
+use crate::tree::{Built, Facts, Herd, Member, NodeKind, Tree};
 use crate::windows::{Aligned, drive_letter};
 
 /// Most bytes read per call: large enough that the disk streams, small
@@ -166,7 +166,7 @@ pub fn scan(
     canonical: &Path,
     options: &ScanOptions,
     progress: &ScanProgress,
-) -> Option<io::Result<Node>> {
+) -> Option<io::Result<Tree>> {
     // A followed link can lead off this volume, or back into it a second
     // time, and the table describes neither: the walk follows them.
     if options.follow_links {
@@ -212,7 +212,7 @@ pub fn scan(
         options,
         progress,
     };
-    let tree = table.directory(ROOT, crate::scan::file_name(root), 0);
+    let tree = table.tree(&crate::scan::file_name(root));
     // Hundreds of megabytes, whose freeing the caller would otherwise
     // wait out before it can finish the tree.
     let Table {
@@ -1053,20 +1053,27 @@ impl Table<'_> {
         }
     }
 
+    /// The tree beneath the root directory, named `name`.
+    fn tree(&self, name: &str) -> Result<Tree, Stop> {
+        Tree::try_build(|herd| self.directory(herd, &herd.get(), ROOT, name, 0))
+    }
+
     /// Mirrors what the walk keeps: see `WalkContext::classify`.
-    fn directory(
+    fn directory<'h>(
         &self,
+        herd: &'h Herd,
+        member: &Member<'h>,
         number: u32,
-        name: Box<str>,
+        name: &str,
         depth: usize,
-    ) -> Result<Node, Stop> {
+    ) -> Result<Built<'h>, Stop> {
         if depth >= MOST_LEVELS || self.progress.is_cancelled() {
             return Err(Stop);
         }
         let descend = self.options.max_depth.is_none_or(|max| depth < max);
         let sequence =
             self.infos.get(number as usize).map(|info| info.sequence);
-        let child = |entry: &Entry| {
+        let child = |member: &Member<'h>, entry: &Entry| {
             // A root directory holds hundreds of thousands of files; a
             // check per entry lets a cancel stop within one.
             if self.progress.is_cancelled() {
@@ -1076,36 +1083,39 @@ impl Table<'_> {
             if Some(entry.parent_sequence) != sequence {
                 return None;
             }
-            self.child(entry, depth, descend).transpose()
+            self.child(herd, member, entry, depth, descend).transpose()
         };
         let entries = self.entries(number);
         // See `tree::PARALLEL_LEVELS`: parallel only near the top.
         let children = if depth < crate::tree::PARALLEL_LEVELS {
+            // An arena per piece of the split, not per entry.
             entries
                 .par_iter()
-                .filter_map(child)
+                .map_init(|| herd.get(), |member, entry| child(member, entry))
+                .flatten()
                 .collect::<Result<_, _>>()?
         } else {
             // Sized up front: nearly every entry becomes a child, and a
             // list grown by doubling copies its nodes over and over.
             let mut children = Vec::with_capacity(entries.len());
-            for node in entries.iter().filter_map(child) {
+            for node in entries.iter().filter_map(|entry| child(member, entry))
+            {
                 children.push(node?);
             }
             children
         };
-        let mut node = Node::directory(name);
-        node.children = children;
-        Ok(node)
+        Ok(member.directory(name, Facts::directory(), None, children))
     }
 
     /// The node for `entry`; `None` for one the walk would not list.
-    fn child(
+    fn child<'h>(
         &self,
+        herd: &'h Herd,
+        member: &Member<'h>,
         entry: &Entry,
         depth: usize,
         descend: bool,
-    ) -> Result<Option<Node>, Stop> {
+    ) -> Result<Option<Built<'h>>, Stop> {
         // The root is its own parent.
         if entry.child == entry.parent || entry.child < FIRST_USER_RECORD {
             return Ok(None);
@@ -1130,7 +1140,7 @@ impl Table<'_> {
                 return Ok(None);
             }
             return self
-                .directory(entry.child, name.into(), depth + 1)
+                .directory(herd, member, entry.child, name, depth + 1)
                 .map(Some);
         }
         let size = if self.options.apparent_size {
@@ -1143,13 +1153,13 @@ impl Table<'_> {
         } else {
             NodeKind::File
         };
-        let mut node = Node::entry(name, kind, size);
-        node.modified = info.modified;
+        let mut facts = Facts::entry(kind, size);
+        facts.modified = info.modified;
         if info.names > 1 {
-            node.inode = NonZeroU64::new(u64::from(entry.child))
+            facts.inode = NonZeroU64::new(u64::from(entry.child))
                 .map(|record| (0, record));
         }
-        Ok(Some(node))
+        Ok(Some(member.leaf(name, facts, None)))
     }
 }
 
@@ -1569,7 +1579,11 @@ mod tests {
         }
     }
 
-    fn paths(node: &Node, prefix: &str, out: &mut Vec<(String, NodeKind)>) {
+    fn paths(
+        node: &crate::tree::Node,
+        prefix: &str,
+        out: &mut Vec<(String, NodeKind)>,
+    ) {
         for child in &node.children {
             let path = format!("{prefix}{}", child.name);
             out.push((path.clone(), child.kind));
@@ -1665,11 +1679,8 @@ mod tests {
                 max_depth,
                 ..ScanOptions::default()
             };
-            let Ok(root) = table(&rows, &options, &progress).directory(
-                ROOT,
-                "C:\\".into(),
-                0,
-            ) else {
+            let Ok(root) = table(&rows, &options, &progress).tree("C:\\")
+            else {
                 panic!("the table is not cut short");
             };
             let mut found = Vec::new();
@@ -1709,7 +1720,7 @@ mod tests {
         let options = ScanOptions::default();
         let progress = ScanProgress::default();
         let table = table(&rows, &options, &progress);
-        assert!(table.directory(ROOT, "C:\\".into(), 0).is_err());
+        assert!(table.tree("C:\\").is_err());
         assert!(!progress.is_cancelled());
     }
 }
