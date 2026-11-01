@@ -4282,16 +4282,17 @@ impl Drop for Disktree {
     }
 }
 
-/// Let go of a tree off the UI thread: freeing a disk's millions of nodes
-/// takes from a good part of a second to many, and nothing waits on it.
-fn discard<T: Send + 'static>(tree: Option<T>) {
-    if let Some(tree) = tree {
+/// Let go of a tree, or anything holding one, off the UI thread: freeing
+/// a disk's millions of nodes takes from a good part of a second to many,
+/// and nothing waits on it.
+fn discard<T: Send + 'static>(held: Option<T>) {
+    if let Some(held) = held {
         #[cfg(test)]
         crate::marks::work::DISCARDED
             .set(crate::marks::work::DISCARDED.get() + 1);
         // When no thread can be made, the closure is dropped here instead,
         // and the tree is freed in place rather than taking the window down.
-        let _ = std::thread::Builder::new().spawn(move || drop(tree));
+        let _ = std::thread::Builder::new().spawn(move || drop(held));
     }
 }
 
