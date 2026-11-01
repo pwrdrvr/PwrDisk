@@ -512,6 +512,14 @@ What is different from Linux:
 - **Cloned files** (copies APFS shares blocks between, as Finder's Duplicate
   makes) remain counted in full in the treemap. The scan line separately
   reports bytes in cloned files and estimated repeated data-fork allocation.
+  The selection panel and a tile's hover card split the listed bytes into
+  private and shared: shared bytes are clone blocks another clone, inside
+  the scan or outside it, may still hold. In `pwrdisk mcp`, every
+  `pwrdisk_scan`, `pwrdisk_ls` and `pwrdisk_find` row with clone blocks
+  reads `0 B private · 11 MiB shared with other APFS clones · frees ≈ 0 B
+  alone`, and the scan and listing headers say how much is counted again
+  and what the files take on disk. Rows without clones, and every row off
+  APFS or in an apparent-size scan, read as before.
   The selection, review and permanent-delete confirmation estimate savings
   from the accepted set of marks together. Complete clone groups credit
   shared data once; a remaining hardlink retains its file data. Unknown or

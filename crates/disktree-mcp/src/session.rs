@@ -36,7 +36,7 @@ use disktree_link::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::report::{age, children, describe, display, matches};
+use crate::report::{age, children, clone_summary, describe, display, matches};
 
 /// The measurement context survives a window scan being reused by an agent.
 fn scan_context(tree: &TreeSummary) -> String {
@@ -621,6 +621,9 @@ impl Session {
             );
         }
         out.push_str(allocation_caveat());
+        if let Some(line) = clone_summary(&facts.top.entry) {
+            out.push_str(&line);
+        }
         out.push_str("Top level, largest first:\n");
         out.push_str(&children(&facts.top, now));
         if !facts.insights.is_empty() {
@@ -789,6 +792,9 @@ impl Session {
                 self.show(&listing.root),
                 human_bytes(listing.root_bytes)
             );
+        }
+        if let Some(line) = clone_summary(&listing.entry) {
+            out.push_str(&line);
         }
         out.push_str(&children(&listing, now));
         if params.show {
@@ -1640,6 +1646,7 @@ impl Session {
                 .unwrap_or_else(|| SelectionEstimate::unknown(plan));
         }
         let mut unmeasured = false;
+        let mut selected: Option<Vec<&Node>> = None;
         plan.estimate_selection(|targets| {
             let mut nodes = Vec::with_capacity(targets.len());
             let mut unknown = Estimate::default();
@@ -1663,6 +1670,11 @@ impl Session {
                     unknown.partial = true;
                 }
             }
+            // The first call covers every target: keep its nodes for the
+            // shared total instead of locating each mark again.
+            if selected.is_none() {
+                selected = Some(nodes.clone());
+            }
             let measured = sharing::estimate(nodes);
             Estimate {
                 lower: measured.lower,
@@ -1670,7 +1682,8 @@ impl Session {
                 partial: measured.partial || unknown.partial,
             }
         });
-        let mut estimate = SelectionEstimate::of(plan);
+        let mut estimate = SelectionEstimate::of(plan)
+            .with_shared(selected.unwrap_or_default());
         if unmeasured {
             estimate.upper = None;
         }
@@ -1948,7 +1961,7 @@ fn version_notice(window: &State) -> String {
 }
 
 fn estimate_report(estimate: &SelectionEstimate) -> String {
-    format!(
+    let mut out = format!(
         "Selected-set reclaim estimate: {}–{}{}. Before snapshots, open files \
          and changes since the scan; actual freed space can be lower.\n",
         human_bytes(estimate.lower),
@@ -1960,7 +1973,19 @@ fn estimate_report(estimate: &SelectionEstimate) -> String {
         } else {
             ""
         },
-    )
+    );
+    // APFS reference counts include clones outside the scan, which can
+    // never be selected: say why the estimate is below the listed bytes.
+    if estimate.shared > 0 {
+        let _ = writeln!(
+            out,
+            "{} of the selection is APFS clone blocks. They count only when \
+             every clone of them is selected; a clone left unselected, or \
+             outside this scan, keeps them.",
+            human_bytes(estimate.shared)
+        );
+    }
+    out
 }
 
 /// Every volume a person would call a disk, fullest first.
@@ -2879,6 +2904,7 @@ mod tests {
                         upper: Some(u64::MAX),
                         on_volume: u64::MAX,
                         partial: false,
+                        shared: 0,
                     });
                 }
             }
@@ -3124,6 +3150,247 @@ mod tests {
             "{report}"
         );
         assert!(report.contains("not guaranteed freed space"), "{report}");
+    }
+
+    /// Three directories, each holding one full clone of a group APFS
+    /// counts `references` members of, beside a plain directory.
+    fn clone_copies(root: &Path, references: u32) -> Scan {
+        use disktree_core::sharing::{Allocation, CloneInfo};
+        use disktree_core::tree::{Metric, NodeKind, aggregate};
+        const MIB: u64 = 1024 * 1024;
+        let mut tree = Node::directory("fixture");
+        for name in ["copy-a", "copy-b", "copy-c", "plain"] {
+            std::fs::create_dir(root.join(name)).expect("fixture directory");
+            let mut dir = Node::directory(name);
+            let mut file = Node::entry("data", NodeKind::File, 12 * MIB);
+            if name != "plain" {
+                file.allocation = Some(Box::new(Allocation {
+                    bytes: 12 * MIB,
+                    identity: None,
+                    links: 1,
+                    followed: false,
+                    clone: Some(CloneInfo {
+                        device: 1,
+                        id: 9,
+                        references,
+                        private_bytes: Some(0),
+                        data_bytes: 12 * MIB,
+                    }),
+                }));
+            }
+            dir.children.push(file);
+            tree.children.push(dir);
+        }
+        aggregate(&mut tree, Metric::Bytes);
+        Scan {
+            root: root.into(),
+            tree: Arc::new(tree),
+            options: ScanOptions::default(),
+            at: now(),
+            elapsed: Duration::ZERO,
+            unreadable: 0,
+            space: None,
+            device: None,
+            insights: vec![],
+        }
+    }
+
+    fn copies(root: &Path) -> Vec<PathBuf> {
+        ["copy-a", "copy-b", "copy-c"]
+            .iter()
+            .map(|name| root.join(name))
+            .collect()
+    }
+
+    #[test]
+    fn clone_rows_split_shared_bytes_and_a_complete_group_frees_one_copy() {
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let mut session = unlinked(&root);
+        let report = session.store_scan(clone_copies(&root, 3));
+        assert!(
+            report.contains("APFS clones: 36 MiB of this is shared"),
+            "{report}"
+        );
+        assert!(
+            report.contains("\u{2248} 24 MiB is counted again"),
+            "{report}"
+        );
+        let listing = session
+            .ls(&LsParams {
+                path: root.clone(),
+                limit: None,
+                show: false,
+            })
+            .expect("ls");
+        let row = |name: &str| {
+            listing
+                .lines()
+                .find(|line| line.contains(&format!(" {name}/ ")))
+                .unwrap_or_else(|| panic!("{name} in {listing}"))
+                .to_string()
+        };
+        for name in ["copy-a", "copy-b", "copy-c"] {
+            assert!(
+                row(name).contains(
+                    "0 B private \u{00b7} 12 MiB shared with other APFS \
+                     clones \u{00b7} frees \u{2248} 0 B alone"
+                ),
+                "{listing}"
+            );
+        }
+        assert!(
+            row("plain").ends_with("  plain/  1 files \u{00b7} age unknown")
+        );
+        let found = session
+            .find(&FindParams {
+                path: Some(root.clone()),
+                kind: Some(KindName::Dir),
+                ..FindParams::default()
+            })
+            .expect("find");
+        assert_eq!(found.matches("shared with other APFS clones").count(), 3);
+
+        let one = session
+            .mark(&PathsParams {
+                paths: vec![root.join("copy-a")],
+            })
+            .expect("mark one");
+        assert!(one.contains("estimate: 0 B\u{2013}0 B"), "{one}");
+        assert!(one.contains("12 MiB of the selection is APFS clone"));
+        assert!(!one.contains("Frees"), "{one}");
+        session.unmark(&PathsParams::default()).expect("unmark");
+        let all = session
+            .mark(&PathsParams {
+                paths: copies(&root),
+            })
+            .expect("mark all");
+        assert!(all.contains("estimate: 12 MiB\u{2013}12 MiB"), "{all}");
+        assert!(all.contains("36 MiB of the selection is APFS clone"));
+    }
+
+    #[test]
+    fn a_clone_outside_the_scan_keeps_every_shared_block() {
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let mut session = unlinked(&root);
+        session.store_scan(clone_copies(&root, 4));
+        let all = session
+            .mark(&PathsParams {
+                paths: copies(&root),
+            })
+            .expect("mark all");
+        assert!(all.contains("estimate: 0 B\u{2013}0 B"), "{all}");
+        assert!(all.contains("outside this scan, keeps them"), "{all}");
+        session.unmark(&PathsParams::default()).expect("unmark");
+        let plain = session
+            .mark(&PathsParams {
+                paths: vec![root.join("plain")],
+            })
+            .expect("mark plain");
+        assert!(plain.contains("estimate: 12 MiB\u{2013}12 MiB"), "{plain}");
+        assert!(!plain.contains("APFS clone"), "{plain}");
+    }
+
+    /// The reproduction behind the clone rows: `cp -c -R` twice and a plain
+    /// `cp -R`, scanned for real. Skipped where the temporary directory
+    /// cannot clone (not APFS).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn real_apfs_clones_read_as_shared_and_free_nothing_alone() {
+        const MIB: u64 = 1_000_000;
+        // The system-tree guard refuses canonical /private, so stay in the
+        // checkout, which is APFS on any Mac that builds this.
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let src = root.join("src");
+        std::fs::create_dir(&src).expect("mkdir");
+        for index in 0..12_u8 {
+            // Distinct, incompressible-enough content per file.
+            let data: Vec<u8> = (0..MIB)
+                .map(|i| (i as u8).wrapping_mul(31).wrapping_add(index))
+                .collect();
+            std::fs::write(src.join(format!("f{index}.bin")), data)
+                .expect("write");
+        }
+        let copy = |flags: &[&str], to: &str| {
+            std::process::Command::new("cp")
+                .args(flags)
+                .arg(&src)
+                .arg(root.join(to))
+                .status()
+                .expect("cp")
+                .success()
+        };
+        if !copy(&["-c", "-R"], "clone-a") {
+            eprintln!("skipped: {} cannot clone files", root.display());
+            return;
+        }
+        assert!(copy(&["-c", "-R"], "clone-b"));
+        assert!(copy(&["-R"], "plain"));
+        let scan =
+            run_scan(root.clone(), ScanOptions::default()).expect("scan");
+        let listing =
+            Listing::of(&scan.root, scan.tree.bytes, &root, &scan.tree, 10);
+        let entry = |name: &str| {
+            listing
+                .children
+                .iter()
+                .find(|child| child.name == name)
+                .unwrap_or_else(|| panic!("{name}"))
+                .clone()
+        };
+        let clone = entry("clone-a").clones.expect("clone facts");
+        assert!(clone.private <= 8 * 1024, "{clone:?}");
+        assert!(clone.shared >= 12 * MIB - 64 * 1024, "{clone:?}");
+        assert_eq!(entry("plain").clones, None);
+        let mut session = unlinked(&root);
+        session.store_scan(scan);
+        let marked = |session: &mut Session, name: &str| {
+            let report = session
+                .mark(&PathsParams {
+                    paths: vec![root.join(name)],
+                })
+                .expect("mark");
+            session.unmark(&PathsParams::default()).expect("unmark");
+            let mut plan = plan(
+                &[Target {
+                    path: root.join(name),
+                    bytes: entry(name).bytes,
+                    is_dir: true,
+                    hidden: false,
+                }],
+                &root,
+            );
+            (report, session.selection_estimate(&mut plan))
+        };
+        let (report, estimate) = marked(&mut session, "clone-a");
+        assert!(estimate.lower < 64 * 1024, "{report}");
+        assert!(
+            report.contains("of the selection is APFS clone"),
+            "{report}"
+        );
+        let (report, estimate) = marked(&mut session, "plain");
+        assert!(estimate.lower >= 12 * MIB, "{report}");
+        assert!(!report.contains("APFS clone"), "{report}");
+
+        // Without allocated blocks there is nothing to split.
+        let mut apparent = unlinked(&root);
+        let report = apparent.store_scan(
+            run_scan(
+                root.clone(),
+                ScanOptions {
+                    apparent_size: true,
+                    ..ScanOptions::default()
+                },
+            )
+            .expect("apparent scan"),
+        );
+        assert!(!report.contains("private"), "{report}");
+        assert!(!report.contains("APFS clones:"), "{report}");
     }
 
     #[cfg(any(unix, windows))]

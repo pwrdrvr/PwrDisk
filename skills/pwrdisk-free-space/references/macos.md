@@ -11,6 +11,14 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
   cloned tree can exceed the volume's used space. Listed allocation is not
   guaranteed freed space; do not cap the scan total to volume usage. The
   free space measured after the review is the real figure.
+- **Read a row's clone split.** A row with clone blocks adds
+  `X private · Y shared with other APFS clones · frees ≈ Z alone`. Only the
+  private part goes when that entry is removed by itself; the shared part
+  stays while any other clone of it remains, and APFS counts clones outside
+  the scanned root too. A header line `APFS clones: … counted again` says
+  how much of the total is listed more than once. Do not present listed
+  bytes, or the shared part, as space a clone-backed worktree or copy will
+  free. A row without the clause has no clone files.
 - **Use the selected-set reclaim bounds, not listed bytes.** PwrDisk
   evaluates accepted marks together: a complete clone group is counted
   once, while copies retained outside the selection keep shared blocks

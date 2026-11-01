@@ -2114,6 +2114,14 @@ fn selection_section(
             cx,
         ))
         .child(widgets::bar(share, highlight, cx))
+        .when_some(clone_split(node), |this, split| {
+            this.child(
+                div()
+                    .text_size(text::CAPTION)
+                    .text_color(theme.secondary)
+                    .child(split),
+            )
+        })
         .when(node.sharing().estimate.is_some(), |this| {
             this.child(
                 div()
@@ -4468,9 +4476,17 @@ pub fn cursor_tooltip(
     // Placement is in pixels because the pointer is; the card's own size and
     // gaps come from the rem scale so they follow interface zoom.
     const HEIGHT_REMS: f32 = 6.5;
+    // A clone split adds a caption line: its text and the card's gap.
+    const SPLIT_REMS: f32 = text::CAPTION.0 * 1.25 + space::XS.0;
     let rem = window.rem_size().as_f32();
     let width = size::TOOLTIP.0 * rem;
-    let height = HEIGHT_REMS * rem;
+    let split = app
+        .hovered
+        .as_deref()
+        .and_then(|crumbs| app.node_at(crumbs))
+        .and_then(clone_split)
+        .is_some();
+    let height = (HEIGHT_REMS + if split { SPLIT_REMS } else { 0.0 }) * rem;
     let gap = space::MD.0 * rem;
     let edge = space::XS.0 * rem;
 
@@ -4658,7 +4674,15 @@ fn node_card(
                         ),
                         human_bytes(node.own_bytes())
                     )),
-            );
+            )
+            .when_some(clone_split(node), |this, split| {
+                this.child(
+                    div()
+                        .text_size(text::CAPTION)
+                        .text_color(theme.secondary)
+                        .child(split),
+                )
+            });
 
     let mut badges = div().flex().flex_row().gap(space::XS).flex_wrap();
     if hidden {
@@ -4870,13 +4894,16 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
     .a11y_synthetic_children(|b| b.parent_node().set_modal())
 }
 
+/// A node's listed bytes split into private and APFS-clone-shared, as the
+/// MCP rows read; `None` without clone blocks, so other systems and other
+/// scans show nothing new. Tile weights stay the allocated bytes.
+pub fn clone_split(node: &disktree_core::tree::Node) -> Option<String> {
+    disktree_link::Clones::of(node)?.split()
+}
+
 /// Both ends are scan-derived; the meter uses the lower bound only.
 fn savings(lower: u64, upper: u64) -> String {
-    if lower == upper {
-        human_bytes(lower)
-    } else {
-        format!("{}–{}", human_bytes(lower), human_bytes(upper))
-    }
+    disktree_core::size::human_bytes_range(lower, upper)
 }
 
 // ── the menu, off macOS ─────────────────────────────────────────────────

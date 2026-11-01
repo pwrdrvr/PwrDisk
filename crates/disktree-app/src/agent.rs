@@ -649,6 +649,20 @@ impl Disktree {
             return SelectionEstimate::unknown(plan);
         }
         let mut estimate = SelectionEstimate::of(plan);
+        if let Some(tree) = &self.tree {
+            let mut resolver = crate::marks::Resolver::new(
+                &self.root_path,
+                tree,
+                PathStyle::Native,
+            );
+            let nodes: Vec<&Node> = plan
+                .targets
+                .iter()
+                .filter_map(|target| resolver.resolve(&target.path))
+                .map(|(_, node)| node)
+                .collect();
+            estimate = estimate.with_shared(nodes);
+        }
         estimate.partial |=
             self.progress.errors > 0 || self.options.max_depth.is_some();
         estimate

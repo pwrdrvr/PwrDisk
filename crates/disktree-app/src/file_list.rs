@@ -184,12 +184,22 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             .matches
             .as_ref()
             .is_some_and(|m| m.keep(&crumbs).is_none());
+        // Clone blocks are not what removing the entry frees; say so
+        // where the size is read, and nowhere when there are none.
+        let split = crate::views::clone_split(node);
+        let clones = split
+            .as_ref()
+            .map_or_else(String::new, |split| format!(" · {split}"));
+        let spoken = split
+            .as_ref()
+            .map_or_else(String::new, |split| format!("; {split}"));
         let label = format!(
-            "{}; {}; {} ({} bytes); {}; last written {}; {}{}{}",
+            "{}; {}; {} ({} bytes){}; {}; last written {}; {}{}{}",
             path.display(),
             if node.is_dir() { "directory" } else { "file" },
             human_bytes(node.bytes),
             node.bytes,
+            spoken,
             node.category.label(),
             crate::widgets::ago(crate::state::now_seconds(), node.modified),
             if marked {
@@ -217,7 +227,7 @@ pub fn list(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
             .border_color(theme.divider())
             .when(selected, |row| row.bg(theme.hover_fill()).border_l_2())
             .child(format!(
-                "{}{} · {} · {}",
+                "{}{} · {}{clones} · {}",
                 if node.is_dir() { "▸ " } else { "" },
                 node.name,
                 human_bytes(node.bytes),
