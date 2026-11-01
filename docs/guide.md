@@ -39,15 +39,18 @@ follows the system's light or dark setting.
 
 ## Choosing sources and roots
 
-Launch without a path to choose **This computer** or enter an SSH alias /
-`user@host` and press **Connect SSH**. Discovery reads that machine's mount
-namespace, not file contents. It never starts a scan or probes mounted
-network filesystems just to fill the list.
+Launch without a path and the chooser lists **This computer**'s mounts.
+Switch to **SSH host**, enter an SSH alias or `user@host` and press
+**Connect** to list that machine's instead. Discovery reads that machine's
+mount namespace, not file contents. It never starts a scan or probes
+mounted network filesystems just to fill the list.
 
-Select a mount and choose **Scan selected root**, or enter an absolute
-directory path and choose **Scan directory**. Enter acts on the focused
-host/path field or the highlighted mount. Escape cancels discovery and
-returns to the current scan, or the idle welcome screen at startup.
+The list ends with a **Directory** row: type an absolute path there, or
+choose **Choose…** for the system's folder picker on this computer. Select
+a mount or the Directory row and press **Scan**; Enter does the same, and
+in the host field it connects. Escape or **Cancel** closes the chooser and
+returns to the current scan, or the idle welcome screen at startup; a click
+outside it does not.
 
 During exploration, press `v`, click **Source…** beside the disk name,
 or click the PwrDisk logo to reopen the same chooser. The source being
@@ -128,6 +131,10 @@ there, then choose:
 - **Delete permanently** — `rm -rf` semantics. It always asks first, in a dialog
   that names what goes and how much comes back.
 
+The commit is the footer's right-hand button, beside **Back**; **Export**
+and **Unmark all** sit on its left. While a removal runs, **Stop after this
+item** (or `esc`) ends it once the item in hand is done.
+
 When it finishes, PwrDisk scans again so the numbers on screen match the disk,
 and shows how much free space was actually gained.
 
@@ -162,16 +169,18 @@ and shows how much free space was actually gained.
 | right-click | show that tile in Finder, File Explorer or the file manager |
 | `shift u` | updates: the version, the release channel, check now |
 | `?` | every key |
-| `q` | quit |
+| `q` | quit, on Linux; ⌘Q on macOS and Alt+F4 on Windows |
 
 On macOS the menu bar also has ⌘⇧R to show the selection in Finder, ⌘R to
 rescan, ⌘[ and ⌘] for back and forward, and ⌘Q, ⌘H and ⌘W (closing the
 window quits); other ⌘ chords are left to the system. On Linux and Windows
 the same work with ctrl, with F5 to rescan too.
 
-On the review screen: `m` trash, `p` permanent, `!` unmark all, `enter`
-commits, `esc` goes back. Or hand the list on instead of acting on it: `s`
-saves it as a text file, one path per line, and `a` copies a prompt for a
+On the review screen: `m` trash, `p` permanent, `!` or **Unmark all**
+clears the list, `u` or Edit › Undo (⌘Z, Ctrl+Z) puts it back, `enter`
+commits, `esc` goes back. Or hand the list on instead of acting on it from
+**Export**: `s` saves it as a text file, one path per line, `e` and `y`
+save or copy a delete script, and `a` copies a prompt for a
 coding agent: free the space by removing what you picked, checking each path
 first (git work that exists nowhere else, a tool's own clean command) and
 touching nothing else. A name holding a newline is left out of the list and
@@ -455,9 +464,14 @@ release in the background. The download installs when PwrDisk quits, or at
 once from **Restart to update**. Nothing is sent but the request for the
 release list.
 
-**Shift-U** opens the Updates panel (on macOS also **PwrDisk › Check for
-Updates…**): the version, what the last check found, **Check now**, and the
-release channel:
+**Check for Updates…** (in the PwrDisk menu on macOS, the strip's menu
+elsewhere) checks at once and answers in a toast at the bottom left of the
+main window: up to date, an update ready to install with **Restart to
+update**, or why the check failed. A check on its own says nothing unless it
+has downloaded an update, and then says so once for each version.
+
+**Shift-U** opens the Updates panel: the version, what the last check found,
+**Check now**, and the release channel:
 
 | Channel | Gets |
 | --- | --- |

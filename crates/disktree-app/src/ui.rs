@@ -104,9 +104,12 @@ pub mod size {
     pub const SOURCE_VIEWPORT_FRACTION: f32 = 0.92;
     /// The keyboard overlay.
     pub const HELP: Rems = Rems(32.5);
-    /// Settings › Updates' channel names' lane, so their descriptions line
-    /// up.
-    pub const UPDATE_SLOT: Rems = Rems(9.5);
+    /// A toast: PwrDisk's 330 px, a little under the family's 380 to 460,
+    /// since it sits over the treemap.
+    pub const TOAST: Rems = Rems(20.625);
+    /// How far the toasts sit above the window's bottom edge: clear of the
+    /// key bar.
+    pub const TOAST_BOTTOM: Rems = Rems(3.0);
     /// The key column of the keyboard overlay.
     pub const KEY_LANE: Rems = Rems(7.0);
     /// A document's measure (the changelog): about 90 characters.
@@ -117,6 +120,10 @@ pub mod size {
     pub const SETTINGS_NAV: Rems = Rems(12.25);
     pub const SETTINGS_PANE: Rems = Rems(47.5);
     pub const SETTINGS_LABEL: Rems = Rems(10.0);
+    /// A pane's lede: the family's 56 characters or so.
+    pub const SETTINGS_LEDE: Rems = Rems(36.0);
+    /// A Settings nav row: the family's 28 to 30 px.
+    pub const SETTINGS_NAV_ROW: Rems = Rems(1.75);
     /// Logs: the search field's least width, so a query still reads
     /// beside its match count and chevrons.
     pub const LOG_FILTER: Rems = Rems(16.25);
@@ -136,6 +143,8 @@ pub mod size {
     pub const MENU_BUTTON: Rems = Rems(1.625);
     /// Its dropdown: wide enough for a row and its shortcut.
     pub const APP_MENU: Rems = Rems(18.0);
+    /// The review footer's Export menu: its longest row and its key.
+    pub const EXPORT_MENU: Rems = Rems(14.0);
     pub const APP_MENU_HEIGHT: Rems = Rems(36.0);
 }
 

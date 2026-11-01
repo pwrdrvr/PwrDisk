@@ -38,6 +38,7 @@ mod settings;
 mod state;
 #[cfg(test)]
 mod tests;
+mod toasts;
 mod treemap_view;
 mod ui;
 mod update_channel;
@@ -331,10 +332,12 @@ fn run() -> Result<()> {
                 let focus = this.focus.clone();
                 window.focus(&focus, cx);
             });
-            // A check that starts or finishes redraws the window and
-            // Settings › Updates, so they show it without waiting for input.
+            // A check that starts or finishes redraws the window, which
+            // answers it in a toast, and Settings › Updates.
             updater::install(cx, move |cx| {
-                let _ = window.update(cx, |_, _, cx| cx.notify());
+                let _ = window.update(cx, |this, _, cx| {
+                    this.updates_changed(cx);
+                });
                 settings::refresh(cx);
             });
             updater::check_in_background(updater::Trigger::Startup);
