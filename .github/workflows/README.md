@@ -22,8 +22,9 @@ Rust job pins Rust 1.97, the version in `rust-toolchain.toml`.
 
 The Linux `licenses` job runs `cargo xtask licenses --check` on every push
 to `main` and on PRs changing `Cargo.lock`, any `Cargo.toml`, `licenses/**`
-or `THIRD_PARTY_LICENSES`. Changes to `ci.yml` or `xtask/src/licenses.rs`
-also run it so edits to the gate or generator are checked. It installs
+or `THIRD_PARTY_LICENSES`. Changes to `ci.yml`, the `setup-rust` action or
+`xtask/src/licenses.rs` also run it so edits to the gate or generator are
+checked. It installs
 `cargo-about@0.9.2` with `cargo install --locked --features cli` and caches
 the binary by OS, architecture, generator version and Rust version. Like
 PwrRoute, the generator is pinned and the notice check runs on Linux only.
@@ -36,17 +37,29 @@ reports a result. A stale file fails with instructions to run
 
 ### The Rust cache
 
-Every `Swatinem/rust-cache` step saves only on `main`; a PR restores
-`main`'s entry for the same job, by key prefix when its `Cargo.lock`
-differs. The Actions cache store holds 10 GB and evicts the least recently
-used entry first. While PRs saved too, each wrote about 6 GB across the
-jobs, `main`'s entries were evicted, and the next PR compiled from scratch:
-the macOS job's lint went from under a minute to six, and its tests from
-two minutes to eight. As in PwrRoute, `scripts/ci/prune-rust-toolchains.sh`
-removes the runner image's own stable toolchain before the cache step,
-because rust-cache hashes every installed toolchain and image rollouts
-would otherwise change the key. A push to `main` never cancels the `main`
-run in progress, since a cancelled job saves nothing.
+Every Rust job in `ci.yml` and `preview-build.yml` sets up through one
+local composite action, `.github/actions/setup-rust`, so the toolchain pin,
+the prune and the cache's save rule cannot drift apart between jobs. It
+installs Rust 1.97 with `dtolnay/rust-toolchain`, runs
+`scripts/ci/prune-rust-toolchains.sh`, then `Swatinem/rust-cache` with
+`save-if` true only on `main`. Its inputs are what differ between jobs:
+`components` (clippy and rustfmt for the lint jobs), `targets` (both Apple
+architectures for the universal preview build) and `cache-bin` (off in the
+`licenses` job, whose own cache owns `cargo-about`). A job must check out
+the repository before using it, as with any local action. `release.yml`
+keeps its own steps with `save-if: false`: a cache saved under a tag is
+readable by that tag's runs alone.
+
+The cache saves only on `main`; a PR restores `main`'s entry for the same
+job, by key prefix when its `Cargo.lock` differs. The Actions cache store
+holds 10 GB and evicts the least recently used entry first. While PRs saved
+too, each wrote about 6 GB across the jobs, `main`'s entries were evicted,
+and the next PR compiled from scratch: the macOS job's lint went from under
+a minute to six, and its tests from two minutes to eight. As in PwrRoute,
+the prune script removes the runner image's own stable toolchain before the
+cache step, because rust-cache hashes every installed toolchain and image
+rollouts would otherwise change the key. A push to `main` never cancels the
+`main` run in progress, since a cancelled job saves nothing.
 
 Lint and test stay one job per platform. They compile separately anyway
 (clippy builds dependencies as metadata, tests as full code), so splitting
