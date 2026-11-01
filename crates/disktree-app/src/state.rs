@@ -487,6 +487,10 @@ pub struct Disktree {
     pub app_menu_open: bool,
     pub show_selection: bool,
     pub focus: FocusHandle,
+    /// The app is quitting: what this window holds is left to the system,
+    /// which takes a process's memory back whole when it exits.
+    quitting: bool,
+    _on_quit: gpui_kit::Subscription,
     /// A trail crumb's sibling menu, when open.
     pub crumb_menu: Option<CrumbMenu>,
 
@@ -722,6 +726,13 @@ impl Disktree {
             scan_elapsed: None,
             scanned_at: now_seconds(),
             agent: None,
+            quitting: false,
+            // GPUI runs quit hooks before it drops the windows, so the flag
+            // is set by the time `Drop` reads it.
+            _on_quit: cx.on_app_quit(|this, _| {
+                this.quitting = true;
+                std::future::ready(())
+            }),
         };
         if local && start {
             tree.device = device_for(&tree.root_path);
@@ -4254,17 +4265,20 @@ pub fn now_seconds() -> i64 {
 /// Closing the window or quitting drops the app, and with it the tree.
 /// Freed in place, a home directory's tens of millions of nodes held the
 /// main thread for seconds after Quit, long enough for macOS to call the
-/// app not responding. On quit the process exits before that thread is
-/// done, which is the point: the system takes the memory back whole. The
-/// find results (an entry per match and ancestor) and a finished scan not
-/// yet taken from its channel can be as large, so they go with it.
+/// app not responding. On quit nothing is freed at all: the process is
+/// about to exit and the system takes its memory back without walking
+/// the nodes. A window closed while the app stays hands them to a
+/// background thread. The find results (an entry per match and ancestor)
+/// and a finished scan not yet taken from its channel can be as large,
+/// so they go with the tree.
 impl Drop for Disktree {
     fn drop(&mut self) {
-        discard(Some((
-            self.tree.take(),
-            self.matches.take(),
-            self.scan.take(),
-        )));
+        let held = (self.tree.take(), self.matches.take(), self.scan.take());
+        if self.quitting {
+            std::mem::forget(held);
+        } else {
+            discard(Some(held));
+        }
     }
 }
 

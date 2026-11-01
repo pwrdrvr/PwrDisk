@@ -6364,38 +6364,40 @@ fn an_answer_leaves_on_its_own(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("toast-update").is_none());
 }
 
-/// Quitting from the review screen drops the window and its tree. Freed on
-/// the main thread, a home directory's tens of millions of nodes kept the
-/// app from exiting for seconds after Quit, and macOS called it not
-/// responding. The tree is handed to a background thread instead, and is
-/// still freed: nothing is leaked when the window closes but the app stays.
-#[gpui_kit::test]
-fn quitting_from_review_frees_the_tree_off_the_main_thread(
-    cx: &mut TestAppContext,
+/// A window over the fixture, on the review screen with `junk` marked, and
+/// a weak handle to its tree.
+fn review_with_tree<'a>(
+    temp: &Path,
+    cx: &'a mut TestAppContext,
+) -> (
+    Entity<Disktree>,
+    &'a mut Window,
+    std::sync::Weak<disktree_core::tree::Node>,
 ) {
-    use crate::marks::work;
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
-
-    cx.update(init);
-    let temp = fixture();
-    let (view, cx) = view_over(temp.path(), cx);
+    let (view, cx) = view_over(temp, cx);
     draw(cx);
     let tree = update(&view, cx, |app, cx| {
-        let junk = app
-            .tree()
-            .and_then(|tree| {
-                tree.children
-                    .iter()
-                    .position(|child| &*child.name == "junk")
-                    .map(|index| vec![index])
-            })
-            .expect("the junk directory");
+        let junk = child_crumbs(app, &[], "junk");
         app.toggle_mark(&junk, cx);
-        Arc::downgrade(app.tree.as_ref().expect("a scanned tree"))
+        std::sync::Arc::downgrade(app.tree.as_ref().expect("a scanned tree"))
     });
     press(cx, "c");
     assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    (view, cx, tree)
+}
+
+/// Quitting from the review screen drops the window and its tree. Freed on
+/// the main thread, a home directory's tens of millions of nodes kept the
+/// app from exiting for seconds after Quit, and macOS called it not
+/// responding. On quit nothing is freed: the process exits and the system
+/// takes the memory back whole.
+#[gpui_kit::test]
+fn quitting_from_review_leaves_the_tree_to_the_system(cx: &mut TestAppContext) {
+    use crate::marks::work;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, tree) = review_with_tree(temp.path(), cx);
 
     work::reset();
     drop(view);
@@ -6403,11 +6405,29 @@ fn quitting_from_review_frees_the_tree_off_the_main_thread(
     // and the state it held is dropped, on this thread.
     cx.cx.update(gpui_kit::App::shutdown);
 
-    assert_eq!(
-        work::DISCARDED.get(),
-        1,
-        "the tree is handed off, not freed while the app quits"
-    );
+    assert_eq!(work::DISCARDED.get(), 0, "no thread is started to free it");
+    assert_eq!(tree.strong_count(), 1, "nothing walks the nodes on quit");
+}
+
+/// Closing the window while the app stays frees the tree, off the main
+/// thread: nothing is leaked and nothing waits on it.
+#[gpui_kit::test]
+fn closing_a_window_frees_its_tree_off_the_main_thread(
+    cx: &mut TestAppContext,
+) {
+    use crate::marks::work;
+    use std::time::{Duration, Instant};
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, tree) = review_with_tree(temp.path(), cx);
+
+    work::reset();
+    drop(view);
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+
+    assert_eq!(work::DISCARDED.get(), 1, "the tree is handed off");
     let deadline = Instant::now() + Duration::from_secs(10);
     while tree.strong_count() > 0 {
         assert!(Instant::now() < deadline, "the tree is never freed");
