@@ -274,8 +274,8 @@ pub fn reclaim_of(
 pub fn classify(tree: &mut Tree) {
     let stores = Stores::find(tree);
     let root = tree.root();
-    // These stores belong to macOS even when an internal folder is named
-    // `cache` or `tmp`; see `kind_of`.
+    // A root that is a macOS store, or a pnpm store, gives its kind to
+    // everything beneath, as any such directory does in `kind_of`.
     let own = category_of_name(root.name())
         .filter(|category| {
             matches!(category, Category::FilesystemEvents | Category::Spotlight)
@@ -303,27 +303,20 @@ pub fn classify(tree: &mut Tree) {
     );
 }
 
-/// The children of a root that is nothing in particular.
+/// The children of a root that is nothing in particular: each takes only
+/// its own evidence, as `kind_of` gives it for a parent of no kind, except
+/// that a file directly in the root takes a kind from its own name too.
 fn decide_top(block: &mut Block<'_>, stores: &Stores) {
     for index in 0..block.len() {
         let child = block.at(index);
-        let id = block.id(index);
-        let has_sibling =
-            |wanted: &str| block.iter().any(|sibling| sibling.name == wanted);
-        // Only evidence about this directory may become an inherited kind.
-        // Guessing from a descendant can turn a whole home into scratch.
-        let category = category_of_name(child.name)
-            .or_else(|| stores.is_git(id).then_some(Category::Git))
-            .unwrap_or(Category::Other);
-        let reclaim = child
-            .kind
-            .is_dir()
-            .then(|| {
-                reclaim_of(child.name, Category::Other, has_sibling).or_else(
-                    || stores.is_pnpm(id).then_some(Reclaim::PackageStore),
-                )
-            })
-            .flatten();
+        let (category, reclaim) = if child.kind.is_dir() {
+            kind_of(block, index, Category::Other, None, stores)
+        } else {
+            (
+                category_of_name(child.name).unwrap_or(Category::Other),
+                None,
+            )
+        };
         let facts = block.facts_mut(index);
         facts.category = category;
         facts.reclaim = reclaim;
@@ -393,10 +386,10 @@ fn kind_of(
 
 /// The directories whose kind is in their shape rather than their name,
 /// by [`Node::id`], in order. There are few: a store per repository.
-struct Stores(Vec<Store>);
+struct Stores(Vec<Shape>);
 
 #[derive(Clone, Copy)]
-struct Store {
+struct Shape {
     id: u32,
     git: bool,
     pnpm: bool,
@@ -411,7 +404,7 @@ impl Stores {
                 .filter_map(|node| {
                     let git = is_git_store(node);
                     let pnpm = is_pnpm_store(node);
-                    (git || pnpm).then(|| Store {
+                    (git || pnpm).then(|| Shape {
                         id: node.id(),
                         git,
                         pnpm,
@@ -421,17 +414,17 @@ impl Stores {
         )
     }
 
-    fn get(&self, id: u32) -> Option<Store> {
-        let found = self.0.binary_search_by_key(&id, |store| store.id).ok()?;
+    fn get(&self, id: u32) -> Option<Shape> {
+        let found = self.0.binary_search_by_key(&id, |shape| shape.id).ok()?;
         Some(self.0[found])
     }
 
     fn is_git(&self, id: u32) -> bool {
-        self.get(id).is_some_and(|store| store.git)
+        self.get(id).is_some_and(|shape| shape.git)
     }
 
     fn is_pnpm(&self, id: u32) -> bool {
-        self.get(id).is_some_and(|store| store.pnpm)
+        self.get(id).is_some_and(|shape| shape.pnpm)
     }
 }
 
