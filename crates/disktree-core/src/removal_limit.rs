@@ -120,9 +120,9 @@ pub(crate) fn measured(targets: &[Target]) -> Result<Vec<Target>, String> {
                 if node.read_error {
                     return Err("Cannot enforce removal limit: part of the selection is unreadable".into());
                 }
-                nodes.extend(&node.children);
+                nodes.extend(node.children());
             }
-            tree.bytes
+            tree.root().bytes
         } else {
             #[cfg(windows)]
             let bytes = crate::windows::allocated_size(&target.path)
@@ -318,6 +318,7 @@ mod tests {
         let tree =
             crate::scan::scan(parent, crate::scan::ScanOptions::default())
                 .expect("directory measurement");
+        let tree = tree.root();
         let length = std::fs::metadata(path).expect("metadata").len();
         let targets = [Target {
             path: path.into(),

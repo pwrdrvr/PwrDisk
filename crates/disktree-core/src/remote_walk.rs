@@ -242,7 +242,7 @@ mod tests {
             rows.iter().filter(|row| row.1 != 0).map(|row| row.2).sum();
         let expected =
             crate::scan::scan(dir.path(), ScanOptions::default()).unwrap();
-        assert_eq!(actual, expected.bytes);
+        assert_eq!(actual, expected.root().bytes);
         assert_eq!(rows.iter().map(|row| row.3).sum::<u64>(), 3);
         assert_eq!(rows.iter().filter(|row| row.0 == "leaf").count(), 1);
         assert_eq!(rows.last().unwrap().6, 4);

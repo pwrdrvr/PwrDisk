@@ -112,7 +112,7 @@ pub fn stores_volume(root: &Path) -> Option<PathBuf> {
 /// Look up an actual path in the scan; no I/O and no invented totals.
 pub fn usage(
     root_path: &Path,
-    tree: &Node,
+    tree: Node<'_>,
     options: &ScanOptions,
     path: &Path,
 ) -> Usage {
@@ -155,7 +155,12 @@ mod tests {
         let mut volume = Draft::directory("volume");
         let options = ScanOptions::default();
         assert_eq!(
-            usage(Path::new("/volume"), &Tree::from(&volume), &options, path),
+            usage(
+                Path::new("/volume"),
+                Tree::from(&volume).root(),
+                &options,
+                path
+            ),
             Usage::Unavailable
         );
         let mut store = Draft::directory(".Spotlight-V100");
@@ -164,7 +169,7 @@ mod tests {
         let mut tree = Tree::from(&volume);
         aggregate(&mut tree, Metric::Bytes);
         assert_eq!(
-            usage(Path::new("/volume"), &tree, &options, path),
+            usage(Path::new("/volume"), tree.root(), &options, path),
             Usage::Unavailable
         );
         let store = &mut volume.children[0];
@@ -178,7 +183,7 @@ mod tests {
         let mut tree = Tree::from(&volume);
         aggregate(&mut tree, Metric::Bytes);
         assert_eq!(
-            usage(Path::new("/volume"), &tree, &options, path),
+            usage(Path::new("/volume"), tree.root(), &options, path),
             Usage::Incomplete(4096)
         );
     }
@@ -188,14 +193,23 @@ mod tests {
         let tree = Tree::from(Draft::directory(".fseventsd"));
         let path = Path::new("/volume/.fseventsd");
         let mut options = ScanOptions::default();
-        assert_eq!(usage(path, &tree, &options, path), Usage::Measured(0));
+        assert_eq!(
+            usage(path, tree.root(), &options, path),
+            Usage::Measured(0)
+        );
         options.include_hidden = false;
-        assert_eq!(usage(path, &tree, &options, path), Usage::Unavailable);
+        assert_eq!(
+            usage(path, tree.root(), &options, path),
+            Usage::Unavailable
+        );
         options.include_hidden = true;
         options.max_depth = Some(0);
-        assert_eq!(usage(path, &tree, &options, path), Usage::Unavailable);
         assert_eq!(
-            usage(Path::new("/Users/me"), &tree, &options, path),
+            usage(path, tree.root(), &options, path),
+            Usage::Unavailable
+        );
+        assert_eq!(
+            usage(Path::new("/Users/me"), tree.root(), &options, path),
             Usage::OutsideScan
         );
     }

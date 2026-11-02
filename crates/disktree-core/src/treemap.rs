@@ -145,7 +145,7 @@ impl Default for LayoutOptions {
 /// being drawn: a caller that resolves a tile from the scanned root gets that
 /// tile, at any depth.
 pub fn layout(
-    root: &Node,
+    root: Node<'_>,
     root_crumbs: &[usize],
     area: Rect,
     metric: Metric,
@@ -157,7 +157,7 @@ pub fn layout(
 /// [`layout`], showing only what `filter` keeps: its matches, at the size
 /// of what matched, inside ancestors sized the same way.
 pub fn layout_filtered(
-    root: &Node,
+    root: Node<'_>,
     root_crumbs: &[usize],
     area: Rect,
     metric: Metric,
@@ -185,7 +185,7 @@ struct Placement<'a> {
 }
 
 fn place_children(
-    node: &Node,
+    node: Node<'_>,
     area: Rect,
     place: &Placement<'_>,
     depth: u32,
@@ -193,14 +193,14 @@ fn place_children(
     out: &mut Vec<Tile>,
 ) {
     let (metric, options) = (place.metric, place.options);
-    if node.children.is_empty() || area.w <= 0.0 || area.h <= 0.0 {
+    if node.children().is_empty() || area.w <= 0.0 || area.h <= 0.0 {
         return;
     }
 
     // Rank by importance ourselves: the tree is already sorted, but a metric
     // switch or a hand-built tree must not produce a bad layout.
     let mut ranked: Vec<(usize, f64)> = node
-        .children
+        .children()
         .iter()
         .enumerate()
         .filter_map(|(index, child)| {
@@ -257,7 +257,7 @@ fn place_children(
             continue;
         };
 
-        let child = &node.children[index];
+        let child = node.children().at(index);
         let subdividable = child.is_dir() && depth + 1 < options.max_depth;
         // A directory that is about to be subdivided claims a header band for
         // its own name. When there is no room for one it stays whole: a name
@@ -504,7 +504,7 @@ mod tests {
         );
 
         let tiles = layout(
-            &root,
+            root.root(),
             &[],
             area(),
             Metric::Bytes,
@@ -532,7 +532,7 @@ mod tests {
             max_depth: 1,
             ..LayoutOptions::default()
         };
-        let tiles = layout(&root, &[], area(), Metric::Bytes, &options);
+        let tiles = layout(root.root(), &[], area(), Metric::Bytes, &options);
         assert_eq!(tiles.len(), 1);
         assert_eq!(tiles[0].crumbs(), &[0]);
     }
@@ -544,7 +544,7 @@ mod tests {
             vec![dir("big", vec![file("inside", 100), file("also", 50)])],
         );
         let tiles = layout(
-            &root,
+            root.root(),
             &[],
             area(),
             Metric::Bytes,
@@ -588,7 +588,7 @@ mod tests {
             min_tile: 150.0,
             ..LayoutOptions::default()
         };
-        let tiles = layout(&root, &[], area(), Metric::Bytes, &options);
+        let tiles = layout(root.root(), &[], area(), Metric::Bytes, &options);
         assert_eq!(tiles.len(), 1, "the child was not subdivided");
         assert!(tiles[0].header.is_none(), "and it has no band of its own");
     }
@@ -600,7 +600,7 @@ mod tests {
         // find a stranger.
         let node = tree("inner", vec![file("a", 10), file("b", 5)]);
         let tiles = layout(
-            &node,
+            node.root(),
             &[3, 1],
             area(),
             Metric::Bytes,
@@ -617,7 +617,7 @@ mod tests {
     fn a_leaf_never_claims_a_header() {
         let root = tree("root", vec![file("solo", 10)]);
         let tiles = layout(
-            &root,
+            root.root(),
             &[],
             area(),
             Metric::Bytes,
@@ -636,7 +636,7 @@ mod tests {
             max_children: 4,
             ..LayoutOptions::default()
         };
-        let tiles = layout(&root, &[], area(), Metric::Bytes, &options);
+        let tiles = layout(root.root(), &[], area(), Metric::Bytes, &options);
         let others: Vec<&Tile> = tiles
             .iter()
             .filter(|tile| matches!(tile.kind, TileKind::Others { .. }))
@@ -653,7 +653,7 @@ mod tests {
         );
 
         let tiles = layout(
-            &root,
+            root.root(),
             &[],
             area(),
             Metric::Bytes,
@@ -686,8 +686,9 @@ mod tests {
             vec![src, file("unit_test.txt", 100), file("huge.iso", 5000)];
         let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
+        let root = root.root();
 
-        let matches = filter(&root, &[], "test").expect("needle");
+        let matches = filter(root, &[], "test").expect("needle");
         let area = Rect::new(0.0, 0.0, 400.0, 400.0);
         let options = LayoutOptions {
             padding: 0.0,
@@ -695,7 +696,7 @@ mod tests {
             ..LayoutOptions::default()
         };
         let tiles = layout_filtered(
-            &root,
+            root,
             &[],
             area,
             Metric::Bytes,
@@ -705,7 +706,7 @@ mod tests {
         let names: Vec<String> = tiles
             .iter()
             .filter_map(|tile| root.resolve(tile.crumbs()))
-            .map(|node| node.name.to_string())
+            .map(|node| node.name().to_string())
             .collect();
         assert!(names.contains(&"big_test.rs".to_string()));
         assert!(names.contains(&"unit_test.txt".to_string()));
@@ -722,7 +723,7 @@ mod tests {
                 .iter()
                 .find(|tile| {
                     root.resolve(tile.crumbs())
-                        .is_some_and(|node| &*node.name == name)
+                        .is_some_and(|node| node.name() == name)
                 })
                 .map(|tile| tile.rect.w * tile.rect.h)
                 .expect("drawn")

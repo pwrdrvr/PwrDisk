@@ -8,7 +8,9 @@
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
-use crate::tree::{Node, NodeMut};
+use std::sync::Mutex;
+
+use crate::tree::{Node, Tree};
 
 mod reclaim;
 pub use reclaim::{Estimate, estimate};
@@ -68,8 +70,8 @@ impl Sharing {
 }
 
 /// Leaf metadata is already retained; do not allocate another box per clone.
-pub(crate) fn leaf_summary(node: &Node) -> Sharing {
-    let Some(allocation) = node.allocation.as_deref() else {
+pub(crate) fn leaf_summary(node: Node<'_>) -> Sharing {
+    let Some(allocation) = node.allocation() else {
         return Sharing::default();
     };
     let mut summary = Sharing {
@@ -142,43 +144,60 @@ const MAX_CLONE_GROUPS: usize = 1_000_000;
 
 /// Small-to-large merging avoids walking every subtree for every ancestor.
 /// Hardlink duplicates already have zero weight when this pass runs.
-pub(crate) fn refresh(node: &mut NodeMut<'_>) {
-    collect(node, MAX_CLONE_GROUPS);
+pub(crate) fn refresh(tree: &mut Tree) {
+    collect(tree, MAX_CLONE_GROUPS);
 }
 
-fn collect(
-    node: &mut NodeMut<'_>,
-    limit: usize,
-) -> (Groups, reclaim::Accumulator) {
-    collect_at(node, limit, 0)
+/// A node's new sharing figures, by its position in the tree.
+type Update = (u32, Option<Sharing>);
+
+/// Where workers leave their updates: one list per run of work, so none
+/// is copied into another.
+type Sink = Mutex<Vec<Vec<Update>>>;
+
+/// The pass reads the tree on every worker and writes nothing; the
+/// figures it settles go into the tree afterwards, by position, since a
+/// write would take the whole tree from every other worker.
+fn collect(tree: &mut Tree, limit: usize) -> (Groups, reclaim::Accumulator) {
+    let sink = Sink::default();
+    let mut updates = Vec::new();
+    let (groups, allocation, _) =
+        collect_at(tree.root(), limit, 0, &mut updates, &sink);
+    let mut lists = sink.into_inner().unwrap_or_else(|poison| {
+        poison.into_inner()
+    });
+    lists.push(updates);
+    tree.set_sharing(lists.into_iter().flatten());
+    (groups, allocation)
 }
 
 /// A file's clone facts in a directory's figures: what [`collect`] of the
 /// file would return, merged, without the file's own maps. Most files of
 /// a large tree are leaves, and a map apiece was most of this pass's time.
 fn fold_leaf(
-    leaf: &mut NodeMut<'_>,
+    leaf: Node<'_>,
     limit: usize,
-    groups: &mut Groups,
-    allocation: &mut reclaim::Accumulator,
-    summary: &mut Sharing,
+    part: &mut Part,
+    updates: &mut Vec<Update>,
 ) {
     // Only a directory keeps figures; clear a file's only if it has some,
     // so a pass reads its millions of files without writing to them.
-    if leaf.sharing.is_some() {
-        leaf.set_sharing(None);
+    if leaf.stored_sharing().is_some() {
+        updates.push((leaf.id(), None));
     }
-    allocation.add_leaf(leaf);
-    if let Some((key, group)) = own(leaf, summary) {
-        join(groups, key, group, limit, summary);
+    part.allocation.add_leaf(leaf);
+    if let Some((key, group)) = own(leaf, &mut part.summary) {
+        join(&mut part.groups, key, group, limit, &mut part.summary);
     }
 }
 
 /// A node's own clone figures, and its group when it can repeat bytes.
-fn own(node: &Node, summary: &mut Sharing) -> Option<((u64, u64), Group)> {
+fn own(
+    node: Node<'_>,
+    summary: &mut Sharing,
+) -> Option<((u64, u64), Group)> {
     let info = node
-        .allocation
-        .as_deref()
+        .allocation()
         .and_then(|allocation| allocation.clone)
         .filter(|_| node.bytes > 0)?;
     summary.files += 1;
@@ -256,19 +275,20 @@ impl Part {
 
     /// Add one child: a file folded straight into these maps, or a
     /// directory collected and then merged.
-    fn add(&mut self, child: &mut NodeMut<'_>, limit: usize, depth: usize) {
+    fn add(
+        &mut self,
+        child: Node<'_>,
+        limit: usize,
+        depth: usize,
+        updates: &mut Vec<Update>,
+        sink: &Sink,
+    ) {
         if !child.is_dir() {
-            fold_leaf(
-                child,
-                limit,
-                &mut self.groups,
-                &mut self.allocation,
-                &mut self.summary,
-            );
+            fold_leaf(child, limit, self, updates);
             return;
         }
-        let (groups, allocation) = collect_at(child, limit, depth + 1);
-        let summary = child.sharing();
+        let (groups, allocation, summary) =
+            collect_at(child, limit, depth + 1, updates, sink);
         self.merge(
             Self {
                 groups,
@@ -300,23 +320,21 @@ impl Part {
     }
 }
 
+/// `node`'s clone groups and reclaim figures, and the sharing figures it
+/// reads as once its update is written, which goes into `updates`.
 fn collect_at(
-    node: &mut NodeMut<'_>,
+    node: Node<'_>,
     limit: usize,
     depth: usize,
-) -> (Groups, reclaim::Accumulator) {
+    updates: &mut Vec<Update>,
+    sink: &Sink,
+) -> (Groups, reclaim::Accumulator, Sharing) {
     #[cfg(test)]
     VISITS.set(VISITS.get() + 1);
     let mut part = Part::new(limit);
     if !node.is_dir() {
-        fold_leaf(
-            node,
-            limit,
-            &mut part.groups,
-            &mut part.allocation,
-            &mut part.summary,
-        );
-        return (part.groups, part.allocation);
+        fold_leaf(node, limit, &mut part, updates);
+        return (part.groups, part.allocation, leaf_summary(node));
     }
     if let Some((key, group)) = own(node, &mut part.summary) {
         part.groups.insert(key, group);
@@ -328,14 +346,19 @@ fn collect_at(
         // a few sets are held at once and a truncated group set keeps the
         // groups the one-thread pass kept.
         let children = node
-            .par_children_mut()
+            .children()
+            .par_iter()
             .fold(
-                || Part::new(limit),
-                |mut part, mut child| {
-                    part.add(&mut child, limit, depth);
-                    part
+                || (Part::new(limit), Vec::new()),
+                |(mut part, mut updates), child| {
+                    part.add(child, limit, depth, &mut updates, sink);
+                    (part, updates)
                 },
             )
+            .map(|(part, updates)| {
+                crate::scan::lock(sink).push(updates);
+                part
+            })
             .reduce(
                 || Part::new(limit),
                 |mut left, right| {
@@ -345,8 +368,8 @@ fn collect_at(
             );
         part.merge(children, limit);
     } else {
-        for mut child in node.children_mut() {
-            part.add(&mut child, limit, depth);
+        for child in node.children() {
+            part.add(child, limit, depth, updates, sink);
         }
     }
     let Part {
@@ -354,19 +377,21 @@ fn collect_at(
         mut allocation,
         mut summary,
     } = part;
-    if node.allocation.as_deref().is_some_and(|info| info.followed) {
+    if node.allocation().is_some_and(|info| info.followed) {
         allocation = reclaim::Accumulator::new(limit);
     }
     summary.estimate = Some(allocation.estimate());
     // `set_sharing` rewrites a directory's figures in place, so a second
     // pass allocates nothing for a directory that already shares.
     let kept = summary.files > 0
-        || node.allocation.is_some()
+        || node.allocation().is_some()
         || allocation.needs_selection()
         || summary.reclaimable(node.bytes) != node.bytes
         || summary.possible(node.bytes) != node.bytes;
-    node.set_sharing(kept.then_some(summary));
-    (groups, allocation)
+    updates.push((node.id(), kept.then_some(summary)));
+    // What `Node::sharing` reads once the update is written: a directory
+    // that keeps nothing has no allocation of its own to summarize.
+    (groups, allocation, if kept { summary } else { Sharing::default() })
 }
 
 #[cfg(test)]

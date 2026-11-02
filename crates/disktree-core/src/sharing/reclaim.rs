@@ -96,7 +96,7 @@ impl Accumulator {
         }
     }
 
-    pub(super) fn leaf(node: &Node, limit: usize) -> Self {
+    pub(super) fn leaf(node: Node<'_>, limit: usize) -> Self {
         work();
         let mut acc = Self::new(limit);
         acc.add_leaf(node);
@@ -107,8 +107,8 @@ impl Accumulator {
     /// its name among a hardlink's. This is what merging a file's own
     /// accumulator did, without making one: a tree of millions of clones
     /// allocated, merged and freed a set of maps for every file.
-    pub(super) fn add_leaf(&mut self, node: &Node) {
-        let Some(allocation) = node.allocation.as_deref() else {
+    pub(super) fn add_leaf(&mut self, node: Node<'_>) {
+        let Some(allocation) = node.allocation() else {
             self.base.lower = self.base.lower.saturating_add(node.bytes);
             self.base.upper = self.base.upper.saturating_add(node.bytes);
             return;
@@ -310,7 +310,7 @@ const fn replace(total: &mut Estimate, before: Estimate, after: Estimate) {
 /// groups spanning separate marks receive credit once.
 ///
 /// Callers cache this scan-derived answer; removal authorization must still be checked afresh.
-pub fn estimate<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Estimate {
+pub fn estimate<'a>(nodes: impl IntoIterator<Item = Node<'a>>) -> Estimate {
     let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
     for node in nodes {
         total.merge(gather(node));
@@ -318,8 +318,8 @@ pub fn estimate<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Estimate {
     total.estimate()
 }
 
-fn gather(node: &Node) -> Accumulator {
-    if node.allocation.as_deref().is_some_and(|info| info.followed) {
+fn gather(node: Node<'_>) -> Accumulator {
+    if node.allocation().is_some_and(|info| info.followed) {
         return Accumulator::new(super::MAX_CLONE_GROUPS);
     }
     if !node.is_dir() {
@@ -329,7 +329,7 @@ fn gather(node: &Node) -> Accumulator {
     // Aggregation retains a summary on any subtree whose metadata can
     // interact with another mark, including zero-weight hardlink aliases.
     // Ordinary subtrees need no second walk after a mark changes.
-    if node.sharing.is_none() {
+    if node.stored_sharing().is_none() {
         let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
         total.base = Estimate {
             lower: node.bytes,
@@ -339,7 +339,7 @@ fn gather(node: &Node) -> Accumulator {
         return total;
     }
     let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
-    for child in &node.children {
+    for child in node.children() {
         if child.is_dir() {
             total.merge(gather(child));
         } else {
