@@ -2767,9 +2767,12 @@ impl Disktree {
                     // narrow names out of their tiles. Only "unreadable",
                     // which is rare, keeps a prefix.
                     let unreadable = if node.read_error { "! " } else { "" };
+                    // A tile the filter left out holds no match: skip the
+                    // search for it.
                     let found = self
                         .matches
                         .as_deref()
+                        .filter(|_| filtered != Filtered::Out)
                         .and_then(|matches| {
                             find_ignoring_case(node.name(), &matches.needle)
                         })
