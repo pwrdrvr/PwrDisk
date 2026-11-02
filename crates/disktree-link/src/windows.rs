@@ -431,6 +431,79 @@ struct PipeIo<T: AsRawHandle> {
     server: bool,
 }
 
+impl<T: AsRawHandle + AsyncRead + Unpin> tokio::io::AsyncRead for PipeIo<T> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().pipe).poll_read(cx, buf)
+    }
+}
+
+impl<T: AsRawHandle + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite
+    for PipeIo<T>
+{
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::pin::Pin::new(&mut self.get_mut().pipe).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().pipe).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().pipe).poll_shutdown(cx)
+    }
+}
+
+/// MCP shares the typed link's SID, protected DACL, remote rejection,
+/// connected-owner verification and cancellation on drop.
+#[derive(Debug)]
+pub struct McpListener {
+    path: PathBuf,
+    server: NamedPipeServer,
+}
+
+impl McpListener {
+    pub(crate) fn bind(path: &Path) -> io::Result<Self> {
+        validate_path(path)?;
+        Ok(Self {
+            path: path.into(),
+            server: Security::current_user()?.create(path, true)?,
+        })
+    }
+
+    pub(crate) async fn accept(
+        &mut self,
+    ) -> io::Result<crate::mcp_stream::Stream> {
+        self.server.connect().await?;
+        // Keep the existing instance until its successor has claimed the
+        // name. A descriptor is allocated only during this synchronous call.
+        let next = Security::current_user()?.create(&self.path, false)?;
+        let pipe = std::mem::replace(&mut self.server, next);
+        Ok(Box::new(PipeIo { pipe, server: true }))
+    }
+}
+
+pub async fn mcp_connect(path: &Path) -> io::Result<crate::mcp_stream::Stream> {
+    validate_path(path)?;
+    Ok(Box::new(PipeIo {
+        pipe: connect(path).await?,
+        server: false,
+    }))
+}
+
 impl<T: AsRawHandle> Drop for PipeIo<T> {
     fn drop(&mut self) {
         // SAFETY: pipe owns a live overlapped handle. Null means every I/O

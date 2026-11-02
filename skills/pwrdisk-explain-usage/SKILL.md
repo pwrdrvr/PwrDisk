@@ -22,6 +22,26 @@ it:
 - Linux: `skill://pwrdisk-free-space/references/linux.md`
 - Windows: `skill://pwrdisk-free-space/references/windows.md`
 
+## Interface ownership
+
+Normal `pwrdisk mcp` requires an already running PwrDisk desktop. Never
+launch the app from the agent or host. The desktop owns definitions,
+skills, instructions, execution, its tree and marks; the relay handles
+transport only. Status reports both versions. An explicit
+`pwrdisk mcp --standalone` connection owns its own scans and marks, never
+links a window, and cannot show, review or remove paths. Do not restart
+active sessions to resolve a harmless release difference. After an update,
+have the user reconnect MCP and rediscover tools and reread skills;
+previously loaded instructions or text may be cached. Never replay removal
+or reuse its approval after reconnecting.
+
+Relative tool paths resolve against the relay's working directory captured
+when MCP connects, independently of the desktop's launch directory or scan
+root. Initialization metadata (`pathBase`) and status report that fixed
+base. `~` refers to the server's home directory. Older relays that supply
+no base require absolute paths or `~/…`; reconnect with an updated relay
+to enable relative paths. Standalone captures its own working directory.
+
 ## Procedure
 
 1. **Status.** `pwrdisk_status`: the volumes, their size and free space,
@@ -29,9 +49,7 @@ it:
    is what you read. Status reports allocated versus apparent sizes, hidden
    entry inclusion and unreadable count; retain that context without a
    rescan. Browsing never moves the displayed directory. Use `pwrdisk_show`
-   only when the user asks to see a path or requests following. If earlier
-   marks are outside its root, the session keeps them and leaves the
-   window where it is; status explains why it is not followed.
+   only when the user asks to see a path or requests following. Connecting never moves the window or imports standalone marks.
 2. **Scan the right thing.** The home directory answers "what of mine is
    big" in seconds. `disk: true` answers "why is the disk full"; say first
    that it walks the whole volume and can take minutes.

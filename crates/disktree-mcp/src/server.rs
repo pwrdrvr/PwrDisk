@@ -78,6 +78,7 @@ For read-only audits use skill://pwrdisk-explain-usage/SKILL.md.";
 #[derive(Clone)]
 pub struct Server {
     session: Arc<Mutex<Session>>,
+    relay_version: Option<String>,
     tool_router: ToolRouter<Self>,
     prompt_router: PromptRouter<Self>,
 }
@@ -92,9 +93,51 @@ impl Server {
     pub fn new(session: Session) -> Self {
         Self {
             session: Arc::new(Mutex::new(session)),
+            relay_version: None,
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
         }
+    }
+
+    pub fn desktop(session: Session, relay_version: String) -> Self {
+        Self {
+            relay_version: Some(relay_version),
+            ..Self::new(session)
+        }
+    }
+
+    fn ownership(&self) -> String {
+        let version = env!("CARGO_PKG_VERSION");
+        let owner = match &self.relay_version {
+            Some(relay) => format!(
+                "MCP authority: PwrDisk desktop {version}. Stdio relay {relay} \
+                 handles transport only. The desktop owns tools, schemas, \
+                 annotations, instructions, skills, resources, prompts and \
+                 execution; its tree and marks remain authoritative."
+            ),
+            None => format!(
+                "MCP authority: standalone server {version}. No desktop is \
+                 connected. This process owns the interface, scans and marks. \
+                 Showing, review and removal require a desktop connection."
+            ),
+        };
+        let base =
+            self.with(|s| s.path_base().map(std::path::Path::to_path_buf));
+        let paths = base.map_or_else(
+            || {
+                "Session path base: unavailable; relative paths are \
+                    rejected. Use absolute paths or ~/…."
+                    .to_string()
+            },
+            |base| {
+                format!(
+                    "Session path base: {}. Relative paths resolve here \
+                     for this connection, independently of the scan root.",
+                    base.display(),
+                )
+            },
+        );
+        format!("{owner}\n{paths} ~ expands to this server's home directory.")
     }
 
     /// Run `f` with the session. A poisoned lock means a tool panicked; the
@@ -116,7 +159,7 @@ impl Server {
         annotations(title = "PwrDisk status", read_only_hint = true)
     )]
     async fn status(&self) -> String {
-        self.with(Session::status)
+        format!("{}\n{}", self.ownership(), self.with(Session::status))
     }
 
     /// Scan a directory tree and keep the result for the other tools. With
@@ -197,8 +240,8 @@ impl Server {
         self.with(|s| s.find(&params))
     }
 
-    /// Show a path in the PwrDisk window, selected in its directory, so
-    /// the user sees what you are looking at. Opens a window when none is.
+    /// Show a path in the running PwrDisk window, selected in its directory,
+    /// only when the user requests it. Requires a desktop connection.
     #[tool(
         name = "pwrdisk_show",
         annotations(
@@ -316,8 +359,8 @@ impl Server {
         self.with(|s| s.unmark(&params))
     }
 
-    /// Open PwrDisk's review screen over the marks, starting a window if
-    /// none is open; tell the user first, since it comes forward on their
+    /// Open the running desktop's review screen over the marks. Requires
+    /// a desktop connection; tell the user first, since it comes forward on their
     /// screen. The user decides there: Enter moves the marks to the trash,
     /// whose space returns once it is emptied; permanent deletion always
     /// asks first. Call `pwrdisk_status` afterwards for what was freed.
@@ -381,6 +424,23 @@ fn invalid(message: impl Into<String>) -> ErrorData {
 #[tool_handler(router = self.tool_router)]
 #[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for Server {
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, ErrorData> {
+        // Modern MCP carries identity on each request instead of requiring
+        // initialize. Keep its metadata and peer unchanged for elicitation.
+        if let Some(client) = context.meta.client_info() {
+            self.with(|session| session.set_client(&client.name));
+        }
+        self.tool_router
+            .call(rmcp::handler::server::tool::ToolCallContext::new(
+                self, request, context,
+            ))
+            .await
+    }
+
     fn get_info(&self) -> ServerConfig {
         let mut capabilities = ServerCapabilities::builder()
             .enable_tools()
@@ -393,13 +453,30 @@ impl ServerHandler for Server {
             std::iter::once((skills::EXTENSION.to_string(), JsonObject::new()))
                 .collect(),
         );
-        ServerConfig::new(capabilities)
+        let mut config = ServerConfig::new(capabilities)
             .with_server_info(
                 Implementation::new("pwrdisk", env!("CARGO_PKG_VERSION"))
                     .with_title("PwrDisk")
                     .with_website_url("https://github.com/pwrdrvr/PwrDisk"),
             )
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(format!(
+                "{} {}\n{INSTRUCTIONS}", self.ownership(),
+                "Interface definitions stay fixed for this connection. After \
+                 updating PwrDisk, reconnect MCP and rediscover tools, prompts \
+                 and skills/resources; previously loaded text may be cached. \
+                 Do not restart active sessions or replay approvals automatically."
+            ));
+        config.meta = Some(serde_json::from_value(serde_json::json!({
+            "com.pwrdrvr.pwrdisk/interface": {
+                "owner": if self.relay_version.is_some() { "desktop" } else { "standalone" },
+                "serverVersion": env!("CARGO_PKG_VERSION"),
+                "desktopVersion": self.relay_version.as_ref().map(|_| env!("CARGO_PKG_VERSION")),
+                "relayVersion": self.relay_version,
+                "streamProtocol": self.relay_version.as_ref().map(|_| crate::desktop::TRANSPORT_VERSION),
+                "pathBase": self.with(|session| session.path_base().map(std::path::Path::to_path_buf)),
+            }
+        })).expect("interface metadata object"));
+        config
     }
 
     /// Learn the client's name before answering: a client may call a tool
