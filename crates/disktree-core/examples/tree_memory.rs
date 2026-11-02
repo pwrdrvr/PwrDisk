@@ -31,18 +31,18 @@ fn main() -> std::io::Result<()> {
     let tree = scan(&root, ScanOptions::default())?;
     let scanned = started.elapsed().as_secs_f64();
     let (now, peak) = footprint_mib();
-    let arena = tree.arena_bytes();
+    let storage = tree.storage_bytes();
     let (allocations, sharings, both) = tree.side_records();
     println!(
         "scan={scanned:.2}s files={} dirs={} footprint+={:.0}MiB \
-         peak+={:.0}MiB arena_used={:.0}MiB arena_reserved={:.0}MiB \
+         peak+={:.0}MiB storage_used={:.0}MiB storage_reserved={:.0}MiB \
          allocations={allocations} sharings={sharings} both={both}",
         tree.root().files,
         tree.root().dirs,
         now - before,
         peak - before,
-        arena.used as f64 / MIB,
-        arena.reserved as f64 / MIB,
+        storage.used as f64 / MIB,
+        storage.reserved as f64 / MIB,
     );
 
     let started = Instant::now();

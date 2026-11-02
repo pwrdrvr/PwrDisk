@@ -61,14 +61,14 @@ impl Metric {
 }
 
 pub use crate::index::{
-    ArenaBytes, Block, Builder, Built, Children, Facts, Iter, Node, NodeMut,
-    Sibling, Tree,
+    Block, Builder, Built, Children, Facts, Iter, Node, NodeMut, Sibling,
+    StorageBytes, Tree,
 };
 
 /// A node and everything beneath it, owned and on the heap.
 ///
 /// How tests and small trees are written before they become a [`Tree`]; a
-/// scan builds its tree in arenas directly, through [`Tree::build`]. Its
+/// scan builds its tree in place, through [`Tree::build`]. Its
 /// facts read and write through `Deref`, as a node's do.
 #[derive(Clone, Debug)]
 pub struct Draft {

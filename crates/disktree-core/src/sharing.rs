@@ -607,12 +607,12 @@ mod tests {
         assert_eq!(nested.root().sharing(), flat.root().sharing());
         assert_eq!(nested.root().sharing().duplicate_bytes, 2 * 80);
 
-        // A second pass keeps every figure and grows no arena.
+        // A second pass keeps every figure and grows no side table.
         let before = nested.root().sharing();
-        let arena = nested.arena_bytes();
+        let storage = nested.storage_bytes();
         aggregate(&mut nested, Metric::Files);
         assert_eq!(nested.root().sharing(), before);
-        assert_eq!(nested.arena_bytes(), arena);
+        assert_eq!(nested.storage_bytes(), storage);
 
         // A directory that no longer shares gives its figures up.
         let mut draft = nested.root().to_draft();

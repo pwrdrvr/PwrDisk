@@ -1512,7 +1512,6 @@ dependencies = [
 name = "disktree-core"
 version = "0.14.0"
 dependencies = [
- "bumpalo",
  "chrono",
  "libc",
  "rayon",

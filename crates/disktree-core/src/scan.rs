@@ -7,10 +7,10 @@
 //! * every directory is a `PendingDir` with an atomic completion counter and a
 //!   `+1` sentinel, so a directory is only built once its own scan *and* all of
 //!   its subdirectory tasks have finished,
-//! * children are handed to the parent as finished nodes, made in the tree's
-//!   arenas (see [`crate::arena`]), and sizes are aggregated bottom-up in
-//!   one pass over the finished tree, which is also where hardlinks are
-//!   de-duplicated.
+//! * children are handed to the parent as finished nodes, appended to the
+//!   tree's buffers (see [`crate::index`]), and sizes are aggregated
+//!   bottom-up in one pass over the finished tree, which is also where
+//!   hardlinks are de-duplicated.
 //!
 //! What is added on top of dust's approach: live progress counters the UI can
 //! poll without locking, and cooperative cancellation so a re-scan can abandon
@@ -389,7 +389,7 @@ impl WalkContext {
     ///
     /// The entry's path is built only where it is used: most entries are
     /// files, and a disk has millions of them. The name is moved out of
-    /// the entry last, so it is copied only once, into the tree's arena.
+    /// the entry last, so it is copied only once, into the tree's names.
     fn classify(&self, dir: &Path, entry: &mut impl Listed) -> Classified {
         let listing = match entry.listing() {
             Ok(listing) => listing,
@@ -1377,7 +1377,7 @@ fn walk<'h>(
     // carries up to twice their size in slack, which a pending directory
     // would hold until its last subdirectory is done. Moving it in whole
     // made a home directory walk a second slower (measured before the
-    // arena, 5 interleaved pairs).
+    // tree held its own buffers, 5 interleaved pairs).
     let spawned = if descend { subdirs.len() } else { 0 };
     {
         let mut partial = lock(&dir.partial);

@@ -1,19 +1,29 @@
 //! How a scanned tree is held: in a handful of buffers, by `u32` index.
 //!
-//! Every node is in one vector, each directory's children a contiguous
-//! range of it, every name in one string, and the rare allocation and
-//! sharing records in side tables.
+//! Every node is a 64-byte record in one vector, each directory's children
+//! a contiguous run of it, every name in one string, and the allocation
+//! and sharing records, which most nodes lack, in side tables.
 //!
 //! A tree of separately allocated nodes is freed one `free()` at a time,
 //! each write reading a page back in, from the compressor if macOS has
-//! packed it away. Here a drop frees five buffers without reading them.
-//! Nothing here needs `unsafe`: an index is checked where a pointer would
-//! have to be trusted.
+//! packed it away: 0.8 to 0.9 s for a 20-million-node tree in a fresh
+//! process, 15 s in a window under memory pressure. Here a drop frees five
+//! buffers without reading them, in under a millisecond and with no page
+//! faults. Nothing here needs `unsafe`: an index is checked where a pointer
+//! would have to be trusted, and a name is a slice of a `String`.
 //!
-//! A directory's children are appended as one block when it is built, so
-//! a block always sits before the node that owns it, and the root is the
-//! last node. Reading goes through [`Node`], a cursor that pairs a stored
-//! record with the tree it indexes into; writing goes through [`NodeMut`].
+//! The walk builds on many workers at once. Each appends a directory's
+//! children as one block when the directory completes, under one lock, so
+//! blocks land in whatever order workers finish. [`Tree::build`] then
+//! reorders the nodes once so that every subtree is one contiguous run,
+//! and from then on a pass can hand separate subtrees to separate workers
+//! by splitting the vector, as [`Tree::par_bottom_up`] does. On a tree of
+//! 19.9 million nodes that took 2.6 to 3.9 s, and it is what keeps the
+//! totals pass at 0.1 to 0.2 s instead of 1.2 to 1.8 s in build order.
+//!
+//! Reading goes through [`Node`], a cursor that pairs a stored record with
+//! the tree it indexes into; writing goes through [`NodeMut`], or a pass
+//! over the whole tree.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -407,8 +417,8 @@ impl Store {
         self.root = 0;
     }
 
-    const fn bytes(&self) -> ArenaBytes {
-        ArenaBytes {
+    const fn bytes(&self) -> StorageBytes {
+        StorageBytes {
             used: self.nodes.len() * size_of::<Slot>()
                 + self.names.len()
                 + self.allocations.len() * size_of::<Allocation>()
@@ -425,7 +435,7 @@ impl Store {
 
 /// What a tree's buffers hold.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ArenaBytes {
+pub struct StorageBytes {
     /// Bytes holding nodes, names and side records.
     pub used: usize,
     /// Bytes the buffers have room for, including growth room that is
@@ -1037,7 +1047,7 @@ impl Tree {
         }
     }
 
-    pub const fn arena_bytes(&self) -> ArenaBytes {
+    pub const fn storage_bytes(&self) -> StorageBytes {
         self.store.bytes()
     }
 
@@ -1277,7 +1287,7 @@ mod tests {
             child.children().len() == 100
                 && child.children().at(99).name() == format!("{dir}-99")
         }));
-        let bytes = tree.arena_bytes();
+        let bytes = tree.storage_bytes();
         assert!(bytes.used > 0 && bytes.used <= bytes.reserved);
     }
 }

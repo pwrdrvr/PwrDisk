@@ -1,4 +1,4 @@
-//! Bounded-memory SSH traversal. No Node, arena, child vector or sort:
+//! Bounded-memory SSH traversal. No Node, child vector or sort:
 //! the receiver owns the tree; the helper retains only its open ancestors.
 use std::fs::{self, ReadDir};
 use std::io::{self, Write};
