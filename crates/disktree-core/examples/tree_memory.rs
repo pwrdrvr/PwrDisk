@@ -5,8 +5,9 @@
 //! plus compressed, what Activity Monitor calls Memory) after the scan and
 //! at its highest so far; the time to copy the tree, to re-rank it as the
 //! size/files toggle does, to derive its totals again and to classify it;
-//! and the time and page faults of dropping each copy. Run it in a fresh process each time: a drop's cost depends on
-//! what the allocator and the compressor hold.
+//! and the time and page faults of dropping each copy. Run it in a fresh
+//! process each time: a drop's cost depends on what the allocator and the
+//! compressor hold.
 
 #![allow(
     unsafe_code,
