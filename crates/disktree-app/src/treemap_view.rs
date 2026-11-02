@@ -9,7 +9,6 @@
 //! labels every frame costs a lookup, and it lets a label clip exactly to its
 //! own tile instead of bleeding into the neighbour.
 
-use std::ops::Range;
 use std::rc::Rc;
 
 use disktree_core::treemap::Rect;
@@ -18,7 +17,7 @@ use gpui_kit::{
     InteractiveElement as _, IntoElement, MouseDownEvent, MouseMoveEvent,
     ParentElement as _, Pixels, Point, ScrollWheelEvent, SharedString, Size,
     StatefulInteractiveElement as _, StrikethroughStyle, Styled, TextAlign,
-    TextRun, UnderlineStyle, Window, canvas, div, pattern_slash, px, quad,
+    TextRun, Window, canvas, div, pattern_slash, px, quad, underline_y_offset,
 };
 use gpui_omarchy::{ActiveTheme, Theme};
 
@@ -563,11 +562,10 @@ fn paint_labels(
             }),
             ..TextRun::default()
         };
-        let runs = name_runs(&run, label.found.clone(), decoration);
         let line = text_system.shape_line(
             SharedString::from(label.text.clone()),
             name_size,
-            &runs,
+            &[run],
             None,
         );
 
@@ -582,6 +580,36 @@ fn paint_labels(
                     window,
                     cx,
                 );
+                // The part of a name the find text matched is underlined, so
+                // a match reads as one without its colour. Painted here, not
+                // as a text run's underline: GPUI sets that below the
+                // baseline, which the slim band of a deeper directory clips
+                // away. This one rises to stay inside the label's region.
+                if let Some(found) = label
+                    .found
+                    .clone()
+                    .filter(|found| found.end <= label.text.len())
+                {
+                    let left = origin.x + line.x_for_index(found.start);
+                    let right = origin.x + line.x_for_index(found.end);
+                    let top = underline_top(
+                        origin.y
+                            + underline_y_offset(
+                                name_line_height,
+                                line.ascent,
+                                line.descent,
+                            ),
+                        mask.origin.y + mask.size.height,
+                        decoration,
+                    );
+                    window.paint_quad(gpui_kit::fill(
+                        Bounds::new(
+                            Point::new(left, top),
+                            Size::new(right - left, decoration),
+                        ),
+                        color,
+                    ));
+                }
 
                 if label.size_text.is_empty() {
                     return;
@@ -655,43 +683,10 @@ fn paint_labels(
     }
 }
 
-/// A label's name as runs: `base` throughout, with the bytes the find text
-/// matched underlined, so a match reads as one without its colour.
-fn name_runs(
-    base: &TextRun,
-    found: Option<Range<usize>>,
-    thickness: Pixels,
-) -> Vec<TextRun> {
-    // A range past the text would shape runs longer than the line; draw it
-    // plain rather than panic in the paint pass.
-    let Some(found) = found.filter(|found| {
-        !found.is_empty() && (..=base.len).contains(&found.end)
-    }) else {
-        return vec![base.clone()];
-    };
-    let underlined = TextRun {
-        len: found.len(),
-        underline: Some(UnderlineStyle {
-            thickness,
-            color: Some(base.color),
-            wavy: false,
-        }),
-        ..base.clone()
-    };
-    [
-        TextRun {
-            len: found.start,
-            ..base.clone()
-        },
-        underlined,
-        TextRun {
-            len: base.len - found.end,
-            ..base.clone()
-        },
-    ]
-    .into_iter()
-    .filter(|run| run.len > 0)
-    .collect()
+/// The top of a find match's underline: where GPUI would put it, raised
+/// as far as needed to stay inside the region the label may draw in.
+fn underline_top(natural: Pixels, bottom: Pixels, thickness: Pixels) -> Pixels {
+    natural.min(bottom - thickness)
 }
 
 fn to_window(rect: &Rect, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
@@ -794,40 +789,12 @@ mod tests {
         }
     }
 
-    /// The underline covers exactly the matched bytes, and a struck name
-    /// stays struck across every run, matched part included.
+    /// A slim band would clip GPUI's own underline position, so the
+    /// underline rises to stay inside; where there is room it is unmoved.
     #[test]
-    fn a_found_range_is_underlined_and_the_strike_runs_throughout() {
-        let base = TextRun {
-            len: "x.cache.y".len(),
-            strikethrough: Some(StrikethroughStyle {
-                thickness: px(1.),
-                color: None,
-            }),
-            ..TextRun::default()
-        };
-        let runs = name_runs(&base, Some(2..7), px(1.));
-        assert_eq!(
-            runs.iter().map(|run| run.len).collect::<Vec<_>>(),
-            [2, 5, 2]
-        );
-        assert_eq!(
-            runs.iter()
-                .map(|run| run.underline.is_some())
-                .collect::<Vec<_>>(),
-            [false, true, false]
-        );
-        assert!(runs.iter().all(|run| run.strikethrough.is_some()));
-
-        // A match at either end leaves no empty run; none, or one that no
-        // longer fits the text, leaves the name in a single plain run.
-        assert_eq!(name_runs(&base, Some(0..1), px(1.)).len(), 2);
-        assert_eq!(name_runs(&base, Some(8..9), px(1.)).len(), 2);
-        for found in [None, Some(3..3), Some(4..40)] {
-            let runs = name_runs(&base, found, px(1.));
-            assert_eq!(runs.len(), 1);
-            assert!(runs[0].underline.is_none());
-        }
+    fn a_find_underline_stays_inside_its_label() {
+        assert_eq!(underline_top(px(17.), px(16.), px(1.)), px(15.));
+        assert_eq!(underline_top(px(17.), px(22.), px(1.)), px(17.));
     }
 
     #[test]
