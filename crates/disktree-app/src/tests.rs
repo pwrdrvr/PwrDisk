@@ -1291,15 +1291,9 @@ fn find_field_never_draws_over_the_legend(cx: &mut TestAppContext) {
             draw(cx);
             let at = format!("{width}x900 at rem {rem}");
             let field = cx.debug_bounds("find-field").expect("find drawn");
-            let hint = cx.debug_bounds("find-hint").expect("hint drawn");
             let legend = cx.debug_bounds("legend").expect("legend drawn");
-            // Half a pixel for rounding where two edges meet. A hint with
-            // no width left draws nothing, wherever its origin falls.
-            assert!(
-                hint.size.width <= px(0.5)
-                    || hint.right() <= field.right() + px(0.5),
-                "{at}: the hint stays inside the field: {hint:?} {field:?}"
-            );
+            // Half a pixel for rounding where two edges meet. The field
+            // clips what it holds, so its own bounds are what is drawn.
             assert!(
                 legend.size.width <= px(0.5)
                     || field.right() <= legend.left() + px(0.5),
@@ -1311,15 +1305,22 @@ fn find_field_never_draws_over_the_legend(cx: &mut TestAppContext) {
             );
         }
     }
-    // At the size the overlap was seen, the hint is there to read and
+    // Where the overlap was seen, and narrower: the whole hint reads, and
     // the legend still shows beside it.
-    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
-    cx.update(|window, _| window.set_rem_size(px(16.)));
-    draw(cx);
-    let hint = cx.debug_bounds("find-hint").expect("hint drawn");
-    let legend = cx.debug_bounds("legend").expect("legend drawn");
-    assert!(hint.size.width > px(100.), "hint readable: {hint:?}");
-    assert!(legend.size.width > px(0.), "legend kept: {legend:?}");
+    for width in [1000., 1440.] {
+        cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
+        cx.update(|window, _| window.set_rem_size(px(16.)));
+        draw(cx);
+        let hint = cx.debug_bounds("find-hint").expect("hint drawn");
+        let field = cx.debug_bounds("find-field").expect("find drawn");
+        let legend = cx.debug_bounds("legend").expect("legend drawn");
+        assert!(
+            hint.size.width > px(100.)
+                && hint.right() <= field.right() + px(0.5),
+            "{width}: the whole hint fits in the field: {hint:?} {field:?}"
+        );
+        assert!(legend.size.width > px(0.), "{width}: legend {legend:?}");
+    }
 }
 
 #[gpui_kit::test]

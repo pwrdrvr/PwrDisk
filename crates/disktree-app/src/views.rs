@@ -1879,7 +1879,7 @@ fn trail_and_legend(
 /// Flex shrinking is proportional, so with equal weights the field lost
 /// width while the legend was still drawn and its no-wrap hint spilled
 /// over "Reclaimable". A weight this lopsided makes the legend clip away
-/// first; only once it is gone does the field's hint start to truncate.
+/// first; only once it is gone does the field narrow, clipping its hint.
 const LEGEND_YIELDS: f32 = 1000.;
 
 /// What the whole scan found, as one quiet line; unreadable paths are
@@ -3552,13 +3552,15 @@ fn find_field(app: &Disktree, theme: &Theme) -> Div {
                     .child(summary),
             )
         })
-        // The hint is the first thing in the field to give way: what was
-        // typed and what it matched stay whole, the hint ends in "…".
+        // Last in the field, so it is what the field's clip takes when the
+        // row is too short even without the legend. No ellipsis: layout
+        // rounding can leave the hint half a pixel under its own width, and
+        // an ellipsis then cut it although the field had room.
         .child(
             div()
                 .debug_selector(|| "find-hint".into())
-                .min_w_0()
-                .truncate()
+                .flex_shrink_0()
+                .whitespace_nowrap()
                 .text_size(text::CAPTION)
                 .text_color(theme.secondary.opacity(0.6))
                 .child(hint),
