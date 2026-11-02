@@ -21,6 +21,7 @@ fn main() -> std::io::Result<()> {
             ..ScanOptions::default()
         },
     )?;
+    let tree = tree.root();
     println!(
         "seconds={:.3} files={} listed={} clone_files={} clone_bytes={} duplicate_bytes={} private_bytes={} unknown_clones={} reclaim_lower={} reclaim_upper={}",
         started.elapsed().as_secs_f64(),

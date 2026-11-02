@@ -156,7 +156,7 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
    children when asked. Hardlink de-duplication zeroes a duplicate leaf's
    `bytes` while that pass runs; anything that patches a directory's `bytes`
    directly will be overwritten. `Node` is paid for tens of millions of
-   times, so `a_node_stays_small` holds its size.
+   times, so `a_node_stays_small` in `index.rs` holds its size.
 3. **A directory is only built when its own scan *and* every subdirectory task
    has finished.** That is the `+1` sentinel in `PendingDir::pending`. Building
    early silently drops whole subtrees — it has happened once.
@@ -227,6 +227,17 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
     the guards refuse, what removal does, or what a system hides from a
     scan updates the matching `references/<system>.md` in the same PR.
 
+15. **A tree owns a handful of buffers, by index.** Nodes live in one
+    vector, each directory's children a contiguous run of it, names in one
+    string and clone records in side tables, so dropping a tree frees five
+    buffers instead of tens of millions of allocations. A node is read
+    through a `Node<'_>` cursor from its tree and written through `NodeMut`
+    or a whole-tree pass. Build with `Tree::build` (a `Draft` for tests and
+    small trees); a subtree moves to another tree only as a copy. A
+    finished tree keeps every subtree one contiguous run, which is what
+    lets `par_bottom_up` split it across workers without `unsafe`: only
+    the order *within* a block may change after it is built.
+
 ## Where changes belong
 
 | change | where |
@@ -236,6 +247,7 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
 | joining, splitting or comparing a scanned path | `crates/disktree-core/src/path_style.rs` |
 | measurement, filtering, parallelism | `crates/disktree-core/src/scan.rs` |
 | what a node is, or a derived total | `crates/disktree-core/src/tree.rs` |
+| how a tree is held in memory, its buffers and parallel passes | `crates/disktree-core/src/index.rs` |
 | tile geometry, nesting, the merged tail | `crates/disktree-core/src/treemap.rs` |
 | anything that deletes, or refuses to | `crates/disktree-core/src/removal.rs` |
 | free space and projections | `crates/disktree-core/src/space.rs` |

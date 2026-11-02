@@ -110,7 +110,7 @@ fn private_service_stores_draw_unavailable_and_partial_figures(
     cx: &mut TestAppContext,
 ) {
     use disktree_core::macos_services::{Usage, usage};
-    use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
@@ -118,21 +118,22 @@ fn private_service_stores_draw_unavailable_and_partial_figures(
     assert!(cx.debug_bounds("macos-services").is_none());
     update(&view, cx, |app, cx| {
         // Replace the fixture's tree without starting a real system scan.
-        let mut history = Node::directory(".fseventsd");
+        let mut history = Draft::directory(".fseventsd");
         history.read_error = true;
-        let mut index = Node::directory(".Spotlight-V100");
+        let mut index = Draft::directory(".Spotlight-V100");
         index
             .children
-            .push(Node::entry("store", NodeKind::File, 8192));
+            .push(Draft::entry("store", NodeKind::File, 8192));
         index.read_error = true;
-        let mut data = Node::directory("Data");
+        let mut data = Draft::directory("Data");
         data.children = vec![history, index];
-        let mut volumes = Node::directory("Volumes");
+        let mut volumes = Draft::directory("Volumes");
         volumes.children.push(data);
-        let mut system = Node::directory("System");
+        let mut system = Draft::directory("System");
         system.children.push(volumes);
-        let mut root = Node::directory("/");
+        let mut root = Draft::directory("/");
         root.children.push(system);
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         disktree_core::classify::classify(&mut root);
         app.tree = Some(std::sync::Arc::new(root));
@@ -191,14 +192,14 @@ fn private_service_stores_draw_unavailable_and_partial_figures(
 fn unreadable_service_stores_stay_quiet_without_hiding_other_privacy_errors(
     cx: &mut TestAppContext,
 ) {
-    use disktree_core::tree::Node;
+    use disktree_core::tree::{Draft, Tree};
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
-        let mut tree = Node::directory(".fseventsd");
+        let mut tree = Draft::directory(".fseventsd");
         tree.read_error = true;
-        app.tree = Some(std::sync::Arc::new(tree));
+        app.tree = Some(std::sync::Arc::new(Tree::from(tree)));
         app.root_path = PathBuf::from("/System/Volumes/Data/.fseventsd");
         app.selected = None;
         app.hovered = None;
@@ -929,7 +930,7 @@ fn the_first_scan_shows_what_it_is_doing_then_the_treemap(
             app.layout().map(<[Tile]>::len).unwrap_or_default(),
             app.selected.is_some(),
             app.tree().is_some_and(|tree| {
-                tree.children.iter().any(|c| c.name.starts_with('.'))
+                tree.children().iter().any(|c| c.name().starts_with('.'))
             }),
         )
     });
@@ -952,7 +953,7 @@ fn keys_walk_the_tree_and_mark_what_is_selected(cx: &mut TestAppContext) {
     let (selected, name) = read(&view, cx, |app| {
         (
             app.selected.clone(),
-            app.node_at(&[0]).map(|node| node.name.to_string()),
+            app.node_at(&[0]).map(|node| node.name().to_string()),
         )
     });
     assert_eq!(selected, Some(vec![0]));
@@ -995,9 +996,9 @@ fn a_permanent_deletion_asks_in_an_alert_dialog_then_removes(
         let junk = app
             .tree()
             .and_then(|tree| {
-                tree.children
+                tree.children()
                     .iter()
-                    .position(|child| &*child.name == "junk")
+                    .position(|child| child.name() == "junk")
                     .map(|index| vec![index])
             })
             .expect("the junk directory");
@@ -1237,7 +1238,7 @@ fn typing_filters_live_and_enter_shows_only_the_matches(
             tiles
                 .iter()
                 .filter_map(|tile| app.node_at(tile.crumbs()))
-                .map(|node| node.name.to_string())
+                .map(|node| node.name().to_string())
                 .collect::<Vec<_>>()
         })
     };
@@ -1251,9 +1252,9 @@ fn typing_filters_live_and_enter_shows_only_the_matches(
     let (count, applied, keep_filtered) = read(&view, cx, |app| {
         let matches = app.matches.as_deref().expect("matching as it is typed");
         let keep = app.tree().and_then(|tree| {
-            tree.children
+            tree.children()
                 .iter()
-                .position(|child| &*child.name == "keep")
+                .position(|child| child.name() == "keep")
         });
         (
             matches.count,
@@ -2621,14 +2622,15 @@ fn remote_review_copies_host_guarded_script_and_prompt(
 fn remote_history_keeps_literal_and_nested_names_separate(
     cx: &mut TestAppContext,
 ) {
-    use disktree_core::tree::Node;
+    use disktree_core::tree::{Draft, Tree};
     cx.update(init);
-    let mut root = Node::directory("srv");
-    root.children.push(Node::directory(r"a\b"));
-    let mut a = Node::directory("a");
-    a.children.push(Node::directory("b"));
+    let mut root = Draft::directory("srv");
+    root.children.push(Draft::directory(r"a\b"));
+    let mut a = Draft::directory("a");
+    a.children.push(Draft::directory("b"));
     root.children.push(a);
-    root.children.push(Node::directory("other"));
+    root.children.push(Draft::directory("other"));
+    let root = Tree::from(root);
     let (view, cx) = cx.add_window_view(move |_, cx| {
         let mut app =
             Disktree::with_tree(PathBuf::from("/srv"), root, options(), 3, cx);
@@ -2662,16 +2664,17 @@ fn remote_history_keeps_literal_and_nested_names_separate(
 fn remote_paths_keep_the_hosts_separators_on_every_client(
     cx: &mut TestAppContext,
 ) {
-    use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
 
     cx.update(init);
-    let mut root = Node::directory("data");
-    let mut logs = Node::directory(r"logs\old");
+    let mut root = Draft::directory("data");
+    let mut logs = Draft::directory(r"logs\old");
     logs.children
-        .push(Node::entry("a:b", NodeKind::File, 4_000));
+        .push(Draft::entry("a:b", NodeKind::File, 4_000));
     root.children.push(logs);
     root.children
-        .push(Node::entry("notes", NodeKind::File, 1_000));
+        .push(Draft::entry("notes", NodeKind::File, 1_000));
+    let mut root = Tree::from(root);
     aggregate(&mut root, Metric::Bytes);
     let root_path = PathBuf::from("/srv/data");
     let (view, cx) = cx.add_window_view(move |_, cx| {
@@ -2807,9 +2810,9 @@ fn interface_zoom_scales_the_rem_and_the_header_band(cx: &mut TestAppContext) {
 fn child_crumbs(app: &Disktree, parent: &[usize], name: &str) -> Vec<usize> {
     let node = app.node_at(parent).expect("the parent");
     let index = node
-        .children
+        .children()
         .iter()
-        .position(|child| &*child.name == name)
+        .position(|child| child.name() == name)
         .unwrap_or_else(|| panic!("no {name}"));
     let mut crumbs = parent.to_vec();
     crumbs.push(index);
@@ -3148,7 +3151,7 @@ fn widening_reuses_the_tree_it_has_and_reads_only_the_rest(
             .selected
             .as_deref()
             .and_then(|crumbs| app.node_at(crumbs))
-            .map(|node| node.name.to_string());
+            .map(|node| node.name().to_string());
         (junk, tree.child_named("keep").is_some(), selected)
     });
     assert_eq!(reused, before, "junk was reused, not walked again");
@@ -3195,7 +3198,7 @@ fn a_crumb_lists_its_siblings_and_jumps_sideways(cx: &mut TestAppContext) {
     let junk = read(&view, cx, |app| {
         app.tree()
             .and_then(|tree| {
-                tree.children.iter().position(|c| &*c.name == "junk")
+                tree.children().iter().position(|c| c.name() == "junk")
             })
             .expect("junk")
     });
@@ -3246,7 +3249,7 @@ fn a_crumb_lists_its_siblings_and_jumps_sideways(cx: &mut TestAppContext) {
     let cache = read(&view, cx, |app| {
         app.tree()
             .and_then(|tree| {
-                tree.children.iter().position(|c| &*c.name == ".cache")
+                tree.children().iter().position(|c| c.name() == ".cache")
             })
             .expect(".cache")
     });
@@ -3494,6 +3497,67 @@ fn switching_the_metric_keeps_the_directory_and_the_selection(
     assert_eq!(read(&view, cx, Disktree::current_path), root.join("big"));
 }
 
+/// The size/files toggle reorders the window's tree where it lies rather
+/// than copying it, yet still hands out a new tree; a tree another task is
+/// reading is copied and left in its old order.
+#[gpui_kit::test]
+fn toggling_the_metric_reorders_without_copying_the_tree(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("big")).expect("mkdir");
+    std::fs::write(root.join("big/one.bin"), vec![b'x'; 500_000])
+        .expect("write");
+    for index in 0..5 {
+        let file = root.join(format!("many/{index}.txt"));
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&file, b"x").expect("write");
+    }
+    let (view, cx) = view_over(root, cx);
+    draw(cx);
+    let first = |app: &Disktree| {
+        app.tree
+            .as_ref()
+            .expect("tree")
+            .root()
+            .children()
+            .at(0)
+            .name()
+            .to_string()
+    };
+
+    let (tree, children) = read(&view, cx, |app| {
+        let tree = app.tree.as_ref().expect("tree");
+        // Where the root's children start: an in-place reorder keeps it.
+        let children = tree.root().children().at(0).facts();
+        (std::sync::Arc::as_ptr(tree), std::ptr::from_ref(children))
+    });
+    assert_eq!(read(&view, cx, first), "big");
+    update(&view, cx, Disktree::toggle_metric);
+    draw(cx);
+    assert_eq!(read(&view, cx, first), "many", "most files first");
+    let (after, children_after) = read(&view, cx, |app| {
+        let tree = app.tree.as_ref().expect("tree");
+        // Where the root's children start: an in-place reorder keeps it.
+        let children = tree.root().children().at(0).facts();
+        (std::sync::Arc::as_ptr(tree), std::ptr::from_ref(children))
+    });
+    assert_eq!(children_after, children, "the nodes were not copied");
+    assert_ne!(after, tree, "but the tree is a new one");
+
+    let held = read(&view, cx, |app| app.tree.clone().expect("tree"));
+    update(&view, cx, Disktree::toggle_metric);
+    draw(cx);
+    assert_eq!(read(&view, cx, first), "big");
+    assert_eq!(
+        held.root().children().at(0).name(),
+        "many",
+        "a reader keeps its order"
+    );
+}
+
 /// Escape stops a first scan. What the walk found so far is not shown as a
 /// tree, a late result is ignored, and `r` starts over.
 #[gpui_kit::test]
@@ -3721,9 +3785,9 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         assert!(copies.private <= 8 * 1024, "{copies:?}");
         assert!(copies.shared >= 8 * 1024 * 1024 - 64 * 1024, "{copies:?}");
         let node = tree
-            .children
+            .children()
             .iter()
-            .find(|node| node.name.as_ref() == "copies")
+            .find(|node| node.name() == "copies")
             .expect("copies");
         let split = crate::views::clone_split(node).expect("a split");
         assert!(split.contains("shared with other APFS clones"), "{split}");
@@ -3736,9 +3800,9 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         let index = app
             .tree()
             .expect("tree")
-            .children
+            .children()
             .iter()
-            .position(|node| node.name.as_ref() == "copies")
+            .position(|node| node.name() == "copies")
             .expect("copies");
         app.toggle_mark(&[index], cx);
         app.screen = Screen::Review;
@@ -3783,9 +3847,9 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         let index = app
             .tree()
             .expect("tree")
-            .children
+            .children()
             .iter()
-            .position(|node| node.name.as_ref() == "original")
+            .position(|node| node.name() == "original")
             .expect("original");
         app.toggle_mark(&[index], cx);
         let plan = app.plan();
@@ -3821,7 +3885,7 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
     update(&view, cx, |app, _| {
         app.marks.refresh(
             &root,
-            &refreshed,
+            refreshed.root(),
             disktree_core::tree::Metric::Bytes,
             app.path_style(),
         );
@@ -3963,20 +4027,21 @@ fn the_power_menu_offers_only_what_the_cpus_can_tell_apart(
 fn marked_window_resolution_budget(cx: &mut TestAppContext) {
     use crate::marks::work;
     use disktree_core::removal::Target;
-    use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
 
     cx.update(init);
     let mut measure = |count| {
         let temp = tempfile::tempdir().expect("tempdir");
         let root_path = temp.path().to_path_buf();
-        let mut tree = Node::directory("root");
+        let mut tree = Draft::directory("root");
         for index in 0..count {
-            let mut folder = Node::directory(format!("folder-{index:05}"));
+            let mut folder = Draft::directory(format!("folder-{index:05}"));
             folder
                 .children
-                .push(Node::entry("payload", NodeKind::File, 1));
+                .push(Draft::entry("payload", NodeKind::File, 1));
             tree.children.push(folder);
         }
+        let mut tree = Tree::from(tree);
         aggregate(&mut tree, Metric::Bytes);
         let (view, window) = cx.add_window_view(move |_, cx| {
             Disktree::with_tree(root_path.clone(), tree, options(), 3, cx)
@@ -4097,9 +4162,10 @@ fn marked_tiles_follow_metric_rescan_and_mark_changes(cx: &mut TestAppContext) {
         std::slice::from_ref(&junk)
     );
     update(&view, window, |app, cx| {
-        let mut tree = (**app.tree.as_ref().expect("tree")).clone();
+        // Child lists are fixed once built: reorder through a draft.
+        let mut tree = app.tree.as_ref().expect("tree").root().to_draft();
         tree.children.reverse();
-        app.tree = Some(Arc::new(tree));
+        app.tree = Some(Arc::new(disktree_core::tree::Tree::from(tree)));
         cx.notify();
     });
     draw(window);
@@ -4246,21 +4312,22 @@ fn queue_budget_view(
     count: usize,
     cx: &mut TestAppContext,
 ) -> (tempfile::TempDir, Entity<Disktree>, &mut Window) {
-    use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
 
     let temp = tempfile::tempdir().expect("tempdir");
     let root_path = temp.path().to_path_buf();
-    let mut tree = Node::directory("root");
-    let mut parent = Node::directory("container");
+    let mut tree = Draft::directory("root");
+    let mut parent = Draft::directory("container");
     for index in 0..count {
-        parent.children.push(Node::entry(
+        parent.children.push(Draft::entry(
             format!("file-{index:05}"),
             NodeKind::File,
             1,
         ));
     }
     tree.children.push(parent);
-    tree.children.push(Node::entry("keep", NodeKind::File, 1));
+    tree.children.push(Draft::entry("keep", NodeKind::File, 1));
+    let mut tree = Tree::from(tree);
     aggregate(&mut tree, Metric::Bytes);
     let (view, window) = cx.add_window_view(move |_, cx| {
         Disktree::with_tree(root_path.clone(), tree, options(), 3, cx)
@@ -4447,7 +4514,7 @@ fn covered_review_status_budget(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn folder_queue_construction_budget(cx: &mut TestAppContext) {
     use crate::marks::work;
-    use disktree_core::tree::{Node, NodeKind, aggregate};
+    use disktree_core::tree::{Draft, NodeKind, Tree, aggregate};
     use std::sync::Arc;
 
     cx.update(init);
@@ -4455,14 +4522,18 @@ fn folder_queue_construction_budget(cx: &mut TestAppContext) {
         let (_temp, view, window) = queue_budget_view(count, cx);
         let operations = update(&view, window, |app, cx| {
             let metric = app.options.metric;
-            let tree = Arc::make_mut(app.tree.as_mut().expect("tree"));
-            for child in &mut tree.children[0].children {
+            // Child lists are fixed once built: turn each file into a
+            // folder through a draft, then build the tree again.
+            let mut draft = app.tree.as_ref().expect("tree").root().to_draft();
+            for child in &mut draft.children[0].children {
                 child.kind = NodeKind::Directory;
                 child
                     .children
-                    .push(Node::entry("payload", NodeKind::File, 1));
+                    .push(Draft::entry("payload", NodeKind::File, 1));
             }
-            aggregate(tree, metric);
+            let mut tree = Tree::from(draft);
+            aggregate(&mut tree, metric);
+            app.tree = Some(Arc::new(tree));
             work::reset();
             let start = std::time::Instant::now();
             for index in 0..count {
@@ -5873,7 +5944,7 @@ fn a_large_directory_keeps_zero_weight_files_reachable_in_bounded_pages(
     assert!(cx.debug_bounds("file-row-49999").is_some());
     assert!(cx.debug_bounds("file-row-49899").is_none());
     read(&view, cx, |app| {
-        assert_eq!(app.current().unwrap().children.len(), 50_000);
+        assert_eq!(app.current().unwrap().children().len(), 50_000);
         assert_eq!(app.selected.as_deref(), Some([49_999].as_slice()));
         assert!(app.marks.is_empty());
     });
@@ -6432,7 +6503,7 @@ fn review_with_tree<'a>(
 ) -> (
     Entity<Disktree>,
     &'a mut Window,
-    std::sync::Weak<disktree_core::tree::Node>,
+    std::sync::Weak<disktree_core::tree::Tree>,
 ) {
     let (view, cx) = view_over(temp, cx);
     draw(cx);
@@ -6690,18 +6761,18 @@ fn marking_a_worktree_trio_one_by_one_frees_one_copy_at_the_end(
     cx: &mut TestAppContext,
 ) {
     use disktree_core::sharing::{Allocation, CloneInfo};
-    use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
     const MIB: u64 = 1024 * 1024;
 
     cx.update(init);
     let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
         .expect("tempdir in the checkout");
     let root_path = std::fs::canonicalize(temp.path()).expect("root");
-    let mut root = Node::directory("fixture");
+    let mut root = Draft::directory("fixture");
     for name in ["wt-a", "wt-b", "wt-c"] {
         std::fs::create_dir(root_path.join(name)).expect("mkdir");
-        let mut dir = Node::directory(name);
-        let mut file = Node::entry("objects", NodeKind::File, 10_140 * MIB);
+        let mut dir = Draft::directory(name);
+        let mut file = Draft::entry("objects", NodeKind::File, 10_140 * MIB);
         file.allocation = Some(Box::new(Allocation {
             bytes: 10_140 * MIB,
             identity: None,
@@ -6717,9 +6788,10 @@ fn marking_a_worktree_trio_one_by_one_frees_one_copy_at_the_end(
         }));
         dir.children.push(file);
         dir.children
-            .push(Node::entry("own", NodeKind::File, 100 * MIB));
+            .push(Draft::entry("own", NodeKind::File, 100 * MIB));
         root.children.push(dir);
     }
+    let mut root = Tree::from(root);
     aggregate(&mut root, Metric::Bytes);
     let path = root_path.clone();
     let (view, cx) = cx.add_window_view(move |_, cx| {

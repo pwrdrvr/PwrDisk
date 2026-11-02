@@ -36,8 +36,8 @@ fn executable_returns_a_read_only_snapshot() {
         read_snapshot(&mut BufReader::new(child.stdout.take().unwrap()))
             .unwrap();
     assert!(child.wait().unwrap().success());
-    assert_eq!(snapshot.tree.bytes, 5);
-    assert_eq!(snapshot.tree.files, 1);
+    assert_eq!(snapshot.tree.root().bytes, 5);
+    assert_eq!(snapshot.tree.root().files, 1);
     assert_eq!(snapshot.header.root, dir.path().canonicalize().unwrap());
     assert_eq!(std::fs::read(file).unwrap(), b"hello");
 }
@@ -123,7 +123,7 @@ fn a_live_supervised_client_receives_a_complete_snapshot() {
     let snapshot =
         read_snapshot(&mut BufReader::new(helper.0.stdout.take().unwrap()))
             .unwrap();
-    assert_eq!(snapshot.tree.files, 1);
+    assert_eq!(snapshot.tree.root().files, 1);
     assert!(helper.0.wait().unwrap().success());
     drop(input);
 }

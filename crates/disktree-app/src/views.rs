@@ -1323,7 +1323,7 @@ fn sibling_menu(
         if parent.is_empty() {
             app.display_path(&app.root_path)
         } else {
-            node.name.to_string()
+            node.name().to_string()
         }
     });
     let metric = app.options.metric;
@@ -2108,7 +2108,7 @@ fn selection_section(
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .child(node.name.to_string()),
+                            .child(node.name().to_string()),
                     ),
             )
             .child(
@@ -2127,7 +2127,7 @@ fn selection_section(
         Metric::Bytes => widgets::split_size(&human_bytes(node.bytes)),
         Metric::Files => (widgets::human_count(node.files), "files".into()),
     };
-    if disktree_core::macos_services::is_service_name(&node.name)
+    if disktree_core::macos_services::is_service_name(node.name())
         && let (Some(tree), Some(path)) = (app.tree(), path.as_deref())
     {
         use disktree_core::macos_services::{Usage, usage};
@@ -2594,7 +2594,7 @@ fn insight_text(app: &Disktree, candidate: &Candidate) -> (String, String) {
     let chain = tree
         .map_or_else(Vec::new, |tree| tree.resolve_chain(&candidate.crumbs));
     let names: Vec<&str> =
-        chain.iter().skip(1).map(|node| &*node.name).collect();
+        chain.iter().skip(1).map(|node| node.name()).collect();
     let tail = names[names.len().saturating_sub(2)..].join("/");
     match &candidate.finding {
         Finding::Reclaimable(reason) => (tail, reason.label().to_string()),
@@ -4653,7 +4653,7 @@ fn node_card(
     let marked = path
         .as_deref()
         .is_some_and(|path| app.marks.contains(path, app.path_style()));
-    let hidden = node.name.starts_with('.');
+    let hidden = node.name().starts_with('.');
     let covered = marks_ancestor(app, path.as_deref());
 
     let mut tip =
@@ -4681,7 +4681,7 @@ fn node_card(
                             .min_w_0()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme.bright)
-                            .child(node.name.to_string()),
+                            .child(node.name().to_string()),
                     ),
             )
             .child(
@@ -4983,7 +4983,7 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
 /// A node's listed bytes split into private and APFS-clone-shared, as the
 /// MCP rows read; `None` without clone blocks, so other systems and other
 /// scans show nothing new. Tile weights stay the allocated bytes.
-pub fn clone_split(node: &disktree_core::tree::Node) -> Option<String> {
+pub fn clone_split(node: disktree_core::tree::Node<'_>) -> Option<String> {
     disktree_link::Clones::of(node)?.split()
 }
 

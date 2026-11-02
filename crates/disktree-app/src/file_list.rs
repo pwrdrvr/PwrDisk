@@ -50,7 +50,7 @@ impl Disktree {
     pub fn file_turn_page(&mut self, step: isize, cx: &mut Context<'_, Self>) {
         let entries = self.filter_applied.then(|| self.file_entries());
         let count = entries.as_ref().map_or_else(
-            || self.current().map_or(0, |node| node.children.len()),
+            || self.current().map_or(0, |node| node.children().len()),
             Vec::len,
         );
         if count == 0 {
@@ -76,7 +76,7 @@ impl Disktree {
     }
     pub fn file_entries(&self) -> Vec<usize> {
         self.current().map_or_else(Vec::new, |node| {
-            (0..node.children.len())
+            (0..node.children().len())
                 .filter(|index| {
                     let mut crumbs = self.crumbs.clone();
                     crumbs.push(*index);
@@ -93,7 +93,7 @@ impl Disktree {
     pub fn file_step(&mut self, step: isize, cx: &mut Context<'_, Self>) {
         let entries = self.filter_applied.then(|| self.file_entries());
         let count = entries.as_ref().map_or_else(
-            || self.current().map_or(0, |node| node.children.len()),
+            || self.current().map_or(0, |node| node.children().len()),
             Vec::len,
         );
         if count == 0 {
@@ -139,7 +139,7 @@ pub fn list(
     // with millions of zero-weight files that the mosaic cannot draw.
     let entries = app.filter_applied.then(|| app.file_entries());
     let count = entries.as_ref().map_or_else(
-        || app.current().map_or(0, |node| node.children.len()),
+        || app.current().map_or(0, |node| node.children().len()),
         Vec::len,
     );
     let page = app.file_page.min(count.saturating_sub(1) / PAGE_SIZE);
@@ -241,7 +241,7 @@ pub fn list(
             .child(format!(
                 "{}{} · {}{clones} · {}",
                 if node.is_dir() { "▸ " } else { "" },
-                node.name,
+                node.name(),
                 human_bytes(node.bytes),
                 if marked {
                     "Marked"

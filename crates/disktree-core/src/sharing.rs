@@ -5,9 +5,12 @@
 //! tzarebczan/diskhound#40). Clone IDs describe full data-fork clones, not
 //! every shared extent of modified files.
 
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
-use crate::tree::Node;
+use std::sync::Mutex;
+
+use crate::tree::{Node, Tree};
 
 mod reclaim;
 pub use reclaim::{Estimate, estimate};
@@ -67,20 +70,15 @@ impl Sharing {
 }
 
 /// Leaf metadata is already retained; do not allocate another box per clone.
-pub(crate) fn leaf_summary(node: &Node) -> Sharing {
-    let Some(allocation) = node.allocation.as_deref() else {
+pub(crate) fn leaf_summary(node: Node<'_>) -> Sharing {
+    let Some(allocation) = node.allocation() else {
         return Sharing::default();
     };
     let mut summary = Sharing {
         estimate: Some(allocation.estimate()),
         ..Sharing::default()
     };
-    if let Some(info) = allocation.clone.filter(|_| node.bytes > 0) {
-        summary.files = 1;
-        summary.bytes = node.bytes;
-        summary.private_bytes = info.private_bytes.unwrap_or(0).min(node.bytes);
-        summary.unknown_files = u64::from(info.private_bytes.is_none());
-    }
+    own(node, &mut summary);
     summary
 }
 
@@ -146,103 +144,269 @@ const MAX_CLONE_GROUPS: usize = 1_000_000;
 
 /// Small-to-large merging avoids walking every subtree for every ancestor.
 /// Hardlink duplicates already have zero weight when this pass runs.
-pub(crate) fn refresh(node: &mut Node) {
-    collect(node, MAX_CLONE_GROUPS);
+pub(crate) fn refresh(tree: &mut Tree) {
+    collect(tree, MAX_CLONE_GROUPS);
 }
 
-fn collect(node: &mut Node, limit: usize) -> (Groups, reclaim::Accumulator) {
-    let mut allocation = if node.is_dir() {
-        reclaim::Accumulator::new(limit)
-    } else {
-        reclaim::Accumulator::leaf(node, limit)
-    };
-    let mut groups = Groups::default();
-    let mut summary = Sharing::default();
-    if let Some(info) = node
-        .allocation
-        .as_deref()
+/// A node's new sharing figures, by its position in the tree.
+type Update = (u32, Option<Sharing>);
+
+/// Where workers leave their updates: one list per run of work, so none
+/// is copied into another.
+type Sink = Mutex<Vec<Vec<Update>>>;
+
+/// The pass reads the tree on every worker and writes nothing; the
+/// figures it settles go into the tree afterwards, by position, since a
+/// write would take the whole tree from every other worker.
+fn collect(tree: &mut Tree, limit: usize) -> (Groups, reclaim::Accumulator) {
+    let sink = Sink::default();
+    let mut updates = Vec::new();
+    let (groups, allocation, _) =
+        collect_at(tree.root(), limit, 0, &mut updates, &sink);
+    let mut lists = sink
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    lists.push(updates);
+    tree.set_sharing(lists.into_iter().flatten());
+    (groups, allocation)
+}
+
+/// A file's clone facts in a directory's figures: what [`collect`] of the
+/// file would return, merged, without the file's own maps. Most files of
+/// a large tree are leaves, and a map apiece was most of this pass's time.
+fn fold_leaf(
+    leaf: Node<'_>,
+    limit: usize,
+    part: &mut Part,
+    updates: &mut Vec<Update>,
+) {
+    // Only a directory keeps figures; clear a file's only if it has some,
+    // so a pass reads its millions of files without writing to them.
+    if leaf.stored_sharing().is_some() {
+        updates.push((leaf.id(), None));
+    }
+    part.allocation.add_leaf(leaf);
+    if let Some((key, group)) = own(leaf, &mut part.summary) {
+        join(&mut part.groups, key, group, limit, &mut part.summary);
+    }
+}
+
+/// A node's own clone figures, and its group when it can repeat bytes.
+fn own(node: Node<'_>, summary: &mut Sharing) -> Option<((u64, u64), Group)> {
+    let info = node
+        .allocation()
         .and_then(|allocation| allocation.clone)
-        .filter(|_| node.bytes > 0)
-    {
-        summary.files = 1;
-        summary.bytes = node.bytes;
-        summary.private_bytes = info.private_bytes.unwrap_or(0).min(node.bytes);
-        summary.unknown_files = u64::from(info.private_bytes.is_none());
-        if info.device != 0 && info.id != 0 && info.references >= 2 {
-            groups.insert(
-                (info.device, info.id),
-                Group {
-                    // A modified clone repeats only what it still shares;
-                    // its private blocks are its own. An unknown private
-                    // size keeps the whole data fork, as before.
-                    bytes: info.data_bytes.min(
-                        node.bytes
-                            .saturating_sub(info.private_bytes.unwrap_or(0)),
-                    ),
-                    count: 1,
+        .filter(|_| node.bytes > 0)?;
+    summary.files += 1;
+    summary.bytes = summary.bytes.saturating_add(node.bytes);
+    summary.private_bytes = summary
+        .private_bytes
+        .saturating_add(info.private_bytes.unwrap_or(0).min(node.bytes));
+    summary.unknown_files += u64::from(info.private_bytes.is_none());
+    (info.device != 0 && info.id != 0 && info.references >= 2).then(|| {
+        (
+            (info.device, info.id),
+            Group {
+                // A modified clone repeats only what it still shares; its
+                // private blocks are its own. An unknown private size keeps
+                // the whole data fork, as before.
+                bytes: info.data_bytes.min(
+                    node.bytes.saturating_sub(info.private_bytes.unwrap_or(0)),
+                ),
+                count: 1,
+            },
+        )
+    })
+}
+
+fn join(
+    groups: &mut Groups,
+    key: (u64, u64),
+    group: Group,
+    limit: usize,
+    summary: &mut Sharing,
+) {
+    reclaim::work();
+    if groups.len() >= limit && !groups.contains_key(&key) {
+        summary.groups_truncated = true;
+        return;
+    }
+    groups
+        .entry(key)
+        .and_modify(|old| {
+            // A scan is not atomic. Use the smaller observation when a file
+            // changes while its clone group is being measured.
+            let before = old.duplicates().saturating_add(group.duplicates());
+            old.bytes = old.bytes.min(group.bytes);
+            old.count += group.count;
+            summary.duplicate_bytes = summary
+                .duplicate_bytes
+                .saturating_sub(before)
+                .saturating_add(old.duplicates());
+        })
+        .or_insert(group);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Calls of `collect_at`, each of which makes a node's maps.
+    static VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A directory's figures while its children are added: what [`collect`]
+/// returns, with the sums its children contribute.
+struct Part {
+    groups: Groups,
+    allocation: reclaim::Accumulator,
+    summary: Sharing,
+}
+
+impl Part {
+    fn new(limit: usize) -> Self {
+        Self {
+            groups: Groups::default(),
+            allocation: reclaim::Accumulator::new(limit),
+            summary: Sharing::default(),
+        }
+    }
+
+    /// Add one child: a file folded straight into these maps, or a
+    /// directory collected and then merged.
+    fn add(
+        &mut self,
+        child: Node<'_>,
+        limit: usize,
+        depth: usize,
+        updates: &mut Vec<Update>,
+        sink: &Sink,
+    ) {
+        if !child.is_dir() {
+            fold_leaf(child, limit, self, updates);
+            return;
+        }
+        let (groups, allocation, summary) =
+            collect_at(child, limit, depth + 1, updates, sink);
+        self.merge(
+            Self {
+                groups,
+                allocation,
+                summary,
+            },
+            limit,
+        );
+    }
+
+    /// Merge the figures of children that follow these.
+    fn merge(&mut self, mut other: Self, limit: usize) {
+        self.allocation.merge(other.allocation);
+        let (mine, theirs) = (&mut self.summary, other.summary);
+        mine.duplicate_bytes =
+            mine.duplicate_bytes.saturating_add(theirs.duplicate_bytes);
+        mine.groups_truncated |= theirs.groups_truncated;
+        mine.files += theirs.files;
+        mine.bytes = mine.bytes.saturating_add(theirs.bytes);
+        mine.private_bytes =
+            mine.private_bytes.saturating_add(theirs.private_bytes);
+        mine.unknown_files += theirs.unknown_files;
+        if self.groups.len() < other.groups.len() {
+            std::mem::swap(&mut self.groups, &mut other.groups);
+        }
+        for (key, group) in other.groups {
+            join(&mut self.groups, key, group, limit, &mut self.summary);
+        }
+    }
+}
+
+/// `node`'s clone groups and reclaim figures, and the sharing figures it
+/// reads as once its update is written, which goes into `updates`.
+fn collect_at(
+    node: Node<'_>,
+    limit: usize,
+    depth: usize,
+    updates: &mut Vec<Update>,
+    sink: &Sink,
+) -> (Groups, reclaim::Accumulator, Sharing) {
+    #[cfg(test)]
+    VISITS.set(VISITS.get() + 1);
+    let mut part = Part::new(limit);
+    if !node.is_dir() {
+        fold_leaf(node, limit, &mut part, updates);
+        return (part.groups, part.allocation, leaf_summary(node));
+    }
+    if let Some((key, group)) = own(node, &mut part.summary) {
+        part.groups.insert(key, group);
+    }
+    if depth < crate::tree::PARALLEL_LEVELS {
+        // Subdirectories near the top are independent work, as in the
+        // totals pass. Each worker folds a run of children into one set of
+        // maps and runs are merged as they finish, in child order, so only
+        // a few sets are held at once and a truncated group set keeps the
+        // groups the one-thread pass kept.
+        let children = node
+            .children()
+            .par_iter()
+            .fold(
+                || (Part::new(limit), Vec::new()),
+                |(mut part, mut updates), child| {
+                    part.add(child, limit, depth, &mut updates, sink);
+                    (part, updates)
+                },
+            )
+            .map(|(part, updates)| {
+                crate::scan::lock(sink).push(updates);
+                part
+            })
+            .reduce(
+                || Part::new(limit),
+                |mut left, right| {
+                    left.merge(right, limit);
+                    left
                 },
             );
+        part.merge(children, limit);
+    } else {
+        for child in node.children() {
+            part.add(child, limit, depth, updates, sink);
         }
     }
-    for child in &mut node.children {
-        let (mut child_groups, child_allocation) = collect(child, limit);
-        allocation.merge(child_allocation);
-        summary.duplicate_bytes = summary
-            .duplicate_bytes
-            .saturating_add(child.sharing().duplicate_bytes);
-        summary.groups_truncated |= child.sharing().groups_truncated;
-        summary.files += child.sharing().files;
-        summary.bytes = summary.bytes.saturating_add(child.sharing().bytes);
-        summary.private_bytes = summary
-            .private_bytes
-            .saturating_add(child.sharing().private_bytes);
-        summary.unknown_files += child.sharing().unknown_files;
-        if groups.len() < child_groups.len() {
-            std::mem::swap(&mut groups, &mut child_groups);
-        }
-        for (key, group) in child_groups {
-            if groups.len() >= limit && !groups.contains_key(&key) {
-                summary.groups_truncated = true;
-                continue;
-            }
-            groups
-                .entry(key)
-                .and_modify(|old| {
-                    // A scan is not atomic. Use the smaller observation when
-                    // a file changes while its clone group is being measured.
-                    let before =
-                        old.duplicates().saturating_add(group.duplicates());
-                    old.bytes = old.bytes.min(group.bytes);
-                    old.count += group.count;
-                    summary.duplicate_bytes = summary
-                        .duplicate_bytes
-                        .saturating_sub(before)
-                        .saturating_add(old.duplicates());
-                })
-                .or_insert(group);
-        }
-    }
-    if node.allocation.as_deref().is_some_and(|info| info.followed) {
+    let Part {
+        groups,
+        mut allocation,
+        mut summary,
+    } = part;
+    if node.allocation().is_some_and(|info| info.followed) {
         allocation = reclaim::Accumulator::new(limit);
     }
     summary.estimate = Some(allocation.estimate());
-    node.sharing = (node.is_dir()
-        && (summary.files > 0
-            || node.allocation.is_some()
-            || allocation.needs_selection()
-            || summary.reclaimable(node.bytes) != node.bytes
-            || summary.possible(node.bytes) != node.bytes))
-        .then(|| Box::new(summary));
-    (groups, allocation)
+    // `set_sharing` rewrites a directory's figures in place, so a second
+    // pass allocates nothing for a directory that already shares.
+    let kept = summary.files > 0
+        || node.allocation().is_some()
+        || allocation.needs_selection()
+        || summary.reclaimable(node.bytes) != node.bytes
+        || summary.possible(node.bytes) != node.bytes;
+    // Most directories keep nothing and had nothing: no update to write,
+    // as `fold_leaf` does for files.
+    if kept || node.stored_sharing().is_some() {
+        updates.push((node.id(), kept.then_some(summary)));
+    }
+    // What `Node::sharing` reads once the update is written: a directory
+    // that keeps nothing has no allocation of its own to summarize.
+    (
+        groups,
+        allocation,
+        if kept { summary } else { Sharing::default() },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::{Draft, Tree};
     use crate::tree::{Metric, NodeKind, Seen, aggregate, aggregate_deduped};
 
-    fn clone(name: &str, device: u64, id: u64, private: Option<u64>) -> Node {
-        let mut node = Node::entry(name, NodeKind::File, 100);
+    fn clone(name: &str, device: u64, id: u64, private: Option<u64>) -> Draft {
+        let mut node = Draft::entry(name, NodeKind::File, 100);
         node.allocation = Some(Box::new(Allocation {
             bytes: node.bytes,
             identity: None,
@@ -261,46 +425,54 @@ mod tests {
 
     #[test]
     fn selecting_a_complete_clone_group_reclaims_its_data_once() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children =
             vec![clone("a", 1, 1, Some(0)), clone("b", 1, 1, Some(0))];
-        aggregate(&mut root, Metric::Bytes);
+        let mut tree = Tree::from(root);
+        aggregate(&mut tree, Metric::Bytes);
+        let root = tree.root();
         assert_eq!(root.sharing().reclaimable(root.bytes), 80);
     }
 
     #[test]
     fn group_limit_marks_the_summary_partial_without_losing_private_bytes() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children =
             vec![clone("a", 1, 1, Some(20)), clone("b", 1, 2, Some(20))];
-        aggregate(&mut root, Metric::Bytes);
-        collect(&mut root, 1);
+        let mut tree = Tree::from(root);
+        aggregate(&mut tree, Metric::Bytes);
+        collect(&mut tree, 1);
+        let root = tree.root();
         assert!(root.sharing().groups_truncated);
         assert_eq!(root.sharing().private_bytes, 40);
     }
 
     #[test]
     fn groups_are_volume_scoped_and_only_data_forks_are_duplicated() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children = vec![
             clone("a", 1, 42, Some(20)),
             clone("b", 1, 42, Some(20)),
             clone("c", 2, 42, Some(20)),
         ];
-        aggregate(&mut root, Metric::Bytes);
+        let mut tree = Tree::from(root);
+        aggregate(&mut tree, Metric::Bytes);
+        let root = tree.root();
         assert_eq!(root.bytes, 300);
         assert_eq!(root.sharing().duplicate_bytes, 80);
         assert_eq!(root.sharing().reclaimable(root.bytes), 140);
-        aggregate(&mut root, Metric::Files);
-        assert_eq!(root.sharing().duplicate_bytes, 80);
+        aggregate(&mut tree, Metric::Files);
+        assert_eq!(tree.root().sharing().duplicate_bytes, 80);
     }
 
     #[test]
     fn modified_clones_repeat_only_what_they_still_share() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children =
             vec![clone("a", 1, 1, Some(60)), clone("b", 1, 1, Some(60))];
-        aggregate(&mut root, Metric::Bytes);
+        let mut tree = Tree::from(root);
+        aggregate(&mut tree, Metric::Bytes);
+        let root = tree.root();
         // Each still shares 40 of its 100 bytes: one copy of that repeats.
         assert_eq!(root.sharing().duplicate_bytes, 40);
         assert!(
@@ -310,45 +482,182 @@ mod tests {
 
     #[test]
     fn unknown_and_oversized_private_values_stay_conservative() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children = vec![
             clone("a", 1, 1, None),
             clone("b", 1, 2, Some(200)),
-            Node::entry("ordinary", NodeKind::File, 30),
+            Draft::entry("ordinary", NodeKind::File, 30),
         ];
-        aggregate(&mut root, Metric::Bytes);
+        let mut tree = Tree::from(root);
+        aggregate(&mut tree, Metric::Bytes);
+        let root = tree.root();
         assert_eq!(root.sharing().unknown_files, 1);
         assert_eq!(root.sharing().reclaimable(root.bytes), 130);
     }
 
     #[test]
     fn deduplicated_hardlinks_do_not_inflate_sharing() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children =
             vec![clone("a", 1, 1, Some(0)), clone("b", 1, 1, Some(0))];
         for node in &mut root.children {
             node.inode =
                 Some((1, std::num::NonZeroU64::new(123).expect("inode")));
         }
-        aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
+        let mut tree = Tree::from(root);
+        aggregate_deduped(&mut tree, Metric::Bytes, &Seen::new());
+        let root = tree.root();
         assert_eq!(root.sharing().files, 1);
         assert_eq!(root.sharing().bytes, 100);
         assert_eq!(root.sharing().duplicate_bytes, 0);
     }
 
+    /// `copies` worktrees nested six levels deep, below the parallel ones,
+    /// each holding a clone of the same `files` files, as a directory of
+    /// agent worktrees does.
+    fn worktrees(copies: u64, files: u64) -> Tree {
+        let mut root = Draft::directory("worktrees");
+        for copy in 0..copies {
+            let mut tree = Draft::directory(format!("w{copy}"));
+            for file in 0..files {
+                let mut node = clone(&format!("f{file}"), 1, file + 1, Some(0));
+                if let Some(info) = node
+                    .allocation
+                    .as_mut()
+                    .and_then(|allocation| allocation.clone.as_mut())
+                {
+                    info.references = u32::try_from(copies).expect("copies");
+                }
+                tree.children.push(node);
+            }
+            for level in 0..6 {
+                let mut dir = Draft::directory(format!("w{copy}-{level}"));
+                dir.children.push(tree);
+                tree = dir;
+            }
+            root.children.push(tree);
+        }
+        let mut root = Tree::from(root);
+        aggregate(&mut root, Metric::Bytes);
+        root
+    }
+
+    /// On one thread, so the thread-local counters see all of the pass.
+    fn refresh_work(tree: &mut Tree) -> (u64, u64) {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("pool")
+            .install(|| {
+                VISITS.set(0);
+                reclaim::WORK.set(0);
+                refresh(tree);
+                (VISITS.get(), reclaim::WORK.get())
+            })
+    }
+
+    /// The pass once took 11 s on 20 million nodes, most of it making,
+    /// merging and freeing two maps for every file. Hold it to maps per
+    /// directory and to work that grows with the files, not faster.
+    #[test]
+    fn refresh_work_grows_with_files_and_makes_no_map_per_file() {
+        let mut counts = Vec::new();
+        for (copies, files) in [(8, 64), (64, 512)] {
+            let mut tree = worktrees(copies, files);
+            let duplicates = tree.root().sharing().duplicate_bytes;
+            assert_eq!(duplicates, 80 * (copies - 1) * files);
+            let (visits, work) = refresh_work(&mut tree);
+            assert_eq!(tree.root().sharing().duplicate_bytes, duplicates);
+            assert_eq!(
+                visits,
+                u64::from(tree.root().dirs),
+                "maps are made per directory, never per file"
+            );
+            // Each file is added to its directory's two maps, and its
+            // group moves into the root's two maps once per other copy:
+            // fewer than four steps a file however many there are.
+            let budget = 4 * copies * files;
+            assert!(work <= budget, "{copies}x{files}: {work} > {budget}");
+            counts.push((work, copies * files));
+        }
+        eprintln!("refresh map steps (work, files): {counts:?}");
+    }
+
+    #[test]
+    fn deep_and_parallel_levels_merge_like_one_directory() {
+        // Members below the parallel levels, beside them and at the top:
+        // every path through `collect_at` must reach the same totals.
+        let mut flat = Draft::directory("root");
+        let mut nested = Draft::directory("root");
+        for (depth, private) in [(0, Some(0)), (3, Some(0)), (7, Some(20))] {
+            flat.children
+                .push(clone(&format!("f{depth}"), 1, 9, private));
+            let mut leaf = clone("file", 1, 9, private);
+            for level in 0..depth {
+                let mut dir = Draft::directory(format!("d{depth}-{level}"));
+                dir.children.push(leaf);
+                leaf = dir;
+            }
+            nested.children.push(leaf);
+        }
+        flat.children.push(Draft::entry("plain", NodeKind::File, 7));
+        nested
+            .children
+            .push(Draft::entry("plain", NodeKind::File, 7));
+        let mut flat = Tree::from(flat);
+        let mut nested = Tree::from(nested);
+        aggregate(&mut flat, Metric::Bytes);
+        aggregate(&mut nested, Metric::Bytes);
+        assert_eq!(nested.root().sharing(), flat.root().sharing());
+        assert_eq!(nested.root().sharing().duplicate_bytes, 2 * 80);
+
+        // A second pass keeps every figure and grows no side table.
+        let before = nested.root().sharing();
+        let storage = nested.storage_bytes();
+        aggregate(&mut nested, Metric::Files);
+        assert_eq!(nested.root().sharing(), before);
+        assert_eq!(nested.storage_bytes(), storage);
+
+        // A directory that no longer shares gives its figures up.
+        let mut draft = nested.root().to_draft();
+        let deep = draft
+            .children
+            .iter_mut()
+            .find(|child| child.kind.is_dir())
+            .expect("a nested branch");
+        let emptied = deep.name.clone();
+        deep.children.clear();
+        let mut nested = Tree::from(draft);
+        aggregate(&mut nested, Metric::Bytes);
+        let emptied = nested
+            .root()
+            .children()
+            .iter()
+            .find(|child| child.name() == &*emptied)
+            .expect("the emptied branch");
+        assert!(emptied.stored_sharing().is_none());
+        assert_eq!(nested.root().sharing().files, 2);
+    }
+
     #[test]
     fn clone_groups_merge_across_directories_and_refresh_after_removal() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         for name in ["a", "b"] {
-            let mut dir = Node::directory(name);
+            let mut dir = Draft::directory(name);
             dir.children.push(clone("file", 1, 1, Some(0)));
             root.children.push(dir);
         }
-        aggregate(&mut root, Metric::Bytes);
+        let mut tree = Tree::from(root);
+        aggregate(&mut tree, Metric::Bytes);
+        let root = tree.root();
         assert_eq!(root.sharing().duplicate_bytes, 80);
-        assert_eq!(root.children[0].sharing().duplicate_bytes, 0);
-        root.children.pop();
-        aggregate(&mut root, Metric::Bytes);
+        assert_eq!(root.children().at(0).sharing().duplicate_bytes, 0);
+        // Removing a directory is a rescan into a new tree.
+        let mut draft = root.to_draft();
+        draft.children.pop();
+        let mut tree = Tree::from(draft);
+        aggregate(&mut tree, Metric::Bytes);
+        let root = tree.root();
         assert_eq!(root.sharing().duplicate_bytes, 0);
         assert_eq!(root.sharing().files, 1);
     }

@@ -13,6 +13,7 @@ pub mod deployment;
 pub mod export;
 pub mod filter;
 pub mod identity;
+pub mod index;
 pub mod insights;
 #[cfg(target_os = "macos")]
 mod macos;

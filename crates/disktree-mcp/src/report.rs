@@ -167,7 +167,7 @@ pub fn matches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
     use std::path::PathBuf;
 
     #[test]
@@ -281,13 +281,20 @@ mod tests {
 
     #[test]
     fn a_listing_is_largest_first_with_the_tail_summed() {
-        let mut root = Node::directory("r");
+        let mut root = Draft::directory("r");
         for (name, bytes) in [("a", 10), ("b", 60), ("c", 30)] {
-            root.children.push(Node::entry(name, NodeKind::File, bytes));
+            root.children
+                .push(Draft::entry(name, NodeKind::File, bytes));
         }
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
-        let listing =
-            Listing::of(Path::new("/r"), root.bytes, Path::new("/r"), &root, 2);
+        let listing = Listing::of(
+            Path::new("/r"),
+            root.root().bytes,
+            Path::new("/r"),
+            root.root(),
+            2,
+        );
         let text = children(&listing, 0);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 3);
