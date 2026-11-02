@@ -294,10 +294,11 @@ unsafe impl Sync for Name {}
 unsafe impl Send for Children {}
 // SAFETY: as for `Name: Send`.
 unsafe impl Sync for Children {}
-// SAFETY: as for `Name: Send`, for any value that may itself be shared.
-unsafe impl<T: Sync> Send for Boxed<T> {}
+// SAFETY: as for `Name: Send`, for a value that may itself be sent and
+// shared: `NodeMut` reaches other threads and overwrites it there.
+unsafe impl<T: Send + Sync> Send for Boxed<T> {}
 // SAFETY: as for `Name: Send`.
-unsafe impl<T: Sync> Sync for Boxed<T> {}
+unsafe impl<T: Send + Sync> Sync for Boxed<T> {}
 
 impl Deref for Node {
     type Target = Facts;
@@ -542,6 +543,8 @@ impl<'h> Member<'h> {
     }
 
     fn boxed<T>(&self, value: T) -> Boxed<T> {
+        // An arena never runs destructors, so whatever it holds needs none.
+        const { assert!(!std::mem::needs_drop::<T>()) };
         Boxed(NonNull::from(self.bump().alloc(value)))
     }
 
@@ -647,7 +650,7 @@ impl<'h> Member<'h> {
             .collect();
         let mut built = self.directory(
             &draft.name,
-            draft.facts(),
+            draft.facts,
             draft.allocation.as_deref().copied(),
             children,
         );
@@ -752,10 +755,11 @@ impl Tree {
     ///
     /// ```compile_fail
     /// use disktree_core::tree::{Facts, Tree};
-    /// let first =
-    ///     Tree::build(|herd| herd.get().leaf("root", Facts::directory(), None));
-    /// let _second = Tree::build(|_| {
-    ///     first.herd().get().leaf("root", Facts::directory(), None)
+    /// let _outer = Tree::build(|outer| {
+    ///     let _inner = Tree::build(|_| {
+    ///         outer.get().leaf("root", Facts::directory(), None)
+    ///     });
+    ///     outer.get().leaf("root", Facts::directory(), None)
     /// });
     /// ```
     pub fn build(build: impl for<'h> FnOnce(&'h Herd) -> Built<'h>) -> Self {
@@ -787,12 +791,6 @@ impl Tree {
             node: &mut self.root,
             herd: &self.herd,
         }
-    }
-
-    /// The arenas this tree's nodes live in. Only good for building
-    /// nothing: what a member makes here cannot join this tree.
-    pub const fn herd(&self) -> &Herd {
-        &self.herd
     }
 
     pub fn arena_bytes(&self) -> ArenaBytes {

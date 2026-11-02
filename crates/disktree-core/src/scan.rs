@@ -1365,12 +1365,12 @@ fn walk<'h>(
         .max_depth
         .is_none_or(|max_depth| dir.depth < max_depth);
     // Sized once for the leaves and every subdirectory to come, before any
-    // subdirectory task can push its node: otherwise that first push
-    // doubles a list just sized to the leaves, and the slack stays in the
-    // finished tree. The leaves are copied, not moved: the list they grew
-    // in carries up to twice their size in slack, and moving it in whole
-    // made a home directory walk a second slower (measured, 5 interleaved
-    // pairs).
+    // subdirectory task can push its node, so no push grows the list
+    // again. The leaves are copied, not moved: the list they grew in
+    // carries up to twice their size in slack, which a pending directory
+    // would hold until its last subdirectory is done. Moving it in whole
+    // made a home directory walk a second slower (measured before the
+    // arena, 5 interleaved pairs).
     let spawned = if descend { subdirs.len() } else { 0 };
     {
         let mut partial = lock(&dir.partial);
