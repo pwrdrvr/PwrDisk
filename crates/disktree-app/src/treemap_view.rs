@@ -9,6 +9,7 @@
 //! labels every frame costs a lookup, and it lets a label clip exactly to its
 //! own tile instead of bleeding into the neighbour.
 
+use std::ops::Range;
 use std::rc::Rc;
 
 use disktree_core::treemap::Rect;
@@ -16,8 +17,8 @@ use gpui_kit::{
     App, Bounds, ContentMask, Context, Corners, Edges, Font, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, MouseDownEvent, MouseMoveEvent,
     ParentElement as _, Pixels, Point, ScrollWheelEvent, SharedString, Size,
-    StatefulInteractiveElement as _, Styled, TextAlign, TextRun, Window,
-    canvas, div, pattern_slash, px, quad,
+    StatefulInteractiveElement as _, StrikethroughStyle, Styled, TextAlign,
+    TextRun, UnderlineStyle, Window, canvas, div, pattern_slash, px, quad,
 };
 use gpui_omarchy::{ActiveTheme, Theme};
 
@@ -125,6 +126,7 @@ pub fn preview(
         };
         mosaic.labels.push(Label {
             text: node.name().to_string(),
+            found: None,
             rect: tile.rect,
             header: None,
             depth: 0,
@@ -517,6 +519,9 @@ fn paint_labels(
     let text_inset = name_size * 0.25;
     let min_width = name_size * 3.3;
     let size_gap = name_size * 0.67;
+    // Strike and underline are read as state, so they stay visible at the
+    // smallest interface zoom rather than thinning to a hairline.
+    let decoration = (name_size * 0.08).max(px(1.));
 
     for label in labels {
         // A subdivided directory's name lives in the band it reserved; a leaf's
@@ -550,12 +555,19 @@ fn paint_labels(
             color,
             // Glyph backgrounds keep hatch out of both names and values.
             background_color: Some(fill),
+            // Marked, or going with a mark: struck through, the usual sign
+            // for something on its way out, and one that costs no width.
+            strikethrough: label.marked.then_some(StrikethroughStyle {
+                thickness: decoration,
+                color: Some(color),
+            }),
             ..TextRun::default()
         };
+        let runs = name_runs(&run, label.found.clone(), decoration);
         let line = text_system.shape_line(
             SharedString::from(label.text.clone()),
             name_size,
-            &[run],
+            &runs,
             None,
         );
 
@@ -641,6 +653,45 @@ fn paint_labels(
             },
         );
     }
+}
+
+/// A label's name as runs: `base` throughout, with the bytes the find text
+/// matched underlined, so a match reads as one without its colour.
+fn name_runs(
+    base: &TextRun,
+    found: Option<Range<usize>>,
+    thickness: Pixels,
+) -> Vec<TextRun> {
+    // A range past the text would shape runs longer than the line; draw it
+    // plain rather than panic in the paint pass.
+    let Some(found) = found.filter(|found| {
+        !found.is_empty() && (..=base.len).contains(&found.end)
+    }) else {
+        return vec![base.clone()];
+    };
+    let underlined = TextRun {
+        len: found.len(),
+        underline: Some(UnderlineStyle {
+            thickness,
+            color: Some(base.color),
+            wavy: false,
+        }),
+        ..base.clone()
+    };
+    [
+        TextRun {
+            len: found.start,
+            ..base.clone()
+        },
+        underlined,
+        TextRun {
+            len: base.len - found.end,
+            ..base.clone()
+        },
+    ]
+    .into_iter()
+    .filter(|run| run.len > 0)
+    .collect()
 }
 
 fn to_window(rect: &Rect, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
@@ -740,6 +791,42 @@ mod tests {
                     theme.background
                 ) >= 4.5
             );
+        }
+    }
+
+    /// The underline covers exactly the matched bytes, and a struck name
+    /// stays struck across every run, matched part included.
+    #[test]
+    fn a_found_range_is_underlined_and_the_strike_runs_throughout() {
+        let base = TextRun {
+            len: "x.cache.y".len(),
+            strikethrough: Some(StrikethroughStyle {
+                thickness: px(1.),
+                color: None,
+            }),
+            ..TextRun::default()
+        };
+        let runs = name_runs(&base, Some(2..7), px(1.));
+        assert_eq!(
+            runs.iter().map(|run| run.len).collect::<Vec<_>>(),
+            [2, 5, 2]
+        );
+        assert_eq!(
+            runs.iter()
+                .map(|run| run.underline.is_some())
+                .collect::<Vec<_>>(),
+            [false, true, false]
+        );
+        assert!(runs.iter().all(|run| run.strikethrough.is_some()));
+
+        // A match at either end leaves no empty run; none, or one that no
+        // longer fits the text, leaves the name in a single plain run.
+        assert_eq!(name_runs(&base, Some(0..1), px(1.)).len(), 2);
+        assert_eq!(name_runs(&base, Some(8..9), px(1.)).len(), 2);
+        for found in [None, Some(3..3), Some(4..40)] {
+            let runs = name_runs(&base, found, px(1.));
+            assert_eq!(runs.len(), 1);
+            assert!(runs[0].underline.is_none());
         }
     }
 
