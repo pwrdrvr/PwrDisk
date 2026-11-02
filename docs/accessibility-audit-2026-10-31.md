@@ -1127,3 +1127,19 @@ Narrator/NVDA/Orca, OS display/text scaling and high-contrast checks remain
 explicitly unverified for this correction. No removal was approved through
 computer use or accessibility APIs; the destructive regression operates
 only on contrived temporary-tree harness files.
+
+### PWR-36 rebase and review corrections
+
+Rebased onto main after #47. #60 retired the `a11y-fixture` example, so the
+commit that taught it `--files` was dropped, and the invocations above
+(`a11y-fixture --tree ROOT --files`, its PIDs) no longer exist on main. The
+native reads stand as recorded at their cited sources; a contrived tree now
+opens with plain `pwrdisk ROOT`, and the file reader is one key away.
+`scripts/a11y-atspi-read.py` says so. On-screen macOS checks run in the
+PwrSuiteLab headed E2E VM, never on the operator's desktop.
+
+| Review finding | Correction |
+| --- | --- |
+| Folding the footer spacer into the log path left none while searching | A spacer stands in when the path is hidden, so the note and search hint stay at the right edge |
+| The diagnostic script named the retired example | It names `pwrdisk ROOT` |
+| No harness assertion for the search field's exposed value | Not added: the harness has no reader for accessibility values, so the value stays native evidence |

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Read native AT-SPI metadata from an explicitly named fixture process.
 
-Run inside the same desktop/session bus as a11y-fixture. This diagnostic
-does not invoke actions, synthesize input, or start a screen reader.
+Run inside the same desktop/session bus as the PwrDisk process opened on a
+contrived tree (`pwrdisk ROOT`). This diagnostic does not invoke actions,
+synthesize input, or start a screen reader.
 """
 
 import argparse

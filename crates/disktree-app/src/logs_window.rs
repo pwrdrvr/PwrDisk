@@ -1989,14 +1989,17 @@ impl LogsWindow {
                 .debug_selector(|| "logs-count".into())
                 .child(summary),
             )
-            .when_some(place, |bar, place| {
-                bar.child(
+            // The path fills the middle; without it a spacer keeps the note
+            // and the search hint at the right edge.
+            .map(|bar| match place {
+                Some(place) => bar.child(
                     crate::semantics::text("logs-path", place.clone())
                         .flex_1()
                         .min_w_0()
                         .truncate()
                         .child(place),
-                )
+                ),
+                None => bar.child(div().flex_1()),
             })
             .when_some(self.note.as_ref(), |bar, (note, _)| {
                 bar.child(
