@@ -4057,17 +4057,20 @@ impl Disktree {
 
     /// Advance the layout transition, if one is running.
     pub fn tick_transition(&mut self, window: &Window, cx: &mut gpui_kit::App) {
+        let Some(transition) = self.transition else {
+            return;
+        };
+        // Asked only mid-flight: the answer is a platform call, and no other
+        // frame has motion to drop.
         if prefers_reduced_motion(cx) {
             self.transition = None;
             return;
         }
-        if let Some(transition) = self.transition {
-            let (_, running) = transition.sample(Rect::default());
-            if running {
-                window.request_animation_frame();
-            } else {
-                self.transition = None;
-            }
+        let (_, running) = transition.sample(Rect::default());
+        if running {
+            window.request_animation_frame();
+        } else {
+            self.transition = None;
         }
     }
 
@@ -4082,8 +4085,9 @@ impl Disktree {
 }
 
 /// Base 0.6.6 follows Linux portal changes, but reads macOS/Windows only
-/// when asked. Re-sample before motion and during frames so a running app
-/// honors an OS toggle too. Base preserves explicit application overrides.
+/// when asked. Re-sample before a transition starts and on each of its
+/// frames so a running app honors an OS toggle too. Base preserves explicit
+/// application overrides.
 fn prefers_reduced_motion(cx: &mut gpui_kit::App) -> bool {
     gpui_kit::base::apply_system_reduce_motion(cx);
     cx.reduce_motion()

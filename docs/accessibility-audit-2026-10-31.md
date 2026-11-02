@@ -855,3 +855,15 @@ the final destination do not distinguish the removed transition; operator
 acceptance of the native trace plus failing-before/passing-after harness
 evidence is requested before merge. No removal was approved through
 computer use or accessibility APIs.
+
+### PWR-35 rebase and review corrections
+
+Rebased onto main after #46. #60 retired the `a11y-fixture` example, so the
+`--tree … --trace-motion` invocation and the fixture hash cited above no
+longer exist; that trace stands as recorded at `24cc28a`, and the motion
+policy and code paths it exercised are unchanged. The review moved the
+platform re-read inside a running transition: an idle frame no longer asks
+macOS or Windows for the preference, while starting a transition and each of
+its frames still do. The harness cannot reach that re-read (GPUI's test
+scheduler never asks the platform), so live OS toggling stays native
+evidence.
