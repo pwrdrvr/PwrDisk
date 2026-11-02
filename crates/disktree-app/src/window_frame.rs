@@ -82,7 +82,7 @@ fn placement(
     let area = display
         .or_else(|| cx.primary_display())
         .map(|display| display.visible_bounds());
-    let min_size = area.map_or(min, |area| cap(min, area.size));
+    let min_size = area.map_or(min, |area| min.min(&area.size));
     let bounds = match (saved, area) {
         (Some(frame), Some(area)) => {
             let fitted = fit(frame.bounds(), area);
@@ -112,7 +112,10 @@ pub fn remember(window: &Window, cx: &App) {
         .display(cx)
         .and_then(|display| display.uuid().ok())
         .map(|uuid| uuid.to_string());
-    let frame = Frame::new(display, window.window_bounds());
+    // Inner: on Linux the outer bounds include the client-side frame's
+    // shadow, and opening with those would grow the window by it each
+    // launch. Elsewhere the two are the same.
+    let frame = Frame::new(display, window.inner_window_bounds());
     *LATEST.lock().unwrap_or_else(PoisonError::into_inner) = Some(frame);
 }
 
@@ -196,15 +199,10 @@ impl Frame {
     }
 }
 
-/// `wanted`, no larger than `area` on either side.
-fn cap(wanted: Size<Pixels>, area: Size<Pixels>) -> Size<Pixels> {
-    size(wanted.width.min(area.width), wanted.height.min(area.height))
-}
-
 /// `frame` cut to `area`'s size and moved, as little as it takes, inside
 /// it: a window that fitted stays exactly where it was.
 fn fit(frame: Bounds<Pixels>, area: Bounds<Pixels>) -> Bounds<Pixels> {
-    let size = cap(frame.size, area.size);
+    let size = frame.size.min(&area.size);
     // `size` is no larger than `area`, so each range is never empty.
     let x = frame
         .origin
@@ -295,12 +293,48 @@ mod tests {
         assert_eq!(load(&path), None, "a window of no size is not opened");
     }
 
-    #[test]
-    fn the_minimum_size_never_exceeds_the_display() {
-        let small = size(px(800.0), px(560.0));
-        assert_eq!(
-            cap(size(px(900.0), px(600.0)), small),
-            size(px(800.0), px(560.0))
-        );
+    #[gpui_kit::test]
+    fn a_saved_frame_returns_to_its_display_or_the_primary(
+        cx: &gpui_kit::TestAppContext,
+    ) {
+        let default = size(px(1440.0), px(900.0));
+        let min = size(px(900.0), px(600.0));
+        cx.update(|cx| {
+            let display = cx.primary_display().expect("a test display");
+            let uuid = display.uuid().expect("uuid").to_string();
+            let area = display.visible_bounds();
+            let saved = |display: &str| Frame {
+                display: Some(display.to_owned()),
+                state: State::Windowed,
+                x: 3000.0,
+                y: 40.0,
+                width: 1200.0,
+                height: 800.0,
+            };
+
+            let here = placement(Some(saved(&uuid)), default, min, cx);
+            assert_eq!(here.display, Some(display.id()));
+            let gone = placement(Some(saved("unplugged")), default, min, cx);
+            assert_eq!(gone.display, None, "the primary display");
+            // Either way the frame is pulled onto the display it opens on.
+            for placed in [here, gone] {
+                let WindowBounds::Windowed(bounds) = placed.bounds else {
+                    panic!("still windowed");
+                };
+                assert_eq!(bounds.size, size(px(1200.0), px(800.0)));
+                assert_eq!(
+                    bounds.origin.x + bounds.size.width,
+                    area.origin.x + area.size.width
+                );
+            }
+
+            let fresh = placement(None, default, min, cx);
+            let WindowBounds::Windowed(bounds) = fresh.bounds else {
+                panic!("windowed");
+            };
+            assert_eq!(bounds.size, default);
+            assert_eq!(bounds.center(), area.center());
+            assert_eq!(fresh.min_size, min);
+        });
     }
 }
