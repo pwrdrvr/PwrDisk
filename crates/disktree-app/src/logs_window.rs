@@ -30,11 +30,11 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity,
     FocusHandle, Focusable as _, Font, FontWeight, HighlightStyle, Hsla,
-    InteractiveElement as _, IntoElement, KeyDownEvent, LineFragment,
-    ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent,
-    ParentElement as _, Pixels, Rems, Render, ScrollWheelEvent, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledText, Window,
-    WindowHandle, deferred, div, list, px,
+    IndentAdjustment, InteractiveElement as _, IntoElement, KeyDownEvent,
+    LineFragment, ListAlignment, ListOffset, ListState, MouseButton,
+    MouseDownEvent, ParentElement as _, Pixels, Rems, Render, ScrollWheelEvent,
+    SharedString, StatefulInteractiveElement as _, Styled as _, StyledText,
+    Window, WindowHandle, deferred, div, list, px,
 };
 use gpui_omarchy::{
     ActiveTheme as _, ButtonVariant, IconName, Theme, button, icon,
@@ -58,14 +58,11 @@ const NOTE_FOR: Duration = Duration::from_secs(3);
 /// returns to), so what led to it shows.
 const REVEAL_ABOVE: usize = 2;
 
-/// How far Page Up and Page Down move the line selection.
-const PAGE_LINES: usize = crate::semantics::PAGE_STEP;
-
 /// What the reader is and which keys it takes, for assistive technology.
 const READER_LABEL: &str = "Logs; Tab moves through controls; Escape \
      leaves search; Up/Down selects lines, Shift extends selection, \
-     Home/End reaches either end; Command or Control C copies selected \
-     lines";
+     Home/End reaches either end, PageUp/PageDown scroll within wrapped \
+     lines; Command or Control C copies selected lines";
 /// Where the view's settings are kept, in the settings folder.
 const PREFS_FILE: &str = "logs-view.json";
 
@@ -587,6 +584,11 @@ impl LogsWindow {
 
     // ---- Search ----------------------------------------------------------
 
+    #[cfg(test)]
+    pub fn scroll_offset(&self) -> Pixels {
+        self.list.scroll_px_offset_for_scrollbar().y
+    }
+
     /// The search field, for the tests to type into.
     #[cfg(test)]
     pub fn search_state(&self) -> Entity<InputState> {
@@ -821,7 +823,20 @@ impl LogsWindow {
             }
             (true, "a") => self.select_all(cx),
             (true, "c") => self.copy_selection(cx),
-            (false, "up" | "down" | "pageup" | "pagedown" | "home" | "end") => {
+            (false, "pageup" | "pagedown") => {
+                // Four fifths of the view, so a line on the edge stays in
+                // sight across the page and a long wrapped line can be read
+                // a screen at a time.
+                let page = self.list.viewport_bounds().size.height * 0.8;
+                self.live = false;
+                self.list.scroll_by(if keystroke.key == "pageup" {
+                    -page
+                } else {
+                    page
+                });
+                cx.notify();
+            }
+            (false, "up" | "down" | "home" | "end") => {
                 let numbers: Vec<_> = self
                     .view
                     .rows()
@@ -841,17 +856,17 @@ impl LogsWindow {
                     // the first line and moving up at the last, rather
                     // than stepping past either.
                     let next = match (keystroke.key.as_str(), at) {
-                        ("end", _) | ("up" | "pageup", None) => last,
+                        ("end", _) | ("up", None) => last,
                         ("home", _) | (_, None) => 0,
                         ("up", Some(at)) => at.saturating_sub(1),
-                        ("pageup", Some(at)) => at.saturating_sub(PAGE_LINES),
-                        ("pagedown", Some(at)) => (at + PAGE_LINES).min(last),
                         (_, Some(at)) => (at + 1).min(last),
                     };
                     let number = numbers[next];
                     self.click_number(number, keystroke.modifiers.shift, cx);
                     self.live = false;
-                    if let Some(row) = self.view.row_of(number) {
+                    if keystroke.key == "end" {
+                        self.list.scroll_to_end();
+                    } else if let Some(row) = self.view.row_of(number) {
                         self.reveal_row(row);
                     }
                     cx.notify();
@@ -937,8 +952,10 @@ impl LogsWindow {
         let fragments = [LineFragment::text(raw)];
         let mut starts = vec![0];
         starts.extend(
+            // SameIndent is how GPUI wrapped before the argument existed;
+            // only the break offsets are used here.
             wrapper
-                .wrap_line(&fragments, px(width))
+                .wrap_line(&fragments, px(width), IndentAdjustment::SameIndent)
                 .map(|boundary| boundary.ix),
         );
         starts.push(raw.len());
@@ -1007,6 +1024,7 @@ impl Render for LogsWindow {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        crate::ui::sync_scale(window, cx);
         // A test may change the view directly.
         self.sync_list(window);
         match std::mem::replace(&mut self.pending_reveal, Reveal::None) {
@@ -1104,6 +1122,7 @@ impl LogsWindow {
     ) -> impl IntoElement {
         let search = gpui_omarchy::input(SEARCH_ID, &self.search, window, cx)
             .aria_label("Search log text").aria_description("Enter moves to the next match; Shift Enter to the previous match. Tab moves to log controls. Escape clears the query.")
+            .aria_value(self.search.read(cx).value())
             .debug_selector(|| SEARCH_ID.into())
             .prefix(
                 icon(IconName::Search)
@@ -1227,6 +1246,7 @@ impl LogsWindow {
         let show_context =
             self.view.mode == SearchMode::Filter && self.view.searching();
         div()
+            .debug_selector(|| "logs-toolbar".into())
             .flex()
             .flex_row()
             .flex_wrap()
@@ -1234,7 +1254,16 @@ impl LogsWindow {
             .gap(space::SM)
             .px(space::LG)
             .py(space::SM)
-            .child(div().flex_1().min_w(size::LOG_FILTER).child(search))
+            .child(
+                div()
+                    // A zero flex basis lets the other controls consume the
+                    // row and squeeze the input to its search icon at 200%.
+                    .flex_grow(1.)
+                    .min_w(size::LOG_FILTER)
+                    .w(size::LOG_FILTER)
+                    .max_w_full()
+                    .child(search),
+            )
             .child(mode)
             .when(show_context, |bar| {
                 bar.child(self.context_select(theme, cx))
@@ -1452,6 +1481,7 @@ impl LogsWindow {
             .child(
                 div()
                     .id("logs-viewport")
+                    .debug_selector(|| "logs-viewport".into())
                     .role(gpui_kit::Role::ListBox)
                     .aria_label(format!(
                         "{}; {}; {}",
@@ -1929,6 +1959,7 @@ impl LogsWindow {
         div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .flex_none()
             .items_center()
             .gap(space::MD)
@@ -1960,8 +1991,18 @@ impl LogsWindow {
                 .debug_selector(|| "logs-count".into())
                 .child(summary),
             )
-            .children(place)
-            .child(div().flex_1())
+            // The path fills the middle; without it a spacer keeps the note
+            // and the search hint at the right edge.
+            .map(|bar| match place {
+                Some(place) => bar.child(
+                    crate::semantics::text("logs-path", place.clone())
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(place),
+                ),
+                None => bar.child(div().flex_1()),
+            })
             .when_some(self.note.as_ref(), |bar, (note, _)| {
                 bar.child(
                     div()

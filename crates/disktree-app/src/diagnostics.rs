@@ -315,7 +315,7 @@ fn session(app: &Disktree, cx: &App) -> Session {
         remote: app.remote.is_some(),
         apparent_size: app.options.apparent_size,
         scan,
-        files: app.tree.as_ref().map(|tree| tree.files),
+        files: app.tree.as_ref().map(|tree| tree.root().files),
         elapsed: app.scan_elapsed,
         power: power.label(app.cpu_threads),
         theme: cx.omarchy().name.to_string(),

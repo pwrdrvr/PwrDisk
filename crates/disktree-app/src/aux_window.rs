@@ -54,17 +54,21 @@ pub fn find<V: Render + 'static>(
     })
 }
 
-/// Opens a window in front, centred on the main display.
+/// Opens a window in front, centred on the display the user is working
+/// on: the main window's, when it is in front.
 pub fn open<V: Render + 'static>(
     spec: &Spec,
     cx: &mut App,
     build: impl FnOnce(&mut Window, &mut Context<'_, V>) -> V,
 ) -> Option<WindowHandle<V>> {
+    let display = crate::placement::display_for_new_window(cx);
     let bounds =
-        Bounds::centered(None, size(px(spec.size.0), px(spec.size.1)), cx);
+        Bounds::centered(display, size(px(spec.size.0), px(spec.size.1)), cx);
     let handle = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            // GPUI reads the bounds relative to this display.
+            display_id: display,
             titlebar: Some(TitlebarOptions {
                 title: Some(spec.title.into()),
                 // As the main window: the strip is the title bar.
@@ -80,6 +84,7 @@ pub fn open<V: Render + 'static>(
             ..Default::default()
         },
         |window, cx| {
+            ui::sync_scale(window, cx);
             if crate::appearance::follows_system(
                 std::env::home_dir().as_deref(),
             ) {
@@ -126,8 +131,13 @@ pub fn frame<V: Drags>(
         // Tab walks every control, the title strip's buttons included, so
         // it is taken here, above them all, rather than by each window's
         // body. A text field binds Tab to indenting, and bindings run
-        // before key handlers, so its actions are caught too.
+        // before key handlers, so its actions are caught too. Interface
+        // zoom is taken here for the same reason: every window gets it.
         .capture_key_down(|event: &KeyDownEvent, window, cx| {
+            if ui::zoom_interface(event, window, cx) {
+                cx.stop_propagation();
+                return;
+            }
             let keys = &event.keystroke;
             if keys.key == "tab"
                 && !keys.modifiers.control

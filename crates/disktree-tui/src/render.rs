@@ -134,7 +134,7 @@ fn header(frame: &mut Frame<'_>, app: &App, area: Rect) {
             human_count(app.progress.files),
             human_count(app.progress.dirs)
         )
-    } else if let Some(node) = app.tree.as_ref() {
+    } else if let Some(node) = app.tree.as_ref().map(|tree| tree.root()) {
         format!(
             "{} · {} files · {} dirs",
             human_bytes(node.bytes),
@@ -150,7 +150,7 @@ fn header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let stats = if compact && app.scan.is_none() {
         app.tree
             .as_ref()
-            .map_or_else(|| scan.clone(), |node| human_bytes(node.bytes))
+            .map_or_else(|| scan.clone(), |tree| human_bytes(tree.root().bytes))
     } else {
         scan
     };
@@ -421,7 +421,7 @@ fn treemap(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // Six visible characters plus an ellipsis make a clipped name readable.
     // Below that, the selected tile's detail line carries its full label.
     const MIN_TILE_LABEL_COLUMNS: u16 = 7;
-    let Some(root) = app.tree.as_ref() else {
+    let Some(root) = app.tree.as_ref().map(|tree| tree.root()) else {
         return;
     };
     let tiles = app.tiles(area);
@@ -438,7 +438,7 @@ fn treemap(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     continue;
                 };
                 (
-                    clean(&item.name),
+                    clean(item.name()),
                     item.value(app.options.metric),
                     item.category,
                     !app.marks.is_empty()
@@ -583,15 +583,15 @@ fn ranked_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut lines = vec![Line::styled(hint, Style::default().fg(MUTED))];
     for position in start..end {
         let index = visible.get(position).expect("visible position in range");
-        let child = &node.children[index];
+        let child = node.children().at(index);
         let mut crumbs = app.current.clone();
         crumbs.push(index);
         let selected = app.selected.as_ref() == Some(&crumbs);
         let marked = !app.marks.is_empty()
-            && app.tree.as_ref().is_some_and(|root| {
+            && app.tree.as_ref().is_some_and(|tree| {
                 app.is_marked(&path_of(
                     &app.root,
-                    root,
+                    tree.root(),
                     &crumbs,
                     PathStyle::Native,
                 ))
@@ -637,9 +637,9 @@ fn ranked_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Span::styled(format!("{size:>8}  "), Style::default().fg(MUTED)),
             Span::styled(
                 if selected {
-                    focused_marquee(app, &clean(&child.name), name_width)
+                    focused_marquee(app, &clean(child.name()), name_width)
                 } else {
-                    marquee(app, &clean(&child.name), name_width)
+                    marquee(app, &clean(child.name()), name_width)
                 },
                 style,
             ),
@@ -681,7 +681,7 @@ fn detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
     put(
         frame,
         Rect::new(inner.x, inner.y + 2, inner.width, 1),
-        focused_marquee(app, &clean(&node.name), usize::from(inner.width)),
+        focused_marquee(app, &clean(node.name()), usize::from(inner.width)),
         Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
     );
     put(
@@ -778,7 +778,7 @@ fn detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
             if y + 1 >= inner.bottom().saturating_sub(5) {
                 break;
             }
-            if let Some(root) = app.tree.as_ref() {
+            if let Some(root) = app.tree.as_ref().map(|tree| tree.root()) {
                 let path = path_of(
                     &app.root,
                     root,
@@ -883,7 +883,7 @@ fn compact_detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
         };
         let label_width = usize::from(area.width.saturating_sub(2))
             .saturating_sub(2 + text_width(&suffix));
-        let label = focused_marquee(app, &clean(&node.name), label_width);
+        let label = focused_marquee(app, &clean(node.name()), label_width);
         put(
             frame,
             Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
@@ -1359,7 +1359,9 @@ fn insights(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let start = app.insight_index.saturating_sub(rows / 2);
     for (index, item) in app.insights.iter().enumerate().skip(start).take(rows)
     {
-        let Some(root) = app.tree.as_ref() else { break };
+        let Some(root) = app.tree.as_ref().map(|tree| tree.root()) else {
+            break;
+        };
         let path = path_of(&app.root, root, &item.crumbs, PathStyle::Native);
         let selected = index == app.insight_index;
         let name_color = if selected { ACCENT } else { TEXT };
@@ -1892,20 +1894,21 @@ mod tests {
 
     #[test]
     fn contrived_frames_cover_all_terminal_sizes_without_private_data() {
-        use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+        use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
         use std::fmt::Write as _;
 
-        fn directory(name: &str, children: Vec<Node>) -> Node {
-            let mut node = Node::directory(name);
+        fn directory(name: &str, children: Vec<Draft>) -> Draft {
+            let mut node = Draft::directory(name);
             node.children = children;
             node
         }
-        fn file(name: &str, mib: u64) -> Node {
-            let mut node = Node::entry(name, NodeKind::File, mib * 1024 * 1024);
+        fn file(name: &str, mib: u64) -> Draft {
+            let mut node =
+                Draft::entry(name, NodeKind::File, mib * 1024 * 1024);
             node.modified = 1_699_900_000;
             node
         }
-        let mut tree = directory(
+        let draft = directory(
             "Fixtures",
             vec![
                 directory(
@@ -1935,6 +1938,7 @@ mod tests {
                 directory(".Spotlight-V100", vec![file("index", 12)]),
             ],
         );
+        let mut tree = Tree::from(draft);
         aggregate(&mut tree, Metric::Bytes);
         disktree_core::classify::classify(&mut tree);
         let mut app = App::new("/Fixtures".into(), ScanOptions::default());
@@ -1942,12 +1946,12 @@ mod tests {
             scan.cancel();
         }
         app.insights = disktree_core::insights::worth_a_look(
-            &tree,
+            tree.root(),
             1_700_000_000,
             disktree_core::insights::INSIGHT_LIMIT,
         );
-        app.progress.files = tree.files;
-        app.progress.dirs = u64::from(tree.dirs);
+        app.progress.files = tree.root().files;
+        app.progress.dirs = u64::from(tree.root().dirs);
         app.tree = Some(tree);
         app.selected = Some(vec![0]);
         app.device = Some("Fixtures".into());
@@ -2314,13 +2318,13 @@ mod tests {
         std::fs::write(temp.path().join("old"), b"old").expect("old file");
         let mut tree = scan(temp.path(), ScanOptions::default()).expect("scan");
         let scanned_at = 100_000_000;
-        for child in &mut tree.children {
-            child.modified = if child.name.as_ref() == "fresh" {
+        tree.root_mut().for_each_child_mut(|mut child| {
+            child.facts_mut().modified = if child.node().name() == "fresh" {
                 scanned_at - 3 * 86_400
             } else {
                 scanned_at - 500 * 86_400
             };
-        }
+        });
         let mut app =
             App::new(temp.path().to_path_buf(), ScanOptions::default());
         if let Some(scan) = app.scan.take() {
@@ -2540,9 +2544,10 @@ mod tests {
             scan.cancel();
         }
         let long_index = tree
-            .children
+            .root()
+            .children()
             .iter()
-            .position(|node| node.name.as_ref() == long_name)
+            .position(|node| node.name() == long_name)
             .expect("long node");
         let selected_index = usize::from(long_index == 0);
         app.insights = vec![Candidate {
@@ -2777,9 +2782,10 @@ mod tests {
             .tiles(map)
             .iter()
             .filter_map(|tile| match &tile.kind {
-                TileKind::Node { crumbs } if crumbs.len() == 2 => {
-                    root.resolve(crumbs).map(|node| node.name.to_string())
-                }
+                TileKind::Node { crumbs } if crumbs.len() == 2 => root
+                    .root()
+                    .resolve(crumbs)
+                    .map(|node| node.name().to_string()),
                 _ => None,
             })
             .collect();

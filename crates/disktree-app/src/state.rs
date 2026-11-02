@@ -22,7 +22,7 @@ use disktree_core::scan::{Known, ScanHandle, ScanOptions, ScanSnapshot};
 use disktree_core::space::{
     SpaceInfo, device_for, space_info, volume_root_for,
 };
-use disktree_core::tree::{Metric, Node, path_of};
+use disktree_core::tree::{Metric, Node, Tree, path_of};
 use disktree_core::treemap::{
     LayoutOptions, Rect, Tile, TileKind, hit, layout_filtered,
 };
@@ -330,7 +330,7 @@ pub struct RunSummary {
 /// Scan-derived display estimates; never cached removal authorization.
 #[derive(Default)]
 struct AccountingCache {
-    tree: Weak<Node>,
+    tree: Weak<Tree>,
     root: PathBuf,
     // Total and scanned-volume subsets only: bounded by the current marks.
     estimates: Vec<(Vec<PathBuf>, disktree_core::sharing::Estimate)>,
@@ -360,7 +360,7 @@ pub struct Disktree {
     /// to toggle, not a press outside the menu that closes it first.
     pub power_hover: bool,
     pub cpu_threads: usize,
-    pub tree: Option<Arc<Node>>,
+    pub tree: Option<Arc<Tree>>,
     pub scan: Option<ScanHandle>,
     pub scan_epoch: u64,
     pub progress: ScanSnapshot,
@@ -380,6 +380,7 @@ pub struct Disktree {
     pub file_focus: FocusHandle,
     restore_file_focus: bool,
     pub review_page: usize,
+    pub review_scroll: gpui_kit::ScrollHandle,
     pub hovered: Option<Vec<usize>>,
     pub history: History,
     /// The history button under the pointer, `true` for `<`: its card is
@@ -421,6 +422,7 @@ pub struct Disktree {
     pub overlay_return: Option<FocusHandle>,
     pub app_menu_index: usize,
     pub menu_scroll: gpui_kit::ScrollHandle,
+    pub help_scroll: gpui_kit::ScrollHandle,
     pub source_roots_focus: FocusHandle,
     /// Focus to move on the next occasion a window is in hand. Key handling
     /// has no window, and opening or closing the dialog must move focus.
@@ -636,6 +638,7 @@ impl Disktree {
             file_focus: cx.focus_handle().tab_stop(true),
             restore_file_focus: false,
             review_page: 0,
+            review_scroll: gpui_kit::ScrollHandle::new(),
             layout_options: LayoutOptions {
                 max_depth: depth.clamp(1, 6),
                 ..LayoutOptions::default()
@@ -662,6 +665,7 @@ impl Disktree {
             overlay_return: None,
             app_menu_index: 0,
             menu_scroll: gpui_kit::ScrollHandle::new(),
+            help_scroll: gpui_kit::ScrollHandle::new(),
             source_roots_focus: cx.focus_handle().tab_stop(true),
             focus_request: None,
             window_title: String::new(),
@@ -760,7 +764,7 @@ impl Disktree {
     #[cfg(test)]
     pub fn with_tree(
         root_path: PathBuf,
-        tree: Node,
+        tree: Tree,
         options: ScanOptions,
         depth: u32,
         cx: &mut Context<'_, Self>,
@@ -773,7 +777,7 @@ impl Disktree {
         app.scan_epoch += 1;
         app.marks.refresh(
             &app.root_path,
-            &tree,
+            tree.root(),
             app.options.metric,
             app.path_style(),
         );
@@ -1242,7 +1246,7 @@ impl Disktree {
     fn refresh_insights(&mut self) {
         self.scanned_at = now_seconds();
         self.insights = self.tree.as_deref().map_or_else(Vec::new, |tree| {
-            worth_a_look(tree, self.scanned_at, INSIGHT_LIMIT)
+            worth_a_look(tree.root(), self.scanned_at, INSIGHT_LIMIT)
         });
     }
 
@@ -1334,7 +1338,7 @@ impl Disktree {
             (None, Some(tree)) => log::info!(
                 target: "pwrdisk::scan",
                 "{kind} scan finished: {} files in {elapsed:.1} s",
-                tree.files
+                tree.root().files
             ),
             (None, None) => {}
         }
@@ -1617,7 +1621,7 @@ impl Disktree {
                     let node = snapshot.tree;
                     self.marks.refresh(
                         &self.root_path,
-                        &node,
+                        node.root(),
                         self.options.metric,
                         self.path_style(),
                     );
@@ -1671,7 +1675,7 @@ impl Disktree {
                 let metric = self.options.metric;
                 self.marks.refresh(
                     &self.root_path,
-                    &node,
+                    node.root(),
                     metric,
                     self.path_style(),
                 );
@@ -1709,11 +1713,11 @@ impl Disktree {
         let Some(tree) = &self.tree else {
             return;
         };
-        if tree.resolve(&self.crumbs).is_none() {
+        if tree.root().resolve(&self.crumbs).is_none() {
             self.crumbs.clear();
         }
         if let Some(selected) = self.selected.clone()
-            && tree.resolve(&selected).is_none()
+            && tree.root().resolve(&selected).is_none()
         {
             self.selected = None;
         }
@@ -1796,24 +1800,31 @@ impl Disktree {
         }
     }
 
-    pub fn tree(&self) -> Option<&Node> {
-        self.tree.as_deref()
+    pub fn tree(&self) -> Option<Node<'_>> {
+        self.tree.as_deref().map(Tree::root)
     }
 
     /// The node the treemap is currently rooted at.
-    pub fn current(&self) -> Option<&Node> {
+    pub fn current(&self) -> Option<Node<'_>> {
         self.tree
             .as_ref()
-            .and_then(|tree| tree.resolve(&self.crumbs))
+            .and_then(|tree| tree.root().resolve(&self.crumbs))
     }
 
-    pub fn node_at(&self, crumbs: &[usize]) -> Option<&Node> {
-        self.tree.as_ref().and_then(|tree| tree.resolve(crumbs))
+    pub fn node_at(&self, crumbs: &[usize]) -> Option<Node<'_>> {
+        self.tree
+            .as_ref()
+            .and_then(|tree| tree.root().resolve(crumbs))
     }
 
     pub fn path_at(&self, crumbs: &[usize]) -> Option<PathBuf> {
         let tree = self.tree.as_ref()?;
-        Some(path_of(&self.root_path, tree, crumbs, self.path_style()))
+        Some(path_of(
+            &self.root_path,
+            tree.root(),
+            crumbs,
+            self.path_style(),
+        ))
     }
 
     /// The path rules of the machine on screen: an SSH host is Unix, so its
@@ -1861,13 +1872,15 @@ impl Disktree {
         };
         let mut crumbs: Vec<usize> = Vec::new();
         for &index in &self.crumbs {
-            let Some(node) =
-                tree.resolve(&crumbs).and_then(|node| node.child(index))
+            let Some(node) = tree
+                .root()
+                .resolve(&crumbs)
+                .and_then(|node| node.child(index))
             else {
                 break;
             };
             crumbs.push(index);
-            trail.push((node.name.to_string(), Crumb::Tree(crumbs.clone())));
+            trail.push((node.name().to_string(), Crumb::Tree(crumbs.clone())));
         }
         trail
     }
@@ -1880,12 +1893,12 @@ impl Disktree {
             return (Vec::new(), 0);
         };
         let mut rows: Vec<Sibling> = node
-            .children
+            .children()
             .iter()
             .enumerate()
             .map(|(index, child)| Sibling {
                 index,
-                name: child.name.to_string(),
+                name: child.name().to_string(),
                 value: child.value(metric),
                 category: child.category,
                 is_dir: child.is_dir(),
@@ -2024,7 +2037,7 @@ impl Disktree {
         let Some(node) = self.node_at(&target) else {
             return;
         };
-        if !node.is_dir() || node.children.is_empty() {
+        if !node.is_dir() || node.children().is_empty() {
             return;
         }
         self.remember();
@@ -2042,7 +2055,8 @@ impl Disktree {
             area.width.as_f32().max(1.0),
             area.height.as_f32().max(1.0),
         );
-        self.transition = Some(LayoutTransition::new(src, dst));
+        self.transition = (!prefers_reduced_motion(cx))
+            .then(|| LayoutTransition::new(src, dst));
         cx.notify();
     }
 
@@ -2073,7 +2087,7 @@ impl Disktree {
             .map(|length| hovered[..length].to_vec())
             .find(|crumbs| {
                 self.node_at(crumbs).is_some_and(|node| {
-                    node.is_dir() && !node.children.is_empty()
+                    node.is_dir() && !node.children().is_empty()
                 }) && self.tile_body(crumbs).is_some()
             })
     }
@@ -2104,10 +2118,13 @@ impl Disktree {
         self.cache = None;
         self.selected = Some(ancestor);
         self.view = View::IDENTITY;
-        self.transition = self
-            .tile_body(&child_crumbs)
-            .filter(|rect| rect.w > 1.0 && rect.h > 1.0)
-            .map(|dst| LayoutTransition::new(src, dst));
+        self.transition = if prefers_reduced_motion(cx) {
+            None
+        } else {
+            self.tile_body(&child_crumbs)
+                .filter(|rect| rect.w > 1.0 && rect.h > 1.0)
+                .map(|dst| LayoutTransition::new(src, dst))
+        };
         cx.notify();
     }
 
@@ -2239,7 +2256,7 @@ impl Disktree {
     fn travel(&mut self, target: Vec<usize>, cx: &mut Context<'_, Self>) {
         let enterable = self
             .node_at(&target)
-            .is_some_and(|node| node.is_dir() && !node.children.is_empty());
+            .is_some_and(|node| node.is_dir() && !node.children().is_empty());
         if target.len() > self.crumbs.len()
             && target.starts_with(&self.crumbs)
             && enterable
@@ -2401,7 +2418,7 @@ impl Disktree {
         let Some(node) = self.node_at(&parent) else {
             return Vec::new();
         };
-        (0..node.children.len())
+        (0..node.children().len())
             .map(|index| {
                 let mut crumbs = parent.clone();
                 crumbs.push(index);
@@ -2602,7 +2619,7 @@ impl Disktree {
             }
             let mut resolver = crate::marks::Resolver::new(
                 &self.root_path,
-                tree,
+                tree.root(),
                 PathStyle::Native,
             );
             let mut next = Vec::new();
@@ -2752,7 +2769,7 @@ impl Disktree {
                             } else {
                                 ""
                             },
-                            node.name
+                            node.name()
                         ),
                         rect: self.animated_rect(tile.rect),
                         header: tile
@@ -2804,13 +2821,13 @@ impl Disktree {
         // `a\b` stays one name on a Windows client.
         let relative = self.path_style().relative(&self.root_path, path)?;
         let tree = self.tree.clone()?;
-        let mut node: &Node = &tree;
+        let mut node = tree.root();
         let mut crumbs = Vec::new();
         for name in relative {
-            let index = node.children.iter().position(|child| {
+            let index = node.children().iter().position(|child| {
                 #[cfg(test)]
                 crate::marks::work::step();
-                child.name.as_ref() == name
+                child.name() == name
             })?;
             crumbs.push(index);
             node = node.child(index)?;
@@ -2847,7 +2864,7 @@ impl Disktree {
         let stale = self.cache.as_ref().is_none_or(|cache| cache.key != key);
         if stale {
             let tree = self.tree.clone()?;
-            let node = tree.resolve(&self.crumbs)?;
+            let node = tree.root().resolve(&self.crumbs)?;
             let rect = Rect::new(0.0, 0.0, key.width, key.height);
             let filter =
                 self.matches.as_deref().filter(|_| self.filter_applied);
@@ -2955,15 +2972,30 @@ impl Disktree {
         let directory = self.current_path();
         let selected = self.selected.as_deref().and_then(|c| self.path_at(c));
         self.options.metric = self.options.metric.toggled();
-        if let Some(tree) = &self.tree {
-            let mut tree = (**tree).clone();
-            disktree_core::tree::aggregate(&mut tree, self.options.metric);
-            discard(self.tree.replace(Arc::new(tree)));
+        if let Some(tree) = self.tree.take() {
+            // The window is usually the tree's only owner, and then it is
+            // reordered where it lies. A copy of 20 million nodes took 0.8
+            // to 0.9 s and briefly held the whole tree twice, 3.2 GiB more
+            // on such a scan, where reordering took 0.1 to 0.2 s. A find or
+            // a widening walk still reading it gets its own copy, as before.
+            // Either way it becomes a new `Arc`, so a removal preview bound
+            // to the old order lapses as it did.
+            let mut tree = Arc::try_unwrap(tree).unwrap_or_else(|shared| {
+                let copy = (*shared).clone();
+                // The other reader may let go first; then this is the last
+                // reference, and it must not be freed on this thread.
+                discard(Some(shared));
+                copy
+            });
+            // Totals and sharing do not depend on the metric; only the order
+            // of children does.
+            disktree_core::tree::reorder(&mut tree, self.options.metric);
+            self.tree = Some(Arc::new(tree));
             let metric = self.options.metric;
             let style = self.path_style();
             self.marks.refresh(
                 &self.root_path,
-                self.tree.as_ref().unwrap(),
+                self.tree.as_ref().unwrap().root(),
                 metric,
                 style,
             );
@@ -3090,26 +3122,14 @@ impl Disktree {
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
+        cx: &mut Context<'_, Self>,
     ) -> bool {
-        let keystroke = &event.keystroke;
-        if !(keystroke.modifiers.control || keystroke.modifiers.platform) {
-            return false;
+        if crate::ui::zoom_interface(event, window, cx) {
+            self.cache = None;
+            true
+        } else {
+            false
         }
-        let steps = crate::ui::ZOOM_STEPS;
-        let current = window.rem_size().as_f32() / crate::ui::BASE_REM;
-        let index = steps
-            .iter()
-            .position(|step| (step - current).abs() < 0.01)
-            .unwrap_or(2);
-        let next = match keystroke.key.as_str() {
-            "=" | "+" => (index + 1).min(steps.len() - 1),
-            "-" => index.saturating_sub(1),
-            "0" => 2,
-            _ => return false,
-        };
-        window.set_rem_size(px(crate::ui::BASE_REM * steps[next]));
-        self.cache = None;
-        true
     }
 
     pub fn begin_removal(&mut self, cx: &mut Context<'_, Self>) {
@@ -3264,7 +3284,8 @@ impl Disktree {
         self.finding = true;
         let base = self.crumbs.clone();
         let task = cx.background_executor().spawn(async move {
-            tree.resolve(&base)
+            tree.root()
+                .resolve(&base)
                 .and_then(|node| filter(node, &base, &needle))
         });
         cx.spawn(async move |this, cx| {
@@ -3316,7 +3337,7 @@ impl Disktree {
             .iter()
             .filter(|(_, keep)| **keep == Keep::Whole)
             .filter_map(|(crumbs, _)| {
-                let node = tree.as_deref()?.resolve(crumbs)?;
+                let node = tree.as_deref()?.root().resolve(crumbs)?;
                 Some((node.bytes, crumbs))
             })
             .max_by_key(|(bytes, _)| *bytes)
@@ -4057,14 +4078,21 @@ impl Disktree {
     }
 
     /// Advance the layout transition, if one is running.
-    pub fn tick_transition(&mut self, window: &Window) {
-        if let Some(transition) = self.transition {
-            let (_, running) = transition.sample(Rect::default());
-            if running {
-                window.request_animation_frame();
-            } else {
-                self.transition = None;
-            }
+    pub fn tick_transition(&mut self, window: &Window, cx: &mut gpui_kit::App) {
+        let Some(transition) = self.transition else {
+            return;
+        };
+        // Asked only mid-flight: the answer is a platform call, and no other
+        // frame has motion to drop.
+        if prefers_reduced_motion(cx) {
+            self.transition = None;
+            return;
+        }
+        let (_, running) = transition.sample(Rect::default());
+        if running {
+            window.request_animation_frame();
+        } else {
+            self.transition = None;
         }
     }
 
@@ -4076,6 +4104,15 @@ impl Disktree {
             None => rect,
         }
     }
+}
+
+/// Base 0.6.6 follows Linux portal changes, but reads macOS/Windows only
+/// when asked. Re-sample before a transition starts and on each of its
+/// frames so a running app honors an OS toggle too. Base preserves explicit
+/// application overrides.
+fn prefers_reduced_motion(cx: &mut gpui_kit::App) -> bool {
+    gpui_kit::base::apply_system_reduce_motion(cx);
+    cx.reduce_motion()
 }
 
 /// A direction for geometric selection movement.
@@ -4344,8 +4381,11 @@ impl Render for Disktree {
     ) -> impl gpui_kit::IntoElement {
         #[cfg(test)]
         crate::marks::work::RENDERS.set(crate::marks::work::RENDERS.get() + 1);
+        if crate::ui::sync_scale(window, cx) {
+            self.cache = None;
+        }
         self.rem = window.rem_size().as_f32();
-        self.tick_transition(window);
+        self.tick_transition(window, cx);
         // The titlebar names the directory on screen, however it got there:
         // a key, a click, a rescan or a folder chosen from the menu.
         let title = if self.awaiting_root {

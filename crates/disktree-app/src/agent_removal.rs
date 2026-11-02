@@ -5,7 +5,7 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use disktree_core::removal::{Target, detect_trash_backend};
-use disktree_core::tree::Node;
+use disktree_core::tree::Tree;
 use disktree_link::{
     ConfirmedRemoval, RemovalChoice, RemovalPreview, Response,
 };
@@ -20,7 +20,7 @@ static NEXT_PREVIEW: AtomicU64 = AtomicU64::new(0);
 pub struct PreparedRemoval {
     preview: RemovalPreview,
     marks: Vec<Target>,
-    tree: Weak<Node>,
+    tree: Weak<Tree>,
     created: Instant,
 }
 

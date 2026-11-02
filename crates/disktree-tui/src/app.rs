@@ -21,7 +21,7 @@ use disktree_core::scan::{ScanHandle, ScanOptions, ScanSnapshot};
 use disktree_core::space::{
     SpaceInfo, Volume, device_for, space_info, volume_root_for, volumes,
 };
-use disktree_core::tree::{Metric, Node, aggregate, path_of};
+use disktree_core::tree::{Metric, Node, Tree, aggregate, path_of};
 use disktree_core::treemap::{
     LayoutOptions, Rect as MapRect, Tile, TileKind, layout_filtered,
 };
@@ -163,7 +163,7 @@ pub struct App {
     pub read_only: bool,
     pub options: ScanOptions,
     pub mode: ViewMode,
-    pub tree: Option<Node>,
+    pub tree: Option<Tree>,
     pub scan: Option<ScanHandle>,
     pub progress: ScanSnapshot,
     pub scan_error: Option<String>,
@@ -348,10 +348,13 @@ impl App {
                             aggregate(&mut tree, self.options.metric);
                         }
                         self.refresh_marks(&tree);
-                        self.insights =
-                            worth_a_look(&tree, now_seconds(), INSIGHT_LIMIT);
+                        self.insights = worth_a_look(
+                            tree.root(),
+                            now_seconds(),
+                            INSIGHT_LIMIT,
+                        );
                         self.scanned_at = now_seconds();
-                        self.selected = first_child(&tree, &[]);
+                        self.selected = first_child(tree.root(), &[]);
                         self.tree = Some(tree);
                         if let Some((directory, selected)) =
                             self.pending_view.take()
@@ -441,7 +444,7 @@ impl App {
         self.space != old
     }
 
-    fn refresh_marks(&mut self, tree: &Node) {
+    fn refresh_marks(&mut self, tree: &Tree) {
         self.marks.retain_mut(|target| {
             let Some(node) = node_at_path(&self.root, tree, &target.path)
             else {
@@ -453,18 +456,21 @@ impl App {
         });
     }
 
-    pub fn current_node(&self) -> Option<&Node> {
-        self.tree.as_ref()?.resolve(&self.current)
+    pub fn current_node(&self) -> Option<Node<'_>> {
+        self.tree.as_ref()?.root().resolve(&self.current)
     }
 
-    pub fn selected_node(&self) -> Option<&Node> {
-        self.tree.as_ref()?.resolve(self.selected.as_deref()?)
+    pub fn selected_node(&self) -> Option<Node<'_>> {
+        self.tree
+            .as_ref()?
+            .root()
+            .resolve(self.selected.as_deref()?)
     }
 
     pub fn selected_path(&self) -> Option<PathBuf> {
         Some(path_of(
             &self.root,
-            self.tree.as_ref()?,
+            self.tree.as_ref()?.root(),
             self.selected.as_deref()?,
             PathStyle::Native,
         ))
@@ -473,7 +479,7 @@ impl App {
     pub fn current_path(&self) -> Option<PathBuf> {
         Some(path_of(
             &self.root,
-            self.tree.as_ref()?,
+            self.tree.as_ref()?.root(),
             &self.current,
             PathStyle::Native,
         ))
@@ -979,7 +985,7 @@ impl App {
             return VisibleChildren::All(0);
         };
         let Some(matches) = self.matches.as_ref() else {
-            return VisibleChildren::All(node.children.len());
+            return VisibleChildren::All(node.children().len());
         };
         if let Some(indices) = self.children_cache.borrow().as_ref() {
             return VisibleChildren::Filtered(Rc::clone(indices));
@@ -1183,8 +1189,10 @@ impl App {
             self.notice = Some("Select a directory to open".to_string());
             return;
         };
-        let Some(node) =
-            self.tree.as_ref().and_then(|tree| tree.resolve(&crumbs))
+        let Some(node) = self
+            .tree
+            .as_ref()
+            .and_then(|tree| tree.root().resolve(&crumbs))
         else {
             self.notice =
                 Some("Selection is no longer in the scan".to_string());
@@ -1194,7 +1202,7 @@ impl App {
             self.notice = Some("File selected; Space marks it".to_string());
             return;
         }
-        if node.children.is_empty() {
+        if node.children().is_empty() {
             self.notice = Some("Directory is empty".to_string());
             return;
         }
@@ -1248,8 +1256,10 @@ impl App {
         self.screen = Screen::Explore;
         if same_path(&root, &self.root) {
             self.current.clear();
-            self.selected =
-                self.tree.as_ref().and_then(|tree| first_child(tree, &[]));
+            self.selected = self
+                .tree
+                .as_ref()
+                .and_then(|tree| first_child(tree.root(), &[]));
             self.invalidate_view_cache();
             return;
         }
@@ -1386,8 +1396,8 @@ impl App {
     }
 
     fn switch_measure(&mut self) {
-        // The desktop and terminal share Node in one executable. Reusing the
-        // scanner avoids charging every GUI/MCP node for terminal metadata.
+        // Reusing the scanner keeps terminal measurement metadata out of
+        // the core tree that every interface uses.
         self.start_scan();
     }
 
@@ -1420,10 +1430,11 @@ impl App {
         self.selected = selected
             .and_then(|path| crumbs_for_path(&self.root, tree, &path))
             .or_else(|| {
-                tree.resolve(&self.current)
+                tree.root()
+                    .resolve(&self.current)
                     .and_then(|node| first_child(node, &self.current))
             });
-        self.insights = worth_a_look(tree, now_seconds(), INSIGHT_LIMIT);
+        self.insights = worth_a_look(tree.root(), now_seconds(), INSIGHT_LIMIT);
         self.matches = None;
         self.search.clear();
         self.search_open = false;
@@ -1501,8 +1512,8 @@ impl App {
     }
 }
 
-fn first_child(node: &Node, base: &[usize]) -> Option<Vec<usize>> {
-    (!node.children.is_empty()).then(|| {
+fn first_child(node: Node<'_>, base: &[usize]) -> Option<Vec<usize>> {
+    (!node.children().is_empty()).then(|| {
         let mut crumbs = base.to_vec();
         crumbs.push(0);
         crumbs
@@ -1511,17 +1522,14 @@ fn first_child(node: &Node, base: &[usize]) -> Option<Vec<usize>> {
 
 fn node_at_path<'a>(
     root_path: &Path,
-    root: &'a Node,
+    root: &'a Tree,
     path: &Path,
-) -> Option<&'a Node> {
+) -> Option<Node<'a>> {
     let relative = path.strip_prefix(root_path).ok()?;
-    let mut node = root;
+    let mut node = root.root();
     for component in relative.components() {
         let name = component.as_os_str().to_string_lossy();
-        node = node
-            .children
-            .iter()
-            .find(|child| child.name.as_ref() == name)?;
+        node = node.children().iter().find(|child| child.name() == name)?;
     }
     Some(node)
 }
@@ -1544,18 +1552,18 @@ fn hidden_path(root: &Path, path: &Path) -> bool {
 
 fn crumbs_for_path(
     root_path: &Path,
-    root: &Node,
+    root: &Tree,
     path: &Path,
 ) -> Option<Vec<usize>> {
     let relative = path.strip_prefix(root_path).ok()?;
-    let mut node = root;
+    let mut node = root.root();
     let mut crumbs = Vec::new();
     for component in relative.components() {
         let name = component.as_os_str().to_string_lossy();
         let index = node
-            .children
+            .children()
             .iter()
-            .position(|child| child.name.as_ref() == name)?;
+            .position(|child| child.name() == name)?;
         crumbs.push(index);
         node = node.child(index)?;
     }
@@ -1706,7 +1714,13 @@ mod tests {
         );
         assert_eq!(app.marked_bytes(), marked_bytes);
         assert_eq!(
-            app.tree.as_ref().expect("tree").children[0].name.as_ref(),
+            app.tree
+                .as_ref()
+                .expect("tree")
+                .root()
+                .children()
+                .at(0)
+                .name(),
             "many"
         );
 
@@ -1715,7 +1729,13 @@ mod tests {
         assert_eq!(app.options.metric, Metric::Bytes);
         assert!(app.scan.is_none(), "age mode should reuse the tree");
         assert_eq!(
-            app.tree.as_ref().expect("tree").children[0].name.as_ref(),
+            app.tree
+                .as_ref()
+                .expect("tree")
+                .root()
+                .children()
+                .at(0)
+                .name(),
             "large"
         );
         assert_eq!(
@@ -1776,14 +1796,14 @@ mod tests {
         std::fs::write(&visible, b"visible").expect("visible");
         let mut app = App::new(root.into(), ScanOptions::default());
         finish_scan(&mut app);
-        let full_bytes = app.tree.as_ref().expect("tree").bytes;
+        let full_bytes = app.tree.as_ref().expect("tree").root().bytes;
         app.selected =
             crumbs_for_path(root, app.tree.as_ref().expect("tree"), &visible);
         app.toggle_mark();
         app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         assert!(app.scan.is_some());
         finish_scan(&mut app);
-        assert!(app.tree.as_ref().expect("tree").bytes < full_bytes);
+        assert!(app.tree.as_ref().expect("tree").root().bytes < full_bytes);
         assert_eq!(app.marks[0].path, visible);
         assert_eq!(app.selected_path().as_deref(), Some(visible.as_path()));
         std::fs::remove_file(&visible).expect("remove fixture file");
@@ -1793,6 +1813,7 @@ mod tests {
             app.tree
                 .as_ref()
                 .expect("tree")
+                .root()
                 .child_named(".private")
                 .is_some()
         );
@@ -1909,9 +1930,11 @@ mod tests {
         assert_eq!(visible.len(), 1);
         let index = visible.get(0).expect("matching ancestor");
         assert_eq!(
-            app.current_node().expect("root").children[index]
-                .name
-                .as_ref(),
+            app.current_node()
+                .expect("root")
+                .children()
+                .at(index)
+                .name(),
             "Projects"
         );
     }
@@ -2043,7 +2066,8 @@ mod tests {
             app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         }
         assert!(app.list_scroll > 0);
-        let selected = app.selected_node().expect("selected").name.to_string();
+        let selected =
+            app.selected_node().expect("selected").name().to_string();
         let mut terminal =
             Terminal::new(TestBackend::new(45, 13)).expect("terminal");
         terminal
@@ -2084,7 +2108,7 @@ mod tests {
         if let Some(scan) = app.scan.take() {
             scan.cancel();
         }
-        app.selected = first_child(&tree, &[]);
+        app.selected = first_child(tree.root(), &[]);
         app.tree = Some(tree);
         for name in ["Projects", "app"] {
             app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -2192,8 +2216,9 @@ mod tests {
             .insights
             .iter()
             .map(|candidate| {
-                let node = tree.resolve(&candidate.crumbs).expect("finding");
-                (node.name.to_string(), candidate.finding.clone())
+                let node =
+                    tree.root().resolve(&candidate.crumbs).expect("finding");
+                (node.name().to_string(), candidate.finding.clone())
             })
             .collect();
         assert_eq!(
@@ -2248,9 +2273,10 @@ mod tests {
             scan.cancel();
         }
         app.selected = tree
-            .children
+            .root()
+            .children()
             .iter()
-            .position(|child| child.name.as_ref() == "selected")
+            .position(|child| child.name() == "selected")
             .map(|index| vec![index]);
         app.tree = Some(tree);
         app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));

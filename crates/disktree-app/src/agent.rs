@@ -305,7 +305,7 @@ impl Disktree {
     }
 
     /// The node at `path` in the tree on screen, or why there is none.
-    fn agent_node(&self, path: &Path) -> Result<&Node, String> {
+    fn agent_node(&self, path: &Path) -> Result<Node<'_>, String> {
         let tree = self.tree.as_deref().ok_or_else(|| {
             if self.scan.is_some() {
                 "the window is still scanning; ask again when the state \
@@ -326,13 +326,16 @@ impl Disktree {
                 )
             )
         })?;
-        tree.descend(relative).map(|(_, node)| node).ok_or_else(|| {
-            format!(
-                "{} is not in the window's tree: it may be new, hidden, \
+        tree.root()
+            .descend(relative)
+            .map(|(_, node)| node)
+            .ok_or_else(|| {
+                format!(
+                    "{} is not in the window's tree: it may be new, hidden, \
                  below the depth limit, or on another filesystem",
-                display_path(path, self.home.as_deref(), PathStyle::Native)
-            )
-        })
+                    display_path(path, self.home.as_deref(), PathStyle::Native)
+                )
+            })
     }
 
     /// What is in a directory of the tree on screen.
@@ -340,7 +343,7 @@ impl Disktree {
         let listing = match self.agent_node(path) {
             Ok(node) => Listing::of(
                 &self.root_path,
-                self.tree.as_ref().map_or(0, |tree| tree.bytes),
+                self.tree.as_ref().map_or(0, |tree| tree.root().bytes),
                 path,
                 node,
                 limit,
@@ -603,9 +606,9 @@ impl Disktree {
                 .as_ref()
                 .and_then(|agent| agent.last_removal.clone()),
             tree: self.tree.as_deref().map(|tree| TreeSummary {
-                bytes: tree.bytes,
-                files: tree.files,
-                dirs: u64::from(tree.dirs),
+                bytes: tree.root().bytes,
+                files: tree.root().files,
+                dirs: u64::from(tree.root().dirs),
                 scanned_at: self.scanned_at,
                 elapsed_ms: self.scan_elapsed.map_or(0, |elapsed| {
                     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
@@ -623,7 +626,7 @@ impl Disktree {
                         .map(|candidate| Insight {
                             path: path_of(
                                 &self.root_path,
-                                tree,
+                                tree.root(),
                                 &candidate.crumbs,
                                 PathStyle::Native,
                             ),
@@ -652,10 +655,10 @@ impl Disktree {
         if let Some(tree) = &self.tree {
             let mut resolver = crate::marks::Resolver::new(
                 &self.root_path,
-                tree,
+                tree.root(),
                 PathStyle::Native,
             );
-            let nodes: Vec<&Node> = plan
+            let nodes: Vec<Node<'_>> = plan
                 .targets
                 .iter()
                 .filter_map(|target| resolver.resolve(&target.path))

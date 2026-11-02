@@ -1,20 +1,25 @@
 //! Small semantic surfaces for text that GPUI does not expose implicitly.
 
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Div, InteractiveElement as _, Role, Stateful,
     StatefulInteractiveElement as _, div,
 };
 
-/// Lines or blocks Page Up or Page Down moves in the Logs and document
-/// readers: about one window of text at the default size, so a page key
-/// moves roughly a screen without measuring the viewport each press.
-pub const PAGE_STEP: usize = 20;
-
 pub fn text(
     id: impl Into<gpui_kit::ElementId>,
     label: impl Into<gpui_kit::SharedString>,
 ) -> Stateful<Div> {
-    div().id(id).role(Role::Label).aria_label(label)
+    let label = label.into();
+    // AT-SPI derives a static label's name from its value, unlike macOS AX.
+    div()
+        .id(id)
+        .role(Role::Label)
+        .aria_label(label.clone())
+        .when(cfg!(target_os = "linux"), |text| {
+            text.aria_value(label)
+                .a11y_synthetic_children(|b| b.parent_node().set_read_only())
+        })
 }
 
 pub fn status(id: &'static str, label: String) -> Stateful<Div> {
