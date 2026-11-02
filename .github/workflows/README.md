@@ -16,7 +16,8 @@ Every job runs on a standard GitHub-hosted runner: free on a public
 repository, macOS included, and discarded after the job. PwrRoute builds
 macOS on self-hosted lab machines; PwrDisk does not, because it takes pull
 requests from forks and those must never reach a persistent machine. Every
-Rust job pins Rust 1.97, the version in `rust-toolchain.toml`.
+Rust job installs the version `rust-toolchain.toml` pins, read from the
+checkout, so that file is the only place it is written.
 
 ## ci.yml
 
@@ -37,18 +38,22 @@ reports a result. A stale file fails with instructions to run
 
 ### The Rust cache
 
-Every Rust job in `ci.yml` and `preview-build.yml` sets up through one
-local composite action, `.github/actions/setup-rust`, so the toolchain pin,
-the prune and the cache's save rule cannot drift apart between jobs. It
-installs Rust 1.97 with `dtolnay/rust-toolchain`, runs
-`scripts/ci/prune-rust-toolchains.sh`, then `Swatinem/rust-cache` with
-`save-if` true only on `main`. Its inputs are what differ between jobs:
+Every Rust job in `ci.yml`, `preview-build.yml` and `release.yml` sets up
+through one local composite action, `.github/actions/setup-rust`, so the
+toolchain pin, the prune and the cache's save rule cannot drift apart
+between jobs. It reads the `channel` from the checked-out
+`rust-toolchain.toml`, installs it with `dtolnay/rust-toolchain`, runs
+`scripts/ci/prune-rust-toolchains.sh`, then `Swatinem/rust-cache`, saving
+only on `main`. The version is read from the file, not a repository
+variable, so a release tag builds with the Rust it pinned however the
+variable has moved since. Its inputs are what differ between jobs:
 `components` (clippy and rustfmt for the lint jobs), `targets` (both Apple
-architectures for the universal preview build) and `cache-bin` (off in the
-`licenses` job, whose own cache owns `cargo-about`). A job must check out
-the repository before using it, as with any local action. `release.yml`
-keeps its own steps with `save-if: false`: a cache saved under a tag is
-readable by that tag's runs alone.
+architectures for the universal macOS build), `cache-bin` (off in the
+`licenses` job, whose own cache owns `cargo-about`) and `save-if` (`false`
+in `release.yml`, because a cache saved under a tag is readable by that
+tag's runs alone). Its `toolchain` output is the version it read, which
+keys the `cargo-about` cache. A job must check out the repository before
+using it, as with any local action.
 
 The cache saves only on `main`; a PR restores `main`'s entry for the same
 job, by key prefix when its `Cargo.lock` differs. The Actions cache store
