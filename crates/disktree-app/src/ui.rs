@@ -82,6 +82,8 @@ pub mod size {
     /// names are four known words, but wide enough for Drain My Battery
     /// beside the check, bar and count.
     pub const POWER_MENU: Rems = Rems(22.0);
+    /// ⋮, the bar's overflow: its longest row is Depth with its stepper.
+    pub const MORE_MENU: Rems = Rems(16.0);
     /// One bar of the Power Efficiency gauge.
     pub const SIGNAL_BAR: Rems = Rems(0.1875);
     /// A list row's share bar.

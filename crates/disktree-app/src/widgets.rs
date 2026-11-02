@@ -452,6 +452,51 @@ pub fn signal(filled: usize, cx: &App) -> Div {
     bars
 }
 
+/// The treemap view's glyph: the app's own mark in outline, one tall tile
+/// and two stacked, so it reads as "tiles" beside the list's rows.
+pub fn treemap_glyph(color: Hsla) -> Div {
+    let tile = || div().border_1().border_color(color);
+    div()
+        .flex_shrink_0()
+        .flex()
+        .flex_row()
+        .gap(space::XXS)
+        .w(crate::ui::icon::SM)
+        .h(GLYPH_HEIGHT)
+        .child(tile().w(GLYPH_TALL_TILE).h_full())
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .gap(space::XXS)
+                .child(tile().flex_1())
+                .child(tile().flex_1()),
+        )
+}
+
+/// The list view's glyph: three rows.
+pub fn list_glyph(color: Hsla) -> Div {
+    let row = || div().w_full().h(space::XXS).bg(color);
+    div()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .justify_between()
+        .w(crate::ui::icon::SM)
+        .h(GLYPH_HEIGHT)
+        .child(row())
+        .child(row())
+        .child(row())
+}
+
+/// Both view glyphs are a little shorter than wide, like a text line's
+/// x-height plus ascender, so they sit on the label's centre line.
+const GLYPH_HEIGHT: gpui_kit::Rems = gpui_kit::Rems(0.625);
+/// The treemap glyph's tall tile: just over half the width, as the
+/// largest tile in a squarified layout tends to be.
+const GLYPH_TALL_TILE: gpui_kit::Rems = gpui_kit::Rems(0.375);
+
 /// One bar per Power Efficiency preset.
 const SIGNAL_STEPS: usize = crate::power::PowerEfficiency::ALL.len();
 
