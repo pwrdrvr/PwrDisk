@@ -867,3 +867,19 @@ macOS or Windows for the preference, while starting a transition and each of
 its frames still do. The harness cannot reach that re-read (GPUI's test
 scheduler never asks the platform), so live OS toggling stays native
 evidence.
+
+Headed macOS evidence after the rebase, in a macOS virtual machine against
+the contrived tree (`scripts/a11y-fixture.py`), with Reduce motion turned on
+before launch and confirmed through `NSWorkspace`, then restored. Entering
+`cache` with Return was recorded at 60 frames per second:
+
+| Build | Distinct frames | Result |
+| --- | --- | --- |
+| main `a05da0d` | 7 | Five in-between frames: the folder zooms despite the preference |
+| this change `e7fe166` | 2 | The start and the destination: navigation lands directly |
+
+The same runs tried to toggle the preference while the app was running.
+Writing it with `defaults` reached new processes but not the running app,
+which re-reads only when the system announces the change, so those clips
+show nothing about live following and are not counted. Live toggling rests on
+the earlier native trace above and the harness's mid-flight cancel.
