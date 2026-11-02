@@ -149,7 +149,7 @@ pub(crate) fn refresh(tree: &mut Tree) {
 }
 
 /// A node's new sharing figures, by its position in the tree.
-type Update = (u32, Option<Sharing>);
+type Update = (crate::tree::NodeId, Option<Sharing>);
 
 /// Where workers leave their updates: one list per run of work, so none
 /// is copied into another.

@@ -1,34 +1,41 @@
-//! How a scanned tree is held: in a handful of buffers, by `u32` index.
+//! How a scanned tree is held: in a few buffers per worker, by `u32`
+//! index.
 //!
-//! Every node is a 64-byte record in one vector, each directory's children
-//! a contiguous run of it, every name in one string, and the allocation
-//! and sharing records, which most nodes lack, in side tables.
+//! Every node is a 64-byte record, each directory's children a contiguous
+//! run of one vector, every name in a string, and the allocation and
+//! sharing records, which most nodes lack, in side tables.
+//!
+//! The walk builds on many workers at once, and each appends to a
+//! [`Store`] of its own, so none waits on another. A finished tree keeps
+//! the stores as they are instead of joining them: joining writes a second
+//! copy of every node at the end of a scan, and macOS does not take back
+//! the memory of a store freed as it is copied, so a 19.9-million-node
+//! scan peaked at 6.1 to 6.4 GiB that way against 3.6 to 3.8 GiB in one
+//! buffer. A node records which store holds its name, side records and
+//! children, in a byte of its own.
 //!
 //! A tree of separately allocated nodes is freed one `free()` at a time,
 //! each write reading a page back in, from the compressor if macOS has
 //! packed it away: 0.8 to 0.9 s for a 20-million-node tree in a fresh
-//! process, 15 s in a window under memory pressure. Here a drop frees five
-//! buffers without reading them, in under a millisecond and with no page
-//! faults. Nothing here needs `unsafe`: an index is checked where a pointer
-//! would have to be trusted, and a name is a slice of a `String`.
+//! process, 15 s in a window under memory pressure. Here a drop frees a
+//! few buffers per worker without reading them. Nothing here needs
+//! `unsafe`: an index is checked where a pointer would have to be trusted,
+//! and a name is a slice of a `String`.
 //!
-//! The walk builds on many workers at once. Each appends a directory's
-//! children as one block when the directory completes, under one lock, so
-//! blocks land in whatever order workers finish. [`Tree::build`] then
-//! reorders the nodes once so that every subtree is one contiguous run,
-//! and from then on a pass can hand separate subtrees to separate workers
-//! by splitting the vector, as [`Tree::par_bottom_up`] does. On a tree of
-//! 19.9 million nodes that took 2.6 to 3.9 s, and it is what keeps the
-//! totals pass at 0.1 to 0.2 s instead of 1.2 to 1.8 s in build order.
+//! A pass that writes splits the work by store, since each is its own
+//! memory: files are visited store by store, each store's directories are
+//! sorted by one worker, and a directory's totals are worked out on every
+//! worker by reading, then written by position.
 //!
 //! Reading goes through [`Node`], a cursor that pairs a stored record with
 //! the tree it indexes into; writing goes through [`NodeMut`], or a pass
 //! over the whole tree.
 
+use std::cmp::Ordering;
 use std::fmt;
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
-use std::ops::Deref;
+use std::ops::{Deref, Range};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use rayon::prelude::*;
@@ -145,23 +152,36 @@ impl Extra {
 }
 
 /// One node as stored: its facts and where its name, children and side
-/// records are.
+/// records are, all in the store that made it.
 #[derive(Clone, Copy, Debug)]
 struct Slot {
     facts: Facts,
-    /// Offset of the name's length prefix in [`Store::names`].
+    /// Offset of the name's length prefix in its store's names.
     name: u32,
-    /// Index of the first child in [`Store::nodes`]; zero when there are
+    /// Index of the first child in its store's nodes; zero when there are
     /// none.
     first: u32,
     len: u32,
     extra: Extra,
 }
 
-/// Everything a tree owns.
+/// Where a node is: the store whose nodes hold it, and its index there.
+/// Good until the tree is next changed, since sorting moves nodes within
+/// their blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct NodeId {
+    store: u8,
+    index: u32,
+}
+
+/// One worker's buffers, or a whole tree built on one thread.
 #[derive(Default)]
 struct Store {
     nodes: Vec<Slot>,
+    /// For each of `nodes`, the store that made it, which holds its name,
+    /// side records and children: a directory's children can come from
+    /// any worker, and a slot has no room left to say which.
+    homes: Vec<u8>,
     /// Every name, each after its length written as one `char`: a `String`
     /// can be sliced without checking its bytes again, which `&[u8]` could
     /// only skip with `unsafe`, and a length that is a `char` keeps the
@@ -172,7 +192,6 @@ struct Store {
     sharings: Vec<Sharing>,
     /// A node with both, which only a followed directory link has.
     both: Vec<(Allocation, Sharing)>,
-    root: u32,
 }
 
 /// A copy made on every worker: copying a large tree is gigabytes of
@@ -185,22 +204,27 @@ impl Clone for Store {
             copy.par_extend(source.par_iter().copied());
             copy
         }
-        let ((nodes, allocations), (names, sharings)) = rayon::join(
+        let ((nodes, homes), (names, (allocations, sharings))) = rayon::join(
+            || rayon::join(|| copied(&self.nodes), || copied(&self.homes)),
             || {
                 rayon::join(
-                    || copied(&self.nodes),
-                    || copied(&self.allocations),
+                    || self.names.clone(),
+                    || {
+                        rayon::join(
+                            || copied(&self.allocations),
+                            || copied(&self.sharings),
+                        )
+                    },
                 )
             },
-            || rayon::join(|| self.names.clone(), || copied(&self.sharings)),
         );
         Self {
             nodes,
+            homes,
             names,
             allocations,
             sharings,
             both: self.both.clone(),
-            root: self.root,
         }
     }
 }
@@ -224,7 +248,7 @@ impl Store {
 
     fn push_name(&mut self, name: &str) -> u32 {
         let at = u32::try_from(self.names.len())
-            .expect("a tree's names fit in four gigabytes");
+            .expect("a store's names fit in four gigabytes");
         // `MAX_NAME_BYTES` is far below the first length that is not a
         // `char`, 55,296, where the surrogates begin.
         assert!(name.len() <= MAX_NAME_BYTES, "a name of {}", name.len());
@@ -305,21 +329,26 @@ impl Store {
     }
 
     /// A node for `name` with these facts and records, holding `children`,
-    /// which become one block of this store.
+    /// each with the store that made it, which become one block here.
     fn place(
         &mut self,
         name: &str,
         facts: Facts,
         allocation: Option<Allocation>,
         sharing: Option<Sharing>,
-        children: impl ExactSizeIterator<Item = Slot>,
+        children: impl ExactSizeIterator<Item = (Slot, u8)>,
     ) -> Slot {
         let len = Self::index(children.len());
         let first = if len == 0 {
             0
         } else {
             let first = Self::index(self.nodes.len());
-            self.nodes.extend(children);
+            self.nodes.reserve(children.len());
+            self.homes.reserve(children.len());
+            for (child, home) in children {
+                self.nodes.push(child);
+                self.homes.push(home);
+            }
             first
         };
         Slot {
@@ -331,159 +360,138 @@ impl Store {
         }
     }
 
-    fn children(&self, slot: &Slot) -> &[Slot] {
-        let first = slot.first as usize;
-        &self.nodes[first..first + slot.len as usize]
-    }
-
-    /// A copy of `node` from any tree, and everything beneath it.
-    fn copy(&mut self, node: Node<'_>, name: &str) -> Slot {
+    /// A copy of `node` from any tree, and everything beneath it, made in
+    /// this store, which is store `me` of its build.
+    fn copy(&mut self, node: Node<'_>, name: &str, me: u8) -> Slot {
         let children: Vec<Slot> = node
             .children()
             .iter()
-            .map(|child| self.copy(child, child.name()))
+            .map(|child| self.copy(child, child.name(), me))
             .collect();
         self.place(
             name,
             *node.facts(),
             node.allocation().copied(),
             node.stored_sharing().copied(),
-            children.into_iter(),
+            children.into_iter().map(|child| (child, me)),
         )
     }
 
-    /// A copy of all of `source` under `name`: its buffers appended in
-    /// order, each index moved past what this store already holds. One
-    /// sequential pass instead of a walk with a list per directory, which
-    /// matters because a build copies under the lock every worker needs.
-    /// `source`'s own root is appended too and left for
-    /// [`Self::relayout`] to cut, which keeps every index a plain shift.
-    fn absorb(&mut self, source: &Self, name: &str) -> Slot {
-        let base = Self::index(self.nodes.len());
-        let names = Self::index(self.names.len());
-        let allocations = self.allocations.len();
-        let sharings = self.sharings.len();
-        let both = self.both.len();
-        self.names.push_str(&source.names);
-        u32::try_from(self.names.len())
-            .expect("a tree's names fit in four gigabytes");
-        self.allocations.extend_from_slice(&source.allocations);
-        self.sharings.extend_from_slice(&source.sharings);
-        self.both.extend_from_slice(&source.both);
-        let moved = |slot: &Slot| {
-            let index = slot.extra.index();
-            let extra = match slot.extra.tag() {
-                Extra::ALLOCATION => {
-                    Extra::new(Extra::ALLOCATION, allocations + index)
-                }
-                Extra::SHARING => Extra::new(Extra::SHARING, sharings + index),
-                Extra::BOTH => Extra::new(Extra::BOTH, both + index),
-                _ => Extra::NONE,
-            };
-            Slot {
-                name: names + slot.name,
-                first: if slot.len == 0 { 0 } else { base + slot.first },
-                extra,
-                ..*slot
-            }
+    /// A copy of all of `source` under `name`: each of its stores'
+    /// buffers appended in turn, every index moved by where its home
+    /// store's buffers landed. One sequential pass instead of a walk with
+    /// a list per directory: the worker that meets a reused tree copies
+    /// all of it before it lists anything else. `source`'s own root is
+    /// appended too, and nothing reaches it, which keeps every index a
+    /// plain shift.
+    fn absorb(&mut self, source: &Tree, name: &str, me: u8) -> Slot {
+        let mut bases = Vec::with_capacity(source.stores.len());
+        let mut next = Bases {
+            nodes: self.nodes.len(),
+            names: self.names.len(),
+            allocations: self.allocations.len(),
+            sharings: self.sharings.len(),
+            both: self.both.len(),
         };
-        // Not in parallel: this runs under the builder's lock, and a rayon
-        // worker waiting on its own jobs can pick up a walk task that asks
-        // for the same lock.
-        self.nodes.extend(source.nodes.iter().map(moved));
+        for part in &source.stores {
+            bases.push(next);
+            next.nodes += part.nodes.len();
+            next.names += part.names.len();
+            next.allocations += part.allocations.len();
+            next.sharings += part.sharings.len();
+            next.both += part.both.len();
+        }
+        u32::try_from(next.names)
+            .expect("a store's names fit in four gigabytes");
+        for part in &source.stores {
+            self.names.push_str(&part.names);
+            self.allocations.extend_from_slice(&part.allocations);
+            self.sharings.extend_from_slice(&part.sharings);
+            self.both.extend_from_slice(&part.both);
+            // Not in parallel: this runs with the worker's store held, and
+            // a rayon worker waiting on its own jobs can pick up a walk
+            // task that asks for the same store.
+            self.nodes.extend(
+                part.nodes
+                    .iter()
+                    .zip(&part.homes)
+                    .map(|(slot, &home)| bases[usize::from(home)].moved(slot)),
+            );
+        }
+        self.homes.resize(self.nodes.len(), me);
+        let root = source.root();
         Slot {
             name: self.push_name(name),
-            ..moved(&source.nodes[source.root as usize])
+            ..bases[usize::from(root.home())].moved(root.slot)
         }
     }
 
-    fn draft(&mut self, draft: &Draft) -> Slot {
+    fn draft(&mut self, draft: &Draft, me: u8) -> Slot {
         let children: Vec<Slot> = draft
             .children
             .iter()
-            .map(|child| self.draft(child))
+            .map(|child| self.draft(child, me))
             .collect();
         self.place(
             &draft.name,
             draft.facts,
             draft.allocation.as_deref().copied(),
             draft.sharing.as_deref().copied(),
-            children.into_iter(),
+            children.into_iter().map(|child| (child, me)),
         )
-    }
-
-    /// Reorder the nodes so that every subtree is one contiguous run: the
-    /// root at index 0, then each directory's block followed by each of its
-    /// children's runs, in block order. That is what lets a pass hand
-    /// separate subtrees to separate workers with `split_at_mut`, where a
-    /// build's order, interleaved by whichever worker finished first,
-    /// gives no such split. Sorting a block later keeps it true: a child
-    /// moves within its block and its run stays where it is.
-    ///
-    /// In place, by a permutation of four bytes a node, instead of a second
-    /// copy of the nodes at sixty-four. Nodes no directory reaches are
-    /// dropped.
-    fn relayout(&mut self) {
-        let len = self.nodes.len();
-        let mut target = vec![u32::MAX; len];
-        target[self.root as usize] = 0;
-        let mut next: u32 = 1;
-        // Depth first: a directory's block, then each child's run.
-        let mut stack: Vec<(u32, u32)> = Vec::new();
-        let mut place =
-            |slot: &Slot, target: &mut [u32], stack: &mut Vec<(u32, u32)>| {
-                if slot.len > 0 {
-                    for offset in 0..slot.len {
-                        target[(slot.first + offset) as usize] = next + offset;
-                    }
-                    next += slot.len;
-                    stack.push((slot.first, slot.first + slot.len));
-                }
-            };
-        place(&self.nodes[self.root as usize], &mut target, &mut stack);
-        while let Some((child, end)) = stack.pop() {
-            if child + 1 < end {
-                stack.push((child + 1, end));
-            }
-            place(&self.nodes[child as usize], &mut target, &mut stack);
-        }
-        let reached = next;
-        // What nothing reaches goes past the end, to be cut off.
-        for slot in &mut target {
-            if *slot == u32::MAX {
-                *slot = next;
-                next += 1;
-            }
-        }
-        // A block moves whole, so its new start is its first child's.
-        for slot in &mut self.nodes {
-            if slot.len > 0 {
-                slot.first = target[slot.first as usize];
-            }
-        }
-        for index in 0..len {
-            while target[index] as usize != index {
-                let to = target[index] as usize;
-                self.nodes.swap(index, to);
-                target.swap(index, to);
-            }
-        }
-        self.nodes.truncate(reached as usize);
-        self.root = 0;
     }
 
     const fn bytes(&self) -> StorageBytes {
         StorageBytes {
             used: self.nodes.len() * size_of::<Slot>()
+                + self.homes.len()
                 + self.names.len()
                 + self.allocations.len() * size_of::<Allocation>()
                 + self.sharings.len() * size_of::<Sharing>()
                 + self.both.len() * size_of::<(Allocation, Sharing)>(),
             reserved: self.nodes.capacity() * size_of::<Slot>()
+                + self.homes.capacity()
                 + self.names.capacity()
                 + self.allocations.capacity() * size_of::<Allocation>()
                 + self.sharings.capacity() * size_of::<Sharing>()
                 + self.both.capacity() * size_of::<(Allocation, Sharing)>(),
+        }
+    }
+}
+
+/// Where one store's buffers start once appended to another.
+#[derive(Clone, Copy, Default)]
+struct Bases {
+    nodes: usize,
+    names: usize,
+    allocations: usize,
+    sharings: usize,
+    both: usize,
+}
+
+impl Bases {
+    /// `slot`, whose home store these bases are for, as the store it is
+    /// appended to reads it.
+    fn moved(self, slot: &Slot) -> Slot {
+        let index = slot.extra.index();
+        let extra = match slot.extra.tag() {
+            Extra::ALLOCATION => {
+                Extra::new(Extra::ALLOCATION, self.allocations + index)
+            }
+            Extra::SHARING => Extra::new(Extra::SHARING, self.sharings + index),
+            Extra::BOTH => Extra::new(Extra::BOTH, self.both + index),
+            _ => Extra::NONE,
+        };
+        let shift = |at: u32, base: usize| Store::index(at as usize + base);
+        Slot {
+            name: shift(slot.name, self.names),
+            first: if slot.len == 0 {
+                0
+            } else {
+                shift(slot.first, self.nodes)
+            },
+            extra,
+            ..*slot
         }
     }
 }
@@ -502,8 +510,9 @@ pub struct StorageBytes {
 /// Its facts read through `Deref`.
 #[derive(Clone, Copy)]
 pub struct Node<'t> {
-    store: &'t Store,
+    tree: &'t Tree,
     slot: &'t Slot,
+    id: NodeId,
 }
 
 impl Deref for Node<'_> {
@@ -519,46 +528,52 @@ impl<'t> Node<'t> {
         &self.slot.facts
     }
 
+    /// The store that holds this node's name, records and children.
+    fn home(self) -> u8 {
+        self.tree.stores[usize::from(self.id.store)].homes
+            [self.id.index as usize]
+    }
+
+    fn records(self) -> &'t Store {
+        &self.tree.stores[usize::from(self.home())]
+    }
+
     pub fn name(self) -> &'t str {
-        self.store.name(self.slot.name)
+        self.records().name(self.slot.name)
     }
 
     /// Children, ordered by [`crate::tree::Metric`] value, descending.
     pub fn children(self) -> Children<'t> {
+        let store = self.home();
+        let first = self.slot.first;
         Children {
-            store: self.store,
-            slots: self.store.children(self.slot),
+            tree: self.tree,
+            store,
+            first,
+            slots: &self.tree.stores[usize::from(store)].nodes
+                [first as usize..first as usize + self.slot.len as usize],
         }
     }
 
     pub fn allocation(self) -> Option<&'t Allocation> {
-        self.store.allocation(self.slot.extra)
+        self.records().allocation(self.slot.extra)
     }
 
     /// Derived clone figures, sparse: see [`Node::sharing`].
     pub fn stored_sharing(self) -> Option<&'t Sharing> {
-        self.store.sharing(self.slot.extra)
+        self.records().sharing(self.slot.extra)
     }
 
-    /// Where this node is in its tree, for [`Tree::set_sharing`]: a pass
+    /// Where this node is in its tree, for writing to it later: a pass
     /// that only reads can work out figures on every worker, then write
-    /// them by position. Good until the tree is next changed.
-    pub(crate) fn id(self) -> u32 {
-        debug_assert!(
-            self.store
-                .nodes
-                .as_ptr_range()
-                .contains(&std::ptr::from_ref(self.slot)),
-            "a node of another tree"
-        );
-        let offset = std::ptr::from_ref(self.slot).addr()
-            - self.store.nodes.as_ptr().addr();
-        Store::index(offset / size_of::<Slot>())
+    /// them by position.
+    pub(crate) const fn id(self) -> NodeId {
+        self.id
     }
 
     /// Whether this is its tree's root, and so the whole tree.
     fn is_root(self) -> bool {
-        self.id() == self.store.root
+        self.id == self.tree.root
     }
 }
 
@@ -574,10 +589,12 @@ impl fmt::Debug for Node<'_> {
     }
 }
 
-/// A directory's children: a contiguous run of its tree's nodes.
+/// A directory's children: a contiguous run of one store's nodes.
 #[derive(Clone, Copy)]
 pub struct Children<'t> {
-    store: &'t Store,
+    tree: &'t Tree,
+    store: u8,
+    first: u32,
     slots: &'t [Slot],
 }
 
@@ -590,29 +607,41 @@ impl<'t> Children<'t> {
         self.slots.is_empty()
     }
 
+    fn node(self, offset: usize, slot: &'t Slot) -> Node<'t> {
+        Node {
+            tree: self.tree,
+            slot,
+            id: NodeId {
+                store: self.store,
+                index: self.first + Store::index(offset),
+            },
+        }
+    }
+
     pub fn get(self, index: usize) -> Option<Node<'t>> {
-        let store = self.store;
-        self.slots.get(index).map(|slot| Node { store, slot })
+        self.slots.get(index).map(|slot| self.node(index, slot))
     }
 
     /// The child at `index`, which must exist.
     pub fn at(self, index: usize) -> Node<'t> {
-        Node {
-            store: self.store,
-            slot: &self.slots[index],
-        }
+        self.node(index, &self.slots[index])
     }
 
     pub fn iter(self) -> Iter<'t> {
+        let first = self.first;
         Iter {
+            tree: self.tree,
             store: self.store,
-            slots: self.slots.iter(),
+            slots: (first..first + Store::index(self.slots.len()))
+                .zip(self.slots.iter()),
         }
     }
 
     pub fn par_iter(self) -> impl IndexedParallelIterator<Item = Node<'t>> {
-        let store = self.store;
-        self.slots.par_iter().map(move |slot| Node { store, slot })
+        self.slots
+            .par_iter()
+            .enumerate()
+            .map(move |(offset, slot)| self.node(offset, slot))
     }
 }
 
@@ -634,8 +663,22 @@ impl fmt::Debug for Children<'_> {
 /// The children of one directory, in order.
 #[derive(Clone)]
 pub struct Iter<'t> {
-    store: &'t Store,
-    slots: std::slice::Iter<'t, Slot>,
+    tree: &'t Tree,
+    store: u8,
+    slots: std::iter::Zip<Range<u32>, std::slice::Iter<'t, Slot>>,
+}
+
+impl<'t> Iter<'t> {
+    const fn node(&self, (index, slot): (u32, &'t Slot)) -> Node<'t> {
+        Node {
+            tree: self.tree,
+            slot,
+            id: NodeId {
+                store: self.store,
+                index,
+            },
+        }
+    }
 }
 
 impl fmt::Debug for Iter<'_> {
@@ -650,8 +693,8 @@ impl<'t> Iterator for Iter<'t> {
     type Item = Node<'t>;
 
     fn next(&mut self) -> Option<Node<'t>> {
-        let store = self.store;
-        self.slots.next().map(|slot| Node { store, slot })
+        let next = self.slots.next()?;
+        Some(self.node(next))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -659,15 +702,15 @@ impl<'t> Iterator for Iter<'t> {
     }
 
     fn nth(&mut self, n: usize) -> Option<Node<'t>> {
-        let store = self.store;
-        self.slots.nth(n).map(|slot| Node { store, slot })
+        let next = self.slots.nth(n)?;
+        Some(self.node(next))
     }
 }
 
 impl DoubleEndedIterator for Iter<'_> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        let store = self.store;
-        self.slots.next_back().map(|slot| Node { store, slot })
+        let next = self.slots.next_back()?;
+        Some(self.node(next))
     }
 }
 
@@ -693,8 +736,8 @@ impl Deref for Sibling<'_> {
 /// Write access to one node of a tree, and through it to its subtree.
 #[derive(Debug)]
 pub struct NodeMut<'t> {
-    store: &'t mut Store,
-    id: u32,
+    tree: &'t mut Tree,
+    id: NodeId,
 }
 
 impl fmt::Debug for Store {
@@ -710,51 +753,71 @@ impl Deref for NodeMut<'_> {
     type Target = Facts;
 
     fn deref(&self) -> &Facts {
-        &self.store.nodes[self.id as usize].facts
+        &self.slot().facts
     }
 }
 
 impl NodeMut<'_> {
+    fn slot(&self) -> &Slot {
+        &self.tree.stores[usize::from(self.id.store)].nodes
+            [self.id.index as usize]
+    }
+
+    fn slot_mut(&mut self) -> &mut Slot {
+        &mut self.tree.stores[usize::from(self.id.store)].nodes
+            [self.id.index as usize]
+    }
+
+    fn home(&self) -> u8 {
+        self.tree.stores[usize::from(self.id.store)].homes
+            [self.id.index as usize]
+    }
+
     /// This node, to read.
     pub fn node(&self) -> Node<'_> {
         Node {
-            store: self.store,
-            slot: &self.store.nodes[self.id as usize],
+            tree: self.tree,
+            slot: self.slot(),
+            id: self.id,
         }
     }
 
     pub fn facts_mut(&mut self) -> &mut Facts {
-        &mut self.store.nodes[self.id as usize].facts
+        &mut self.slot_mut().facts
     }
 
     /// This node again, for a shorter borrow.
     pub const fn reborrow(&mut self) -> NodeMut<'_> {
         NodeMut {
-            store: self.store,
+            tree: self.tree,
             id: self.id,
         }
     }
 
     pub fn child_count(&self) -> usize {
-        self.store.nodes[self.id as usize].len as usize
+        self.slot().len as usize
     }
 
     pub fn child_mut(&mut self, index: usize) -> Option<NodeMut<'_>> {
-        let slot = &self.store.nodes[self.id as usize];
+        let slot = *self.slot();
         let index = u32::try_from(index).ok().filter(|i| *i < slot.len)?;
         Some(NodeMut {
-            id: slot.first + index,
-            store: self.store,
+            id: NodeId {
+                store: self.home(),
+                index: slot.first + index,
+            },
+            tree: self.tree,
         })
     }
 
     /// Visit each child in order, one at a time.
     pub fn for_each_child_mut(&mut self, mut visit: impl FnMut(NodeMut<'_>)) {
-        let slot = self.store.nodes[self.id as usize];
-        for id in slot.first..slot.first + slot.len {
+        let slot = *self.slot();
+        let store = self.home();
+        for index in slot.first..slot.first + slot.len {
             visit(NodeMut {
-                store: self.store,
-                id,
+                tree: self.tree,
+                id: NodeId { store, index },
             });
         }
     }
@@ -764,250 +827,242 @@ impl NodeMut<'_> {
     /// with that record.
     pub fn sort_children_by(
         &mut self,
-        mut compare: impl FnMut(Sibling<'_>, Sibling<'_>) -> std::cmp::Ordering,
+        compare: impl Fn(Sibling<'_>, Sibling<'_>) -> Ordering,
     ) {
-        let Store { nodes, names, .. } = &mut *self.store;
-        let slot = nodes[self.id as usize];
-        let first = slot.first as usize;
-        nodes[first..first + slot.len as usize].sort_unstable_by(
-            |left, right| {
-                compare(
-                    Sibling {
-                        facts: &left.facts,
-                        name: name_at(names, left.name),
-                    },
-                    Sibling {
-                        facts: &right.facts,
-                        name: name_at(names, right.name),
-                    },
-                )
-            },
+        let slot = *self.slot();
+        let home = usize::from(self.home());
+        let (names, mut parts) = self.tree.split();
+        let block = slot.first as usize..(slot.first + slot.len) as usize;
+        let Part { nodes, homes } = &mut parts[home];
+        sort_block(
+            &mut nodes[block.clone()],
+            &mut homes[block],
+            &names,
+            &compare,
+            &mut Scratch::default(),
         );
     }
 
     pub fn set_sharing(&mut self, sharing: Option<Sharing>) {
-        let extra = self.store.nodes[self.id as usize].extra;
-        let extra = self.store.set_sharing(extra, sharing);
-        self.store.nodes[self.id as usize].extra = extra;
+        let extra = self.slot().extra;
+        let home = usize::from(self.home());
+        let extra = self.tree.stores[home].set_sharing(extra, sharing);
+        self.slot_mut().extra = extra;
     }
 }
 
-/// One directory's children, as a whole-tree pass sees them: their facts
-/// and names to read, and their facts and order to change.
-#[derive(Debug)]
-pub struct Block<'a> {
-    slots: &'a mut [Slot],
-    names: &'a str,
-    /// Where the block starts in the tree's nodes.
-    first: u32,
+/// Reused by one worker across the blocks it sorts.
+#[derive(Default)]
+struct Scratch {
+    order: Vec<u32>,
+    sorted: Vec<(Slot, u8)>,
 }
 
-impl Block<'_> {
-    pub const fn len(&self) -> usize {
-        self.slots.len()
-    }
-
-    pub const fn is_empty(&self) -> bool {
-        self.slots.is_empty()
-    }
-
-    /// The child at `index`, which must exist.
-    pub fn at(&self, index: usize) -> Sibling<'_> {
-        let slot = &self.slots[index];
-        Sibling {
-            facts: &slot.facts,
-            name: name_at(self.names, slot.name),
-        }
-    }
-
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = Sibling<'_>> {
-        self.slots.iter().map(|slot| Sibling {
-            facts: &slot.facts,
-            name: name_at(self.names, slot.name),
-        })
-    }
-
-    /// The facts of the child at `index`, which must exist.
-    pub fn facts_mut(&mut self, index: usize) -> &mut Facts {
-        &mut self.slots[index].facts
-    }
-
-    /// Every child's facts, in order.
-    pub fn for_each_facts_mut(&mut self, visit: impl FnMut(&mut Facts)) {
-        self.slots
-            .iter_mut()
-            .map(|slot| &mut slot.facts)
-            .for_each(visit);
-    }
-
-    /// The [`Node::id`] of the child at `index`: what a pass that read the
-    /// tree first found out about it can be looked up by.
-    pub(crate) fn id(&self, index: usize) -> u32 {
-        debug_assert!(index < self.slots.len(), "a child of this block");
-        self.first + Store::index(index)
-    }
-
-    /// Reorder the children; see [`NodeMut::sort_children_by`].
-    pub fn sort_by(
-        &mut self,
-        mut compare: impl FnMut(Sibling<'_>, Sibling<'_>) -> std::cmp::Ordering,
-    ) {
-        let names = self.names;
-        self.slots.sort_unstable_by(|left, right| {
-            compare(
-                Sibling {
-                    facts: &left.facts,
-                    name: name_at(names, left.name),
-                },
-                Sibling {
-                    facts: &right.facts,
-                    name: name_at(names, right.name),
-                },
-            )
-        });
-    }
-}
-
-/// `node`, whose descendants are all in `region`, which starts at index
-/// `base` of the tree's nodes. In the layout [`Store::relayout`] makes,
-/// a directory's block opens its run, and each child's run is the part
-/// of what follows that starts at the child's first child.
-fn bottom_up<L, D>(
-    node: &mut Slot,
-    region: &mut [Slot],
-    base: usize,
-    names: &str,
-    depth: usize,
-    visit: &(L, D),
-) where
-    L: Fn(&mut Facts) + Sync,
-    D: Fn(&mut Facts, Block<'_>) + Sync,
-{
-    let (leaf, directory) = visit;
-    if !node.facts.kind.is_dir() {
-        leaf(&mut node.facts);
+/// Sort one block of children and their homes together. The order is
+/// worked out on indices and then applied, since the two live in separate
+/// vectors; a block already in order, as after a re-rank that changes
+/// nothing, is left unwritten.
+fn sort_block(
+    slots: &mut [Slot],
+    homes: &mut [u8],
+    names: &[&str],
+    compare: &impl Fn(Sibling<'_>, Sibling<'_>) -> Ordering,
+    scratch: &mut Scratch,
+) {
+    if slots.len() < 2 {
         return;
     }
-    let len = node.len as usize;
-    let start = if len == 0 {
-        0
-    } else {
-        node.first as usize - base
-    };
-    let (block, rest) = region[start..].split_at_mut(len);
-    let rest_base = base + start + len;
-    if depth < crate::tree::PARALLEL_LEVELS && len > 1 {
-        let parts = runs(block, rest, rest_base);
-        block
-            .par_iter_mut()
-            .zip(parts)
-            .for_each(|(child, (run, base))| {
-                bottom_up(child, run, base, names, depth + 1, visit);
-            });
-    } else {
-        for child in block.iter_mut() {
-            bottom_up(child, rest, rest_base, names, depth + 1, visit);
+    let sibling = |offset: u32| {
+        let slot = &slots[offset as usize];
+        Sibling {
+            facts: &slot.facts,
+            name: name_at(
+                names[usize::from(homes[offset as usize])],
+                slot.name,
+            ),
         }
+    };
+    let order = &mut scratch.order;
+    order.clear();
+    order.extend(0..Store::index(slots.len()));
+    order.sort_unstable_by(|&left, &right| {
+        compare(sibling(left), sibling(right))
+    });
+    if order
+        .iter()
+        .enumerate()
+        .all(|(at, &from)| from as usize == at)
+    {
+        return;
     }
-    let first = node.first;
-    directory(
-        &mut node.facts,
-        Block {
-            slots: block,
-            names,
-            first,
-        },
+    let sorted = &mut scratch.sorted;
+    sorted.clear();
+    sorted.extend(
+        order
+            .iter()
+            .map(|&from| (slots[from as usize], homes[from as usize])),
+    );
+    for ((slot, home), &(sorted_slot, sorted_home)) in
+        slots.iter_mut().zip(homes.iter_mut()).zip(sorted.iter())
+    {
+        *slot = sorted_slot;
+        *home = sorted_home;
+    }
+}
+
+/// One store's nodes and homes, to write, while every store's names are
+/// read.
+struct Part<'a> {
+    nodes: &'a mut [Slot],
+    homes: &'a mut [u8],
+}
+
+/// Sort the blocks of one store, which start at `blocks`' firsts, in
+/// order: halves of the store go to separate workers until each has a
+/// few hundred blocks, so a tree built on one thread, as an SSH scan's
+/// is, still sorts on every worker.
+fn sort_blocks(
+    nodes: &mut [Slot],
+    homes: &mut [u8],
+    base: u32,
+    blocks: &[(u32, u32)],
+    names: &[&str],
+    compare: &(impl Fn(Sibling<'_>, Sibling<'_>) -> Ordering + Sync),
+) {
+    const ALONE: usize = 256;
+    if blocks.len() <= ALONE {
+        let mut scratch = Scratch::default();
+        for &(first, len) in blocks {
+            let start = (first - base) as usize;
+            let end = start + len as usize;
+            sort_block(
+                &mut nodes[start..end],
+                &mut homes[start..end],
+                names,
+                compare,
+                &mut scratch,
+            );
+        }
+        return;
+    }
+    let (left, right) = blocks.split_at(blocks.len() / 2);
+    let middle = right[0].0;
+    let at = (middle - base) as usize;
+    let (left_nodes, right_nodes) = nodes.split_at_mut(at);
+    let (left_homes, right_homes) = homes.split_at_mut(at);
+    rayon::join(
+        || sort_blocks(left_nodes, left_homes, base, left, names, compare),
+        || sort_blocks(right_nodes, right_homes, middle, right, names, compare),
     );
 }
 
-/// Beneath `block`, whose facts are written: each child directory's own
-/// block with `directory`, then beneath that. `rest` holds the runs of
-/// all of `block`'s children and starts at index `base`, as in
-/// [`bottom_up`].
-fn top_down<D>(
-    block: &[Slot],
-    rest: &mut [Slot],
-    base: usize,
-    names: &str,
+/// Updates a read-only pass leaves for each run of its work, so that none
+/// is copied into another.
+type Updates<T> = Mutex<Vec<Vec<(NodeId, T)>>>;
+
+/// One store's part of a [`Tree::par_write`]: nodes by index, and blocks
+/// whose files all take a value.
+struct Targets<T> {
+    nodes: Vec<(u32, T)>,
+    files: Vec<(u32, u32, T)>,
+}
+
+impl<T> Default for Targets<T> {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            files: Vec::new(),
+        }
+    }
+}
+
+/// `node`'s facts once `derive` has worked out every directory beneath
+/// it, each directory's new facts left in `updates`.
+fn derive_at<D>(
+    node: Node<'_>,
     depth: usize,
-    directory: &D,
-) where
-    D: Fn(&Facts, Block<'_>) + Sync,
+    derive: &D,
+    updates: &mut Vec<(NodeId, Facts)>,
+    sink: &Updates<Facts>,
+) -> Facts
+where
+    D: Fn(&mut Facts, &mut dyn Iterator<Item = Facts>) + Sync,
 {
-    // As in `bottom_up`, a node that is not a directory is a leaf, and a
-    // directory that holds nothing has no block to visit.
-    let below = |child: &Slot, region: &mut [Slot], base: usize| {
-        let len = child.len as usize;
-        if !child.facts.kind.is_dir() || len == 0 {
-            return;
-        }
-        let start = child.first as usize - base;
-        let (block, rest) = region[start..].split_at_mut(len);
-        directory(
-            &child.facts,
-            Block {
-                slots: &mut *block,
-                names,
-                first: child.first,
-            },
-        );
-        top_down(block, rest, base + start + len, names, depth + 1, directory);
-    };
-    if depth < crate::tree::PARALLEL_LEVELS && block.len() > 1 {
-        block
+    let mut facts = *node.facts();
+    if !facts.kind.is_dir() {
+        return facts;
+    }
+    let children = node.children();
+    if depth < crate::tree::PARALLEL_LEVELS && children.len() > 1 {
+        // Subdirectories near the top are independent work.
+        let derived: Vec<Facts> = children
             .par_iter()
-            .zip(runs(block, rest, base))
-            .for_each(|(child, (run, base))| below(child, run, base));
+            .map(|child| {
+                let mut mine = Vec::new();
+                let facts =
+                    derive_at(child, depth + 1, derive, &mut mine, sink);
+                if !mine.is_empty() {
+                    lock(sink).push(mine);
+                }
+                facts
+            })
+            .collect();
+        derive(&mut facts, &mut derived.into_iter());
     } else {
-        for child in block {
-            below(child, rest, base);
+        let mut derived = children
+            .iter()
+            .map(|child| derive_at(child, depth + 1, derive, updates, sink));
+        derive(&mut facts, &mut derived);
+        // Every subdirectory is derived, even past where `derive` stopped.
+        derived.for_each(drop);
+    }
+    updates.push((node.id(), facts));
+    facts
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Where a tree is built, by any number of workers at once.
+///
+/// Each worker appends to a store of its own, so none waits on another,
+/// and the finished tree keeps the stores. `'h` brands what it builds
+/// with the build it belongs to.
+pub struct Builder {
+    /// One per worker of the pool the build starts on, and one more for
+    /// any other thread. Each has a lock only so that a thread of another
+    /// pool, whose worker number can match, cannot write to it at the same
+    /// time; a pool's own workers never meet on one.
+    stores: Box<[Mutex<Store>]>,
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        // A store's number is a byte.
+        let workers = rayon::current_num_threads().min(usize::from(u8::MAX));
+        Self {
+            stores: std::iter::repeat_with(Mutex::default)
+                .take(workers + 1)
+                .collect(),
         }
     }
 }
 
-/// Each child's run of `rest`, which holds the runs of all of `block`'s
-/// children and starts at index `base`, with the index it starts at; an
-/// empty run for a child with no children. Runs are in the order they
-/// were laid out, which sorting the block since has not changed.
-fn runs<'r>(
-    block: &[Slot],
-    rest: &'r mut [Slot],
-    base: usize,
-) -> Vec<(&'r mut [Slot], usize)> {
-    let len = block.len();
-    let mut runs: Vec<usize> =
-        (0..len).filter(|&index| block[index].len > 0).collect();
-    runs.sort_unstable_by_key(|&index| block[index].first);
-    let mut parts: Vec<(&mut [Slot], usize)> =
-        (0..len).map(|_| (&mut [][..], base)).collect();
-    let mut rest = rest;
-    let mut at = base;
-    for (order, &index) in runs.iter().enumerate() {
-        let begin = block[index].first as usize;
-        let end = runs
-            .get(order + 1)
-            .map_or(at + rest.len(), |&next| block[next].first as usize);
-        let (_, tail) = std::mem::take(&mut rest).split_at_mut(begin - at);
-        let (run, tail) = tail.split_at_mut(end - begin);
-        parts[index] = (run, begin);
-        rest = tail;
-        at = end;
+impl fmt::Debug for Builder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Builder")
+            .field("stores", &self.stores.len())
+            .finish()
     }
-    parts
-}
-
-/// Where a tree is built: nodes are appended under a lock, so any number
-/// of workers can build at once. `'h` brands what it builds with the
-/// build it belongs to.
-#[derive(Debug, Default)]
-pub struct Builder {
-    store: Mutex<Store>,
 }
 
 /// A node one build has made, not yet placed in its tree.
 #[must_use]
 pub struct Built<'h> {
     slot: Slot,
+    /// The store that made it.
+    home: u8,
     /// Invariant: a node of one build cannot be taken for another's.
     brand: PhantomData<fn(&'h ()) -> &'h ()>,
 }
@@ -1033,13 +1088,29 @@ impl Built<'_> {
 }
 
 impl Builder {
-    fn lock(&self) -> MutexGuard<'_, Store> {
-        self.store.lock().unwrap_or_else(PoisonError::into_inner)
+    /// This thread's store and its number.
+    fn store(&self) -> (MutexGuard<'_, Store>, u8) {
+        let other = self.stores.len() - 1;
+        let home = rayon::current_thread_index().map_or(other, |w| w % other);
+        (
+            lock(&self.stores[home]),
+            u8::try_from(home).expect("at most 256 stores"),
+        )
     }
 
-    const fn built<'h>(slot: Slot) -> Built<'h> {
+    /// Run `make` on this thread's store, every node it adds made there.
+    fn make(&self, make: impl FnOnce(&mut Store, u8) -> Slot) -> Built<'_> {
+        let (mut store, home) = self.store();
+        let slot = make(&mut store, home);
+        let len = store.nodes.len();
+        store.homes.resize(len, home);
+        Self::built(slot, home)
+    }
+
+    const fn built<'h>(slot: Slot, home: u8) -> Built<'h> {
         Built {
             slot,
+            home,
             brand: PhantomData,
         }
     }
@@ -1051,32 +1122,28 @@ impl Builder {
         facts: Facts,
         allocation: Option<Allocation>,
     ) -> Built<'h> {
-        let slot = self.lock().place(
-            name,
-            facts,
-            allocation,
-            None,
-            std::iter::empty(),
-        );
-        Self::built(slot)
+        self.make(|store, _| {
+            store.place(name, facts, allocation, None, std::iter::empty())
+        })
     }
 
-    /// Several leaves under one lock: how a listing adds its files.
+    /// Several leaves at once: how a listing adds its files.
     pub fn leaves<'h, 'a>(
         &'h self,
         leaves: impl IntoIterator<Item = (&'a str, Facts, Option<Allocation>)>,
     ) -> Vec<Built<'h>> {
-        let mut store = self.lock();
+        let (mut store, home) = self.store();
         leaves
             .into_iter()
             .map(|(name, facts, allocation)| {
-                Self::built(store.place(
+                let slot = store.place(
                     name,
                     facts,
                     allocation,
                     None,
                     std::iter::empty(),
-                ))
+                );
+                Self::built(slot, home)
             })
             .collect()
     }
@@ -1090,14 +1157,16 @@ impl Builder {
         allocation: Option<Allocation>,
         children: Vec<Built<'h>>,
     ) -> Built<'h> {
-        let slot = self.lock().place(
+        let (mut store, home) = self.store();
+        // Each child keeps the store it was made in; the block is here.
+        let slot = store.place(
             name,
             facts,
             allocation,
             None,
-            children.into_iter().map(|child| child.slot),
+            children.into_iter().map(|child| (child.slot, child.home)),
         );
-        Self::built(slot)
+        Self::built(slot, home)
     }
 
     /// A deep copy of `node`, from any tree, into this build: how a
@@ -1108,26 +1177,37 @@ impl Builder {
 
     /// [`Self::copy`], under another name.
     pub fn copy_named<'h>(&'h self, node: Node<'_>, name: &str) -> Built<'h> {
-        let mut store = self.lock();
-        // A whole tree, as a wider scan reuses one, goes in as its buffers.
-        let slot = if node.is_root() {
-            store.absorb(node.store, name)
-        } else {
-            store.copy(node, name)
-        };
-        Self::built(slot)
+        self.make(|store, me| {
+            // A whole tree, as a wider scan reuses one, goes in as its
+            // buffers.
+            if node.is_root() {
+                store.absorb(node.tree, name, me)
+            } else {
+                store.copy(node, name, me)
+            }
+        })
     }
 
     /// `draft`, with everything beneath it.
     pub fn draft<'h>(&'h self, draft: &Draft) -> Built<'h> {
-        Self::built(self.lock().draft(draft))
+        self.make(|store, me| store.draft(draft, me))
     }
 }
 
 /// A scanned tree and the buffers its nodes live in.
-#[derive(Clone)]
 pub struct Tree {
-    store: Store,
+    /// One per worker that built it, and one for any other thread.
+    stores: Box<[Store]>,
+    root: NodeId,
+}
+
+impl Clone for Tree {
+    fn clone(&self) -> Self {
+        Self {
+            stores: self.stores.par_iter().map(Store::clone).collect(),
+            root: self.root,
+        }
+    }
 }
 
 impl fmt::Debug for Tree {
@@ -1169,8 +1249,8 @@ impl Tree {
     /// ```
     pub fn build(build: impl for<'h> FnOnce(&'h Builder) -> Built<'h>) -> Self {
         let builder = Builder::default();
-        let root = build(&builder).slot;
-        Self::finish(builder, root)
+        let Built { slot, home, .. } = build(&builder);
+        Self::finish(builder, slot, home)
     }
 
     /// [`Self::build`], for a build that can fail.
@@ -1178,122 +1258,265 @@ impl Tree {
         build: impl for<'h> FnOnce(&'h Builder) -> Result<Built<'h>, E>,
     ) -> Result<Self, E> {
         let builder = Builder::default();
-        let root = build(&builder)?.slot;
-        Ok(Self::finish(builder, root))
+        let Built { slot, home, .. } = build(&builder)?;
+        Ok(Self::finish(builder, slot, home))
     }
 
-    fn finish(builder: Builder, root: Slot) -> Self {
-        let mut store = builder
-            .store
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner);
-        store.root = Store::index(store.nodes.len());
+    /// The builder's stores as they are, with the root in the store that
+    /// made it.
+    fn finish(builder: Builder, root: Slot, home: u8) -> Self {
+        let mut stores: Box<[Store]> = builder
+            .stores
+            .into_vec()
+            .into_iter()
+            .map(|store| {
+                store.into_inner().unwrap_or_else(PoisonError::into_inner)
+            })
+            .collect();
+        let store = &mut stores[usize::from(home)];
+        let index = Store::index(store.nodes.len());
         store.nodes.push(root);
-        store.relayout();
-        Self { store }
+        store.homes.push(home);
+        Self {
+            stores,
+            root: NodeId { store: home, index },
+        }
     }
 
     /// A tree of its own holding a copy of `node` and everything beneath:
-    /// the whole store at once when `node` is a root.
+    /// every store at once when `node` is a root.
     pub fn copy_of(node: Node<'_>) -> Self {
         if node.is_root() {
-            return Self {
-                store: node.store.clone(),
-            };
+            return node.tree.clone();
         }
         Self::build(|builder| builder.copy(node))
     }
 
     pub fn root(&self) -> Node<'_> {
         Node {
-            store: &self.store,
-            slot: &self.store.nodes[self.store.root as usize],
+            tree: self,
+            slot: &self.stores[usize::from(self.root.store)].nodes
+                [self.root.index as usize],
+            id: self.root,
         }
     }
 
     pub const fn root_mut(&mut self) -> NodeMut<'_> {
         NodeMut {
-            id: self.store.root,
-            store: &mut self.store,
+            id: self.root,
+            tree: self,
         }
     }
 
-    pub const fn storage_bytes(&self) -> StorageBytes {
-        self.store.bytes()
+    /// The node at `id`, which [`Node::id`] gave on this tree, unchanged
+    /// since.
+    pub(crate) const fn node_mut(&mut self, id: NodeId) -> NodeMut<'_> {
+        NodeMut { tree: self, id }
+    }
+
+    pub fn storage_bytes(&self) -> StorageBytes {
+        self.stores.iter().map(Store::bytes).fold(
+            StorageBytes::default(),
+            |sum, part| StorageBytes {
+                used: sum.used + part.used,
+                reserved: sum.reserved + part.reserved,
+            },
+        )
     }
 
     /// Replace the sharing figures of the nodes at these positions, which
     /// [`Node::id`] gave on this tree, unchanged since.
     pub(crate) fn set_sharing(
         &mut self,
-        figures: impl IntoIterator<Item = (u32, Option<Sharing>)>,
+        figures: impl IntoIterator<Item = (NodeId, Option<Sharing>)>,
     ) {
         for (id, sharing) in figures {
-            NodeMut {
-                store: &mut self.store,
-                id,
-            }
-            .set_sharing(sharing);
+            self.node_mut(id).set_sharing(sharing);
         }
     }
 
-    /// Every leaf with `leaf`, then each directory with `directory` once
-    /// its children are done; separate subtrees near the top run on
-    /// separate workers.
-    pub fn par_bottom_up(
-        &mut self,
-        leaf: impl Fn(&mut Facts) + Sync,
-        directory: impl Fn(&mut Facts, Block<'_>) + Sync,
-    ) {
-        let Store { nodes, names, .. } = &mut self.store;
-        let (root, region) =
-            nodes.split_first_mut().expect("a tree has a root");
-        bottom_up(root, region, 1, names, 0, &(leaf, directory));
+    /// Every store's nodes and homes to write, beside every store's names
+    /// to read.
+    fn split(&mut self) -> (Vec<&str>, Vec<Part<'_>>) {
+        let mut names = Vec::with_capacity(self.stores.len());
+        let mut parts = Vec::with_capacity(self.stores.len());
+        for store in &mut self.stores {
+            let Store {
+                nodes,
+                homes,
+                names: text,
+                ..
+            } = store;
+            names.push(text.as_str());
+            parts.push(Part { nodes, homes });
+        }
+        (names, parts)
     }
 
-    /// The root's children with `root`, which writes the root's facts and
-    /// theirs, then each directory's children with `directory` once its
-    /// own facts are written, given those facts; separate subtrees near
-    /// the top run on separate workers, as in [`Self::par_bottom_up`].
-    pub fn par_top_down(
+    /// Write `value` with `write` to each node these name, and, where the
+    /// flag is set, to every child of it that is not a directory: what a
+    /// pass that decided by reading leaves to write. Each store's writes
+    /// run on their own worker, which is why a directory's files are named
+    /// once by their directory rather than one by one.
+    pub(crate) fn par_write<T: Copy + Send + Sync>(
         &mut self,
-        root: impl FnOnce(&mut Facts, Block<'_>),
-        directory: impl Fn(&Facts, Block<'_>) + Sync,
+        writes: Vec<Vec<(NodeId, T, bool)>>,
+        write: impl Fn(&mut Facts, T) + Sync,
     ) {
-        let Store { nodes, names, .. } = &mut self.store;
-        let (node, region) =
-            nodes.split_first_mut().expect("a tree has a root");
-        // The root's block, if it has one, is the first after the root.
-        debug_assert!(node.len == 0 || node.first == 1, "a laid-out tree");
-        let (block, rest) = region.split_at_mut(node.len as usize);
-        root(
-            &mut node.facts,
-            Block {
-                slots: &mut *block,
-                names,
-                first: node.first,
-            },
-        );
-        let base = 1 + block.len();
-        top_down(block, rest, base, names, 0, &directory);
+        let stores = self.stores.len();
+        // Sorted into the stores the writes land in, a node in the store
+        // that holds it and its files in the store of its block: one set
+        // of lists per run of work, however many lists came in.
+        let sorted: Vec<Vec<Targets<T>>> = writes
+            .into_par_iter()
+            .flatten_iter()
+            .fold(
+                || {
+                    std::iter::repeat_with(Targets::default)
+                        .take(stores)
+                        .collect::<Vec<_>>()
+                },
+                |mut by_store, (id, value, files)| {
+                    by_store[usize::from(id.store)]
+                        .nodes
+                        .push((id.index, value));
+                    if files {
+                        let node = self.node(id);
+                        by_store[usize::from(node.home())].files.push((
+                            node.slot.first,
+                            node.slot.len,
+                            value,
+                        ));
+                    }
+                    by_store
+                },
+            )
+            .collect();
+        self.stores
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(at, store)| {
+                for targets in &sorted {
+                    let targets = &targets[at];
+                    for &(index, value) in &targets.nodes {
+                        write(&mut store.nodes[index as usize].facts, value);
+                    }
+                    for &(first, len, value) in &targets.files {
+                        let block = first as usize..(first + len) as usize;
+                        store.nodes[block]
+                            .iter_mut()
+                            .filter(|slot| !slot.facts.kind.is_dir())
+                            .for_each(|slot| write(&mut slot.facts, value));
+                    }
+                }
+            });
     }
 
-    /// Every node, spread across workers, for a pass that only reads and
-    /// needs no particular order. The n-th has [`Node::id`] n.
-    pub(crate) fn par_nodes(
-        &self,
-    ) -> impl IndexedParallelIterator<Item = Node<'_>> {
-        let store = &self.store;
-        store.nodes.par_iter().map(move |slot| Node { store, slot })
+    /// Every node, on every worker, ordered by [`Node::id`]. A node that
+    /// nothing reaches, such as the root of a tree a build absorbed, is
+    /// among them.
+    pub(crate) fn par_nodes(&self) -> impl ParallelIterator<Item = Node<'_>> {
+        self.stores
+            .par_iter()
+            .enumerate()
+            .flat_map(move |(at, store)| {
+                let at = u8::try_from(at).expect("at most 256 stores");
+                store
+                    .nodes
+                    .par_iter()
+                    .enumerate()
+                    .map(move |(index, slot)| Node {
+                        tree: self,
+                        slot,
+                        id: NodeId {
+                            store: at,
+                            index: Store::index(index),
+                        },
+                    })
+            })
+    }
+
+    fn node(&self, id: NodeId) -> Node<'_> {
+        Node {
+            tree: self,
+            slot: &self.stores[usize::from(id.store)].nodes[id.index as usize],
+            id,
+        }
+    }
+
+    /// Every node that is not a directory, with `leaf`, on every worker.
+    pub fn par_leaves(&mut self, leaf: impl Fn(&mut Facts) + Sync) {
+        self.stores.par_iter_mut().for_each(|store| {
+            store
+                .nodes
+                .par_iter_mut()
+                .filter(|slot| !slot.facts.kind.is_dir())
+                .for_each(|slot| leaf(&mut slot.facts));
+        });
+    }
+
+    /// Each directory's facts from its children's, bottom-up: `derive`
+    /// gets a directory's facts to change and its children's, already
+    /// derived. Worked out on every worker by reading, then written.
+    pub fn par_derive(
+        &mut self,
+        derive: impl Fn(&mut Facts, &mut dyn Iterator<Item = Facts>) + Sync,
+    ) {
+        let sink = Updates::default();
+        let mut updates = Vec::new();
+        derive_at(self.root(), 0, &derive, &mut updates, &sink);
+        let mut lists =
+            sink.into_inner().unwrap_or_else(PoisonError::into_inner);
+        lists.push(updates);
+        for (id, facts) in lists.into_iter().flatten() {
+            *self.node_mut(id).facts_mut() = facts;
+        }
+    }
+
+    /// Reorder every directory's children by `compare`, each store's
+    /// directories on their own workers. Each child's own children stay
+    /// where they are: a child records where its block is, and moves with
+    /// that record.
+    pub fn sort_children(
+        &mut self,
+        compare: impl Fn(Sibling<'_>, Sibling<'_>) -> Ordering + Sync,
+    ) {
+        // Every block worth sorting, by the store that holds it: found by
+        // reading each store's directories, wherever they are held.
+        let found: Vec<Vec<(u8, u32, u32)>> = self
+            .stores
+            .par_iter()
+            .map(|store| {
+                store
+                    .nodes
+                    .iter()
+                    .zip(&store.homes)
+                    .filter(|(slot, _)| slot.len > 1)
+                    .map(|(slot, &home)| (home, slot.first, slot.len))
+                    .collect()
+            })
+            .collect();
+        let mut blocks: Vec<Vec<(u32, u32)>> =
+            vec![Vec::new(); self.stores.len()];
+        for (home, first, len) in found.into_iter().flatten() {
+            blocks[usize::from(home)].push((first, len));
+        }
+        blocks.par_iter_mut().for_each(|list| list.sort_unstable());
+        let (names, parts) = self.split();
+        parts.into_par_iter().zip(blocks).for_each(|(part, list)| {
+            sort_blocks(part.nodes, part.homes, 0, &list, &names, &compare);
+        });
     }
 
     /// Records in each side table, for measuring what they cost.
-    pub const fn side_records(&self) -> (usize, usize, usize) {
-        (
-            self.store.allocations.len(),
-            self.store.sharings.len(),
-            self.store.both.len(),
-        )
+    pub fn side_records(&self) -> (usize, usize, usize) {
+        self.stores.iter().fold((0, 0, 0), |(a, s, b), store| {
+            (
+                a + store.allocations.len(),
+                s + store.sharings.len(),
+                b + store.both.len(),
+            )
+        })
     }
 }
 
@@ -1504,7 +1727,7 @@ mod tests {
             // Records already in every table, so the copy's must move.
             let mut before = builder.leaf("before", file(9), Some(allocation));
             before.slot.extra =
-                builder.lock().set_sharing(before.slot.extra, shared(4));
+                builder.store().0.set_sharing(before.slot.extra, shared(4));
             let other = builder.leaf("other", file(1), None);
             let other = builder.directory(
                 "other-dir",
@@ -1526,8 +1749,12 @@ mod tests {
         let before = tree.root().children().at(0);
         assert_eq!(before.allocation().map(|a| a.bytes), Some(9));
         assert_eq!(before.stored_sharing().map(|s| s.files), Some(4));
-        // The source's root went in too, and nothing reaches it.
-        assert_eq!(tree.store.nodes.len(), 1 + 3 + 1 + 3 + 1);
+        // The source's five, its root included though nothing reaches
+        // it, then `top`'s block, the block
+        // in `other-dir` and `top` itself.
+        let nodes: usize =
+            tree.stores.iter().map(|store| store.nodes.len()).sum();
+        assert_eq!(nodes, 5 + 3 + 1 + 1);
     }
 
     #[test]
@@ -1539,63 +1766,68 @@ mod tests {
         assert_eq!(count, 3);
     }
 
-    /// Deeper than the levels that run in parallel, and with every block
-    /// re-sorted so blocks no longer list children in the order their runs
-    /// were laid out.
+    /// A directory's children are made on whichever workers listed them,
+    /// and the directory on another: every index has to survive the join.
     #[test]
-    fn top_down_writes_every_node_once_from_its_parent() {
-        fn draft(name: &str, depth: usize) -> Draft {
-            let mut node = Draft::directory(name);
-            if depth < crate::tree::PARALLEL_LEVELS + 3 {
-                node.children = (0..3)
-                    .map(|index| draft(&format!("{name}/{index}"), depth + 1))
-                    .collect();
+    fn nodes_from_every_worker_join_into_one_tree() {
+        let known = sample();
+        let tree = Tree::build(|builder| {
+            let files: Vec<Built<'_>> = (0..2000_u64)
+                .into_par_iter()
+                .map(|index| {
+                    let allocation =
+                        index.is_multiple_of(3).then_some(Allocation {
+                            bytes: index,
+                            identity: None,
+                            links: 1,
+                            followed: false,
+                            clone: None,
+                        });
+                    builder.leaf(&format!("f{index}"), file(index), allocation)
+                })
+                .collect();
+            let mut files = files.into_iter();
+            let groups: Vec<Vec<Built<'_>>> = (0..20)
+                .map(|_| files.by_ref().take(100).collect())
+                .collect();
+            let mut dirs: Vec<Built<'_>> = groups
+                .into_par_iter()
+                .rev()
+                .enumerate()
+                .map(|(dir, group)| {
+                    builder.directory(
+                        &format!("d{}", 19 - dir),
+                        Facts::directory(),
+                        None,
+                        group,
+                    )
+                })
+                .collect();
+            dirs.reverse();
+            let (copy, ()) = rayon::join(
+                || builder.copy_named(known.root(), "known"),
+                || {},
+            );
+            dirs.push(copy);
+            builder.directory("root", Facts::directory(), None, dirs)
+        });
+        let root = tree.root();
+        assert_eq!(root.children().len(), 21);
+        for (dir, node) in root.children().iter().take(20).enumerate() {
+            assert_eq!(node.name(), format!("d{dir}"));
+            for (offset, file) in node.children().iter().enumerate() {
+                let index = (dir * 100 + offset) as u64;
+                assert_eq!(file.name(), format!("f{index}"));
+                assert_eq!(file.bytes, index);
+                assert_eq!(
+                    file.allocation().map(|a| a.bytes),
+                    index.is_multiple_of(3).then_some(index)
+                );
             }
-            node.children.push(Draft::entry(
-                format!("{name}/file").as_str(),
-                NodeKind::File,
-                0,
-            ));
-            node.children
-                .push(Draft::directory(format!("{name}/empty").as_str()));
-            node
         }
-        fn check(node: Node<'_>, depth: i64, nodes: &mut usize) {
-            *nodes += 1;
-            assert_eq!(node.bytes, 1, "{} written once", node.name());
-            assert_eq!(node.modified, depth, "{} at its depth", node.name());
-            for child in node.children() {
-                check(child, depth + 1, nodes);
-            }
-        }
-        let mut tree = Tree::from(draft("root", 0));
-        tree.par_bottom_up(
-            |_| {},
-            |_, mut block| {
-                block.sort_by(|left, right| right.name.cmp(left.name));
-            },
-        );
-        // Each write counts itself in `bytes` and records its depth in
-        // `modified`, which only the parent's own facts can give.
-        tree.par_top_down(
-            |root, mut block| {
-                root.bytes += 1;
-                root.modified = 0;
-                block.for_each_facts_mut(|child| {
-                    child.bytes += 1;
-                    child.modified = 1;
-                });
-            },
-            |parent, mut block| {
-                block.for_each_facts_mut(|child| {
-                    child.bytes += 1;
-                    child.modified = parent.modified + 1;
-                });
-            },
-        );
-        let mut nodes = 0;
-        check(tree.root(), 0, &mut nodes);
-        assert_eq!(nodes, tree.store.nodes.len());
+        let copy = root.children().at(20);
+        assert_eq!(copy.name(), "known");
+        assert_same(copy, known.root());
     }
 
     #[test]

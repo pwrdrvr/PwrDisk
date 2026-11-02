@@ -1278,8 +1278,8 @@ fn walk<'h>(
         return Vec::new();
     }
     let mut subdirs: Vec<Arc<PendingDir<'h>>> = Vec::new();
-    // Gathered first and added to the tree under one lock: every worker
-    // appends to the same buffers.
+    // Gathered first and added to the tree in one call, which takes the
+    // worker's store once per listing instead of once per file.
     let mut found: Vec<Leaf> = Vec::new();
     let mut leaves: Vec<Built<'h>> = Vec::new();
     let mut tally = Tally::default();

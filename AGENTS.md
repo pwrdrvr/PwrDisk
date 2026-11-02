@@ -227,16 +227,20 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
     the guards refuse, what removal does, or what a system hides from a
     scan updates the matching `references/<system>.md` in the same PR.
 
-15. **A tree owns a handful of buffers, by index.** Nodes live in one
+15. **A tree owns a few buffers per worker, by index.** Each worker that
+    builds a tree appends to a store of its own, with no lock between
+    them, and the finished tree keeps those stores rather than joining
+    them, which would hold every node twice. In a store, nodes live in one
     vector, each directory's children a contiguous run of it, names in one
-    string and clone records in side tables, so dropping a tree frees five
-    buffers instead of tens of millions of allocations. A node is read
-    through a `Node<'_>` cursor from its tree and written through `NodeMut`
-    or a whole-tree pass. Build with `Tree::build` (a `Draft` for tests and
-    small trees); a subtree moves to another tree only as a copy. A
-    finished tree keeps every subtree one contiguous run, which is what
-    lets `par_bottom_up` split it across workers without `unsafe`: only
-    the order *within* a block may change after it is built.
+    string and clone records in side tables, so dropping a tree frees a
+    few buffers per worker instead of tens of millions of allocations. A
+    node records which store holds its name, records and children. A node
+    is read through a `Node<'_>` cursor from its tree and written through
+    `NodeMut` or a whole-tree pass; a pass that writes splits its work by
+    store, the only split that needs no `unsafe`, and only the order
+    *within* a block may change after it is built. Build with
+    `Tree::build` (a `Draft` for tests and small trees); a subtree moves to
+    another tree only as a copy.
 
 ## Where changes belong
 

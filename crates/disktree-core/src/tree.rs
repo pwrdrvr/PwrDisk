@@ -61,9 +61,11 @@ impl Metric {
 }
 
 pub use crate::index::{
-    Block, Builder, Built, Children, Facts, Iter, MAX_NAME_BYTES, Node,
-    NodeMut, Sibling, StorageBytes, Tree,
+    Builder, Built, Children, Facts, Iter, MAX_NAME_BYTES, Node, NodeMut,
+    Sibling, StorageBytes, Tree,
 };
+
+pub(crate) use crate::index::NodeId;
 
 /// A node and everything beneath it, owned and on the heap.
 ///
@@ -289,43 +291,42 @@ pub fn aggregate(tree: &mut Tree, metric: Metric) {
 }
 
 /// Every directory's totals from its children, then its children in
-/// order, with separate subtrees near the top on separate workers.
+/// order: each a pass on every worker, files store by store, totals by
+/// reading and then writing, and the order block by block.
 fn aggregate_tree(tree: &mut Tree, metric: Metric, seen: Option<&Seen>) {
-    tree.par_bottom_up(
-        |facts| {
+    if let Some(seen) = seen {
+        tree.par_leaves(|facts| {
             // Every name of a file has the file's size, so one that weighs
             // nothing need not be remembered to be charged once.
             if facts.bytes > 0
-                && let Some(seen) = seen
                 && let Some((device, file)) = facts.inode
                 && !seen.insert((device, file.get()))
             {
                 facts.bytes = 0;
             }
-        },
-        |facts, mut block| {
-            let mut bytes = 0;
-            let mut files = 0;
-            let mut dirs: u32 = 1;
-            let mut modified = 0;
-            let mut read_error = facts.read_error;
-            for child in block.iter() {
-                read_error |= child.read_error;
-                modified = modified.max(child.modified);
-                // Saturating: a corrupt volume's file table can claim any
-                // size.
-                bytes = child.bytes.saturating_add(bytes);
-                files += child.files;
-                dirs += child.dirs;
-            }
-            facts.read_error = read_error;
-            facts.bytes = bytes;
-            facts.files = files;
-            facts.dirs = dirs;
-            facts.modified = modified;
-            order(&mut block, metric);
-        },
-    );
+        });
+    }
+    tree.par_derive(|facts, children| {
+        let mut bytes = 0;
+        let mut files = 0;
+        let mut dirs: u32 = 1;
+        let mut modified = 0;
+        let mut read_error = facts.read_error;
+        for child in children {
+            read_error |= child.read_error;
+            modified = modified.max(child.modified);
+            // Saturating: a corrupt volume's file table can claim any size.
+            bytes = child.bytes.saturating_add(bytes);
+            files += child.files;
+            dirs += child.dirs;
+        }
+        facts.read_error = read_error;
+        facts.bytes = bytes;
+        facts.files = files;
+        facts.dirs = dirs;
+        facts.modified = modified;
+    });
+    reorder(tree, metric);
 }
 
 /// [`aggregate`], charging a hardlinked file once: a leaf whose identity
@@ -414,19 +415,14 @@ pub(crate) const PARALLEL_LEVELS: usize = 4;
 /// For a tree [`aggregate`] has already derived, this is all a change of
 /// metric needs: totals and sharing are sums and unions over children, so
 /// the order they are visited in changes none of them. On a scanned tree
-/// of 19 million nodes this took 0.03 to 0.06 s; the sharing pass that
-/// `aggregate` adds took 0.5 to 0.8 s.
+/// of 19 million nodes this took 0.07 to 0.08 s, and all of `aggregate`
+/// 0.3 to 0.4 s.
 pub fn reorder(tree: &mut Tree, metric: Metric) {
-    tree.par_bottom_up(|_| {}, |_, mut block| order(&mut block, metric));
-}
-
-fn order(block: &mut Block<'_>, metric: Metric) {
     // Largest first: a treemap lays out big tiles best, and the order is what
-    // makes "descend into the largest child" meaningful. Unstable: names in
-    // one directory are distinct, and the only ties are names that decoded
-    // to the same lossy text, whose order does not matter, so the stable
-    // sort's scratch allocation buys nothing.
-    block.sort_by(|left, right| {
+    // makes "descend into the largest child" meaningful. Names in one
+    // directory are distinct, and the only ties are names that decoded to
+    // the same lossy text, whose order does not matter.
+    tree.sort_children(|left, right| {
         right
             .value(metric)
             .cmp(&left.value(metric))

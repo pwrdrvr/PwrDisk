@@ -1101,9 +1101,9 @@ impl Table<'_> {
             }
             found
         };
-        // A directory's files go into the tree under one lock, as the
-        // walk's do: every worker adds to the same buffers, and a lock per
-        // file would have them queue on it.
+        // A directory's files go into the tree in one call, as the walk's
+        // do: the worker's store is taken once per directory instead of
+        // once per file.
         let mut children =
             builder.leaves(found.iter().filter_map(|child| match child {
                 Child::Leaf(name, facts) => Some((*name, *facts, None)),
