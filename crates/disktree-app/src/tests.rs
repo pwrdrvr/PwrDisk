@@ -63,12 +63,56 @@ fn a_live_empty_match_keeps_its_drawn_ancestors_readable(
 
 /// Native filesystem callbacks cannot run on GPUI's deterministic scheduler.
 ///
-/// `gpui_omarchy::init` follows the system theme with a `notify` watcher on
-/// `$HOME`, so any write there wakes a task from the watcher's thread and
-/// the scheduler panics. Applying a theme stops following. Every test starts
-/// here, never with `gpui_omarchy::init` itself.
+/// `gpui_omarchy::init` watches `$HOME` even without an Omarchy theme. Its
+/// callback wakes the deterministic executor from a foreign thread. The
+/// control initializers are private in gpui-omarchy 0.1.3, so mirror their
+/// bindings here and apply a fixed theme without creating a watcher at all.
 fn init(cx: &mut gpui_kit::App) {
-    gpui_omarchy::init(cx);
+    use gpui_kit::base::actions::{Cancel, Confirm, SelectLeft, SelectRight};
+    use gpui_kit::{KeyBinding, NoAction};
+    use gpui_omarchy::focus::{Next, Previous};
+
+    gpui_kit::base::init(cx);
+    cx.bind_keys([
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "cmd-c"
+            } else {
+                "ctrl-c"
+            },
+            gpui_kit::base::input::Copy,
+            Some("OmarchyFocusScope"),
+        ),
+        KeyBinding::new("tab", Next, Some("OmarchyFocusScope")),
+        KeyBinding::new("shift-tab", Previous, Some("OmarchyFocusScope")),
+        KeyBinding::new("left", SelectLeft, Some("OmarchyOptionGroup")),
+        KeyBinding::new("h", SelectLeft, Some("OmarchyOptionGroup")),
+        KeyBinding::new("right", SelectRight, Some("OmarchyOptionGroup")),
+        KeyBinding::new("l", SelectRight, Some("OmarchyOptionGroup")),
+        KeyBinding::new(
+            "enter",
+            Confirm { secondary: false },
+            Some("OmarchyOptionGroup"),
+        ),
+        KeyBinding::new(
+            "space",
+            Confirm { secondary: false },
+            Some("OmarchyOptionGroup"),
+        ),
+        KeyBinding::new("enter", NoAction, Some("OmarchyPopoverContent")),
+        KeyBinding::new("space", NoAction, Some("OmarchyPopoverContent")),
+        KeyBinding::new(
+            "enter",
+            Confirm { secondary: false },
+            Some("OmarchyDatePicker"),
+        ),
+        KeyBinding::new(
+            "space",
+            Confirm { secondary: false },
+            Some("OmarchyDatePicker"),
+        ),
+        KeyBinding::new("escape", Cancel, Some("OmarchyDatePicker")),
+    ]);
     Theme::tokyo_night().apply(cx);
 }
 
@@ -1271,6 +1315,56 @@ fn right_click_selects_the_tile_and_reveals_it(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn find_field_never_draws_over_the_legend(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (_view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    press(cx, "/");
+    // Matches bring the longest hint, "enter shows only these".
+    cx.simulate_input("BLOB");
+    cx.run_until_parked();
+    // The minimum window width up to a wide one, at 100%, 150% and 200%.
+    for width in [900., 1100., 1440.] {
+        for rem in [16., 24., 32.] {
+            cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
+            cx.update(|window, _| window.set_rem_size(px(rem)));
+            draw(cx);
+            let at = format!("{width}x900 at rem {rem}");
+            let field = cx.debug_bounds("find-field").expect("find drawn");
+            let legend = cx.debug_bounds("legend").expect("legend drawn");
+            // Half a pixel for rounding where two edges meet. The field
+            // clips what it holds, so its own bounds are what is drawn.
+            assert!(
+                legend.size.width <= px(0.5)
+                    || field.right() <= legend.left() + px(0.5),
+                "{at}: field {field:?} overlaps legend {legend:?}"
+            );
+            assert!(
+                field.right() <= px(width) + px(0.5),
+                "{at}: the field stays in the window: {field:?}"
+            );
+        }
+    }
+    // Where the overlap was seen, and narrower: the whole hint reads, and
+    // the legend still shows beside it.
+    for width in [1000., 1440.] {
+        cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
+        cx.update(|window, _| window.set_rem_size(px(16.)));
+        draw(cx);
+        let hint = cx.debug_bounds("find-hint").expect("hint drawn");
+        let field = cx.debug_bounds("find-field").expect("find drawn");
+        let legend = cx.debug_bounds("legend").expect("legend drawn");
+        assert!(
+            hint.size.width > px(100.)
+                && hint.right() <= field.right() + px(0.5),
+            "{width}: the whole hint fits in the field: {hint:?} {field:?}"
+        );
+        assert!(legend.size.width > px(0.), "{width}: legend {legend:?}");
+    }
+}
+
+#[gpui_kit::test]
 fn typing_filters_live_and_enter_shows_only_the_matches(
     cx: &mut TestAppContext,
 ) {
@@ -1313,6 +1407,30 @@ fn typing_filters_live_and_enter_shows_only_the_matches(
     assert!(keep_filtered, "keep holds no blob");
     // Dimmed, not hidden: a non-match is still drawn while typing.
     assert!(names_drawn(&view, cx).contains(&"deeper".to_string()));
+    // A match says so without colour (WCAG 1.4.1): the part of its name the
+    // find text matched is underlined, whatever case it was typed in. A
+    // non-match keeps its plain name, with no word added to every tile.
+    let mosaic = update(&view, cx, |app, _| app.prepare());
+    let matched: Vec<_> = mosaic
+        .labels
+        .iter()
+        .filter_map(|label| Some((label, label.found.clone()?)))
+        .collect();
+    assert!(!matched.is_empty(), "a blob is labelled");
+    for (label, found) in &matched {
+        assert_eq!(label.text, "blob.bin");
+        assert_eq!(&label.text[found.clone()], "blob");
+    }
+    let unmatched: Vec<_> = mosaic
+        .labels
+        .iter()
+        .filter(|label| label.found.is_none())
+        .map(|label| label.text.as_str())
+        .collect();
+    assert!(
+        unmatched.iter().all(|text| !text.starts_with('[')),
+        "{unmatched:?}"
+    );
 
     // Enter: only the matches, and the largest selected for marking.
     press(cx, "enter");
@@ -3375,23 +3493,53 @@ fn marking_a_directory_marks_everything_inside_it(cx: &mut TestAppContext) {
     assert!(inside >= 2, "blob.bin and deeper are drawn inside junk");
     assert!(covered, "every tile inside junk goes with it");
 
-    // The mark is said in words as well as drawn: a label carries its
-    // tile's state, so colour is never the only cue (WCAG 1.4.1).
+    // The mark is not said by colour alone (WCAG 1.4.1): its name, and every
+    // name inside it, is struck through. The name itself is left whole, so
+    // a narrow tile still shows it rather than a repeated word.
     let label = mosaic
         .labels
         .iter()
-        .find(|label| label.text.ends_with("junk"))
-        .expect("junk is large enough to be labelled");
-    assert_eq!(label.text, "[marked] junk");
+        .find(|label| label.text == "junk")
+        .expect("junk is large enough to be labelled, under its own name");
+    assert!(label.marked, "a marked name is struck through");
     assert!(label.decoration.marked, "the label paints its tile's state");
+    let covered: Vec<_> = mosaic
+        .labels
+        .iter()
+        .filter(|label| label.decoration.covered)
+        .collect();
+    assert!(!covered.is_empty(), "something inside junk is labelled");
+    assert!(
+        covered.iter().all(|label| label.marked),
+        "what goes with a mark is struck through as going"
+    );
+    assert!(
+        covered.iter().all(|label| matches!(
+            &*label.text,
+            "blob.bin" | "deeper" | "more.bin"
+        )),
+        "covered names carry no prefix: {:?}",
+        covered.iter().map(|label| &label.text).collect::<Vec<_>>()
+    );
     assert!(
         mosaic
             .labels
             .iter()
-            .filter(|label| label.decoration.covered)
-            .all(|label| label.text.starts_with("[marked] ")),
-        "what goes with a mark is labelled as going"
+            .filter(
+                |label| !label.decoration.marked && !label.decoration.covered
+            )
+            .all(|label| !label.marked),
+        "nothing else is struck"
     );
+    // Gone inside the mark, the trail still shows it: the crumbs for junk
+    // and anything in it are struck, the rest are not.
+    let keep = crumbs(&view, cx, "keep");
+    read(&view, cx, |app| {
+        assert!(app.goes_with_a_mark(&junk));
+        assert!(app.goes_with_a_mark(&deeper));
+        assert!(!app.goes_with_a_mark(&keep));
+        assert!(!app.goes_with_a_mark(&[]), "the scanned root");
+    });
 
     // Marking something inside it is refused, and says why.
     update(&view, cx, |app, cx| app.toggle_mark(&deeper, cx));
@@ -3956,7 +4104,8 @@ fn power_efficiency_menu_saves_without_discarding_the_tree(
     let config = tempfile::tempdir().expect("config");
     let path = config.path().join("power-efficiency");
     let (view, cx) = view_over(temp.path(), cx);
-    cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+    // Wide enough for the gauge to sit in the bar rather than in ⋮.
+    cx.simulate_resize(gpui_kit::size(px(1280.), px(800.)));
     update(&view, cx, |app, _| {
         app.power_settings_path = Some(path.clone());
         // Enough CPUs that every preset is offered, whatever runs the test.
@@ -4007,7 +4156,7 @@ fn the_power_menu_offers_only_what_the_cpus_can_tell_apart(
     let temp = fixture();
     let config = tempfile::tempdir().expect("config");
     let (view, cx) = view_over(temp.path(), cx);
-    cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+    cx.simulate_resize(gpui_kit::size(px(1280.), px(800.)));
     update(&view, cx, |app, _| {
         app.power_settings_path = Some(config.path().join("power"));
         // Aggressive and Drain My Battery would both run four workers.
@@ -6938,7 +7087,10 @@ fn double_scale_wraps_controls_and_keeps_pointer_targets(
     assert!(
         (cx.update(|window, _| window.rem_size().as_f32()) - 32.).abs() < 0.01
     );
-    for selector in ["depth-less-target", "depth-more-target"] {
+    // At 28 rem the bar keeps only the view switch; Depth is in ⋮.
+    assert!(cx.debug_bounds("depth-less-target").is_none());
+    click_on(cx, "more-toggle");
+    for selector in ["more-toggle", "more-depth-less", "more-depth-more"] {
         let bounds = cx.debug_bounds(selector).expect("depth target");
         assert!(
             bounds.right() <= px(900.) && bounds.bottom() <= px(600.),
@@ -7222,4 +7374,182 @@ fn reduced_motion_cancels_active_transition_and_can_be_disabled(
     draw(cx);
     assert!(read(&view, cx, |app| app.transition.is_none()));
     assert!(read(&view, cx, |app| app.crumbs.is_empty()));
+}
+
+#[gpui_kit::test]
+fn the_view_switch_and_the_view_menu_show_the_file_list(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    // The switch is in the title bar, not a row of its own over the mosaic.
+    let strip = cx.debug_bounds("title-strip").expect("strip");
+    let list = cx.debug_bounds("view-list").expect("switch");
+    assert!(strip.contains(&list.center()), "{list:?} in {strip:?}");
+
+    click_on(cx, "view-list");
+    assert!(read(&view, cx, |app| app.file_list));
+    assert!(cx.debug_bounds("file-list").is_some());
+    assert!(
+        cx.update(|window, cx| view.read(cx).file_focus.is_focused(window)),
+        "the list takes the keyboard, so a screen reader lands in it"
+    );
+
+    cx.dispatch_action(crate::app_menu::ShowTreemap);
+    draw(cx);
+    assert!(!read(&view, cx, |app| app.file_list));
+    assert!(cx.update(|window, cx| view.read(cx).focus.is_focused(window)));
+    cx.dispatch_action(crate::app_menu::ShowFileList);
+    draw(cx);
+    assert!(read(&view, cx, |app| app.file_list));
+    click_on(cx, "view-treemap");
+    assert!(!read(&view, cx, |app| app.file_list));
+}
+
+#[gpui_kit::test]
+fn the_bar_folds_into_more_as_the_window_narrows(cx: &mut TestAppContext) {
+    use crate::toolbar::BarFit;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    // Window size and interface zoom presses, then the tier it lands in.
+    let cases = [
+        (1440., 900., 0, BarFit::Full),
+        (1100., 700., 0, BarFit::Folded),
+        (900., 600., 0, BarFit::Folded),
+        (900., 600., 2, BarFit::Narrow),
+        (900., 600., 4, BarFit::Tight),
+    ];
+    let mut labelled_width = None;
+    for (width, height, zoom, fit) in cases {
+        press(cx, "ctrl-0");
+        cx.simulate_resize(gpui_kit::size(px(width), px(height)));
+        for _ in 0..zoom {
+            press(cx, "ctrl-=");
+        }
+        draw(cx);
+        assert_eq!(read(&view, cx, |app| app.bar_fit), fit, "{width} {zoom}");
+        let full = fit == BarFit::Full;
+        assert_eq!(
+            cx.debug_bounds("power-efficiency").is_some(),
+            full,
+            "{fit:?}"
+        );
+        assert_eq!(cx.debug_bounds("more-toggle").is_none(), full, "{fit:?}");
+        assert_eq!(
+            cx.debug_bounds("history-back").is_some(),
+            fit.shows_history_and_depth(),
+            "{fit:?}"
+        );
+        assert_eq!(
+            cx.debug_bounds("depth-less-target").is_some(),
+            fit.shows_history_and_depth(),
+            "{fit:?}"
+        );
+        assert_eq!(cx.debug_bounds("measure-mode").is_some(), fit.shows_mode());
+
+        // Whatever is left fits in one bar, beside the brand.
+        let strip = cx.debug_bounds("title-strip").expect("strip");
+        let brand = cx.debug_bounds("strip-brand").expect("brand");
+        let switch = cx.debug_bounds("view-treemap").expect("switch");
+        let last = cx
+            .debug_bounds(if full {
+                "power-efficiency"
+            } else {
+                "more-toggle"
+            })
+            .expect("last control");
+        assert!(switch.left() >= brand.right(), "{fit:?}: {switch:?}");
+        assert!(last.right() <= px(width), "{fit:?}: {last:?}");
+        assert!(strip.contains(&last.center()), "{fit:?}: one row");
+        assert!(switch.size.height >= px(24.), "{fit:?}: {switch:?}");
+
+        // The switch keeps its words until 64 rem.
+        if zoom == 0 && width >= 1100. {
+            labelled_width = Some(switch.size.width);
+        } else if zoom == 0 {
+            let labelled = labelled_width.expect("a labelled switch");
+            assert!(switch.size.width < labelled, "glyph alone at {width}");
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn more_holds_the_folded_controls_and_takes_the_keys(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1100.), px(700.)));
+    update(&view, cx, |app, _| app.cpu_threads = 18);
+    let hidden = read(&view, cx, |app| app.options.include_hidden);
+    let epoch = read(&view, cx, |app| app.scan_epoch);
+
+    click_on(cx, "more-toggle");
+    assert_eq!(read(&view, cx, |app| app.more_menu), Some(0));
+    assert!(cx.debug_bounds("more-menu").is_some());
+    // Hidden files rescans, as its checkbox does.
+    press(cx, "enter");
+    read(&view, cx, |app| {
+        assert_eq!(app.options.include_hidden, !hidden);
+        assert_eq!(app.scan_epoch, epoch + 1);
+        assert!(app.more_menu.is_none());
+    });
+    update(&view, cx, |app, _| {
+        if let Some(scan) = app.scan.take() {
+            scan.cancel();
+        }
+    });
+
+    // Scan workers opens the power menu in ⋮'s place; ⋮ closes it again.
+    click_on(cx, "more-toggle");
+    press(cx, "end");
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.power_menu.is_some()));
+    assert!(cx.debug_bounds("power-menu").is_some());
+    // A real press arrives after the pointer is on ⋮.
+    let more = cx.debug_bounds("more-toggle").expect("more");
+    cx.simulate_mouse_move(more.center(), None, gpui_kit::Modifiers::none());
+    click_on(cx, "more-toggle");
+    read(&view, cx, |app| {
+        assert!(app.power_menu.is_none());
+        assert!(app.more_menu.is_none());
+    });
+
+    // Escape closes without acting; a screen key closes and still acts.
+    click_on(cx, "more-toggle");
+    press(cx, "escape");
+    assert!(read(&view, cx, |app| app.more_menu.is_none()));
+    click_on(cx, "more-toggle");
+    press(cx, "?");
+    assert!(read(&view, cx, |app| app.more_menu.is_none() && app.show_help));
+}
+
+#[gpui_kit::test]
+fn more_steps_depth_in_place_when_the_stepper_folds(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+    press(cx, "ctrl-=");
+    press(cx, "ctrl-=");
+    let depth = read(&view, cx, |app| app.layout_options.max_depth);
+    click_on(cx, "more-toggle");
+    // Nowhere to go back or forward yet, so ⋮ opens on Depth, past the
+    // disabled history rows; the up arrow does not land on them either.
+    assert_eq!(read(&view, cx, |app| app.more_menu), Some(2));
+    press(cx, "up");
+    assert_eq!(read(&view, cx, |app| app.more_menu), Some(2));
+    // The row stays open while the arrows step it.
+    press(cx, "left");
+    assert_eq!(
+        read(&view, cx, |app| app.layout_options.max_depth),
+        depth - 1
+    );
+    assert_eq!(read(&view, cx, |app| app.more_menu), Some(2));
+    click_on(cx, "more-depth-more");
+    assert_eq!(read(&view, cx, |app| app.layout_options.max_depth), depth);
 }

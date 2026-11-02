@@ -5,13 +5,14 @@
 //! re-scan — live here so they can be reasoned about in one place.
 
 use std::cell::{Cell, RefCell};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use disktree_core::access::file_table_readable;
-use disktree_core::filter::{Keep, Matches, filter};
+use disktree_core::filter::{Keep, Matches, filter, find_ignoring_case};
 use disktree_core::insights::{Candidate, INSIGHT_LIMIT, worth_a_look};
 use disktree_core::path_style::PathStyle;
 use disktree_core::removal::{
@@ -359,6 +360,14 @@ pub struct Disktree {
     /// The pointer is on the menu's button. A press there is the button's
     /// to toggle, not a press outside the menu that closes it first.
     pub power_hover: bool,
+    /// The ⋮ menu, when open: the row the arrow keys are on, as an index
+    /// into [`crate::toolbar::BarFit::more_items`].
+    pub more_menu: Option<usize>,
+    /// The pointer is on ⋮, as [`Self::power_hover`] is for its button.
+    pub more_hover: bool,
+    /// How much of the explore bar fit when it was last drawn, which says
+    /// what ⋮ holds.
+    pub bar_fit: crate::toolbar::BarFit,
     pub cpu_threads: usize,
     pub tree: Option<Arc<Tree>>,
     pub scan: Option<ScanHandle>,
@@ -615,6 +624,9 @@ impl Disktree {
             removal_settings_dir: crate::updater::settings_dir(),
             power_menu: None,
             power_hover: false,
+            more_menu: None,
+            more_hover: false,
+            bar_fit: crate::toolbar::BarFit::default(),
             cpu_threads: crate::power::cpu_threads(),
             tree: None,
             scan: None,
@@ -1484,6 +1496,19 @@ impl Disktree {
         }
         cx.notify();
         true
+    }
+
+    /// `i`, the Hidden files checkbox and its ⋮ row: rescan with or without
+    /// hidden entries.
+    pub fn toggle_hidden(&mut self, cx: &mut Context<'_, Self>) {
+        self.options.include_hidden = !self.options.include_hidden;
+        self.start_scan(cx);
+    }
+
+    /// `d`, the Apparent size checkbox and its ⋮ row.
+    pub fn toggle_apparent(&mut self, cx: &mut Context<'_, Self>) {
+        self.options.apparent_size = !self.options.apparent_size;
+        self.start_scan(cx);
     }
 
     /// Start a fresh scan, abandoning any walk still in progress.
@@ -2755,22 +2780,30 @@ impl Disktree {
                     let Some(node) = self.node_at(crumbs) else {
                         continue;
                     };
+                    // State is said without colour, and without spending
+                    // the label's width on it: a marked name, and every name
+                    // inside it, is struck through, and a name the find text
+                    // matches has the matching part underlined. Words would
+                    // repeat on every tile in a mark or a search and push
+                    // narrow names out of their tiles. Only "unreadable",
+                    // which is rare, keeps a prefix.
+                    let unreadable = if node.read_error { "! " } else { "" };
+                    // A tile the filter left out holds no match: skip the
+                    // search for it.
+                    let found = self
+                        .matches
+                        .as_deref()
+                        .filter(|_| filtered != Filtered::Out)
+                        .and_then(|matches| {
+                            find_ignoring_case(node.name(), &matches.needle)
+                        })
+                        .map(|range| {
+                            range.start + unreadable.len()
+                                ..range.end + unreadable.len()
+                        });
                     labels.push(Label {
-                        text: format!(
-                            "{}{}{}{}",
-                            if is_marked || is_covered {
-                                "[marked] "
-                            } else {
-                                ""
-                            },
-                            if node.read_error { "! " } else { "" },
-                            if filtered == Filtered::Out {
-                                "[filtered] "
-                            } else {
-                                ""
-                            },
-                            node.name()
-                        ),
+                        text: format!("{unreadable}{}", node.name()),
+                        found,
                         rect: self.animated_rect(tile.rect),
                         header: tile
                             .header
@@ -2784,6 +2817,7 @@ impl Disktree {
                 }
                 TileKind::Others { count, .. } => labels.push(Label {
                     text: format!("+{count} more"),
+                    found: None,
                     rect: self.animated_rect(tile.rect),
                     header: None,
                     depth: tile.depth,
@@ -2807,6 +2841,17 @@ impl Disktree {
             labels,
             view,
         }
+    }
+
+    /// Whether the node at `crumbs` is marked, or inside a marked directory
+    /// and so removed with it. The trail strikes such a crumb, as the
+    /// mosaic strikes such a tile's name.
+    pub fn goes_with_a_mark(&self, crumbs: &[usize]) -> bool {
+        let style = self.path_style();
+        self.path_at(crumbs).is_some_and(|path| {
+            self.marks.contains(&path, style)
+                || self.marks.ancestor(&path, style).is_some()
+        })
     }
 
     /// Crumbs for an absolute path, if the tree still contains it.
@@ -3392,6 +3437,7 @@ impl Disktree {
             // A modal must not leave another keyboard owner behind it.
             self.crumb_menu = None;
             self.power_menu = None;
+            self.more_menu = None;
             self.app_menu_open = false;
             self.export_menu_open = false;
             self.show_help = true;
@@ -3656,6 +3702,9 @@ impl Disktree {
         if self.power_menu.is_some() && self.on_power_key(key, cx) {
             return;
         }
+        if self.more_menu.is_some() && self.on_more_key(key, cx) {
+            return;
+        }
 
         if self.app_menu_open {
             if key == "escape" {
@@ -3851,14 +3900,8 @@ impl Disktree {
             "r" if !control => self.start_scan(cx),
             "g" if !control => self.go_to_disk(cx),
             "v" if !control && !shift => self.open_volumes(cx),
-            "i" if !control => {
-                self.options.include_hidden = !self.options.include_hidden;
-                self.start_scan(cx);
-            }
-            "d" if !control => {
-                self.options.apparent_size = !self.options.apparent_size;
-                self.start_scan(cx);
-            }
+            "i" if !control => self.toggle_hidden(cx),
+            "d" if !control => self.toggle_apparent(cx),
             "p" if !control => {
                 self.show_selection = !self.show_selection;
                 cx.notify();
@@ -4178,6 +4221,9 @@ impl Direction {
 #[derive(Clone, Debug)]
 pub struct Label {
     pub text: String,
+    /// The bytes of `text` the find text matched: underlined, so a match
+    /// reads as one without its colour.
+    pub found: Option<Range<usize>>,
     /// Base-space rectangle; the view transform is applied while painting.
     pub rect: Rect,
     /// The band this label belongs in, when its tile reserved one. A parent's
@@ -4187,6 +4233,7 @@ pub struct Label {
     pub depth: u32,
     /// Filtered out while typing: drawn quietly.
     pub dim: bool,
+    /// Marked, or inside a mark: struck through, in the marked ink.
     pub marked: bool,
     pub size_text: String,
     /// The exact fill state is needed for contrast after filtering/marking.

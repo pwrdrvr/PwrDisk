@@ -262,6 +262,7 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
 | APFS clone hints and private-size system calls | `crates/disktree-core/src/macos.rs` — isolated `unsafe` |
 | clone sharing totals and conservative savings | `crates/disktree-core/src/sharing.rs` |
 | a key, a screen transition, a mark | `crates/disktree-app/src/state.rs` |
+| what the explore bar folds into ⋮ at each width, and ⋮'s keys | `crates/disktree-app/src/toolbar.rs` |
 | spacing, type and size | `crates/disktree-app/src/ui.rs` — tokens only, no `px` in layout |
 | the mosaic's painting or labels | `crates/disktree-app/src/treemap_view.rs` |
 | layout of a screen | `crates/disktree-app/src/views.rs` |
@@ -298,6 +299,10 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
   keys, including one that marks a directory, confirms the removal and checks
   the files are gone while unmarked neighbours are untouched, and one that
   drives the window over the real socket or pipe as `pwrdisk mcp` does.
+  Initialize them through `tests::init`, which applies a fixed theme without
+  native filesystem watching. Keep its control bindings aligned with
+  gpui-omarchy when updating that dependency; its normal `init` starts a
+  watcher that cannot wake GPUI's deterministic test executor safely.
 * `disktree-mcp` tests every tool as a function against a temporary tree,
   with a stand-in window on the socket or pipe for the linked cases;
   `disktree-link` tests the transport itself.
