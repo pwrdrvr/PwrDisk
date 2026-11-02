@@ -47,6 +47,7 @@ mod update_channel;
 mod updater;
 mod views;
 mod widgets;
+mod window_frame;
 
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
@@ -251,15 +252,21 @@ fn run() -> Result<()> {
             }
             let options = args.options.clone();
             let root_for_app = root.clone();
+            // Where the user left it, else centred; inside the display
+            // either way. Below 900 by 600 the treemap stops being
+            // readable, so ask the compositor not to go there, unless the
+            // display itself is smaller.
+            let place = window_frame::initial(
+                size(px(1440.), px(900.)),
+                size(px(900.), px(600.)),
+                cx,
+            );
             let window = cx
                 .open_window(
                     WindowOptions {
-                        window_bounds: Some(gpui_kit::WindowBounds::Windowed(
-                            gpui_kit::Bounds::new(
-                                gpui_kit::point(px(120.), px(90.)),
-                                size(px(1440.), px(900.)),
-                            ),
-                        )),
+                        window_bounds: Some(place.bounds),
+                        // GPUI reads the bounds relative to this display.
+                        display_id: place.display,
                         titlebar: Some(gpui_kit::TitlebarOptions {
                             title: Some(
                                 format!(
@@ -294,9 +301,7 @@ fn run() -> Result<()> {
                         // Left unset, the class is empty and that rule never
                         // matches.
                         app_id: Some("pwrdisk".to_owned()),
-                        // Below this the treemap stops being readable, so ask
-                        // the compositor not to go there.
-                        window_min_size: Some(size(px(900.), px(600.))),
+                        window_min_size: Some(place.min_size),
                         ..Default::default()
                     },
                     move |window, cx| {
@@ -309,6 +314,15 @@ fn run() -> Result<()> {
                             cx.observe_button_layout_changed(
                                 window,
                                 |_, _, cx| cx.notify(),
+                            )
+                            .detach();
+                            // Moving or resizing is noted; the quit hook
+                            // below writes it down.
+                            cx.observe_window_bounds(
+                                window,
+                                |_, window, cx| {
+                                    window_frame::remember(window, cx);
+                                },
                             )
                             .detach();
                             let mut app = if args.choose_root {
@@ -334,6 +348,14 @@ fn run() -> Result<()> {
                     },
                 )
                 .expect("open the PwrDisk window");
+
+            // Every route to quitting runs this, closing the window
+            // included, so the next launch opens where this one was left.
+            cx.on_app_quit(|_| {
+                window_frame::save();
+                async {}
+            })
+            .detach();
 
             // The treemap owns the keyboard from the first frame; there is no
             // text field to focus first.
