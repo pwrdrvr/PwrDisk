@@ -3,13 +3,13 @@
 //!
 //! A scan keeps an allocation for every file that may share blocks, and
 //! as a 96-byte struct that was more than the nodes themselves cost. On
-//! 17.4 million files of agent worktrees, 14.2 million kept one: 97.7 %
+//! 16.4 million files of agent worktrees, 14.2 million kept one: 97.7 %
 //! were clones with one name whose size is the node's own and whose
 //! data fork is all of it, and nearly all of those were wholly shared.
 //! Such a clone keeps 16 or 24 bytes here. A file with several names, or
-//! one reached through a followed link, keeps 16: its identity is the
-//! node's inode. Anything else keeps the whole struct, so no figure is
-//! ever approximated to fit.
+//! one reached through a followed link, keeps 16 when it has no clone
+//! facts: its identity is the node's inode. Anything else keeps the whole
+//! struct, so no figure is ever approximated to fit.
 
 use super::Facts;
 use crate::sharing::{Allocation, CloneInfo};
@@ -23,6 +23,36 @@ pub(super) const FULL: u32 = 4;
 /// Whether `tag` names one of these tables.
 pub(super) const fn holds(tag: u32) -> bool {
     matches!(tag, SHARED | CLONE | LINK | FULL)
+}
+
+/// Whether the table `tag` names reads a file's size from its node, which
+/// holds only while the leaf has no inode for de-duplication to act on.
+pub(super) const fn reads_size(tag: u32) -> bool {
+    matches!(tag, SHARED | CLONE)
+}
+
+/// Where each table of one store starts once it is appended to another:
+/// the other's lengths before the append.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Starts {
+    shared: usize,
+    clones: usize,
+    links: usize,
+    full: usize,
+}
+
+impl Starts {
+    /// Where the record at `index` of the table `tag` names moved to.
+    pub(super) const fn moved(self, tag: u32, index: usize) -> usize {
+        index
+            + match tag {
+                SHARED => self.shared,
+                CLONE => self.clones,
+                LINK => self.links,
+                FULL => self.full,
+                _ => 0,
+            }
+    }
 }
 
 /// A clone with one name and no private blocks: what nearly every file
@@ -266,15 +296,13 @@ impl Records {
         })
     }
 
-    /// Records in the table `tag` names: where a table appended to it
-    /// starts.
-    pub(super) const fn len_of(&self, tag: u32) -> usize {
-        match tag {
-            SHARED => self.shared.len(),
-            CLONE => self.clones.len(),
-            LINK => self.links.len(),
-            FULL => self.full.len(),
-            _ => 0,
+    /// Where each table of a store appended to this one will start.
+    pub(super) const fn starts(&self) -> Starts {
+        Starts {
+            shared: self.shared.len(),
+            clones: self.clones.len(),
+            links: self.links.len(),
+            full: self.full.len(),
         }
     }
 

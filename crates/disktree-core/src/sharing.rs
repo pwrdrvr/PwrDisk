@@ -688,18 +688,26 @@ mod tests {
     }
 
     /// Each node's figures, the estimate of each node alone and of every
-    /// pair of nodes: what a selection of marks reads.
+    /// pair of nodes neither of which holds the other: what a selection
+    /// of marks reads.
     fn figures(tree: &Tree) -> Vec<(Sharing, Estimate)> {
-        let mut nodes = Vec::new();
-        let mut stack = vec![tree.root()];
-        while let Some(node) = stack.pop() {
-            nodes.push(node);
-            stack.extend(node.children());
+        /// Nodes in preorder, each with the end of its subtree's run.
+        fn preorder<'t>(node: Node<'t>, nodes: &mut Vec<(Node<'t>, usize)>) {
+            let at = nodes.len();
+            nodes.push((node, 0));
+            for child in node.children() {
+                preorder(child, nodes);
+            }
+            nodes[at].1 = nodes.len();
         }
+        let mut nodes = Vec::new();
+        preorder(tree.root(), &mut nodes);
         let mut figures = Vec::new();
-        for (index, &node) in nodes.iter().enumerate() {
+        for &(node, end) in &nodes {
             figures.push((node.sharing(), estimate([node])));
-            for &other in &nodes[index + 1..] {
+            // What follows a node's subtree in preorder is outside it, and
+            // cannot hold it.
+            for &(other, _) in &nodes[end..] {
                 figures.push((Sharing::default(), estimate([node, other])));
             }
         }

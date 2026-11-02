@@ -379,14 +379,7 @@ impl Store {
     fn absorb(&mut self, source: &Self, name: &str) -> Slot {
         let base = Self::index(self.nodes.len());
         let names = Self::index(self.names.len());
-        // Where each allocation table of `source` starts, once appended.
-        let allocations = [
-            records::SHARED,
-            records::CLONE,
-            records::LINK,
-            records::FULL,
-        ]
-        .map(|tag| self.allocations.len_of(tag));
+        let allocations = self.allocations.starts();
         let sharings = self.sharings.len();
         let both = self.both.len();
         self.names.push_str(&source.names);
@@ -398,10 +391,9 @@ impl Store {
         let moved = |slot: &Slot| {
             let index = slot.extra.index();
             let extra = match slot.extra.tag() {
-                tag @ records::SHARED..=records::FULL => Extra::new(
-                    tag,
-                    allocations[(tag - records::SHARED) as usize] + index,
-                ),
+                tag if records::holds(tag) => {
+                    Extra::new(tag, allocations.moved(tag, index))
+                }
                 Extra::SHARING => Extra::new(Extra::SHARING, sharings + index),
                 Extra::BOTH => Extra::new(Extra::BOTH, both + index),
                 _ => Extra::NONE,
@@ -882,6 +874,13 @@ fn bottom_up<L, D>(
 {
     let (leaf, directory) = visit;
     if !node.facts.kind.is_dir() {
+        // De-duplication may zero a leaf with an inode; a clone that reads
+        // its size from the node must never have one.
+        debug_assert!(
+            node.facts.inode.is_none()
+                || !records::reads_size(node.extra.tag()),
+            "a clone record whose size could be de-duplicated away"
+        );
         leaf(&mut node.facts);
         return;
     }
@@ -1504,6 +1503,23 @@ mod tests {
         // And a copy of the whole store, as the size/files toggle makes.
         assert_same(tree.clone().root(), tree.root());
         assert_eq!(tree.side_records().0, 8);
+    }
+
+    /// A clone that reads its size from its node, given an inode after it
+    /// was kept: de-duplication could zero the size it reads.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "could be de-duplicated away")]
+    fn an_inode_on_a_clone_that_reads_its_size_is_caught() {
+        let mut tree = Tree::build(|builder| {
+            let files = every_record(builder, 5);
+            builder.directory("root", Facts::directory(), None, files)
+        });
+        let mut root = tree.root_mut();
+        let mut shared = root.child_mut(0).expect("the shared clone");
+        assert!(records::reads_size(shared.node().slot.extra.tag()));
+        shared.facts_mut().inode = NonZeroU64::new(5).map(|inode| (4, inode));
+        crate::tree::aggregate(&mut tree, Metric::Bytes);
     }
 
     #[test]
