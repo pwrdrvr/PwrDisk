@@ -79,9 +79,16 @@ fn footprint_mib() -> f64 {
     let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
     let pid = i32::try_from(std::process::id()).expect("a pid fits");
     // SAFETY: as above.
-    unsafe {
+    let status = unsafe {
         libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, (&raw mut info).cast())
     };
+    // A zeroed struct would read as a footprint of nothing.
+    assert_eq!(
+        status,
+        0,
+        "proc_pid_rusage: {}",
+        std::io::Error::last_os_error()
+    );
     info.ri_phys_footprint as f64 / MIB
 }
 

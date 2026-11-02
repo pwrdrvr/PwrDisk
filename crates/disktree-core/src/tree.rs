@@ -1,6 +1,5 @@
 //! The scanned tree.
 
-use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock};
@@ -8,7 +7,6 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
 
-use crate::classify::{Category, Reclaim};
 use crate::path_style::PathStyle;
 
 /// What a node represents on disk.
@@ -68,24 +66,32 @@ pub use crate::arena::{
     NodeMut, Tree,
 };
 
-/// A node and everything beneath it, owned and on the heap: how tests and
-/// small trees are written before they become a [`Tree`]. A scan builds
-/// its tree in arenas directly, through [`Tree::build`].
+/// A node and everything beneath it, owned and on the heap.
+///
+/// How tests and small trees are written before they become a [`Tree`]; a
+/// scan builds its tree in arenas directly, through [`Tree::build`]. Its
+/// facts read and write through `Deref`, as a node's do.
 #[derive(Clone, Debug)]
 pub struct Draft {
     pub name: Box<str>,
-    pub kind: NodeKind,
-    pub bytes: u64,
-    pub files: u64,
-    pub dirs: u32,
-    pub inode: Option<(u64, NonZeroU64)>,
+    pub facts: Facts,
     pub allocation: Option<Box<crate::sharing::Allocation>>,
     pub sharing: Option<Box<crate::sharing::Sharing>>,
-    pub read_error: bool,
-    pub modified: i64,
-    pub category: Category,
-    pub reclaim: Option<Reclaim>,
     pub children: Vec<Self>,
+}
+
+impl std::ops::Deref for Draft {
+    type Target = Facts;
+
+    fn deref(&self) -> &Facts {
+        &self.facts
+    }
+}
+
+impl std::ops::DerefMut for Draft {
+    fn deref_mut(&mut self) -> &mut Facts {
+        &mut self.facts
+    }
 }
 
 impl Draft {
@@ -106,32 +112,10 @@ impl Draft {
     fn of(name: impl Into<Box<str>>, facts: Facts) -> Self {
         Self {
             name: name.into(),
-            kind: facts.kind,
-            bytes: facts.bytes,
-            files: facts.files,
-            dirs: facts.dirs,
-            inode: facts.inode,
+            facts,
             allocation: None,
             sharing: None,
-            read_error: facts.read_error,
-            modified: facts.modified,
-            category: facts.category,
-            reclaim: facts.reclaim,
             children: Vec::new(),
-        }
-    }
-
-    pub const fn facts(&self) -> Facts {
-        Facts {
-            kind: self.kind,
-            bytes: self.bytes,
-            files: self.files,
-            dirs: self.dirs,
-            inode: self.inode,
-            read_error: self.read_error,
-            modified: self.modified,
-            category: self.category,
-            reclaim: self.reclaim,
         }
     }
 }
@@ -475,6 +459,7 @@ pub fn path_of(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::num::NonZeroU64;
 
     fn leaf(name: &str, bytes: u64) -> Draft {
         Draft::entry(name, NodeKind::File, bytes)
