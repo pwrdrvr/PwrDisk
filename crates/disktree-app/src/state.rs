@@ -780,7 +780,7 @@ impl Disktree {
         app.scan_epoch += 1;
         app.marks.refresh(
             &app.root_path,
-            &tree,
+            tree.root(),
             app.options.metric,
             app.path_style(),
         );
@@ -1249,7 +1249,7 @@ impl Disktree {
     fn refresh_insights(&mut self) {
         self.scanned_at = now_seconds();
         self.insights = self.tree.as_deref().map_or_else(Vec::new, |tree| {
-            worth_a_look(tree, self.scanned_at, INSIGHT_LIMIT)
+            worth_a_look(tree.root(), self.scanned_at, INSIGHT_LIMIT)
         });
     }
 
@@ -1341,7 +1341,7 @@ impl Disktree {
             (None, Some(tree)) => log::info!(
                 target: "pwrdisk::scan",
                 "{kind} scan finished: {} files in {elapsed:.1} s",
-                tree.files
+                tree.root().files
             ),
             (None, None) => {}
         }
@@ -1624,7 +1624,7 @@ impl Disktree {
                     let node = snapshot.tree;
                     self.marks.refresh(
                         &self.root_path,
-                        &node,
+                        node.root(),
                         self.options.metric,
                         self.path_style(),
                     );
@@ -1678,7 +1678,7 @@ impl Disktree {
                 let metric = self.options.metric;
                 self.marks.refresh(
                     &self.root_path,
-                    &node,
+                    node.root(),
                     metric,
                     self.path_style(),
                 );
@@ -1716,11 +1716,11 @@ impl Disktree {
         let Some(tree) = &self.tree else {
             return;
         };
-        if tree.resolve(&self.crumbs).is_none() {
+        if tree.root().resolve(&self.crumbs).is_none() {
             self.crumbs.clear();
         }
         if let Some(selected) = self.selected.clone()
-            && tree.resolve(&selected).is_none()
+            && tree.root().resolve(&selected).is_none()
         {
             self.selected = None;
         }
@@ -1803,24 +1803,31 @@ impl Disktree {
         }
     }
 
-    pub fn tree(&self) -> Option<&Node> {
+    pub fn tree(&self) -> Option<Node<'_>> {
         self.tree.as_deref().map(Tree::root)
     }
 
     /// The node the treemap is currently rooted at.
-    pub fn current(&self) -> Option<&Node> {
+    pub fn current(&self) -> Option<Node<'_>> {
         self.tree
             .as_ref()
-            .and_then(|tree| tree.resolve(&self.crumbs))
+            .and_then(|tree| tree.root().resolve(&self.crumbs))
     }
 
-    pub fn node_at(&self, crumbs: &[usize]) -> Option<&Node> {
-        self.tree.as_ref().and_then(|tree| tree.resolve(crumbs))
+    pub fn node_at(&self, crumbs: &[usize]) -> Option<Node<'_>> {
+        self.tree
+            .as_ref()
+            .and_then(|tree| tree.root().resolve(crumbs))
     }
 
     pub fn path_at(&self, crumbs: &[usize]) -> Option<PathBuf> {
         let tree = self.tree.as_ref()?;
-        Some(path_of(&self.root_path, tree, crumbs, self.path_style()))
+        Some(path_of(
+            &self.root_path,
+            tree.root(),
+            crumbs,
+            self.path_style(),
+        ))
     }
 
     /// The path rules of the machine on screen: an SSH host is Unix, so its
@@ -1868,13 +1875,15 @@ impl Disktree {
         };
         let mut crumbs: Vec<usize> = Vec::new();
         for &index in &self.crumbs {
-            let Some(node) =
-                tree.resolve(&crumbs).and_then(|node| node.child(index))
+            let Some(node) = tree
+                .root()
+                .resolve(&crumbs)
+                .and_then(|node| node.child(index))
             else {
                 break;
             };
             crumbs.push(index);
-            trail.push((node.name.to_string(), Crumb::Tree(crumbs.clone())));
+            trail.push((node.name().to_string(), Crumb::Tree(crumbs.clone())));
         }
         trail
     }
@@ -1887,12 +1896,12 @@ impl Disktree {
             return (Vec::new(), 0);
         };
         let mut rows: Vec<Sibling> = node
-            .children
+            .children()
             .iter()
             .enumerate()
             .map(|(index, child)| Sibling {
                 index,
-                name: child.name.to_string(),
+                name: child.name().to_string(),
                 value: child.value(metric),
                 category: child.category,
                 is_dir: child.is_dir(),
@@ -2031,7 +2040,7 @@ impl Disktree {
         let Some(node) = self.node_at(&target) else {
             return;
         };
-        if !node.is_dir() || node.children.is_empty() {
+        if !node.is_dir() || node.children().is_empty() {
             return;
         }
         self.remember();
@@ -2081,7 +2090,7 @@ impl Disktree {
             .map(|length| hovered[..length].to_vec())
             .find(|crumbs| {
                 self.node_at(crumbs).is_some_and(|node| {
-                    node.is_dir() && !node.children.is_empty()
+                    node.is_dir() && !node.children().is_empty()
                 }) && self.tile_body(crumbs).is_some()
             })
     }
@@ -2250,7 +2259,7 @@ impl Disktree {
     fn travel(&mut self, target: Vec<usize>, cx: &mut Context<'_, Self>) {
         let enterable = self
             .node_at(&target)
-            .is_some_and(|node| node.is_dir() && !node.children.is_empty());
+            .is_some_and(|node| node.is_dir() && !node.children().is_empty());
         if target.len() > self.crumbs.len()
             && target.starts_with(&self.crumbs)
             && enterable
@@ -2412,7 +2421,7 @@ impl Disktree {
         let Some(node) = self.node_at(&parent) else {
             return Vec::new();
         };
-        (0..node.children.len())
+        (0..node.children().len())
             .map(|index| {
                 let mut crumbs = parent.clone();
                 crumbs.push(index);
@@ -2613,7 +2622,7 @@ impl Disktree {
             }
             let mut resolver = crate::marks::Resolver::new(
                 &self.root_path,
-                tree,
+                tree.root(),
                 PathStyle::Native,
             );
             let mut next = Vec::new();
@@ -2763,7 +2772,7 @@ impl Disktree {
                             } else {
                                 ""
                             },
-                            node.name
+                            node.name()
                         ),
                         rect: self.animated_rect(tile.rect),
                         header: tile
@@ -2815,13 +2824,13 @@ impl Disktree {
         // `a\b` stays one name on a Windows client.
         let relative = self.path_style().relative(&self.root_path, path)?;
         let tree = self.tree.clone()?;
-        let mut node: &Node = &tree;
+        let mut node = tree.root();
         let mut crumbs = Vec::new();
         for name in relative {
-            let index = node.children.iter().position(|child| {
+            let index = node.children().iter().position(|child| {
                 #[cfg(test)]
                 crate::marks::work::step();
-                child.name.as_ref() == name
+                child.name() == name
             })?;
             crumbs.push(index);
             node = node.child(index)?;
@@ -2858,7 +2867,7 @@ impl Disktree {
         let stale = self.cache.as_ref().is_none_or(|cache| cache.key != key);
         if stale {
             let tree = self.tree.clone()?;
-            let node = tree.resolve(&self.crumbs)?;
+            let node = tree.root().resolve(&self.crumbs)?;
             let rect = Rect::new(0.0, 0.0, key.width, key.height);
             let filter =
                 self.matches.as_deref().filter(|_| self.filter_applied);
@@ -2989,7 +2998,7 @@ impl Disktree {
             let style = self.path_style();
             self.marks.refresh(
                 &self.root_path,
-                self.tree.as_ref().unwrap(),
+                self.tree.as_ref().unwrap().root(),
                 metric,
                 style,
             );
@@ -3278,7 +3287,8 @@ impl Disktree {
         self.finding = true;
         let base = self.crumbs.clone();
         let task = cx.background_executor().spawn(async move {
-            tree.resolve(&base)
+            tree.root()
+                .resolve(&base)
                 .and_then(|node| filter(node, &base, &needle))
         });
         cx.spawn(async move |this, cx| {
@@ -3330,7 +3340,7 @@ impl Disktree {
             .iter()
             .filter(|(_, keep)| **keep == Keep::Whole)
             .filter_map(|(crumbs, _)| {
-                let node = tree.as_deref()?.resolve(crumbs)?;
+                let node = tree.as_deref()?.root().resolve(crumbs)?;
                 Some((node.bytes, crumbs))
             })
             .max_by_key(|(bytes, _)| *bytes)

@@ -198,9 +198,9 @@ fn run() -> Result<()> {
                     "{}:{} — {} bytes, {} files, {} directories",
                     host,
                     snapshot.header.root.display(),
-                    snapshot.tree.bytes,
-                    snapshot.tree.files,
-                    snapshot.tree.dirs
+                    snapshot.tree.root().bytes,
+                    snapshot.tree.root().files,
+                    snapshot.tree.root().dirs
                 );
                 return Ok(());
             }

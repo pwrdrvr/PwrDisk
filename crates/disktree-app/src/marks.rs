@@ -11,7 +11,7 @@ use std::sync::{Arc, Weak};
 
 use disktree_core::path_style::PathStyle;
 use disktree_core::removal::Target;
-use disktree_core::tree::{Metric, Node, Tree};
+use disktree_core::tree::{Facts, Metric, Node, Tree};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 #[cfg(test)]
@@ -241,7 +241,7 @@ impl Marks {
     pub fn refresh(
         &mut self,
         root_path: &Path,
-        root: &Node,
+        root: Node<'_>,
         _metric: Metric,
         style: PathStyle,
     ) {
@@ -286,7 +286,7 @@ impl Marks {
         {
             return Arc::clone(&resolved.crumbs);
         }
-        let mut resolver = Resolver::new(root_path, tree, style);
+        let mut resolver = Resolver::new(root_path, tree.root(), style);
         let mut crumbs = FxHashSet::default();
         for item in &self.items {
             #[cfg(test)]
@@ -314,13 +314,15 @@ impl Marks {
 #[derive(Debug)]
 pub struct Resolver<'a> {
     root_path: &'a Path,
-    root: &'a Node,
+    root: Node<'a>,
     style: PathStyle,
-    indexes: FxHashMap<*const Node, FxHashMap<&'a str, usize>>,
+    /// Keyed by where a node's facts live, which is unique per node in
+    /// one tree: `Node` is a by-value cursor with no identity of its own.
+    indexes: FxHashMap<*const Facts, FxHashMap<&'a str, usize>>,
 }
 
 impl<'a> Resolver<'a> {
-    pub fn new(root_path: &'a Path, root: &'a Node, style: PathStyle) -> Self {
+    pub fn new(root_path: &'a Path, root: Node<'a>, style: PathStyle) -> Self {
         Self {
             root_path,
             root,
@@ -331,7 +333,7 @@ impl<'a> Resolver<'a> {
 
     /// Compare whole components with the scan's existing case-sensitive,
     /// lossy name semantics. The first equal child wins, as in a linear walk.
-    pub fn resolve(&mut self, path: &Path) -> Option<(Vec<usize>, &'a Node)> {
+    pub fn resolve(&mut self, path: &Path) -> Option<(Vec<usize>, Node<'a>)> {
         let relative = self.style.relative(self.root_path, path)?;
         let mut node = self.root;
         let mut crumbs = Vec::new();
@@ -340,19 +342,19 @@ impl<'a> Resolver<'a> {
             work::step();
             let children = self
                 .indexes
-                .entry(std::ptr::from_ref(node))
+                .entry(std::ptr::from_ref(node.facts()))
                 .or_insert_with(|| {
                     let mut children = FxHashMap::default();
-                    for (index, child) in node.children.iter().enumerate() {
+                    for (index, child) in node.children().iter().enumerate() {
                         #[cfg(test)]
                         work::step();
-                        children.entry(child.name.as_ref()).or_insert(index);
+                        children.entry(child.name()).or_insert(index);
                     }
                     children
                 });
             let index = *children.get(name.as_ref())?;
             crumbs.push(index);
-            node = &node.children[index];
+            node = node.children().at(index);
         }
         Some((crumbs, node))
     }
@@ -446,7 +448,7 @@ mod tests {
             for _ in 0..4 {
                 marks.refresh(
                     &root_path,
-                    &root,
+                    root.root(),
                     Metric::Bytes,
                     PathStyle::Native,
                 );
@@ -524,7 +526,7 @@ mod tests {
         let files =
             marks.crumbs(root_path, &root, Metric::Files, PathStyle::Native);
         assert!(!Arc::ptr_eq(&before, &files), "metric changes invalidate");
-        marks.refresh(root_path, &root, Metric::Files, PathStyle::Native);
+        marks.refresh(root_path, root.root(), Metric::Files, PathStyle::Native);
         let refreshed =
             marks.crumbs(root_path, &root, Metric::Files, PathStyle::Native);
         assert!(!Arc::ptr_eq(&files, &refreshed), "refresh invalidates");
@@ -546,7 +548,7 @@ mod tests {
 
         let old_tree = Arc::downgrade(&root);
         // A tree's child lists are fixed once built: reorder a copy's draft.
-        let mut replacement = root.to_draft();
+        let mut replacement = root.root().to_draft();
         replacement.children.reverse();
         root = Arc::new(Tree::from(replacement));
         assert!(old_tree.upgrade().is_none(), "old scan is released");
@@ -555,7 +557,7 @@ mod tests {
                 .crumbs(root_path, &root, Metric::Files, PathStyle::Native)
                 .contains(&vec![0])
         );
-        let mut emptied = root.to_draft();
+        let mut emptied = root.root().to_draft();
         emptied.children.clear();
         root = Arc::new(Tree::from(emptied));
         assert!(
@@ -573,11 +575,12 @@ mod tests {
         let mut root = {
             let mut tree = Tree::from(draft());
             aggregate(&mut tree, Metric::Bytes);
-            tree.to_draft()
+            tree.root().to_draft()
         };
         root.children.push(file("notes.bin", 200));
         let root = Tree::from(root);
-        let mut resolver = Resolver::new(root_path, &root, PathStyle::Native);
+        let mut resolver =
+            Resolver::new(root_path, root.root(), PathStyle::Native);
         let (crumbs, node) = resolver
             .resolve(&root_path.join("notes.bin"))
             .expect("file");
@@ -602,7 +605,8 @@ mod tests {
         let mut root = Draft::directory("root");
         root.children.push(file(&name.to_string_lossy(), 1));
         let root = Tree::from(root);
-        let mut resolver = Resolver::new(root_path, &root, PathStyle::Native);
+        let mut resolver =
+            Resolver::new(root_path, root.root(), PathStyle::Native);
         assert_eq!(
             resolver
                 .resolve(&root_path.join(name))
@@ -724,7 +728,7 @@ mod tests {
         assert!(!Arc::ptr_eq(&before, &after));
         assert_eq!(after.len(), 1);
         assert!(after.contains(&vec![0]));
-        marks.refresh(root_path, &root, Metric::Files, PathStyle::Native);
+        marks.refresh(root_path, root.root(), Metric::Files, PathStyle::Native);
         assert!(
             marks.contains(
                 Path::new("/home/tobi/gone/nested"),
@@ -807,7 +811,7 @@ mod tests {
 
         // Removal bytes stay measured bytes even when the treemap shows files.
         for metric in [Metric::Bytes, Metric::Files] {
-            marks.refresh(root_path, &root, metric, PathStyle::Native);
+            marks.refresh(root_path, root.root(), metric, PathStyle::Native);
             assert_eq!(marks.items()[0].bytes, 900);
             assert!(marks.items()[0].is_dir);
             assert!(marks.items()[0].hidden, "the .cache mark is hidden");
@@ -822,8 +826,11 @@ mod tests {
     #[test]
     fn find_matches_whole_components_only() {
         let root = tree();
-        let mut resolver =
-            Resolver::new(Path::new("/home/tobi"), &root, PathStyle::Native);
+        let mut resolver = Resolver::new(
+            Path::new("/home/tobi"),
+            root.root(),
+            PathStyle::Native,
+        );
         assert!(resolver.resolve(Path::new("/home/tobi/.cache")).is_some());
         assert!(
             resolver
@@ -832,9 +839,13 @@ mod tests {
         );
         assert!(resolver.resolve(Path::new("/home/tobi/cache")).is_none());
         assert!(
-            Resolver::new(Path::new("/elsewhere"), &root, PathStyle::Native)
-                .resolve(Path::new("/home/tobi/notes.bin"))
-                .is_none()
+            Resolver::new(
+                Path::new("/elsewhere"),
+                root.root(),
+                PathStyle::Native
+            )
+            .resolve(Path::new("/home/tobi/notes.bin"))
+            .is_none()
         );
     }
 
@@ -903,7 +914,7 @@ mod tests {
             for _ in 0..repeats {
                 marks.refresh(
                     &root_path,
-                    &root,
+                    root.root(),
                     Metric::Bytes,
                     PathStyle::Native,
                 );
@@ -946,12 +957,12 @@ mod tests {
         root.children.push(file(r"a\b", 7));
         let root = Tree::from(root);
         assert!(
-            Resolver::new(home, &root, posix)
+            Resolver::new(home, root.root(), posix)
                 .resolve(Path::new(r"/home/tobi/a\b"))
                 .is_some()
         );
         assert!(
-            Resolver::new(home, &root, posix)
+            Resolver::new(home, root.root(), posix)
                 .resolve(Path::new("/home/tobi/a/b"))
                 .is_none()
         );
@@ -1027,7 +1038,7 @@ mod tests {
         for path in [r"/srv/logs\old/a:b", "/srv/logs/old/a:b"] {
             marks.toggle(target(path, 0), style);
         }
-        marks.refresh(root_path, &root, Metric::Bytes, style);
+        marks.refresh(root_path, root.root(), Metric::Bytes, style);
         assert_eq!(
             marks
                 .items()
@@ -1039,7 +1050,7 @@ mod tests {
         let crumbs = marks.crumbs(root_path, &root, Metric::Bytes, style);
         assert_eq!(crumbs.len(), 2);
         for item in marks.items() {
-            let (path, node) = Resolver::new(root_path, &root, style)
+            let (path, node) = Resolver::new(root_path, root.root(), style)
                 .resolve(&item.path)
                 .unwrap();
             assert!(crumbs.contains(&path));

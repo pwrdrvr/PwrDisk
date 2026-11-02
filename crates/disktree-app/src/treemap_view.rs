@@ -79,8 +79,7 @@ pub fn preview(
     use disktree_core::tree::{Facts, NodeKind, Tree};
     use disktree_core::treemap::{LayoutOptions, layout};
     // These are display buckets, never exposed through state.tree/path_at.
-    let root = Tree::build(|herd| {
-        let member = herd.get();
+    let root = Tree::build(|builder| {
         let buckets = preview
             .entries
             .iter()
@@ -89,14 +88,14 @@ pub fn preview(
                     files: entry.files,
                     ..Facts::entry(NodeKind::File, entry.bytes)
                 };
-                member.leaf(entry.name.as_str(), facts, None)
+                builder.leaf(entry.name.as_str(), facts, None)
             })
             .collect();
-        member.directory("preview", Facts::directory(), None, buckets)
+        builder.directory("preview", Facts::directory(), None, buckets)
     });
     let area = app.treemap_size.get();
     let tiles = layout(
-        &root,
+        root.root(),
         &[],
         Rect::new(0., 0., area.width.as_f32(), area.height.as_f32()),
         app.options.metric,
@@ -108,7 +107,7 @@ pub fn preview(
     );
     let mut mosaic = Mosaic::default();
     for tile in tiles {
-        let Some(node) = root.resolve(tile.crumbs()) else {
+        let Some(node) = root.root().resolve(tile.crumbs()) else {
             continue;
         };
         let decoration = TileDeco {
@@ -125,7 +124,7 @@ pub fn preview(
             selected: false,
         };
         mosaic.labels.push(Label {
-            text: node.name.to_string(),
+            text: node.name().to_string(),
             rect: tile.rect,
             header: None,
             depth: 0,

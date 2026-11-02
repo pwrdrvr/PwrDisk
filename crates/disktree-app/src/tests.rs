@@ -930,7 +930,7 @@ fn the_first_scan_shows_what_it_is_doing_then_the_treemap(
             app.layout().map(<[Tile]>::len).unwrap_or_default(),
             app.selected.is_some(),
             app.tree().is_some_and(|tree| {
-                tree.children.iter().any(|c| c.name.starts_with('.'))
+                tree.children().iter().any(|c| c.name().starts_with('.'))
             }),
         )
     });
@@ -953,7 +953,7 @@ fn keys_walk_the_tree_and_mark_what_is_selected(cx: &mut TestAppContext) {
     let (selected, name) = read(&view, cx, |app| {
         (
             app.selected.clone(),
-            app.node_at(&[0]).map(|node| node.name.to_string()),
+            app.node_at(&[0]).map(|node| node.name().to_string()),
         )
     });
     assert_eq!(selected, Some(vec![0]));
@@ -996,9 +996,9 @@ fn a_permanent_deletion_asks_in_an_alert_dialog_then_removes(
         let junk = app
             .tree()
             .and_then(|tree| {
-                tree.children
+                tree.children()
                     .iter()
-                    .position(|child| &*child.name == "junk")
+                    .position(|child| child.name() == "junk")
                     .map(|index| vec![index])
             })
             .expect("the junk directory");
@@ -1238,7 +1238,7 @@ fn typing_filters_live_and_enter_shows_only_the_matches(
             tiles
                 .iter()
                 .filter_map(|tile| app.node_at(tile.crumbs()))
-                .map(|node| node.name.to_string())
+                .map(|node| node.name().to_string())
                 .collect::<Vec<_>>()
         })
     };
@@ -1252,9 +1252,9 @@ fn typing_filters_live_and_enter_shows_only_the_matches(
     let (count, applied, keep_filtered) = read(&view, cx, |app| {
         let matches = app.matches.as_deref().expect("matching as it is typed");
         let keep = app.tree().and_then(|tree| {
-            tree.children
+            tree.children()
                 .iter()
-                .position(|child| &*child.name == "keep")
+                .position(|child| child.name() == "keep")
         });
         (
             matches.count,
@@ -2810,9 +2810,9 @@ fn interface_zoom_scales_the_rem_and_the_header_band(cx: &mut TestAppContext) {
 fn child_crumbs(app: &Disktree, parent: &[usize], name: &str) -> Vec<usize> {
     let node = app.node_at(parent).expect("the parent");
     let index = node
-        .children
+        .children()
         .iter()
-        .position(|child| &*child.name == name)
+        .position(|child| child.name() == name)
         .unwrap_or_else(|| panic!("no {name}"));
     let mut crumbs = parent.to_vec();
     crumbs.push(index);
@@ -3151,7 +3151,7 @@ fn widening_reuses_the_tree_it_has_and_reads_only_the_rest(
             .selected
             .as_deref()
             .and_then(|crumbs| app.node_at(crumbs))
-            .map(|node| node.name.to_string());
+            .map(|node| node.name().to_string());
         (junk, tree.child_named("keep").is_some(), selected)
     });
     assert_eq!(reused, before, "junk was reused, not walked again");
@@ -3198,7 +3198,7 @@ fn a_crumb_lists_its_siblings_and_jumps_sideways(cx: &mut TestAppContext) {
     let junk = read(&view, cx, |app| {
         app.tree()
             .and_then(|tree| {
-                tree.children.iter().position(|c| &*c.name == "junk")
+                tree.children().iter().position(|c| c.name() == "junk")
             })
             .expect("junk")
     });
@@ -3249,7 +3249,7 @@ fn a_crumb_lists_its_siblings_and_jumps_sideways(cx: &mut TestAppContext) {
     let cache = read(&view, cx, |app| {
         app.tree()
             .and_then(|tree| {
-                tree.children.iter().position(|c| &*c.name == ".cache")
+                tree.children().iter().position(|c| c.name() == ".cache")
             })
             .expect(".cache")
     });
@@ -3518,14 +3518,21 @@ fn toggling_the_metric_reorders_without_copying_the_tree(
     let (view, cx) = view_over(root, cx);
     draw(cx);
     let first = |app: &Disktree| {
-        app.tree.as_ref().expect("tree").children[0]
-            .name
+        app.tree
+            .as_ref()
+            .expect("tree")
+            .root()
+            .children()
+            .at(0)
+            .name()
             .to_string()
     };
 
     let (tree, children) = read(&view, cx, |app| {
         let tree = app.tree.as_ref().expect("tree");
-        (std::sync::Arc::as_ptr(tree), tree.children.as_ptr())
+        // Where the root's children start: an in-place reorder keeps it.
+        let children = tree.root().children().at(0).facts();
+        (std::sync::Arc::as_ptr(tree), std::ptr::from_ref(children))
     });
     assert_eq!(read(&view, cx, first), "big");
     update(&view, cx, Disktree::toggle_metric);
@@ -3533,7 +3540,9 @@ fn toggling_the_metric_reorders_without_copying_the_tree(
     assert_eq!(read(&view, cx, first), "many", "most files first");
     let (after, children_after) = read(&view, cx, |app| {
         let tree = app.tree.as_ref().expect("tree");
-        (std::sync::Arc::as_ptr(tree), tree.children.as_ptr())
+        // Where the root's children start: an in-place reorder keeps it.
+        let children = tree.root().children().at(0).facts();
+        (std::sync::Arc::as_ptr(tree), std::ptr::from_ref(children))
     });
     assert_eq!(children_after, children, "the nodes were not copied");
     assert_ne!(after, tree, "but the tree is a new one");
@@ -3542,7 +3551,11 @@ fn toggling_the_metric_reorders_without_copying_the_tree(
     update(&view, cx, Disktree::toggle_metric);
     draw(cx);
     assert_eq!(read(&view, cx, first), "big");
-    assert_eq!(&*held.children[0].name, "many", "a reader keeps its order");
+    assert_eq!(
+        held.root().children().at(0).name(),
+        "many",
+        "a reader keeps its order"
+    );
 }
 
 /// Escape stops a first scan. What the walk found so far is not shown as a
@@ -3772,9 +3785,9 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         assert!(copies.private <= 8 * 1024, "{copies:?}");
         assert!(copies.shared >= 8 * 1024 * 1024 - 64 * 1024, "{copies:?}");
         let node = tree
-            .children
+            .children()
             .iter()
-            .find(|node| node.name.as_ref() == "copies")
+            .find(|node| node.name() == "copies")
             .expect("copies");
         let split = crate::views::clone_split(node).expect("a split");
         assert!(split.contains("shared with other APFS clones"), "{split}");
@@ -3787,9 +3800,9 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         let index = app
             .tree()
             .expect("tree")
-            .children
+            .children()
             .iter()
-            .position(|node| node.name.as_ref() == "copies")
+            .position(|node| node.name() == "copies")
             .expect("copies");
         app.toggle_mark(&[index], cx);
         app.screen = Screen::Review;
@@ -3834,9 +3847,9 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         let index = app
             .tree()
             .expect("tree")
-            .children
+            .children()
             .iter()
-            .position(|node| node.name.as_ref() == "original")
+            .position(|node| node.name() == "original")
             .expect("original");
         app.toggle_mark(&[index], cx);
         let plan = app.plan();
@@ -3872,7 +3885,7 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
     update(&view, cx, |app, _| {
         app.marks.refresh(
             &root,
-            &refreshed,
+            refreshed.root(),
             disktree_core::tree::Metric::Bytes,
             app.path_style(),
         );
@@ -4150,7 +4163,7 @@ fn marked_tiles_follow_metric_rescan_and_mark_changes(cx: &mut TestAppContext) {
     );
     update(&view, window, |app, cx| {
         // Child lists are fixed once built: reorder through a draft.
-        let mut tree = app.tree.as_ref().expect("tree").to_draft();
+        let mut tree = app.tree.as_ref().expect("tree").root().to_draft();
         tree.children.reverse();
         app.tree = Some(Arc::new(disktree_core::tree::Tree::from(tree)));
         cx.notify();
@@ -4511,7 +4524,7 @@ fn folder_queue_construction_budget(cx: &mut TestAppContext) {
             let metric = app.options.metric;
             // Child lists are fixed once built: turn each file into a
             // folder through a draft, then build the tree again.
-            let mut draft = app.tree.as_ref().expect("tree").to_draft();
+            let mut draft = app.tree.as_ref().expect("tree").root().to_draft();
             for child in &mut draft.children[0].children {
                 child.kind = NodeKind::Directory;
                 child
@@ -5931,7 +5944,7 @@ fn a_large_directory_keeps_zero_weight_files_reachable_in_bounded_pages(
     assert!(cx.debug_bounds("file-row-49999").is_some());
     assert!(cx.debug_bounds("file-row-49899").is_none());
     read(&view, cx, |app| {
-        assert_eq!(app.current().unwrap().children.len(), 50_000);
+        assert_eq!(app.current().unwrap().children().len(), 50_000);
         assert_eq!(app.selected.as_deref(), Some([49_999].as_slice()));
         assert!(app.marks.is_empty());
     });
