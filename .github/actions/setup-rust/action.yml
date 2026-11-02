@@ -27,8 +27,8 @@ runs:
   steps:
     # Pinned to rust-toolchain.toml's version: the lint gate denies
     # clippy::all and ::pedantic, and a newer clippy's new lints are a
-    # change to make on purpose, not by surprise. Empty components and
-    # targets install none beyond the default profile.
+    # change to make on purpose, not by surprise. dtolnay installs the
+    # minimal profile, so a job that runs clippy or rustfmt asks for them.
     - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
       with:
         toolchain: "1.97"

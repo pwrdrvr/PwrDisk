@@ -164,7 +164,8 @@ test('license inputs and gate changes select the notice check, including renames
     'xtask/Cargo.toml', 'licenses/about.toml', 'licenses/about.hbs',
     'licenses/bundled.txt', 'licenses/velopack.txt', 'licenses/nested/NOTES.md',
     'THIRD_PARTY_LICENSES', '.github/workflows/ci.yml',
-    '.github/actions/setup-rust/action.yml', 'xtask/src/licenses.rs',
+    '.github/actions/setup-rust/action.yml',
+    '.github/actions/setup-rust/prune.sh', 'xtask/src/licenses.rs',
   ]) {
     for (const status of ['modified', 'added', 'removed']) {
       assert.equal((await run({ files: [{ filename: path, status }] }))

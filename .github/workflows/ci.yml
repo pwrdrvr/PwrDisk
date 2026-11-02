@@ -120,7 +120,7 @@ jobs:
               path === "THIRD_PARTY_LICENSES" ||
               // Exercise changes to the gate and generator themselves.
               path === ".github/workflows/ci.yml" ||
-              path === ".github/actions/setup-rust/action.yml" ||
+              path.startsWith(".github/actions/setup-rust/") ||
               path === "xtask/src/licenses.rs";
             const licensesImpacting = files.some((file) =>
               [file.filename, file.previous_filename].filter(Boolean)
