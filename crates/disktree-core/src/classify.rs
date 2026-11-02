@@ -927,6 +927,51 @@ mod tests {
         }
     }
 
+    /// What lies directly in the root is judged by its own evidence only:
+    /// its name, or its shape for a store, never its parent's kind.
+    #[test]
+    fn the_roots_children_take_only_their_own_evidence() {
+        let root = dir(
+            "volume",
+            vec![
+                file("tmp", 1),
+                file("README", 1),
+                dir(
+                    "bare",
+                    vec![
+                        dir("objects", vec![]),
+                        dir("refs", vec![]),
+                        file("HEAD", 1),
+                    ],
+                ),
+                dir("store", vec![dir("v3", vec![dir("files", vec![])])]),
+                dir("Caches", vec![file("blob", 1)]),
+                dir("plain", vec![file("tmp", 1)]),
+            ],
+        );
+        let mut root = Tree::from(root);
+        classify(&mut root);
+        let kind = |path: &[&str]| {
+            let node = named(root.root(), path);
+            (node.category, node.reclaim)
+        };
+        // A file directly in the root takes a kind from its name, but
+        // never a reclaim reason; deeper, a file only inherits.
+        assert_eq!(kind(&["tmp"]), (Category::Cache, None));
+        assert_eq!(kind(&["README"]), (Category::Other, None));
+        assert_eq!(kind(&["plain", "tmp"]), (Category::Other, None));
+        assert_eq!(kind(&["bare"]), (Category::Git, None));
+        assert_eq!(kind(&["bare", "HEAD"]), (Category::Git, None));
+        assert_eq!(
+            kind(&["store"]),
+            (Category::Other, Some(Reclaim::PackageStore))
+        );
+        assert_eq!(
+            kind(&["Caches", "blob"]),
+            (Category::Cache, Some(Reclaim::Regenerable))
+        );
+    }
+
     #[test]
     fn the_legend_lists_every_named_category_once() {
         let mut seen = std::collections::HashSet::new();
