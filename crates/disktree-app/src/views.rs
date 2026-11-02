@@ -1875,13 +1875,6 @@ fn trail_and_legend(
     row.child(div().flex_1()).child(legend(app, theme, cx))
 }
 
-/// How much more readily the legend gives up width than the find field.
-/// Flex shrinking is proportional, so with equal weights the field lost
-/// width while the legend was still drawn and its no-wrap hint spilled
-/// over "Reclaimable". A weight this lopsided makes the legend clip away
-/// first; only once it is gone does the field narrow, clipping its hint.
-const LEGEND_YIELDS: f32 = 1000.;
-
 /// What the whole scan found, as one quiet line; unreadable paths are
 /// flagged in the warning colour when there are any.
 fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
@@ -1930,6 +1923,13 @@ fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
             )))
         })
 }
+
+/// How much more readily the legend gives up width than the find field.
+/// Flex shrinking is proportional, so with equal weights the field lost
+/// width while the legend was still drawn and its no-wrap hint spilled
+/// over "Reclaimable". A weight this lopsided makes the legend clip away
+/// first; only once it is gone does the field narrow, clipping its hint.
+const LEGEND_YIELDS: f32 = 1000.;
 
 /// The key to the colours: the categories, or the age ramp in age mode.
 /// Clipped from the trailing end when the row runs out of room.
@@ -3501,8 +3501,9 @@ fn find_field(app: &Disktree, theme: &Theme) -> Div {
         .px(space::SM)
         .py(space::XS)
         .debug_selector(|| "find-field".into())
-        // Shrinks only after the legend has gone, and then clips its own
-        // content rather than drawing past its border.
+        // Gives up width only once the legend has (see `LEGEND_YIELDS`),
+        // and then clips its own content rather than drawing past its
+        // border.
         .min_w_0()
         .overflow_hidden()
         .border_1()
