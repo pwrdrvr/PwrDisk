@@ -130,16 +130,28 @@ impl Disktree {
         // The worker presets open in ⋮'s place; ⋮ then closes them.
         let was_open = self.more_menu.is_some() || self.power_menu.is_some();
         self.power_menu = None;
-        self.more_menu = if was_open || !self.bar_fit_has_more() {
+        self.more_menu = if was_open {
             None
         } else {
-            Some(0)
+            self.next_enabled_more(&self.bar_fit.more_items(), None, true)
         };
         cx.notify();
     }
 
-    fn bar_fit_has_more(&self) -> bool {
-        !self.bar_fit.more_items().is_empty()
+    /// The next row after `from` (or the first, from `None`) that can act,
+    /// so the highlight never rests on a disabled Back or Forward.
+    fn next_enabled_more(
+        &self,
+        items: &[MoreItem],
+        from: Option<usize>,
+        forward: bool,
+    ) -> Option<usize> {
+        let enabled = |&index: &usize| self.more_item_enabled(items[index]);
+        match (from, forward) {
+            (None, _) => (0..items.len()).find(enabled),
+            (Some(at), true) => (at + 1..items.len()).find(enabled),
+            (Some(at), false) => (0..at).rev().find(enabled),
+        }
     }
 
     /// Whether a ⋮ row can act now. History rows wait for somewhere to go.
@@ -168,14 +180,8 @@ impl Disktree {
             MoreItem::Back => self.go_back(cx),
             MoreItem::Forward => self.go_forward(cx),
             MoreItem::Depth => {}
-            MoreItem::Hidden => {
-                self.options.include_hidden = !self.options.include_hidden;
-                self.start_scan(cx);
-            }
-            MoreItem::Apparent => {
-                self.options.apparent_size = !self.options.apparent_size;
-                self.start_scan(cx);
-            }
+            MoreItem::Hidden => self.toggle_hidden(cx),
+            MoreItem::Apparent => self.toggle_apparent(cx),
             MoreItem::Workers => self.toggle_power_menu(cx),
         }
         cx.notify();
@@ -196,12 +202,21 @@ impl Disktree {
             self.more_menu = None;
             return false;
         };
-        let last = items.len() - 1;
+        let step = |forward: bool| {
+            self.next_enabled_more(&items, Some(highlighted), forward)
+                .unwrap_or(highlighted)
+        };
         match key {
-            "down" | "j" => self.more_menu = Some((highlighted + 1).min(last)),
-            "up" | "k" => self.more_menu = Some(highlighted.saturating_sub(1)),
-            "home" => self.more_menu = Some(0),
-            "end" => self.more_menu = Some(last),
+            "down" | "j" => self.more_menu = Some(step(true)),
+            "up" | "k" => self.more_menu = Some(step(false)),
+            "home" => {
+                self.more_menu = self.next_enabled_more(&items, None, true);
+            }
+            "end" => {
+                self.more_menu = (0..items.len())
+                    .rev()
+                    .find(|&index| self.more_item_enabled(items[index]));
+            }
             "left" | "h" | "-" if item == MoreItem::Depth => {
                 self.adjust_depth(-1, cx);
             }

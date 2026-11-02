@@ -462,8 +462,8 @@ pub fn treemap_glyph(color: Hsla) -> Div {
         .flex_row()
         .gap(space::XXS)
         .w(crate::ui::icon::SM)
-        .h(GLYPH_HEIGHT)
-        .child(tile().w(GLYPH_TALL_TILE).h_full())
+        .h(crate::ui::size::VIEW_GLYPH_HEIGHT)
+        .child(tile().w(crate::ui::size::VIEW_GLYPH_TILE).h_full())
         .child(
             div()
                 .flex()
@@ -484,18 +484,11 @@ pub fn list_glyph(color: Hsla) -> Div {
         .flex_col()
         .justify_between()
         .w(crate::ui::icon::SM)
-        .h(GLYPH_HEIGHT)
+        .h(crate::ui::size::VIEW_GLYPH_HEIGHT)
         .child(row())
         .child(row())
         .child(row())
 }
-
-/// Both view glyphs are a little shorter than wide, like a text line's
-/// x-height plus ascender, so they sit on the label's centre line.
-const GLYPH_HEIGHT: gpui_kit::Rems = gpui_kit::Rems(0.625);
-/// The treemap glyph's tall tile: just over half the width, as the
-/// largest tile in a squarified layout tends to be.
-const GLYPH_TALL_TILE: gpui_kit::Rems = gpui_kit::Rems(0.375);
 
 /// One bar per Power Efficiency preset.
 const SIGNAL_STEPS: usize = crate::power::PowerEfficiency::ALL.len();

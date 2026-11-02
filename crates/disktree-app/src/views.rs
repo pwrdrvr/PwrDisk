@@ -112,8 +112,16 @@ pub fn root(
     // What ⋮ held at the old width is not what it holds at the new one.
     if fit != app.bar_fit {
         app.more_menu = None;
+        // ⋮ may vanish under the pointer, which then never reports leaving.
+        app.more_hover = false;
     }
     app.bar_fit = fit;
+    // A dialog owns the keys; a menu left open behind it would take them
+    // first (see `dispatch_key`).
+    if app.has_modal() {
+        app.more_menu = None;
+        app.power_menu = None;
+    }
     let theme = cx.omarchy().clone();
     let readable_status = app.accessibility_status();
     let strip = title_strip(app, frame, window, cx);
@@ -201,12 +209,12 @@ pub fn root(
         ))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ShowTreemap, window, cx| {
-                show_file_list(this, false, window, cx);
+                choose_view(this, false, window, cx);
             },
         ))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ShowFileList, window, cx| {
-                show_file_list(this, true, window, cx);
+                choose_view(this, true, window, cx);
             },
         ))
         .on_action(cx.listener(
@@ -1445,7 +1453,10 @@ fn view_settings(
     let focus = app.focus.clone();
     let entity = cx.entity().downgrade();
 
-    let mode = {
+    // What does not fit goes in ⋮, least used first; the view switch
+    // never does. See `toolbar::BarFit`. Folded controls are not built.
+    let fit = app.bar_fit;
+    let mode = fit.shows_mode().then(|| {
         let entity = entity.clone();
         let focus = focus.clone();
         button_group(
@@ -1468,7 +1479,7 @@ fn view_settings(
         // Tighter than a standalone group, so the segmented control shares
         // the checkboxes' height and centre line.
         .p(space::XXS)
-    };
+    });
 
     let check = |on: bool| {
         if on {
@@ -1477,7 +1488,7 @@ fn view_settings(
             CheckboxState::Unchecked
         }
     };
-    let hidden = {
+    let hidden = fit.shows_scan_options().then(|| {
         let entity = entity.clone();
         let focus = focus.clone();
         checkbox(
@@ -1492,14 +1503,13 @@ fn view_settings(
         .self_center()
         .tab_stop(true)
         .on_change(move |_, _, window, cx| {
-            let _ = entity.update(cx, |this, cx| {
-                this.options.include_hidden = !this.options.include_hidden;
-                this.start_scan(cx);
-            });
+            let _ = entity.update(cx, Disktree::toggle_hidden);
             window.focus(&focus, cx);
         })
-    };
-    let apparent = {
+    });
+    let apparent = fit.shows_scan_options().then(|| {
+        let entity = entity.clone();
+        let focus = focus.clone();
         checkbox(
             "apparent",
             "Apparent size",
@@ -1509,13 +1519,10 @@ fn view_settings(
         .self_center()
         .tab_stop(true)
         .on_change(move |_, _, window, cx| {
-            let _ = entity.update(cx, |this, cx| {
-                this.options.apparent_size = !this.options.apparent_size;
-                this.start_scan(cx);
-            });
+            let _ = entity.update(cx, Disktree::toggle_apparent);
             window.focus(&focus, cx);
         })
-    };
+    });
 
     let theme = cx.omarchy().clone();
     // Back and forward through the directories visited, beside the choices
@@ -1576,26 +1583,28 @@ fn view_settings(
                 )
             })
     };
-    let history = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .child(travel(
-            "history-back",
-            "<",
-            app.can_go_back(),
-            true,
-            Disktree::go_back,
-            cx,
-        ))
-        .child(travel(
-            "history-forward",
-            ">",
-            app.can_go_forward(),
-            false,
-            Disktree::go_forward,
-            cx,
-        ));
+    let history = fit.shows_history_and_depth().then(|| {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(travel(
+                "history-back",
+                "<",
+                app.can_go_back(),
+                true,
+                Disktree::go_back,
+                cx,
+            ))
+            .child(travel(
+                "history-forward",
+                ">",
+                app.can_go_forward(),
+                false,
+                Disktree::go_forward,
+                cx,
+            ))
+    });
 
     let depth = app.layout_options.max_depth;
     let stepper = |id: &'static str,
@@ -1618,29 +1627,28 @@ fn view_settings(
                 window.focus(&this.focus, cx);
             }))
     };
-    let depth_control = with_tooltip(
-        div()
-            .id("depth")
-            .flex()
-            .flex_row()
-            .items_center()
-            .border_1()
-            .border_color(theme.control_border())
-            .child(
-                div()
-                    .px(space::SM)
-                    .text_size(text::BODY)
-                    .text_color(theme.foreground)
-                    .child(format!("Depth {depth}")),
-            )
-            .child(stepper("depth-less", "\u{2212}", -1, cx))
-            .child(stepper("depth-more", "+", 1, cx)),
-        "Levels drawn at once \u{00b7} [ and ]",
-    );
+    let depth_control = fit.shows_history_and_depth().then(|| {
+        with_tooltip(
+            div()
+                .id("depth")
+                .flex()
+                .flex_row()
+                .items_center()
+                .border_1()
+                .border_color(theme.control_border())
+                .child(
+                    div()
+                        .px(space::SM)
+                        .text_size(text::BODY)
+                        .text_color(theme.foreground)
+                        .child(format!("Depth {depth}")),
+                )
+                .child(stepper("depth-less", "\u{2212}", -1, cx))
+                .child(stepper("depth-more", "+", 1, cx)),
+            "Levels drawn at once \u{00b7} [ and ]",
+        )
+    });
 
-    // What does not fit goes in ⋮, least used first; the view switch
-    // never does. See `toolbar::BarFit`.
-    let fit = app.bar_fit;
     let rems = window.viewport_size().width.as_f32() / app.rem;
     let switch =
         view_switch(app, crate::toolbar::BarFit::labelled_switch(rems), cx);
@@ -1650,15 +1658,12 @@ fn view_settings(
         .items_center()
         .gap(space::SM)
         .flex_shrink_0()
-        .when(fit.shows_history_and_depth(), |row| row.child(history))
+        .children(history)
         .child(switch)
-        .when(fit.shows_mode(), |row| row.child(mode))
-        .when(fit.shows_scan_options(), |row| {
-            row.child(hidden).child(apparent)
-        })
-        .when(fit.shows_history_and_depth(), |row| {
-            row.child(depth_control)
-        })
+        .children(mode)
+        .children(hidden)
+        .children(apparent)
+        .children(depth_control)
         .map(|row| {
             if fit.shows_scan_options() {
                 row.child(power_efficiency(app, cx))
@@ -1668,9 +1673,10 @@ fn view_settings(
         })
 }
 
-/// Treemap or file list, from the menu bar or the view switch. The list
-/// takes the keyboard when it appears, so a screen reader lands in it.
-fn show_file_list(
+/// Treemap or file list, from the menu bar or the view switch. A drawn
+/// list takes the keyboard, so a screen reader lands in it; until a scan
+/// finishes there is no list yet, and the root keeps it.
+fn choose_view(
     app: &mut Disktree,
     on: bool,
     window: &mut Window,
@@ -1680,7 +1686,8 @@ fn show_file_list(
         return;
     }
     app.show_file_list(on, cx);
-    window.focus(if on { &app.file_focus } else { &app.focus }, cx);
+    let list = on && app.tree().is_some();
+    window.focus(if list { &app.file_focus } else { &app.focus }, cx);
 }
 
 /// Treemap | List: how the directory on screen is drawn. It is a radio
@@ -1699,7 +1706,7 @@ fn view_switch(
     let shortcut = if cfg!(target_os = "macos") {
         "\u{2318}"
     } else {
-        "Ctrl+"
+        "ctrl-"
     };
     let option = |list: bool| {
         let checked = app.file_list == list;
@@ -1760,7 +1767,7 @@ fn view_switch(
             .when(labelled, |this| this.child(word))
             .on_change(move |_, _, window, cx| {
                 let _ = entity.update(cx, |this, cx| {
-                    show_file_list(this, list, window, cx);
+                    choose_view(this, list, window, cx);
                 });
             })
             // The arrows choose, as in any radio group. Focus moves into
@@ -1773,7 +1780,7 @@ fn view_switch(
                 };
                 cx.stop_propagation();
                 let _ = keys.update(cx, |this, cx| {
-                    show_file_list(this, to, window, cx);
+                    choose_view(this, to, window, cx);
                 });
             });
         with_tooltip(

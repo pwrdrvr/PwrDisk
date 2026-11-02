@@ -7393,9 +7393,12 @@ fn more_steps_depth_in_place_when_the_stepper_folds(cx: &mut TestAppContext) {
     press(cx, "ctrl-=");
     let depth = read(&view, cx, |app| app.layout_options.max_depth);
     click_on(cx, "more-toggle");
-    // Back, Forward, Depth: the row stays open while the arrows step it.
-    press(cx, "down");
-    press(cx, "down");
+    // Nowhere to go back or forward yet, so ⋮ opens on Depth, past the
+    // disabled history rows; the up arrow does not land on them either.
+    assert_eq!(read(&view, cx, |app| app.more_menu), Some(2));
+    press(cx, "up");
+    assert_eq!(read(&view, cx, |app| app.more_menu), Some(2));
+    // The row stays open while the arrows step it.
     press(cx, "left");
     assert_eq!(
         read(&view, cx, |app| app.layout_options.max_depth),

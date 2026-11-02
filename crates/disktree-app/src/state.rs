@@ -1500,6 +1500,19 @@ impl Disktree {
         true
     }
 
+    /// `i`, the Hidden files checkbox and its ⋮ row: rescan with or without
+    /// hidden entries.
+    pub fn toggle_hidden(&mut self, cx: &mut Context<'_, Self>) {
+        self.options.include_hidden = !self.options.include_hidden;
+        self.start_scan(cx);
+    }
+
+    /// `d`, the Apparent size checkbox and its ⋮ row.
+    pub fn toggle_apparent(&mut self, cx: &mut Context<'_, Self>) {
+        self.options.apparent_size = !self.options.apparent_size;
+        self.start_scan(cx);
+    }
+
     /// Start a fresh scan, abandoning any walk still in progress.
     pub fn start_scan(&mut self, cx: &mut Context<'_, Self>) {
         self.accessible_progress = None;
@@ -3869,14 +3882,8 @@ impl Disktree {
             "r" if !control => self.start_scan(cx),
             "g" if !control => self.go_to_disk(cx),
             "v" if !control && !shift => self.open_volumes(cx),
-            "i" if !control => {
-                self.options.include_hidden = !self.options.include_hidden;
-                self.start_scan(cx);
-            }
-            "d" if !control => {
-                self.options.apparent_size = !self.options.apparent_size;
-                self.start_scan(cx);
-            }
+            "i" if !control => self.toggle_hidden(cx),
+            "d" if !control => self.toggle_apparent(cx),
             "p" if !control => {
                 self.show_selection = !self.show_selection;
                 cx.notify();
