@@ -1120,6 +1120,7 @@ impl LogsWindow {
     ) -> impl IntoElement {
         let search = gpui_omarchy::input(SEARCH_ID, &self.search, window, cx)
             .aria_label("Search log text").aria_description("Enter moves to the next match; Shift Enter to the previous match. Tab moves to log controls. Escape clears the query.")
+            .aria_value(self.search.read(cx).value())
             .debug_selector(|| SEARCH_ID.into())
             .prefix(
                 icon(IconName::Search)
@@ -1243,6 +1244,7 @@ impl LogsWindow {
         let show_context =
             self.view.mode == SearchMode::Filter && self.view.searching();
         div()
+            .debug_selector(|| "logs-toolbar".into())
             .flex()
             .flex_row()
             .flex_wrap()
@@ -1252,8 +1254,10 @@ impl LogsWindow {
             .py(space::SM)
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
+                    // A zero flex basis lets the other controls consume the
+                    // row and squeeze the input to its search icon at 200%.
+                    .flex_grow(1.)
+                    .min_w(size::LOG_FILTER)
                     .w(size::LOG_FILTER)
                     .max_w_full()
                     .child(search),
@@ -1475,6 +1479,7 @@ impl LogsWindow {
             .child(
                 div()
                     .id("logs-viewport")
+                    .debug_selector(|| "logs-viewport".into())
                     .role(gpui_kit::Role::ListBox)
                     .aria_label(format!(
                         "{}; {}; {}",
@@ -1984,8 +1989,18 @@ impl LogsWindow {
                 .debug_selector(|| "logs-count".into())
                 .child(summary),
             )
-            .children(place)
-            .child(div().flex_1())
+            // The path fills the middle; without it a spacer keeps the note
+            // and the search hint at the right edge.
+            .map(|bar| match place {
+                Some(place) => bar.child(
+                    crate::semantics::text("logs-path", place.clone())
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(place),
+                ),
+                None => bar.child(div().flex_1()),
+            })
             .when_some(self.note.as_ref(), |bar, (note, _)| {
                 bar.child(
                     div()

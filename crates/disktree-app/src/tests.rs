@@ -6916,15 +6916,27 @@ fn logs_wrap_at_minimum_size_and_double_scale(cx: &mut TestAppContext) {
         "invented 日本語 ".repeat(50)
     );
     let (_dir, _path, view, cx) = logs_over(cx, &text);
-    cx.simulate_resize(gpui_kit::size(px(640.), px(480.)));
     cx.update(|window, _| window.set_rem_size(px(32.)));
-    draw(cx);
-    let search = cx
-        .debug_bounds(crate::logs_window::SEARCH_ID)
-        .expect("named search");
-    assert!(search.right() <= px(640.), "{search:?}");
-    let row = cx.debug_bounds("log-row-1").expect("wrapped line");
-    assert!(row.right() <= px(640.), "{row:?}");
+    for width in [640., 880., 1120.] {
+        cx.simulate_resize(gpui_kit::size(px(width), px(480.)));
+        draw(cx);
+        let search = cx
+            .debug_bounds(crate::logs_window::SEARCH_ID)
+            .expect("named search");
+        assert!(search.right() <= px(width), "{search:?}");
+        assert!(
+            search.size.width >= px(400.),
+            "search retains room for input and match controls: {search:?}"
+        );
+        let row = cx.debug_bounds("log-row-1").unwrap_or_else(|| {
+            panic!(
+                "wrapped line at {width}: toolbar={:?}, viewport={:?}",
+                cx.debug_bounds("logs-toolbar"),
+                cx.debug_bounds("logs-viewport")
+            )
+        });
+        assert!(row.right() <= px(width), "{row:?}");
+    }
     assert!(view.read_with(cx, |view, _| view.wrap));
 }
 

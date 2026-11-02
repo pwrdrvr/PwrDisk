@@ -167,12 +167,12 @@ pub fn list(
         .flex().flex_col().flex_1().min_h_0().track_scroll(&app.file_scroll).overflow_y_scroll();
     if count == 0 {
         rows = rows.child(
-            div()
-                .id("empty")
-                .role(Role::Label)
-                .aria_label("No entries in this directory or filter")
-                .p(space::LG)
-                .child("No entries in this directory or filter"),
+            crate::semantics::text(
+                "empty",
+                "No entries in this directory or filter",
+            )
+            .p(space::LG)
+            .child("No entries in this directory or filter"),
         );
     }
     for position in start..end {
@@ -265,10 +265,7 @@ pub fn list(
         .min_w_0()
         .min_h_0()
         .child(
-            div()
-                .id("file-summary")
-                .role(Role::Label)
-                .aria_label(summary.clone())
+            crate::semantics::text("file-summary", summary.clone())
                 .text_size(text::CAPTION)
                 .p(space::SM)
                 .when(compact, |header| {
