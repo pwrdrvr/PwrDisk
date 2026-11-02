@@ -3,9 +3,9 @@
 //!
 //! Scans PATH, then reports the process's physical footprint (resident
 //! plus compressed, what Activity Monitor calls Memory) after the scan and
-//! at its highest so far, the time to copy and re-rank the tree as the
-//! size/files toggle does, and the time and page faults of dropping each
-//! copy. Run it in a fresh process each time: a drop's cost depends on
+//! at its highest so far; the time to copy the tree, to re-rank it as the
+//! size/files toggle does, to derive its totals again and to classify it;
+//! and the time and page faults of dropping each copy. Run it in a fresh process each time: a drop's cost depends on
 //! what the allocator and the compressor hold.
 
 #![allow(
@@ -20,7 +20,7 @@ fn main() -> std::io::Result<()> {
     use std::time::Instant;
 
     use disktree_core::scan::{ScanOptions, scan};
-    use disktree_core::tree::{Metric, aggregate};
+    use disktree_core::tree::{Metric, aggregate, reorder};
 
     let root = std::env::args_os()
         .nth(1)
@@ -49,6 +49,9 @@ fn main() -> std::io::Result<()> {
     let mut copy = tree.clone();
     let cloned = started.elapsed().as_secs_f64();
     let started = Instant::now();
+    reorder(&mut copy, Metric::Files);
+    let reordered = started.elapsed().as_secs_f64();
+    let started = Instant::now();
     aggregate(&mut copy, Metric::Files);
     let aggregated = started.elapsed().as_secs_f64();
     let started = Instant::now();
@@ -56,7 +59,7 @@ fn main() -> std::io::Result<()> {
     let classified = started.elapsed().as_secs_f64();
     let (now, peak) = footprint_mib();
     println!(
-        "toggle: copy={cloned:.2}s aggregate={aggregated:.2}s \
+        "copy={cloned:.2}s reorder={reordered:.2}s aggregate={aggregated:.2}s \
          classify={classified:.2}s footprint+={:.0}MiB peak+={:.0}MiB",
         now - before,
         peak - before,
@@ -91,9 +94,16 @@ fn footprint_mib() -> (f64, f64) {
     let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
     let pid = i32::try_from(std::process::id()).expect("a pid fits");
     // SAFETY: as above.
-    unsafe {
+    let status = unsafe {
         libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V4, (&raw mut info).cast())
     };
+    // A zeroed struct would read as a footprint of nothing.
+    assert_eq!(
+        status,
+        0,
+        "proc_pid_rusage: {}",
+        std::io::Error::last_os_error()
+    );
     (
         info.ri_phys_footprint as f64 / MIB,
         info.ri_lifetime_max_phys_footprint as f64 / MIB,
