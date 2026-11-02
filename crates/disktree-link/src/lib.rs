@@ -321,7 +321,7 @@ impl Clones {
         })
     }
 
-    pub fn of(node: &Node) -> Option<Self> {
+    pub fn of(node: Node<'_>) -> Option<Self> {
         let sharing = node.sharing();
         // Only clone files carry these facts: off macOS, in an apparent
         // size scan or with clone metadata off there are none, and the
@@ -344,9 +344,9 @@ impl Clones {
 }
 
 impl Entry {
-    pub fn of(node: &Node) -> Self {
+    pub fn of(node: Node<'_>) -> Self {
         Self {
-            name: node.name.to_string(),
+            name: node.name().to_string(),
             is_dir: node.is_dir(),
             bytes: node.bytes,
             files: node.files,
@@ -382,14 +382,14 @@ impl Listing {
         root: &Path,
         root_bytes: u64,
         path: &Path,
-        node: &Node,
+        node: Node<'_>,
         limit: usize,
     ) -> Self {
         let children: Vec<Entry> =
-            node.children.iter().take(limit).map(Entry::of).collect();
-        let more = node.children.len().saturating_sub(limit);
+            node.children().iter().take(limit).map(Entry::of).collect();
+        let more = node.children().len().saturating_sub(limit);
         let more_bytes = node
-            .children
+            .children()
             .iter()
             .skip(limit)
             .map(|child| child.bytes)
@@ -429,7 +429,7 @@ impl FoundList {
                 .iter()
                 .map(|(path, node)| Found {
                     path: path.clone(),
-                    entry: Entry::of(node),
+                    entry: Entry::of(*node),
                 })
                 .collect(),
             count: found.count,
@@ -512,7 +512,7 @@ impl SelectionEstimate {
     #[must_use]
     pub fn with_shared<'a>(
         mut self,
-        nodes: impl IntoIterator<Item = &'a Node>,
+        nodes: impl IntoIterator<Item = Node<'a>>,
     ) -> Self {
         self.shared = nodes
             .into_iter()
@@ -710,7 +710,7 @@ mod tests {
     #[test]
     fn a_full_clone_is_all_shared_and_frees_nothing_alone() {
         let root = clones(3, 3, Some(0));
-        let copy = Clones::of(&root.children[0]).expect("a clone");
+        let copy = Clones::of(root.root().children().at(0)).expect("a clone");
         assert_eq!(
             copy,
             Clones {
@@ -723,7 +723,7 @@ mod tests {
             }
         );
         // Every member is beneath the root, so the group is freed once.
-        let all = Clones::of(&root).expect("clones beneath");
+        let all = Clones::of(root.root()).expect("clones beneath");
         assert_eq!((all.private, all.shared, all.repeated), (50, 3000, 2000));
         assert_eq!((all.lower, all.upper), (1050, 1050));
     }
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn a_member_outside_the_scan_keeps_the_group_from_being_credited() {
         let root = clones(3, 4, Some(0));
-        let all = Clones::of(&root).expect("clones beneath");
+        let all = Clones::of(root.root()).expect("clones beneath");
         assert_eq!((all.lower, all.upper), (50, 50));
         assert_eq!(all.repeated, 2000);
     }
@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn a_modified_clone_counts_its_private_bytes_only() {
         let root = clones(3, 3, Some(300));
-        let copy = Clones::of(&root.children[0]).expect("a clone");
+        let copy = Clones::of(root.root().children().at(0)).expect("a clone");
         assert_eq!((copy.private, copy.shared), (300, 700));
         assert_eq!((copy.lower, copy.upper), (300, 1000));
         assert!(!copy.partial);
@@ -748,9 +748,13 @@ mod tests {
     #[test]
     fn missing_clone_facts_are_partial() {
         let mut root = clones(2, 0, Some(0));
-        assert!(Clones::of(&root.children[0]).expect("a clone").partial);
+        assert!(
+            Clones::of(root.root().children().at(0))
+                .expect("a clone")
+                .partial
+        );
         root = clones(2, 2, None);
-        let copy = Clones::of(&root.children[0]).expect("a clone");
+        let copy = Clones::of(root.root().children().at(0)).expect("a clone");
         assert!(copy.partial);
         // An unknown private size is never claimed as private.
         assert_eq!((copy.private, copy.shared, copy.lower), (0, 1000, 0));
@@ -759,7 +763,7 @@ mod tests {
     #[test]
     fn entries_without_clones_carry_nothing_and_old_payloads_decode() {
         let root = clones(1, 2, Some(0));
-        let plain = Entry::of(&root.children[1]);
+        let plain = Entry::of(root.root().children().at(1));
         assert_eq!(plain.name, "plain");
         assert_eq!(plain.clones, None);
         let line = serde_json::to_string(&plain).expect("encode");
@@ -772,7 +776,7 @@ mod tests {
         )
         .expect("decode");
         assert_eq!(old.clones, None);
-        let clone = Entry::of(&root.children[0]);
+        let clone = Entry::of(root.root().children().at(0));
         assert!(clone.clones.is_some());
         let back: Entry =
             serde_json::from_str(&serde_json::to_string(&clone).expect("enc"))

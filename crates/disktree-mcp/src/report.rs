@@ -288,8 +288,13 @@ mod tests {
         }
         let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
-        let listing =
-            Listing::of(Path::new("/r"), root.bytes, Path::new("/r"), &root, 2);
+        let listing = Listing::of(
+            Path::new("/r"),
+            root.root().bytes,
+            Path::new("/r"),
+            root.root(),
+            2,
+        );
         let text = children(&listing, 0);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 3);

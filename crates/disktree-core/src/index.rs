@@ -752,7 +752,6 @@ impl Block<'_> {
     }
 }
 
-
 /// `node`, whose descendants are all in `region`, which starts at index
 /// `base` of the tree's nodes. In the layout [`Store::relayout`] makes,
 /// a directory's block opens its run, and each child's run is the part

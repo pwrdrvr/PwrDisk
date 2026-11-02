@@ -697,15 +697,16 @@ impl Session {
         let relative = path
             .strip_prefix(&scan.root)
             .map_err(|_| "unreachable: prefix was checked".to_string())?;
-        let (crumbs, node) = scan.tree.descend(relative).ok_or_else(|| {
-            format!(
-                "{} is not in the scan of {}: it may be new, hidden, below \
+        let (crumbs, node) =
+            scan.tree.root().descend(relative).ok_or_else(|| {
+                format!(
+                    "{} is not in the scan of {}: it may be new, hidden, below \
                  the depth limit, or on another filesystem. Scan again if \
                  it should be there.",
-                self.show(&path),
-                self.show(&scan.root)
-            )
-        })?;
+                    self.show(&path),
+                    self.show(&scan.root)
+                )
+            })?;
         Ok(Located {
             scan,
             path,
@@ -764,7 +765,7 @@ impl Session {
         let found = self.locate(path)?;
         Ok(Listing::of(
             &found.scan.root,
-            found.scan.tree.bytes,
+            found.scan.tree.root().bytes,
             &found.path,
             found.node,
             limit,
@@ -816,7 +817,8 @@ impl Session {
             };
         }
         let filter = request.filter()?;
-        let scope: Vec<(PathBuf, &Node)> = if let Some(path) = &request.path {
+        let scope: Vec<(PathBuf, Node<'_>)> = if let Some(path) = &request.path
+        {
             let located = self.locate(path)?;
             vec![(located.path, located.node)]
         } else {
@@ -839,8 +841,12 @@ impl Session {
         };
         let mut all = FoundList::default();
         for (path, node) in &scope {
-            let found =
-                FoundList::of(&query::find(path, node, &filter, request.limit));
+            let found = FoundList::of(&query::find(
+                path,
+                *node,
+                &filter,
+                request.limit,
+            ));
             all.matches.extend(found.matches);
             all.count += found.count;
             all.bytes += found.bytes;
@@ -1646,7 +1652,7 @@ impl Session {
                 .unwrap_or_else(|| SelectionEstimate::unknown(plan));
         }
         let mut unmeasured = false;
-        let mut selected: Option<Vec<&Node>> = None;
+        let mut selected: Option<Vec<Node<'_>>> = None;
         plan.estimate_selection(|targets| {
             let mut nodes = Vec::with_capacity(targets.len());
             let mut unknown = Estimate::default();
@@ -1857,8 +1863,8 @@ impl Session {
                     "  {}  {} \u{00b7} {} files \u{00b7} {} \u{00b7} took \
                      {:.1} s",
                     self.show(&scan.root),
-                    human_bytes(scan.tree.bytes),
-                    human_count(scan.tree.files),
+                    human_bytes(scan.tree.root().bytes),
+                    human_count(scan.tree.root().files),
                     age(now, scan.at),
                     scan.elapsed.as_secs_f64(),
                 );
@@ -2058,7 +2064,7 @@ struct Located<'a> {
     scan: &'a Scan,
     path: PathBuf,
     crumbs: Vec<usize>,
-    node: &'a Node,
+    node: Node<'a>,
 }
 
 /// What a scan report is made of, whichever side did the walking.
@@ -2076,9 +2082,9 @@ impl ScanFacts {
         Self {
             root: scan.root.clone(),
             tree: TreeSummary {
-                bytes: scan.tree.bytes,
-                files: scan.tree.files,
-                dirs: u64::from(scan.tree.dirs),
+                bytes: scan.tree.root().bytes,
+                files: scan.tree.root().files,
+                dirs: u64::from(scan.tree.root().dirs),
                 scanned_at: scan.at,
                 elapsed_ms: u64::try_from(scan.elapsed.as_millis())
                     .unwrap_or(u64::MAX),
@@ -2094,9 +2100,9 @@ impl ScanFacts {
             device: scan.device.clone(),
             top: Listing::of(
                 &scan.root,
-                scan.tree.bytes,
+                scan.tree.root().bytes,
                 &scan.root,
-                &scan.tree,
+                scan.tree.root(),
                 TOP,
             ),
             insights: scan
@@ -2105,7 +2111,7 @@ impl ScanFacts {
                 .map(|candidate| Insight {
                     path: path_of(
                         &scan.root,
-                        &scan.tree,
+                        scan.tree.root(),
                         &candidate.crumbs,
                         disktree_core::path_style::PathStyle::Native,
                     ),
@@ -2156,7 +2162,7 @@ pub fn run_scan(root: PathBuf, options: ScanOptions) -> Result<Scan, String> {
     })?;
     let snapshot = handle.progress.snapshot();
     let at = now();
-    let insights = worth_a_look(&tree, at, INSIGHTS);
+    let insights = worth_a_look(tree.root(), at, INSIGHTS);
     Ok(Scan {
         space: space_info(&root).ok(),
         device: device_for(&root),
@@ -2314,8 +2320,8 @@ mod tests {
         let scan = worktrees(&root);
         let mut session = unlinked(&root);
         let mut paths = Vec::new();
-        for node in &scan.tree.children {
-            let root = root.join(node.name.as_ref());
+        for node in scan.tree.root().children() {
+            let root = root.join(node.name());
             std::fs::write(root.join("shared"), b"synthetic allocation")
                 .expect("fixture volume identity");
             paths.push(root.join("shared"));
@@ -2350,9 +2356,13 @@ mod tests {
             .expect("fixture");
         let root = temp.path().canonicalize().expect("root");
         let scan = worktrees(&root);
-        let paths: Vec<_> = scan.tree.children[..10]
+        let paths: Vec<_> = scan
+            .tree
+            .root()
+            .children()
             .iter()
-            .map(|node| root.join(node.name.as_ref()))
+            .take(10)
+            .map(|node| root.join(node.name()))
             .collect();
         let mut session = unlinked(&root);
         session.store_scan(scan);
@@ -2611,7 +2621,7 @@ mod tests {
                         .path
                         .strip_prefix(&self.root)
                         .ok()
-                        .and_then(|relative| self.tree.descend(relative))
+                        .and_then(|relative| self.tree.root().descend(relative))
                         .map(|(_, node)| node)
                 }))
             });
@@ -2635,9 +2645,9 @@ mod tests {
                     at: now() - 120,
                 }),
                 tree: Some(TreeSummary {
-                    bytes: self.tree.bytes,
-                    files: self.tree.files,
-                    dirs: u64::from(self.tree.dirs),
+                    bytes: self.tree.root().bytes,
+                    files: self.tree.root().files,
+                    dirs: u64::from(self.tree.root().dirs),
                     scanned_at: now() - 30,
                     elapsed_ms: 1_500,
                     unreadable: self.unreadable,
@@ -2675,16 +2685,16 @@ mod tests {
                     Response::State(self.state("explore"))
                 }
                 Request::Ls { path, limit } => {
-                    let Some((_, node)) = path
-                        .strip_prefix(&self.root)
-                        .ok()
-                        .and_then(|relative| self.tree.descend(relative))
+                    let Some((_, node)) =
+                        path.strip_prefix(&self.root).ok().and_then(
+                            |relative| self.tree.root().descend(relative),
+                        )
                     else {
                         return Response::error("not in the window's tree");
                     };
                     Response::Listing(Listing::of(
                         &self.root,
-                        self.tree.bytes,
+                        self.tree.root().bytes,
                         path,
                         node,
                         *limit,
@@ -2697,7 +2707,7 @@ mod tests {
                     };
                     let found = query::find(
                         &self.root,
-                        &self.tree,
+                        self.tree.root(),
                         &filter,
                         request.limit,
                     );
@@ -2708,7 +2718,7 @@ mod tests {
                     for target in targets {
                         let node =
                             target.path.strip_prefix(&self.root).ok().and_then(
-                                |relative| self.tree.descend(relative),
+                                |relative| self.tree.root().descend(relative),
                             );
                         let Some((_, node)) = node else {
                             refused.push(Refused {
@@ -2859,14 +2869,18 @@ mod tests {
                 unreadable: 0,
             },
         );
-        let paths: Vec<_> = scan.tree.children[..10]
+        let paths: Vec<_> = scan
+            .tree
+            .root()
+            .children()
             .iter()
-            .map(|node| root.join(node.name.as_ref()))
+            .take(10)
+            .map(|node| root.join(node.name()))
             .collect();
         let mut session = Session::detached(socket, None);
         // The agent's old scan has no sharing facts; the window owns truth.
         let mut stale = scan;
-        let mut draft = stale.tree.to_draft();
+        let mut draft = stale.tree.root().to_draft();
         for dir in &mut draft.children {
             dir.children[0].allocation = None;
         }
@@ -3441,8 +3455,13 @@ mod tests {
         assert!(copy(&["-R"], "plain"));
         let scan =
             run_scan(root.clone(), ScanOptions::default()).expect("scan");
-        let listing =
-            Listing::of(&scan.root, scan.tree.bytes, &root, &scan.tree, 10);
+        let listing = Listing::of(
+            &scan.root,
+            scan.tree.root().bytes,
+            &root,
+            scan.tree.root(),
+            10,
+        );
         let entry = |name: &str| {
             listing
                 .children

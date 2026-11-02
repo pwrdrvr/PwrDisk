@@ -430,15 +430,13 @@ mod tests {
             }
             root.children.push(dir);
         }
-        let mut root = Tree::from(root);
-        aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
-        let selected = &root.children[..10];
+        let mut tree = Tree::from(root);
+        aggregate_deduped(&mut tree, Metric::Bytes, &Seen::new());
+        let root = tree.root();
+        let selected = || root.children().iter().take(10);
+        assert_eq!(selected().map(|n| n.bytes).sum::<u64>(), 100 * 1024 * MIB);
         assert_eq!(
-            selected.iter().map(|n| n.bytes).sum::<u64>(),
-            100 * 1024 * MIB
-        );
-        assert_eq!(
-            estimate(selected),
+            estimate(selected()),
             Estimate {
                 lower: 500 * MIB,
                 upper: 500 * MIB,
@@ -446,8 +444,8 @@ mod tests {
             }
         );
         // Including the surviving member completes the union exactly once.
-        assert_eq!(estimate(&root.children).lower, LISTED + 450 * MIB);
-        assert_eq!(estimate(&root.children).upper, LISTED + 450 * MIB);
+        assert_eq!(estimate(root.children()).lower, LISTED + 450 * MIB);
+        assert_eq!(estimate(root.children()).upper, LISTED + 450 * MIB);
     }
 
     #[test]
@@ -477,14 +475,15 @@ mod tests {
             dir.children.push(file("file", 1, 2, None));
             root.children.push(dir);
         }
-        let mut root = Tree::from(root);
-        aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
+        let mut tree = Tree::from(root);
+        aggregate_deduped(&mut tree, Metric::Bytes, &Seen::new());
+        let root = tree.root();
         assert_eq!(root.bytes, 4096);
-        for child in &root.children {
+        for child in root.children() {
             assert_eq!(estimate([child]).lower, 0);
             assert_eq!(child.sharing().reclaimable(child.bytes), 0);
         }
-        assert_eq!(estimate(&root.children).lower, 4096);
+        assert_eq!(estimate(root.children()).lower, 4096);
         assert_eq!(root.sharing().reclaimable(root.bytes), 4096);
     }
 
@@ -497,14 +496,15 @@ mod tests {
                 .push(file("file", inode, links, Some(clone_info())));
             root.children.push(dir);
         }
-        let mut root = Tree::from(root);
-        aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
+        let mut tree = Tree::from(root);
+        aggregate_deduped(&mut tree, Metric::Bytes, &Seen::new());
+        let root = tree.root();
         assert_eq!(root.bytes, 8192);
         assert_eq!(root.sharing().duplicate_bytes, 4096);
-        assert_eq!(estimate(root.children.iter().take(2)).lower, 0);
-        assert_eq!(estimate(&root.children).lower, 4096);
+        assert_eq!(estimate(root.children().iter().take(2)).lower, 0);
+        assert_eq!(estimate(root.children()).lower, 4096);
         assert_eq!(root.sharing().reclaimable(root.bytes), 4096);
-        assert_eq!(estimate(&root.children).upper, 4096);
+        assert_eq!(estimate(root.children()).upper, 4096);
     }
 
     #[test]
@@ -570,7 +570,7 @@ mod tests {
                 info.id = group;
                 info.private_bytes = Some(1024);
                 total.merge(Accumulator::leaf(
-                    &Tree::from(file("f", inode, 1, Some(info))),
+                    Tree::from(file("f", inode, 1, Some(info))).root(),
                     1,
                 ));
             }

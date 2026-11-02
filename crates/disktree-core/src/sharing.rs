@@ -163,9 +163,9 @@ fn collect(tree: &mut Tree, limit: usize) -> (Groups, reclaim::Accumulator) {
     let mut updates = Vec::new();
     let (groups, allocation, _) =
         collect_at(tree.root(), limit, 0, &mut updates, &sink);
-    let mut lists = sink.into_inner().unwrap_or_else(|poison| {
-        poison.into_inner()
-    });
+    let mut lists = sink
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     lists.push(updates);
     tree.set_sharing(lists.into_iter().flatten());
     (groups, allocation)
@@ -192,10 +192,7 @@ fn fold_leaf(
 }
 
 /// A node's own clone figures, and its group when it can repeat bytes.
-fn own(
-    node: Node<'_>,
-    summary: &mut Sharing,
-) -> Option<((u64, u64), Group)> {
+fn own(node: Node<'_>, summary: &mut Sharing) -> Option<((u64, u64), Group)> {
     let info = node
         .allocation()
         .and_then(|allocation| allocation.clone)
@@ -391,7 +388,11 @@ fn collect_at(
     updates.push((node.id(), kept.then_some(summary)));
     // What `Node::sharing` reads once the update is written: a directory
     // that keeps nothing has no allocation of its own to summarize.
-    (groups, allocation, if kept { summary } else { Sharing::default() })
+    (
+        groups,
+        allocation,
+        if kept { summary } else { Sharing::default() },
+    )
 }
 
 #[cfg(test)]
@@ -423,8 +424,9 @@ mod tests {
         let mut root = Draft::directory("root");
         root.children =
             vec![clone("a", 1, 1, Some(0)), clone("b", 1, 1, Some(0))];
-        let mut root = Tree::from(root);
-        aggregate(&mut root, Metric::Bytes);
+        let mut tree = Tree::from(root);
+        aggregate(&mut tree, Metric::Bytes);
+        let root = tree.root();
         assert_eq!(root.sharing().reclaimable(root.bytes), 80);
     }
 
@@ -433,9 +435,10 @@ mod tests {
         let mut root = Draft::directory("root");
         root.children =
             vec![clone("a", 1, 1, Some(20)), clone("b", 1, 2, Some(20))];
-        let mut root = Tree::from(root);
-        aggregate(&mut root, Metric::Bytes);
-        collect(&mut root.root_mut(), 1);
+        let mut tree = Tree::from(root);
+        aggregate(&mut tree, Metric::Bytes);
+        collect(&mut tree, 1);
+        let root = tree.root();
         assert!(root.sharing().groups_truncated);
         assert_eq!(root.sharing().private_bytes, 40);
     }
@@ -448,13 +451,14 @@ mod tests {
             clone("b", 1, 42, Some(20)),
             clone("c", 2, 42, Some(20)),
         ];
-        let mut root = Tree::from(root);
-        aggregate(&mut root, Metric::Bytes);
+        let mut tree = Tree::from(root);
+        aggregate(&mut tree, Metric::Bytes);
+        let root = tree.root();
         assert_eq!(root.bytes, 300);
         assert_eq!(root.sharing().duplicate_bytes, 80);
         assert_eq!(root.sharing().reclaimable(root.bytes), 140);
-        aggregate(&mut root, Metric::Files);
-        assert_eq!(root.sharing().duplicate_bytes, 80);
+        aggregate(&mut tree, Metric::Files);
+        assert_eq!(tree.root().sharing().duplicate_bytes, 80);
     }
 
     #[test]
@@ -462,8 +466,9 @@ mod tests {
         let mut root = Draft::directory("root");
         root.children =
             vec![clone("a", 1, 1, Some(60)), clone("b", 1, 1, Some(60))];
-        let mut root = Tree::from(root);
-        aggregate(&mut root, Metric::Bytes);
+        let mut tree = Tree::from(root);
+        aggregate(&mut tree, Metric::Bytes);
+        let root = tree.root();
         // Each still shares 40 of its 100 bytes: one copy of that repeats.
         assert_eq!(root.sharing().duplicate_bytes, 40);
         assert!(
@@ -479,8 +484,9 @@ mod tests {
             clone("b", 1, 2, Some(200)),
             Draft::entry("ordinary", NodeKind::File, 30),
         ];
-        let mut root = Tree::from(root);
-        aggregate(&mut root, Metric::Bytes);
+        let mut tree = Tree::from(root);
+        aggregate(&mut tree, Metric::Bytes);
+        let root = tree.root();
         assert_eq!(root.sharing().unknown_files, 1);
         assert_eq!(root.sharing().reclaimable(root.bytes), 130);
     }
@@ -494,8 +500,9 @@ mod tests {
             node.inode =
                 Some((1, std::num::NonZeroU64::new(123).expect("inode")));
         }
-        let mut root = Tree::from(root);
-        aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
+        let mut tree = Tree::from(root);
+        aggregate_deduped(&mut tree, Metric::Bytes, &Seen::new());
+        let root = tree.root();
         assert_eq!(root.sharing().files, 1);
         assert_eq!(root.sharing().bytes, 100);
         assert_eq!(root.sharing().duplicate_bytes, 0);
@@ -540,7 +547,7 @@ mod tests {
             .install(|| {
                 VISITS.set(0);
                 reclaim::WORK.set(0);
-                refresh(&mut tree.root_mut());
+                refresh(tree);
                 (VISITS.get(), reclaim::WORK.get())
             })
     }
@@ -553,13 +560,13 @@ mod tests {
         let mut counts = Vec::new();
         for (copies, files) in [(8, 64), (64, 512)] {
             let mut tree = worktrees(copies, files);
-            let duplicates = tree.sharing().duplicate_bytes;
+            let duplicates = tree.root().sharing().duplicate_bytes;
             assert_eq!(duplicates, 80 * (copies - 1) * files);
             let (visits, work) = refresh_work(&mut tree);
-            assert_eq!(tree.sharing().duplicate_bytes, duplicates);
+            assert_eq!(tree.root().sharing().duplicate_bytes, duplicates);
             assert_eq!(
                 visits,
-                u64::from(tree.dirs),
+                u64::from(tree.root().dirs),
                 "maps are made per directory, never per file"
             );
             // Each file is added to its directory's two maps, and its
@@ -597,18 +604,18 @@ mod tests {
         let mut nested = Tree::from(nested);
         aggregate(&mut flat, Metric::Bytes);
         aggregate(&mut nested, Metric::Bytes);
-        assert_eq!(nested.sharing(), flat.sharing());
-        assert_eq!(nested.sharing().duplicate_bytes, 2 * 80);
+        assert_eq!(nested.root().sharing(), flat.root().sharing());
+        assert_eq!(nested.root().sharing().duplicate_bytes, 2 * 80);
 
         // A second pass keeps every figure and grows no arena.
-        let before = nested.sharing();
+        let before = nested.root().sharing();
         let arena = nested.arena_bytes();
         aggregate(&mut nested, Metric::Files);
-        assert_eq!(nested.sharing(), before);
+        assert_eq!(nested.root().sharing(), before);
         assert_eq!(nested.arena_bytes(), arena);
 
         // A directory that no longer shares gives its figures up.
-        let mut draft = nested.to_draft();
+        let mut draft = nested.root().to_draft();
         let deep = draft
             .children
             .iter_mut()
@@ -619,12 +626,13 @@ mod tests {
         let mut nested = Tree::from(draft);
         aggregate(&mut nested, Metric::Bytes);
         let emptied = nested
-            .children
+            .root()
+            .children()
             .iter()
-            .find(|child| *child.name == *emptied)
+            .find(|child| child.name() == &*emptied)
             .expect("the emptied branch");
-        assert!(emptied.sharing.is_none());
-        assert_eq!(nested.sharing().files, 2);
+        assert!(emptied.stored_sharing().is_none());
+        assert_eq!(nested.root().sharing().files, 2);
     }
 
     #[test]
@@ -635,15 +643,17 @@ mod tests {
             dir.children.push(clone("file", 1, 1, Some(0)));
             root.children.push(dir);
         }
-        let mut root = Tree::from(root);
-        aggregate(&mut root, Metric::Bytes);
+        let mut tree = Tree::from(root);
+        aggregate(&mut tree, Metric::Bytes);
+        let root = tree.root();
         assert_eq!(root.sharing().duplicate_bytes, 80);
-        assert_eq!(root.children[0].sharing().duplicate_bytes, 0);
+        assert_eq!(root.children().at(0).sharing().duplicate_bytes, 0);
         // Removing a directory is a rescan into a new tree.
         let mut draft = root.to_draft();
         draft.children.pop();
-        let mut root = Tree::from(draft);
-        aggregate(&mut root, Metric::Bytes);
+        let mut tree = Tree::from(draft);
+        aggregate(&mut tree, Metric::Bytes);
+        let root = tree.root();
         assert_eq!(root.sharing().duplicate_bytes, 0);
         assert_eq!(root.sharing().files, 1);
     }
