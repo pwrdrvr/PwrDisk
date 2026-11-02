@@ -6992,3 +6992,104 @@ fn file_list_keeps_a_complete_entry_visible_at_double_scale(
     );
     assert!(row.size.height >= px(24.));
 }
+
+/// Reduced motion lands on the same real layout and preserves the ordinary
+/// selection/history/mark behavior, including wheel-driven descent.
+#[gpui_kit::test]
+fn reduced_motion_lands_navigation_history_and_zoom(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    update(&view, cx, |app, cx| {
+        let junk = child_crumbs(app, &[], "junk");
+        let keep = child_crumbs(app, &[], "keep");
+        app.toggle_mark(&keep, cx);
+        app.selected = Some(junk.clone());
+        app.descend(cx);
+        assert!(app.transition.is_none(), "descent lands immediately");
+        assert_eq!(app.crumbs, junk);
+        assert_eq!(app.selected.as_ref(), Some(&junk));
+        let expected: Vec<_> = app
+            .layout()
+            .expect("layout")
+            .iter()
+            .map(|tile| tile.rect)
+            .collect();
+        let drawn: Vec<_> = app
+            .prepare()
+            .tiles
+            .into_iter()
+            .map(|tile| tile.rect)
+            .collect();
+        assert_eq!(drawn, expected, "no transient geometry");
+        app.ascend(cx);
+        assert!(app.transition.is_none());
+        assert!(app.crumbs.is_empty());
+        app.go_back(cx);
+        assert_eq!(app.crumbs, junk);
+        assert!(app.transition.is_none());
+        app.go_forward(cx);
+        assert!(app.crumbs.is_empty());
+        assert!(app.transition.is_none());
+        app.go_to(junk.clone(), cx);
+        app.zoom_at(100., 100., 1.2, false, cx);
+        assert!(app.view.scale > 1.0, "user-controlled zoom still works");
+        assert!(app.transition.is_none());
+        app.reset_view(cx);
+        let deeper = child_crumbs(app, &junk, "deeper");
+        let body = app.tile_body(&deeper).expect("nested directory");
+        let pivot = disktree_core::treemap::Rect::new(
+            body.x + body.w / 2.,
+            body.y + body.h / 2.,
+            0.,
+            0.,
+        );
+        for _ in 0..80 {
+            if app.crumbs == deeper {
+                break;
+            }
+            let screen = app.view.project(pivot);
+            app.zoom_at(screen.x, screen.y, 1.15, true, cx);
+        }
+        assert_eq!(app.crumbs, deeper, "wheel zoom reaches its directory");
+        assert!(app.transition.is_none());
+        assert_eq!(app.marks.len(), 1);
+    });
+    draw(cx);
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// A live policy change cancels an in-flight transition. Turning the policy
+/// off restores ordinary navigation motion without changing the destination.
+#[gpui_kit::test]
+fn reduced_motion_cancels_active_transition_and_can_be_disabled(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    cx.update(|_, cx| cx.set_reduce_motion(false));
+    update(&view, cx, |app, cx| {
+        let junk = child_crumbs(app, &[], "junk");
+        app.selected = Some(junk);
+        app.descend(cx);
+        assert!(app.transition.is_some(), "normal motion remains available");
+    });
+    let destination = read(&view, cx, Disktree::current_path);
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    draw(cx);
+    assert!(read(&view, cx, |app| app.transition.is_none()));
+    assert_eq!(read(&view, cx, Disktree::current_path), destination);
+    cx.update(|_, cx| cx.set_reduce_motion(false));
+    update(&view, cx, |app, cx| {
+        app.ascend(cx);
+        assert!(app.transition.is_some(), "normal ascent animates again");
+    });
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    draw(cx);
+    assert!(read(&view, cx, |app| app.transition.is_none()));
+    assert!(read(&view, cx, |app| app.crumbs.is_empty()));
+}

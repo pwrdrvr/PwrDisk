@@ -829,3 +829,57 @@ above also struck `the_agent_overlay_opens_and_closes`; it and the link test
 pass alone. Ubuntu 24.04.5 x86_64 Sandboxer at `d5990e3`: setup 0 (8s),
 lint 0 (17s), test 0 (17s), portable build 0 (49s), isolated SSH 0 (2s),
 all 0. Native AT, OS scaling and high contrast remain the PWR-36 gaps above.
+
+### PWR-35 remediation: reduced motion
+
+Production source `24cc28afe058f3893fa6805c7198570c1f090fa2` refreshes the
+SDK's system motion preference before directory navigation and during
+transition frames. The pinned base SDK samples macOS/Windows at startup
+but does not follow subsequent native changes on those platforms. Enter,
+ascend and history now land directly when reduced motion is enabled; an
+active transition is discarded on the next frame. User-driven zoom stays
+available. No upstream UI redesign or dependency upgrade is included.
+
+| Layer | Observed result |
+| --- | --- |
+| Harness | PASS: two regressions failed before the change and pass after it. Immediate enter/ascend/history/wheel navigation, final layout, marks and user zoom retained; enabling reduced motion clears an active transition, disabling it allows subsequent transitions |
+| Native macOS preference | PASS subset on macOS 27.0.1 arm64: System Settings AX reports Reduce motion off → on → off, restored to its initial value. One running contrived-tree fixture reports normal descent `reduced=false transitioning=true depth=1`, return with the OS preference on `reduced=true transitioning=false depth=0`, then forward with the restored preference `reduced=false transitioning=true depth=1` |
+| Native process | Fixture SHA-256 `cb19f7a034b46df12cb95f4299dd56fa80f86426bd533464d625c728617d9899`, `--tree /Volumes/A11yFixtures/Projects --trace-motion`; only policy/transition/depth/scale flags are traced, no scanned paths |
+| Gate | macOS lint, full workspace tests (245 app tests), main and fixture builds PASS. Ubuntu 24.04.5 x86_64 Sandboxer at `24cc28a`: setup 0 (1s), lint 0 (5s), tests 0 (15s), portable build 0 (43s), isolated SSH 0 (3s), all 0 |
+
+Native preference switching establishes the macOS policy bridge and
+navigation state, not perceptual motion sensitivity or AT speech. Native
+mid-transition toggling is covered only by the harness. Native Windows
+and Linux desktop motion preferences remain unverified. Still images of
+the final destination do not distinguish the removed transition; operator
+acceptance of the native trace plus failing-before/passing-after harness
+evidence is requested before merge. No removal was approved through
+computer use or accessibility APIs.
+
+### PWR-35 rebase and review corrections
+
+Rebased onto main after #46. #60 retired the `a11y-fixture` example, so the
+`--tree … --trace-motion` invocation and the fixture hash cited above no
+longer exist; that trace stands as recorded at `24cc28a`, and the motion
+policy and code paths it exercised are unchanged. The review moved the
+platform re-read inside a running transition: an idle frame no longer asks
+macOS or Windows for the preference, while starting a transition and each of
+its frames still do. The harness cannot reach that re-read (GPUI's test
+scheduler never asks the platform), so live OS toggling stays native
+evidence.
+
+Headed macOS evidence after the rebase, in a macOS virtual machine against
+the contrived tree (`scripts/a11y-fixture.py`), with Reduce motion turned on
+before launch and confirmed through `NSWorkspace`, then restored. Entering
+`cache` with Return was recorded at 60 frames per second:
+
+| Build | Distinct frames | Result |
+| --- | --- | --- |
+| main `a05da0d` | 7 | Five in-between frames: the folder zooms despite the preference |
+| this change `e7fe166` | 2 | The start and the destination: navigation lands directly |
+
+The same runs tried to toggle the preference while the app was running.
+Writing it with `defaults` reached new processes but not the running app,
+which re-reads only when the system announces the change, so those clips
+show nothing about live following and are not counted. Live toggling rests on
+the earlier native trace above and the harness's mid-flight cancel.
