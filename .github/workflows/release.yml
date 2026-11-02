@@ -41,6 +41,22 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
 
+      # The signing environments accept only v* tags, so a rebuild
+      # dispatched from a branch would build everything and then be refused
+      # at signing. Fail here instead: dispatch it from the tag itself.
+      # First, before the tag's own setup-rust action is loaded: a tag
+      # older than that action fails here with this message, not there.
+      - name: Check the run starts from the tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" != tag ] || [ "$REF_NAME" != "$RELEASE_TAG" ]; then
+            echo "Run this workflow from the tag $RELEASE_TAG (Use workflow from:" \
+              "Tags > $RELEASE_TAG), not from $REF_TYPE $REF_NAME" >&2
+            exit 1
+          fi
+
       - name: System libraries
         run: |
           sudo apt-get update
@@ -54,20 +70,6 @@ jobs:
           components: clippy, rustfmt
           # A cache saved under a tag is readable by that tag's runs alone.
           save-if: false
-
-      # The signing environments accept only v* tags, so a rebuild
-      # dispatched from a branch would build everything and then be refused
-      # at signing. Fail here instead: dispatch it from the tag itself.
-      - name: Check the run starts from the tag
-        env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          if [ "$REF_TYPE" != tag ] || [ "$REF_NAME" != "$RELEASE_TAG" ]; then
-            echo "Run this workflow from the tag $RELEASE_TAG (Use workflow from:" \
-              "Tags > $RELEASE_TAG), not from $REF_TYPE $REF_NAME" >&2
-            exit 1
-          fi
 
       # The tag, Cargo.toml and CHANGELOG.md agree before anything is
       # built; the changelog section becomes the release's notes.
@@ -113,15 +115,14 @@ jobs:
 
       - uses: ./.github/actions/setup-rust
         with:
+          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
           save-if: false
 
       - name: Test
         run: cargo xtask test
 
       - name: Build
-        run: |
-          rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
-          cargo xtask portable
+        run: cargo xtask portable
 
       # Velopack is not used on Linux: vpk's Linux output is an AppImage
       # only, and its updater runs only from one. Linux packages are not

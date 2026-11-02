@@ -1,7 +1,8 @@
 name: Set up Rust
 description: >-
   Install the Rust toolchain rust-toolchain.toml pins, remove every other
-  one, and restore the Rust cache, saving it only from main.
+  one, and restore the Rust cache, saving it only from main unless save-if
+  says otherwise.
 
 # One copy of the setup every Rust job needs, so the pin, the prune and
 # the cache's save rule cannot drift apart between ci.yml, preview-build.yml
