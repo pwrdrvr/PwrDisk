@@ -385,7 +385,11 @@ fn collect_at(
         || allocation.needs_selection()
         || summary.reclaimable(node.bytes) != node.bytes
         || summary.possible(node.bytes) != node.bytes;
-    updates.push((node.id(), kept.then_some(summary)));
+    // Most directories keep nothing and had nothing: no update to write,
+    // as `fold_leaf` does for files.
+    if kept || node.stored_sharing().is_some() {
+        updates.push((node.id(), kept.then_some(summary)));
+    }
     // What `Node::sharing` reads once the update is written: a directory
     // that keeps nothing has no allocation of its own to summarize.
     (

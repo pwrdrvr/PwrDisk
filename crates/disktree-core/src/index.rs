@@ -352,6 +352,51 @@ impl Store {
         )
     }
 
+    /// A copy of all of `source` under `name`: its buffers appended in
+    /// order, each index moved past what this store already holds. One
+    /// sequential pass instead of a walk with a list per directory, which
+    /// matters because a build copies under the lock every worker needs.
+    /// `source`'s own root is appended too and left for
+    /// [`Self::relayout`] to cut, which keeps every index a plain shift.
+    fn absorb(&mut self, source: &Self, name: &str) -> Slot {
+        let base = Self::index(self.nodes.len());
+        let names = Self::index(self.names.len());
+        let allocations = self.allocations.len();
+        let sharings = self.sharings.len();
+        let both = self.both.len();
+        self.names.push_str(&source.names);
+        u32::try_from(self.names.len())
+            .expect("a tree's names fit in four gigabytes");
+        self.allocations.extend_from_slice(&source.allocations);
+        self.sharings.extend_from_slice(&source.sharings);
+        self.both.extend_from_slice(&source.both);
+        let moved = |slot: &Slot| {
+            let index = slot.extra.index();
+            let extra = match slot.extra.tag() {
+                Extra::ALLOCATION => {
+                    Extra::new(Extra::ALLOCATION, allocations + index)
+                }
+                Extra::SHARING => Extra::new(Extra::SHARING, sharings + index),
+                Extra::BOTH => Extra::new(Extra::BOTH, both + index),
+                _ => Extra::NONE,
+            };
+            Slot {
+                name: names + slot.name,
+                first: if slot.len == 0 { 0 } else { base + slot.first },
+                extra,
+                ..*slot
+            }
+        };
+        // Not in parallel: this runs under the builder's lock, and a rayon
+        // worker waiting on its own jobs can pick up a walk task that asks
+        // for the same lock.
+        self.nodes.extend(source.nodes.iter().map(moved));
+        Slot {
+            name: self.push_name(name),
+            ..moved(&source.nodes[source.root as usize])
+        }
+    }
+
     fn draft(&mut self, draft: &Draft) -> Slot {
         let children: Vec<Slot> = draft
             .children
@@ -499,9 +544,21 @@ impl<'t> Node<'t> {
     /// that only reads can work out figures on every worker, then write
     /// them by position. Good until the tree is next changed.
     pub(crate) fn id(self) -> u32 {
+        debug_assert!(
+            self.store
+                .nodes
+                .as_ptr_range()
+                .contains(&std::ptr::from_ref(self.slot)),
+            "a node of another tree"
+        );
         let offset = std::ptr::from_ref(self.slot).addr()
             - self.store.nodes.as_ptr().addr();
         Store::index(offset / size_of::<Slot>())
+    }
+
+    /// Whether this is its tree's root, and so the whole tree.
+    fn is_root(self) -> bool {
+        self.id() == self.store.root
     }
 }
 
@@ -953,7 +1010,14 @@ impl Builder {
 
     /// [`Self::copy`], under another name.
     pub fn copy_named<'h>(&'h self, node: Node<'_>, name: &str) -> Built<'h> {
-        Self::built(self.lock().copy(node, name))
+        let mut store = self.lock();
+        // A whole tree, as a wider scan reuses one, goes in as its buffers.
+        let slot = if node.is_root() {
+            store.absorb(node.store, name)
+        } else {
+            store.copy(node, name)
+        };
+        Self::built(slot)
     }
 
     /// `draft`, with everything beneath it.
@@ -1034,8 +1098,7 @@ impl Tree {
     /// A tree of its own holding a copy of `node` and everything beneath:
     /// the whole store at once when `node` is a root.
     pub fn copy_of(node: Node<'_>) -> Self {
-        let root = &node.store.nodes[node.store.root as usize];
-        if std::ptr::eq(node.slot, root) {
+        if node.is_root() {
             return Self {
                 store: node.store.clone(),
             };
@@ -1258,6 +1321,79 @@ mod tests {
         };
         assert_eq!(subtree.root().name(), "child");
         assert_eq!(subtree.root().children().len(), 1);
+    }
+
+    /// Everything below two nodes reads the same, names included.
+    fn assert_same(left: Node<'_>, right: Node<'_>) {
+        assert_eq!(left.bytes, right.bytes, "{}", left.name());
+        assert_eq!(left.kind, right.kind, "{}", left.name());
+        assert_eq!(
+            left.allocation().map(|a| a.bytes),
+            right.allocation().map(|a| a.bytes),
+            "{}",
+            left.name()
+        );
+        assert_eq!(
+            left.stored_sharing().map(|s| s.files),
+            right.stored_sharing().map(|s| s.files),
+            "{}",
+            left.name()
+        );
+        assert_eq!(names(left), names(right));
+        for (left, right) in left.children().iter().zip(right.children()) {
+            assert_same(left, right);
+        }
+    }
+
+    #[test]
+    fn a_whole_tree_copied_into_a_build_keeps_its_records() {
+        let mut source = sample();
+        let shared = |files| {
+            Some(Sharing {
+                files,
+                ..Sharing::default()
+            })
+        };
+        let mut root = source.root_mut();
+        root.set_sharing(shared(1));
+        // `direct` already has an allocation: this puts it in `both`.
+        root.child_mut(1).expect("direct").set_sharing(shared(2));
+        root.child_mut(0).expect("child").set_sharing(shared(3));
+        let allocation = Allocation {
+            bytes: 9,
+            identity: None,
+            links: 1,
+            followed: false,
+            clone: None,
+        };
+        let tree = Tree::build(|builder| {
+            // Records already in every table, so the copy's must move.
+            let mut before = builder.leaf("before", file(9), Some(allocation));
+            before.slot.extra =
+                builder.lock().set_sharing(before.slot.extra, shared(4));
+            let other = builder.leaf("other", file(1), None);
+            let other = builder.directory(
+                "other-dir",
+                Facts::directory(),
+                None,
+                vec![other],
+            );
+            let reused = builder.copy_named(source.root(), "reused");
+            builder.directory(
+                "top",
+                Facts::directory(),
+                None,
+                vec![before, other, reused],
+            )
+        });
+        let reused = tree.root().children().at(2);
+        assert_eq!(reused.name(), "reused");
+        assert_same(reused, source.root());
+        let before = tree.root().children().at(0);
+        assert_eq!(before.allocation().map(|a| a.bytes), Some(9));
+        assert_eq!(before.stored_sharing().map(|s| s.files), Some(4));
+        // The source's root went in too, and nothing reaches it.
+        assert_eq!(tree.store.nodes.len(), 1 + 3 + 1 + 3 + 1);
     }
 
     #[test]
