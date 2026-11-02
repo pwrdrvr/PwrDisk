@@ -98,11 +98,12 @@ a root. Explicit command-line paths and `--disk` still start directly;
   folder that is only partly shown marks all of it, and the panel says so.
 - **Panel:** the selection (its size set large, share of the scan, files,
   last write, and for a checkout what git says — changes, stashes, unpushed
-  commits); *Worth a look*, the largest things that could plausibly go;
-  what is marked; then, pinned above the disk, the marks taken together —
+  commits); what is marked; *Worth a look*, the largest things that could
+  plausibly go; then, pinned above the disk, the marks taken together —
   how much is marked, what removing all of it frees, and the way to the
-  review screen; and the disk, free now and after the marks. Drag its left edge to resize it; double-click the
-  edge to reset.
+  review screen; and the disk, free now and after the marks. On a short
+  window *Worth a look* is what scrolls. Drag its left edge to resize it;
+  double-click the edge to reset.
 
 One colour is kept apart: amber marks the selection, the main action, and
 what can be had back.

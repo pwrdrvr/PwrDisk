@@ -7680,6 +7680,12 @@ fn the_marked_total_is_pinned_above_the_disk_with_the_review(
         scroll.bottom() <= total.top() + px(0.5),
         "pinned below lists"
     );
+    // The list leads the scroll, so on a short window it is suggestions
+    // that scroll out of sight, not what is marked.
+    let row = cx.debug_bounds("marked-row-0").expect("marked row drawn");
+    let worth = cx.debug_bounds("worth-section").expect("worth drawn");
+    assert!(row.bottom() <= worth.top(), "{row:?} {worth:?}");
+    assert!(row.bottom() <= scroll.bottom(), "{row:?} {scroll:?}");
     // Without clones what is marked is what is freed, said once.
     assert!(cx.debug_bounds("marked-frees").is_some());
     assert!(cx.debug_bounds("marked-split").is_none());

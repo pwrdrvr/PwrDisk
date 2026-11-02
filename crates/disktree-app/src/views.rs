@@ -2648,9 +2648,12 @@ fn side_panel(
                     indexing_progress(app, theme, cx).flex_shrink_0()
                 }))
                 .children(indexing.then(|| rule().flex_shrink_0()))
-                .child(worth_section(app, theme, cx))
-                .child(rule())
+                // The marked list leads: the pinned total below takes room
+                // from this scroll, and on a short window what comes last
+                // scrolls out of sight. Suggestions can; the cart cannot.
                 .child(marked_section(app, &plan, theme, cx))
+                .child(rule())
+                .child(worth_section(app, theme, cx))
                 .children(macos_services_section(app, theme, cx)),
         )
         .children(notice_line(app, theme, cx))
@@ -3122,23 +3125,28 @@ fn worth_section(
     let total: u64 = app.insights.iter().map(|candidate| candidate.bytes).sum();
     let largest = app.insights.first().map_or(1, |candidate| candidate.bytes);
     let highlight = palette::highlight(theme);
-    let mut section = div().flex().flex_col().gap(space::XS).child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .pb(space::XS)
-            .child(widgets::eyebrow("Worth a look", cx))
-            .when(total > 0, |this| {
-                this.child(
-                    div()
-                        .text_size(text::CAPTION)
-                        .text_color(highlight)
-                        .child(human_bytes(total)),
-                )
-            }),
-    );
+    let mut section = div()
+        .debug_selector(|| "worth-section".into())
+        .flex()
+        .flex_col()
+        .gap(space::XS)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .pb(space::XS)
+                .child(widgets::eyebrow("Worth a look", cx))
+                .when(total > 0, |this| {
+                    this.child(
+                        div()
+                            .text_size(text::CAPTION)
+                            .text_color(highlight)
+                            .child(human_bytes(total)),
+                    )
+                }),
+        );
     if app.insights.is_empty() {
         return section.child(
             div()
@@ -3296,6 +3304,7 @@ fn marked_section(
         let path = item.path.clone();
         section = section.child(
             div()
+                .debug_selector(move || format!("marked-row-{index}"))
                 .flex()
                 .flex_row()
                 .items_center()
