@@ -48,7 +48,8 @@ fn entry_semantics(
 
 impl Disktree {
     pub fn file_turn_page(&mut self, step: isize, cx: &mut Context<'_, Self>) {
-        let entries = self.filter_applied.then(|| self.file_entries());
+        let entries =
+            self.layout_filter().is_some().then(|| self.file_entries());
         let count = entries.as_ref().map_or_else(
             || self.current().map_or(0, |node| node.children().len()),
             Vec::len,
@@ -80,18 +81,17 @@ impl Disktree {
                 .filter(|index| {
                     let mut crumbs = self.crumbs.clone();
                     crumbs.push(*index);
-                    !self.filter_applied
-                        || self
-                            .matches
-                            .as_ref()
-                            .is_none_or(|m| m.keep(&crumbs).is_some())
+                    self.layout_filter().is_none_or(|m| {
+                        m.keep_at(&crumbs, node.children().at(*index)).is_some()
+                    })
                 })
                 .collect()
         })
     }
 
     pub fn file_step(&mut self, step: isize, cx: &mut Context<'_, Self>) {
-        let entries = self.filter_applied.then(|| self.file_entries());
+        let entries =
+            self.layout_filter().is_some().then(|| self.file_entries());
         let count = entries.as_ref().map_or_else(
             || self.current().map_or(0, |node| node.children().len()),
             Vec::len,
@@ -137,7 +137,7 @@ pub fn list(
     let theme = cx.omarchy();
     // Unfiltered navigation needs only the visible page, even in a directory
     // with millions of zero-weight files that the mosaic cannot draw.
-    let entries = app.filter_applied.then(|| app.file_entries());
+    let entries = app.layout_filter().is_some().then(|| app.file_entries());
     let count = entries.as_ref().map_or_else(
         || app.current().map_or(0, |node| node.children().len()),
         Vec::len,
@@ -151,7 +151,7 @@ pub fn list(
         count,
         usize::from(count > 0) + start,
         end,
-        if app.filter_applied {
+        if app.layout_filter().is_some() {
             " · filtered"
         } else {
             ""
@@ -193,7 +193,7 @@ pub fn list(
         let filtered = app
             .matches
             .as_ref()
-            .is_some_and(|m| m.keep(&crumbs).is_none());
+            .is_some_and(|m| m.keep_at(&crumbs, node).is_none());
         // Clone blocks are not what removing the entry frees; say so
         // where the size is read, and nowhere when there are none.
         let split = crate::views::clone_split(node);
