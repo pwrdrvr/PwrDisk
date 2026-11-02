@@ -287,7 +287,8 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
 /// they are part of what fills the disk, but files there belong to packages
 /// and removing them by hand breaks the system; pacman, paccache,
 /// `journalctl --vacuum` or `brew cleanup` are the right tools. Refused even
-/// where permissions would allow it, and even inside them.
+/// where permissions would allow it, and even inside them, except for the
+/// scratch space in [`SCRATCH_TREES`].
 ///
 /// One list for every platform: a macOS tree never exists on Linux, and the
 /// other way round, so the extra entries cost nothing. On macOS `/etc`,
@@ -475,7 +476,8 @@ const SYSTEM_TOOLS: &str = "remove it with the tool that installed it";
 const SYSTEM_TOOLS: &str = "use Settings, or the program's own uninstaller";
 
 /// The system tree the path keyed `key` is in, if any. The home directory is
-/// never system, wherever it lives.
+/// never system, wherever it lives, and neither is what is inside the
+/// scratch space of [`SCRATCH_TREES`].
 fn system_tree(key: &Path, home: Option<&Path>) -> Option<&'static str> {
     if home.is_some_and(|home| key.starts_with(home)) {
         return None;
@@ -3039,6 +3041,22 @@ mod tests {
                     .contains("part of the system under /private")),
             "{reason:?}"
         );
+    }
+
+    /// The whole plan, on a real entry: the link and mount checks pass a
+    /// folder in `/private/tmp` too, so a whole-disk scan may remove it.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_whole_disk_plan_accepts_a_real_entry_in_private_tmp() {
+        let temp =
+            tempfile::tempdir_in("/private/tmp").expect("scratch fixture");
+        let planned = plan(&[target(temp.path(), 1)], Path::new("/"));
+        assert!(planned.blocked.is_empty(), "{:?}", planned.blocked);
+        assert_eq!(planned.targets.len(), 1);
+
+        let planned =
+            plan(&[target(Path::new("/private/tmp"), 1)], Path::new("/"));
+        assert!(planned.targets.is_empty());
     }
 
     #[test]
