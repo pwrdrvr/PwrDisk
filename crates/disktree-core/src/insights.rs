@@ -59,10 +59,10 @@ pub struct Candidate {
 
 /// The `limit` largest findings beneath `root`, largest first. `now` is Unix
 /// seconds, passed in so the answer is testable.
-pub fn worth_a_look(root: &Node, now: i64, limit: usize) -> Vec<Candidate> {
+pub fn worth_a_look(root: Node<'_>, now: i64, limit: usize) -> Vec<Candidate> {
     let mut found = Vec::new();
     let mut crumbs = Vec::new();
-    for (index, child) in root.children.iter().enumerate() {
+    for (index, child) in root.children().iter().enumerate() {
         crumbs.push(index);
         visit(child, &mut crumbs, now, &mut found);
         crumbs.pop();
@@ -74,7 +74,7 @@ pub fn worth_a_look(root: &Node, now: i64, limit: usize) -> Vec<Candidate> {
 }
 
 fn visit(
-    node: &Node,
+    node: Node<'_>,
     crumbs: &mut Vec<usize>,
     now: i64,
     found: &mut Vec<Candidate>,
@@ -93,11 +93,11 @@ fn visit(
         });
         return;
     }
-    let name = &*node.name;
+    let name = node.name();
     let scratch = node.category == Category::AgentScratch;
     if scratch && name.eq_ignore_ascii_case("worktrees") {
-        let trees: Vec<&Node> = node
-            .children
+        let trees: Vec<Node<'_>> = node
+            .children()
             .iter()
             .filter(|child| child.is_dir())
             .collect();
@@ -123,7 +123,7 @@ fn visit(
         && (name.eq_ignore_ascii_case("tries")
             || name.eq_ignore_ascii_case("experiments"));
     let mut stale = (0_usize, 0_u64);
-    for (index, child) in node.children.iter().enumerate() {
+    for (index, child) in node.children().iter().enumerate() {
         let is_stale = experiments
             && child.is_dir()
             && child.modified > 0
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn ranks_findings_largest_first_and_skips_the_tiny() {
-        let found = worth_a_look(&home(), NOW, 10);
+        let found = worth_a_look(home().root(), NOW, 10);
         let kinds: Vec<&Finding> = found.iter().map(|c| &c.finding).collect();
         assert_eq!(
             kinds,
@@ -238,14 +238,15 @@ mod tests {
 
     #[test]
     fn documents_are_never_suggested() {
-        let found = worth_a_look(&home(), NOW, 10);
+        let found = worth_a_look(home().root(), NOW, 10);
         assert!(found.iter().all(|c| c.crumbs != vec![3]));
     }
 
     #[test]
     fn crumbs_address_the_finding_from_the_root() {
-        let root = home();
-        for candidate in worth_a_look(&root, NOW, 10) {
+        let tree = home();
+        let root = tree.root();
+        for candidate in worth_a_look(root, NOW, 10) {
             let node = root.resolve(&candidate.crumbs).expect("resolves");
             assert!(node.is_dir());
         }
@@ -253,7 +254,7 @@ mod tests {
 
     #[test]
     fn the_limit_keeps_the_largest() {
-        let found = worth_a_look(&home(), NOW, 2);
+        let found = worth_a_look(home().root(), NOW, 2);
         assert_eq!(found.len(), 2);
         assert_eq!(
             found[1].finding,

@@ -67,8 +67,8 @@ impl Sharing {
 }
 
 /// Leaf metadata is already retained; do not allocate another box per clone.
-pub(crate) fn leaf_summary(node: &Node) -> Sharing {
-    let Some(allocation) = node.allocation.as_deref() else {
+pub(crate) fn leaf_summary(node: Node<'_>) -> Sharing {
+    let Some(allocation) = node.allocation() else {
         return Sharing::default();
     };
     let mut summary = Sharing {
@@ -154,16 +154,16 @@ fn collect(
     node: &mut NodeMut<'_>,
     limit: usize,
 ) -> (Groups, reclaim::Accumulator) {
-    let mut allocation = if node.is_dir() {
+    let mut allocation = if node.kind.is_dir() {
         reclaim::Accumulator::new(limit)
     } else {
-        reclaim::Accumulator::leaf(node, limit)
+        reclaim::Accumulator::leaf(node.node(), limit)
     };
     let mut groups = Groups::default();
     let mut summary = Sharing::default();
     if let Some(info) = node
-        .allocation
-        .as_deref()
+        .node()
+        .allocation()
         .and_then(|allocation| allocation.clone)
         .filter(|_| node.bytes > 0)
     {
@@ -187,9 +187,10 @@ fn collect(
             );
         }
     }
-    for mut child in node.children_mut() {
+    node.for_each_child_mut(|mut child| {
         let (mut child_groups, child_allocation) = collect(&mut child, limit);
         allocation.merge(child_allocation);
+        let child = child.node();
         summary.duplicate_bytes = summary
             .duplicate_bytes
             .saturating_add(child.sharing().duplicate_bytes);
@@ -224,14 +225,15 @@ fn collect(
                 })
                 .or_insert(group);
         }
-    }
-    if node.allocation.as_deref().is_some_and(|info| info.followed) {
+    });
+    let allocated = node.node().allocation().is_some();
+    if node.node().allocation().is_some_and(|info| info.followed) {
         allocation = reclaim::Accumulator::new(limit);
     }
     summary.estimate = Some(allocation.estimate());
-    let kept = node.is_dir()
+    let kept = node.kind.is_dir()
         && (summary.files > 0
-            || node.allocation.is_some()
+            || allocated
             || allocation.needs_selection()
             || summary.reclaimable(node.bytes) != node.bytes
             || summary.possible(node.bytes) != node.bytes);
@@ -270,7 +272,7 @@ mod tests {
             vec![clone("a", 1, 1, Some(0)), clone("b", 1, 1, Some(0))];
         let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
-        assert_eq!(root.sharing().reclaimable(root.bytes), 80);
+        assert_eq!(root.root().sharing().reclaimable(root.root().bytes), 80);
     }
 
     #[test]
@@ -281,8 +283,8 @@ mod tests {
         let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         collect(&mut root.root_mut(), 1);
-        assert!(root.sharing().groups_truncated);
-        assert_eq!(root.sharing().private_bytes, 40);
+        assert!(root.root().sharing().groups_truncated);
+        assert_eq!(root.root().sharing().private_bytes, 40);
     }
 
     #[test]
@@ -295,11 +297,11 @@ mod tests {
         ];
         let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
-        assert_eq!(root.bytes, 300);
-        assert_eq!(root.sharing().duplicate_bytes, 80);
-        assert_eq!(root.sharing().reclaimable(root.bytes), 140);
+        assert_eq!(root.root().bytes, 300);
+        assert_eq!(root.root().sharing().duplicate_bytes, 80);
+        assert_eq!(root.root().sharing().reclaimable(root.root().bytes), 140);
         aggregate(&mut root, Metric::Files);
-        assert_eq!(root.sharing().duplicate_bytes, 80);
+        assert_eq!(root.root().sharing().duplicate_bytes, 80);
     }
 
     #[test]
@@ -310,9 +312,10 @@ mod tests {
         let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         // Each still shares 40 of its 100 bytes: one copy of that repeats.
-        assert_eq!(root.sharing().duplicate_bytes, 40);
+        assert_eq!(root.root().sharing().duplicate_bytes, 40);
         assert!(
-            root.sharing().duplicate_bytes <= root.sharing().shared_bytes()
+            root.root().sharing().duplicate_bytes
+                <= root.root().sharing().shared_bytes()
         );
     }
 
@@ -326,8 +329,8 @@ mod tests {
         ];
         let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
-        assert_eq!(root.sharing().unknown_files, 1);
-        assert_eq!(root.sharing().reclaimable(root.bytes), 130);
+        assert_eq!(root.root().sharing().unknown_files, 1);
+        assert_eq!(root.root().sharing().reclaimable(root.root().bytes), 130);
     }
 
     #[test]
@@ -341,9 +344,9 @@ mod tests {
         }
         let mut root = Tree::from(root);
         aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
-        assert_eq!(root.sharing().files, 1);
-        assert_eq!(root.sharing().bytes, 100);
-        assert_eq!(root.sharing().duplicate_bytes, 0);
+        assert_eq!(root.root().sharing().files, 1);
+        assert_eq!(root.root().sharing().bytes, 100);
+        assert_eq!(root.root().sharing().duplicate_bytes, 0);
     }
 
     #[test]
@@ -356,14 +359,14 @@ mod tests {
         }
         let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
-        assert_eq!(root.sharing().duplicate_bytes, 80);
-        assert_eq!(root.children[0].sharing().duplicate_bytes, 0);
+        assert_eq!(root.root().sharing().duplicate_bytes, 80);
+        assert_eq!(root.root().children().at(0).sharing().duplicate_bytes, 0);
         // Removing a directory is a rescan into a new tree.
-        let mut draft = root.to_draft();
+        let mut draft = root.root().to_draft();
         draft.children.pop();
         let mut root = Tree::from(draft);
         aggregate(&mut root, Metric::Bytes);
-        assert_eq!(root.sharing().duplicate_bytes, 0);
-        assert_eq!(root.sharing().files, 1);
+        assert_eq!(root.root().sharing().duplicate_bytes, 0);
+        assert_eq!(root.root().sharing().files, 1);
     }
 }

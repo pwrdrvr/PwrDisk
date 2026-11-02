@@ -46,13 +46,12 @@ fn main() -> io::Result<()> {
         "decode" => {
             let snapshot =
                 read_snapshot(&mut BufReader::new(File::open(path)?))?;
-            eprintln!(
-                "files={} bytes={}",
-                snapshot.tree.files, snapshot.tree.bytes
-            );
+            let tree = snapshot.tree.root();
+            eprintln!("files={} bytes={}", tree.files, tree.bytes);
         }
         "scan" => {
             let tree = scan(path, ScanOptions::default())?;
+            let tree = tree.root();
             eprintln!("files={} bytes={}", tree.files, tree.bytes);
         }
         "ssh" | "ssh-plain" => {
@@ -94,7 +93,7 @@ fn main() -> io::Result<()> {
             if !child.wait()?.success() {
                 return Err(io::Error::other("fixture SSH failed"));
             }
-            eprintln!("files={}", snapshot.tree.files);
+            eprintln!("files={}", snapshot.tree.root().files);
         }
         "stream" => {
             let request = serde_json::to_vec(&serde_json::json!({

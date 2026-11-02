@@ -33,7 +33,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 use crate::scan::{ScanOptions, ScanProgress};
-use crate::tree::{Built, Facts, Herd, Member, NodeKind, Tree};
+use crate::tree::{Builder, Built, Facts, NodeKind, Tree};
 use crate::windows::{Aligned, drive_letter};
 
 /// Most bytes read per call: large enough that the disk streams, small
@@ -1055,14 +1055,13 @@ impl Table<'_> {
 
     /// The tree beneath the root directory, named `name`.
     fn tree(&self, name: &str) -> Result<Tree, Stop> {
-        Tree::try_build(|herd| self.directory(herd, &herd.get(), ROOT, name, 0))
+        Tree::try_build(|builder| self.directory(builder, ROOT, name, 0))
     }
 
     /// Mirrors what the walk keeps: see `WalkContext::classify`.
     fn directory<'h>(
         &self,
-        herd: &'h Herd,
-        member: &Member<'h>,
+        builder: &'h Builder,
         number: u32,
         name: &str,
         depth: usize,
@@ -1073,7 +1072,7 @@ impl Table<'_> {
         let descend = self.options.max_depth.is_none_or(|max| depth < max);
         let sequence =
             self.infos.get(number as usize).map(|info| info.sequence);
-        let child = |member: &Member<'h>, entry: &Entry| {
+        let child = |entry: &Entry| {
             // A root directory holds hundreds of thousands of files; a
             // check per entry lets a cancel stop within one.
             if self.progress.is_cancelled() {
@@ -1083,35 +1082,31 @@ impl Table<'_> {
             if Some(entry.parent_sequence) != sequence {
                 return None;
             }
-            self.child(herd, member, entry, depth, descend).transpose()
+            self.child(builder, entry, depth, descend).transpose()
         };
         let entries = self.entries(number);
         // See `tree::PARALLEL_LEVELS`: parallel only near the top.
         let children = if depth < crate::tree::PARALLEL_LEVELS {
-            // An arena per piece of the split, not per entry.
             entries
                 .par_iter()
-                .map_init(|| herd.get(), |member, entry| child(member, entry))
-                .flatten()
+                .filter_map(child)
                 .collect::<Result<_, _>>()?
         } else {
             // Sized up front: nearly every entry becomes a child, and a
             // list grown by doubling copies its nodes over and over.
             let mut children = Vec::with_capacity(entries.len());
-            for node in entries.iter().filter_map(|entry| child(member, entry))
-            {
+            for node in entries.iter().filter_map(child) {
                 children.push(node?);
             }
             children
         };
-        Ok(member.directory(name, Facts::directory(), None, children))
+        Ok(builder.directory(name, Facts::directory(), None, children))
     }
 
     /// The node for `entry`; `None` for one the walk would not list.
     fn child<'h>(
         &self,
-        herd: &'h Herd,
-        member: &Member<'h>,
+        builder: &'h Builder,
         entry: &Entry,
         depth: usize,
         descend: bool,
@@ -1140,7 +1135,7 @@ impl Table<'_> {
                 return Ok(None);
             }
             return self
-                .directory(herd, member, entry.child, name, depth + 1)
+                .directory(builder, entry.child, name, depth + 1)
                 .map(Some);
         }
         let size = if self.options.apparent_size {
@@ -1159,7 +1154,7 @@ impl Table<'_> {
             facts.inode = NonZeroU64::new(u64::from(entry.child))
                 .map(|record| (0, record));
         }
-        Ok(Some(member.leaf(name, facts, None)))
+        Ok(Some(builder.leaf(name, facts, None)))
     }
 }
 
@@ -1580,12 +1575,12 @@ mod tests {
     }
 
     fn paths(
-        node: &crate::tree::Node,
+        node: crate::tree::Node<'_>,
         prefix: &str,
         out: &mut Vec<(String, NodeKind)>,
     ) {
-        for child in &node.children {
-            let path = format!("{prefix}{}", child.name);
+        for child in node.children() {
+            let path = format!("{prefix}{}", child.name());
             out.push((path.clone(), child.kind));
             paths(child, &format!("{path}/"), out);
         }
@@ -1683,8 +1678,9 @@ mod tests {
             else {
                 panic!("the table is not cut short");
             };
+            let root = root.root();
             let mut found = Vec::new();
-            paths(&root, "", &mut found);
+            paths(root, "", &mut found);
             found.sort_by(|left, right| left.0.cmp(&right.0));
             let kind = |path: &str| match path {
                 "link" => NodeKind::Symlink,

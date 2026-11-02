@@ -12,9 +12,7 @@
 
 use std::borrow::Cow;
 
-use rayon::prelude::*;
-
-use crate::tree::{Node, NodeMut, Tree};
+use crate::tree::{Children, Node, NodeMut, Tree};
 
 /// A kind of data, for colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -269,86 +267,72 @@ pub fn reclaim_of(
 /// space is inherited too, so everything under a cache is hatched.
 pub fn classify(tree: &mut Tree) {
     let mut root = tree.root_mut();
-    if let Some(category) = category_of_name(&root.name)
+    if let Some(category) = category_of_name(root.node().name())
         && matches!(category, Category::FilesystemEvents | Category::Spotlight)
     {
-        classify_below(&mut root, category, None, 0);
+        classify_below(&mut root, category, None);
         return;
     }
-    if is_pnpm_store(&root) {
+    if is_pnpm_store(root.node()) {
         classify_below(
             &mut root,
             Category::Toolchain,
             Some(Reclaim::PackageStore),
-            0,
         );
         return;
     }
     let facts = root.facts_mut();
     facts.category = Category::Other;
     facts.reclaim = None;
-    for index in 0..root.children.len() {
-        let siblings = &root.children;
+    for index in 0..root.child_count() {
+        let siblings = root.node().children();
         let has_sibling =
-            |wanted: &str| siblings.iter().any(|name| &*name.name == wanted);
-        let child = &siblings[index];
+            |wanted: &str| siblings.iter().any(|name| name.name() == wanted);
+        let child = siblings.at(index);
         // Only evidence about this directory may become an inherited kind.
         // Guessing from a descendant can turn a whole home into scratch.
-        let category = category_of_name(&child.name)
+        let category = category_of_name(child.name())
             .or_else(|| is_git_store(child).then_some(Category::Git))
             .unwrap_or(Category::Other);
         let reclaim = child
             .is_dir()
             .then(|| {
-                reclaim_of(&child.name, Category::Other, has_sibling).or_else(
+                reclaim_of(child.name(), Category::Other, has_sibling).or_else(
                     || is_pnpm_store(child).then_some(Reclaim::PackageStore),
                 )
             })
             .flatten();
         if let Some(mut child) = root.child_mut(index) {
-            classify_below(&mut child, category, reclaim, 1);
+            classify_below(&mut child, category, reclaim);
         }
     }
 }
 
+/// One directory at a time: each child's kind is read from its siblings
+/// before the child is written, and a write borrows the whole tree.
 fn classify_below(
     node: &mut NodeMut<'_>,
     category: Category,
     reclaim: Option<Reclaim>,
-    depth: usize,
 ) {
     let facts = node.facts_mut();
     facts.category = category;
     facts.reclaim = reclaim;
     // Most directories hold only files, which take this one's kind as
     // they are: no list of kinds to build, no call per file.
-    if !node.children.iter().any(Node::is_dir) {
-        for mut child in node.children_mut() {
+    if !node.node().children().iter().any(Node::is_dir) {
+        node.for_each_child_mut(|mut child| {
             let facts = child.facts_mut();
             facts.category = category;
             facts.reclaim = reclaim;
-        }
+        });
         return;
     }
-    // See `tree::PARALLEL_LEVELS`: parallel only near the top. Deeper, the
-    // children are decided and descended one at a time, with no list of
-    // decisions: there are half a million directories to get through.
-    if depth < crate::tree::PARALLEL_LEVELS {
-        let kinds: Vec<(Category, Option<Reclaim>)> = (0..node.children.len())
-            .map(|index| kind_of(&node.children, index, category, reclaim))
-            .collect();
-        node.par_children_mut().zip(kinds).for_each(
-            |(mut child, (category, reclaim))| {
-                classify_below(&mut child, category, reclaim, depth + 1);
-            },
-        );
-    } else {
-        for index in 0..node.children.len() {
-            let (category, reclaim) =
-                kind_of(&node.children, index, category, reclaim);
-            if let Some(mut child) = node.child_mut(index) {
-                classify_below(&mut child, category, reclaim, depth + 1);
-            }
+    for index in 0..node.child_count() {
+        let (category, reclaim) =
+            kind_of(node.node().children(), index, category, reclaim);
+        if let Some(mut child) = node.child_mut(index) {
+            classify_below(&mut child, category, reclaim);
         }
     }
 }
@@ -356,12 +340,12 @@ fn classify_below(
 /// What the child at `index` is, given what its parent is: its own name
 /// wins, otherwise it inherits. A file always inherits.
 fn kind_of(
-    siblings: &[Node],
+    siblings: Children<'_>,
     index: usize,
     category: Category,
     reclaim: Option<Reclaim>,
 ) -> (Category, Option<Reclaim>) {
-    let child = &siblings[index];
+    let child = siblings.at(index);
     // These stores belong to macOS even when an internal folder is named
     // `cache` or `tmp`; raw deletion is not an appropriate cleanup method.
     if !child.is_dir()
@@ -370,8 +354,8 @@ fn kind_of(
         return (category, reclaim);
     }
     let has_sibling =
-        |wanted: &str| siblings.iter().any(|name| &*name.name == wanted);
-    let child_category = category_of_name(&child.name)
+        |wanted: &str| siblings.iter().any(|name| name.name() == wanted);
+    let child_category = category_of_name(child.name())
         .or_else(|| is_git_store(child).then_some(Category::Git))
         .unwrap_or(category);
     let child_reclaim = if matches!(
@@ -381,7 +365,7 @@ fn kind_of(
         None
     } else {
         reclaim
-            .or_else(|| reclaim_of(&child.name, category, has_sibling))
+            .or_else(|| reclaim_of(child.name(), category, has_sibling))
             .or_else(|| is_pnpm_store(child).then_some(Reclaim::PackageStore))
     };
     (child_category, child_reclaim)
@@ -390,27 +374,28 @@ fn kind_of(
 /// pnpm's versioned content-addressable store, not its installation prefix.
 /// `pnpm` also holds its executable, global tools and `.tools`; only a
 /// store with a version directory containing `files` is a cleanup candidate.
-fn is_pnpm_store(node: &Node) -> bool {
+fn is_pnpm_store(node: Node<'_>) -> bool {
     node.is_dir()
-        && matches!(&*node.name, "store" | ".pnpm-store")
-        && node.children.iter().any(|version| {
+        && matches!(node.name(), "store" | ".pnpm-store")
+        && node.children().iter().any(|version| {
             version.is_dir()
-                && version.name.strip_prefix('v').is_some_and(|number| {
+                && version.name().strip_prefix('v').is_some_and(|number| {
                     !number.is_empty()
                         && number.bytes().all(|c| c.is_ascii_digit())
                 })
                 && version
-                    .children
+                    .children()
                     .iter()
-                    .any(|child| child.is_dir() && &*child.name == "files")
+                    .any(|child| child.is_dir() && child.name() == "files")
         })
 }
 
 /// A git object store by its shape, whatever it is called: a bare
 /// repository, or a `.git` directory, has `objects`, `refs` and `HEAD`.
-pub fn is_git_store(node: &Node) -> bool {
-    let has =
-        |wanted: &str| node.children.iter().any(|child| &*child.name == wanted);
+pub fn is_git_store(node: Node<'_>) -> bool {
+    let has = |wanted: &str| {
+        node.children().iter().any(|child| child.name() == wanted)
+    };
     node.is_dir() && has("objects") && has("refs") && has("HEAD")
 }
 
@@ -488,13 +473,13 @@ mod tests {
         home
     }
 
-    fn named<'a>(node: &'a Node, path: &[&str]) -> &'a Node {
+    fn named<'a>(node: Node<'a>, path: &[&str]) -> Node<'a> {
         let mut node = node;
         for part in path {
             node = node
-                .children
+                .children()
                 .iter()
-                .find(|child| &*child.name == *part)
+                .find(|child| child.name() == *part)
                 .unwrap_or_else(|| panic!("no {part}"));
         }
         node
@@ -521,9 +506,13 @@ mod tests {
         let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         classify(&mut root);
-        let library = &root.children[0];
+        let library = root.root().children().at(0);
         assert_eq!(library.category, Category::Media);
-        let common = library.children[0].child_named("common").expect("common");
+        let common = library
+            .children()
+            .at(0)
+            .child_named("common")
+            .expect("common");
         assert_eq!(common.category, Category::Media);
         assert_eq!(common.reclaim, None, "installed games are not hatched");
     }
@@ -539,19 +528,19 @@ mod tests {
     #[test]
     fn names_announce_their_kind_and_children_inherit_it() {
         let home = home();
-        assert_eq!(named(&home, &["src"]).category, Category::Code);
+        assert_eq!(named(home.root(), &["src"]).category, Category::Code);
         // `tries` is agent scratch even inside code: it is what agents write.
         assert_eq!(
-            named(&home, &["src", "tries"]).category,
+            named(home.root(), &["src", "tries"]).category,
             Category::AgentScratch
         );
         assert_eq!(
-            named(&home, &["src", "tries", "2026-09-01"]).category,
+            named(home.root(), &["src", "tries", "2026-09-01"]).category,
             Category::AgentScratch,
             "an unknown name inherits"
         );
         assert_eq!(
-            named(&home, &["src", "tries", "2026-09-01", "a"]).category,
+            named(home.root(), &["src", "tries", "2026-09-01", "a"]).category,
             Category::AgentScratch,
             "files inherit too"
         );
@@ -560,15 +549,18 @@ mod tests {
     #[test]
     fn unknown_aggregates_do_not_guess_from_descendants() {
         let home = home();
-        assert_eq!(named(&home, &["world"]).category, Category::Other);
-        assert_eq!(named(&home, &["mystery"]).category, Category::Other);
+        assert_eq!(named(home.root(), &["world"]).category, Category::Other);
+        assert_eq!(named(home.root(), &["mystery"]).category, Category::Other);
         assert_eq!(
-            named(&home, &["world", "README"]).category,
+            named(home.root(), &["world", "README"]).category,
             Category::Other
         );
         // A bare repository is git by its shape, whatever it is called.
-        assert_eq!(named(&home, &["monorepo"]).category, Category::Other);
-        assert_eq!(named(&home, &["monorepo", "git"]).category, Category::Git);
+        assert_eq!(named(home.root(), &["monorepo"]).category, Category::Other);
+        assert_eq!(
+            named(home.root(), &["monorepo", "git"]).category,
+            Category::Git
+        );
     }
 
     #[test]
@@ -612,18 +604,21 @@ mod tests {
             vec!["pnpm", ".tools", "pnpm"],
             vec![".pnpm-store", "unverified"],
         ] {
-            assert_eq!(named(&root, &path).reclaim, None, "{path:?}");
+            assert_eq!(named(root.root(), &path).reclaim, None, "{path:?}");
         }
         assert_eq!(
-            named(&root, &["pnpm", "store", "v10", "files", "ab", "package"])
-                .reclaim,
+            named(
+                root.root(),
+                &["pnpm", "store", "v10", "files", "ab", "package"]
+            )
+            .reclaim,
             Some(Reclaim::PackageStore)
         );
         let mut standalone = store();
         standalone.name = ".pnpm-store".into();
         let mut standalone = Tree::from(standalone);
         classify(&mut standalone);
-        assert_eq!(standalone.reclaim, Some(Reclaim::PackageStore));
+        assert_eq!(standalone.root().reclaim, Some(Reclaim::PackageStore));
         assert_eq!(reclaim_of("pnpm", Category::Toolchain, |_| false), None);
         for contents in [
             dir("version", vec![dir("files", vec![])]),
@@ -634,8 +629,8 @@ mod tests {
             let unverified = dir(".pnpm-store", vec![contents]);
             let mut unverified = Tree::from(unverified);
             classify(&mut unverified);
-            assert_eq!(unverified.reclaim, None);
-            assert_eq!(unverified.children[0].reclaim, None);
+            assert_eq!(unverified.root().reclaim, None);
+            assert_eq!(unverified.root().children().at(0).reclaim, None);
         }
     }
 
@@ -681,7 +676,7 @@ mod tests {
             vec!["Users", "fixture", "Library", "VM data", "disk"],
             vec!["Users", "fixture", "Library", "snapshots"],
         ] {
-            let node = named(&root, &path);
+            let node = named(root.root(), &path);
             assert_eq!(node.category, Category::Other, "{path:?}");
             assert_eq!(node.reclaim, None, "{path:?}");
         }
@@ -694,7 +689,7 @@ mod tests {
         ] {
             let found = find(
                 Path::new("/"),
-                &root,
+                root.root(),
                 &Filter {
                     category: Some(category),
                     ..Filter::default()
@@ -706,7 +701,7 @@ mod tests {
         }
         assert_eq!(
             named(
-                &root,
+                root.root(),
                 &[
                     "Users",
                     "fixture",
@@ -734,28 +729,28 @@ mod tests {
     fn caches_are_reclaimable_all_the_way_down() {
         let home = home();
         assert_eq!(
-            named(&home, &[".cache"]).reclaim,
+            named(home.root(), &[".cache"]).reclaim,
             Some(Reclaim::Regenerable)
         );
         assert_eq!(
-            named(&home, &[".cache", "kache", "store"]).reclaim,
+            named(home.root(), &[".cache", "kache", "store"]).reclaim,
             Some(Reclaim::Regenerable)
         );
         assert_eq!(
-            named(&home, &["Sync", ".stversions"]).reclaim,
+            named(home.root(), &["Sync", ".stversions"]).reclaim,
             Some(Reclaim::SyncHistory)
         );
-        assert_eq!(named(&home, &["src"]).reclaim, None);
+        assert_eq!(named(home.root(), &["src"]).reclaim, None);
     }
 
     #[test]
     fn target_is_build_output_only_beside_a_cargo_manifest() {
         let home = home();
         assert_eq!(
-            named(&home, &["rust-thing", "target"]).reclaim,
+            named(home.root(), &["rust-thing", "target"]).reclaim,
             Some(Reclaim::BuildOutput)
         );
-        assert_eq!(named(&home, &["js-thing", "target"]).reclaim, None);
+        assert_eq!(named(home.root(), &["js-thing", "target"]).reclaim, None);
     }
 
     #[test]
@@ -764,12 +759,12 @@ mod tests {
         // .microsandbox/cache is already a regenerable cache, so its layers
         // inherit that; the snapshots are judged on their own.
         assert!(
-            named(&home, &[".microsandbox", "cache", "layers"])
+            named(home.root(), &[".microsandbox", "cache", "layers"])
                 .reclaim
                 .is_some()
         );
         assert_eq!(
-            named(&home, &[".microsandbox", "snapshots"]).reclaim,
+            named(home.root(), &[".microsandbox", "snapshots"]).reclaim,
             Some(Reclaim::Snapshots)
         );
         assert_eq!(
@@ -855,18 +850,23 @@ mod tests {
             let mut store = Tree::from(store);
             aggregate(&mut store, Metric::Bytes);
             classify(&mut store);
-            assert_eq!(store.category, category);
-            assert_eq!(store.children[0].category, category);
-            assert_eq!(store.children[0].children[0].category, category);
-            assert_eq!(store.children[0].reclaim, None);
-            assert_eq!(store.bytes, 123);
+            let root = store.root();
+            assert_eq!(root.category, category);
+            assert_eq!(root.children().at(0).category, category);
+            assert_eq!(
+                root.children().at(0).children().at(0).category,
+                category
+            );
+            assert_eq!(root.children().at(0).reclaim, None);
+            assert_eq!(root.bytes, 123);
             let volume =
-                dir("volume", vec![store.to_draft(), dir("ordinary", vec![])]);
+                dir("volume", vec![root.to_draft(), dir("ordinary", vec![])]);
             let mut volume = Tree::from(volume);
             classify(&mut volume);
-            assert_eq!(volume.children[0].category, category);
-            assert_eq!(volume.children[1].category, Category::Other);
-            assert_eq!(volume.children[0].reclaim, None);
+            let volume = volume.root();
+            assert_eq!(volume.children().at(0).category, category);
+            assert_eq!(volume.children().at(1).category, Category::Other);
+            assert_eq!(volume.children().at(0).reclaim, None);
         }
     }
 

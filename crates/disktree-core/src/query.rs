@@ -55,7 +55,7 @@ pub struct Filter {
 }
 
 impl Filter {
-    pub fn matches(&self, node: &Node) -> bool {
+    pub fn matches(&self, node: Node<'_>) -> bool {
         let kind_ok = match self.kind {
             Kind::Any => true,
             Kind::File => !node.is_dir(),
@@ -70,7 +70,7 @@ impl Filter {
             && self
                 .name
                 .as_deref()
-                .is_none_or(|name| node.name.to_lowercase().contains(name))
+                .is_none_or(|name| node.name().to_lowercase().contains(name))
             && self.before.is_none_or(|before| {
                 node.modified > 0 && node.modified < before
             })
@@ -82,8 +82,8 @@ impl Filter {
     pub fn collect<'a>(
         &self,
         path: &Path,
-        node: &'a Node,
-        found: &mut Vec<(PathBuf, &'a Node)>,
+        node: Node<'a>,
+        found: &mut Vec<(PathBuf, Node<'a>)>,
     ) {
         if node.bytes < self.min_bytes || node.kind == NodeKind::Other {
             return;
@@ -92,8 +92,8 @@ impl Filter {
             found.push((path.to_path_buf(), node));
             return;
         }
-        for child in &node.children {
-            self.collect(&path.join(&*child.name), child, found);
+        for child in node.children() {
+            self.collect(&path.join(child.name()), child, found);
         }
     }
 }
@@ -102,7 +102,7 @@ impl Filter {
 #[derive(Clone, Debug, Default)]
 pub struct Found<'a> {
     /// The largest matches, largest first, at most the limit asked for.
-    pub matches: Vec<(PathBuf, &'a Node)>,
+    pub matches: Vec<(PathBuf, Node<'a>)>,
     /// How many matched in all.
     pub count: usize,
     /// Bytes of every match, not only the ones listed.
@@ -113,13 +113,13 @@ pub struct Found<'a> {
 /// `filter`. The root itself is never a match.
 pub fn find<'a>(
     root_path: &Path,
-    root: &'a Node,
+    root: Node<'a>,
     filter: &Filter,
     limit: usize,
 ) -> Found<'a> {
     let mut matches = Vec::new();
-    for child in &root.children {
-        filter.collect(&root_path.join(&*child.name), child, &mut matches);
+    for child in root.children() {
+        filter.collect(&root_path.join(child.name()), child, &mut matches);
     }
     matches.sort_by_key(|(_, node)| std::cmp::Reverse(node.bytes));
     let count = matches.len();
@@ -168,11 +168,12 @@ mod tests {
 
     #[test]
     fn reclaimable_matches_are_topmost_and_largest_first() {
-        let root = tree();
+        let tree = tree();
+        let root = tree.root();
         let root_path = Path::new("/r");
         let found = find(
             root_path,
-            &root,
+            root,
             &Filter {
                 reclaimable: true,
                 ..Filter::default()
@@ -194,10 +195,11 @@ mod tests {
 
     #[test]
     fn files_over_a_size_and_names_and_ages_filter() {
-        let root = tree();
+        let tree = tree();
+        let root = tree.root();
         let big = find(
             Path::new("/r"),
-            &root,
+            root,
             &Filter {
                 kind: Kind::File,
                 min_bytes: 260,
@@ -206,12 +208,12 @@ mod tests {
             10,
         );
         assert_eq!(big.matches.len(), 2);
-        assert_eq!(&*big.matches[0].1.name, "blob.bin");
-        assert_eq!(&*big.matches[1].1.name, "app");
+        assert_eq!(big.matches[0].1.name(), "blob.bin");
+        assert_eq!(big.matches[1].1.name(), "app");
 
         let named = find(
             Path::new("/r"),
-            &root,
+            root,
             &Filter {
                 name: Some("iso".into()),
                 ..Filter::default()
@@ -219,13 +221,13 @@ mod tests {
             1,
         );
         assert_eq!(named.count, 1);
-        assert_eq!(&*named.matches[0].1.name, "Movie.iso");
+        assert_eq!(named.matches[0].1.name(), "Movie.iso");
 
         // Older than 2_000: blob.bin (1_000), not main.rs (5_000), and not
         // the unknown-age iso.
         let old = find(
             Path::new("/r"),
-            &root,
+            root,
             &Filter {
                 kind: Kind::File,
                 before: Some(2_000),
@@ -234,10 +236,10 @@ mod tests {
             10,
         );
         assert_eq!(old.count, 1);
-        assert_eq!(&*old.matches[0].1.name, "blob.bin");
+        assert_eq!(old.matches[0].1.name(), "blob.bin");
 
         // The limit trims the list but not the totals.
-        let one = find(Path::new("/r"), &root, &Filter::default(), 1);
+        let one = find(Path::new("/r"), root, &Filter::default(), 1);
         assert_eq!(one.matches.len(), 1);
         assert_eq!(one.count, 3);
     }

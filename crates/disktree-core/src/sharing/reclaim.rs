@@ -83,10 +83,10 @@ impl Accumulator {
         }
     }
 
-    pub(super) fn leaf(node: &Node, limit: usize) -> Self {
+    pub(super) fn leaf(node: Node<'_>, limit: usize) -> Self {
         work();
         let mut acc = Self::new(limit);
-        if let Some(allocation) = node.allocation.as_deref() {
+        if let Some(allocation) = node.allocation() {
             if allocation.followed {
                 return acc;
             }
@@ -267,7 +267,7 @@ const fn replace(total: &mut Estimate, before: Estimate, after: Estimate) {
 /// groups spanning separate marks receive credit once.
 ///
 /// Callers cache this scan-derived answer; removal authorization must still be checked afresh.
-pub fn estimate<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Estimate {
+pub fn estimate<'a>(nodes: impl IntoIterator<Item = Node<'a>>) -> Estimate {
     let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
     for node in nodes {
         total.merge(gather(node));
@@ -275,8 +275,8 @@ pub fn estimate<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Estimate {
     total.estimate()
 }
 
-fn gather(node: &Node) -> Accumulator {
-    if node.allocation.as_deref().is_some_and(|info| info.followed) {
+fn gather(node: Node<'_>) -> Accumulator {
+    if node.allocation().is_some_and(|info| info.followed) {
         return Accumulator::new(super::MAX_CLONE_GROUPS);
     }
     if !node.is_dir() {
@@ -286,7 +286,7 @@ fn gather(node: &Node) -> Accumulator {
     // Aggregation retains a summary on any subtree whose metadata can
     // interact with another mark, including zero-weight hardlink aliases.
     // Ordinary subtrees need no second walk after a mark changes.
-    if node.sharing.is_none() {
+    if node.stored_sharing().is_none() {
         let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
         total.base = Estimate {
             lower: node.bytes,
@@ -296,7 +296,7 @@ fn gather(node: &Node) -> Accumulator {
         return total;
     }
     let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
-    for child in &node.children {
+    for child in node.children() {
         total.merge(gather(child));
     }
     total
@@ -382,9 +382,10 @@ mod tests {
         }
         let mut root = Tree::from(root);
         aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
-        let selected = &root.children[..10];
+        let root = root.root();
+        let selected = root.children().iter().take(10);
         assert_eq!(
-            selected.iter().map(|n| n.bytes).sum::<u64>(),
+            selected.clone().map(|n| n.bytes).sum::<u64>(),
             100 * 1024 * MIB
         );
         assert_eq!(
@@ -396,8 +397,8 @@ mod tests {
             }
         );
         // Including the surviving member completes the union exactly once.
-        assert_eq!(estimate(&root.children).lower, LISTED + 450 * MIB);
-        assert_eq!(estimate(&root.children).upper, LISTED + 450 * MIB);
+        assert_eq!(estimate(root.children()).lower, LISTED + 450 * MIB);
+        assert_eq!(estimate(root.children()).upper, LISTED + 450 * MIB);
     }
 
     #[test]
@@ -429,12 +430,13 @@ mod tests {
         }
         let mut root = Tree::from(root);
         aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
+        let root = root.root();
         assert_eq!(root.bytes, 4096);
-        for child in &root.children {
+        for child in root.children() {
             assert_eq!(estimate([child]).lower, 0);
             assert_eq!(child.sharing().reclaimable(child.bytes), 0);
         }
-        assert_eq!(estimate(&root.children).lower, 4096);
+        assert_eq!(estimate(root.children()).lower, 4096);
         assert_eq!(root.sharing().reclaimable(root.bytes), 4096);
     }
 
@@ -449,12 +451,13 @@ mod tests {
         }
         let mut root = Tree::from(root);
         aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
+        let root = root.root();
         assert_eq!(root.bytes, 8192);
         assert_eq!(root.sharing().duplicate_bytes, 4096);
-        assert_eq!(estimate(root.children.iter().take(2)).lower, 0);
-        assert_eq!(estimate(&root.children).lower, 4096);
+        assert_eq!(estimate(root.children().iter().take(2)).lower, 0);
+        assert_eq!(estimate(root.children()).lower, 4096);
         assert_eq!(root.sharing().reclaimable(root.bytes), 4096);
-        assert_eq!(estimate(&root.children).upper, 4096);
+        assert_eq!(estimate(root.children()).upper, 4096);
     }
 
     #[test]
@@ -520,7 +523,7 @@ mod tests {
                 info.id = group;
                 info.private_bytes = Some(1024);
                 total.merge(Accumulator::leaf(
-                    &Tree::from(file("f", inode, 1, Some(info))),
+                    Tree::from(file("f", inode, 1, Some(info))).root(),
                     1,
                 ));
             }

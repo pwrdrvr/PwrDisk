@@ -50,6 +50,7 @@ fn main() {
         }
         std::thread::sleep(Duration::from_millis(20));
     };
+    let node = node.root();
     let elapsed = start.elapsed().as_secs_f64();
     let progress = handle.progress.snapshot();
     println!(

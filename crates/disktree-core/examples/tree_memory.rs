@@ -2,10 +2,11 @@
 //! `cargo run --release -p disktree-core --example tree_memory -- PATH`
 //!
 //! Scans PATH, then reports the process's physical footprint (resident
-//! plus compressed, what Activity Monitor calls Memory), the time to copy
-//! and re-rank the tree as the size/files toggle does, and the time and
-//! page faults of dropping each copy. Run it in a fresh process each time:
-//! a drop's cost depends on what the allocator and the compressor hold.
+//! plus compressed, what Activity Monitor calls Memory) after the scan and
+//! at its highest so far, the time to copy and re-rank the tree as the
+//! size/files toggle does, and the time and page faults of dropping each
+//! copy. Run it in a fresh process each time: a drop's cost depends on
+//! what the allocator and the compressor hold.
 
 #![allow(
     unsafe_code,
@@ -25,17 +26,21 @@ fn main() -> std::io::Result<()> {
         .nth(1)
         .map_or_else(|| PathBuf::from("."), PathBuf::from);
 
-    let before = footprint_mib();
+    let (before, _) = footprint_mib();
     let started = Instant::now();
     let tree = scan(&root, ScanOptions::default())?;
+    let scanned = started.elapsed().as_secs_f64();
+    let (now, peak) = footprint_mib();
     let arena = tree.arena_bytes();
+    let (allocations, sharings, both) = tree.side_records();
     println!(
-        "scan={:.2}s files={} dirs={} footprint+={:.0}MiB \
-         arena_used={:.0}MiB arena_reserved={:.0}MiB",
-        started.elapsed().as_secs_f64(),
-        tree.files,
-        tree.dirs,
-        footprint_mib() - before,
+        "scan={scanned:.2}s files={} dirs={} footprint+={:.0}MiB \
+         peak+={:.0}MiB arena_used={:.0}MiB arena_reserved={:.0}MiB \
+         allocations={allocations} sharings={sharings} both={both}",
+        tree.root().files,
+        tree.root().dirs,
+        now - before,
+        peak - before,
         arena.used as f64 / MIB,
         arena.reserved as f64 / MIB,
     );
@@ -45,9 +50,16 @@ fn main() -> std::io::Result<()> {
     let cloned = started.elapsed().as_secs_f64();
     let started = Instant::now();
     aggregate(&mut copy, Metric::Files);
+    let aggregated = started.elapsed().as_secs_f64();
+    let started = Instant::now();
+    disktree_core::classify::classify(&mut copy);
+    let classified = started.elapsed().as_secs_f64();
+    let (now, peak) = footprint_mib();
     println!(
-        "toggle: copy={cloned:.2}s aggregate={:.2}s",
-        started.elapsed().as_secs_f64()
+        "toggle: copy={cloned:.2}s aggregate={aggregated:.2}s \
+         classify={classified:.2}s footprint+={:.0}MiB peak+={:.0}MiB",
+        now - before,
+        peak - before,
     );
     timed_drop("copy", copy);
     timed_drop("scanned tree", tree);
@@ -71,18 +83,21 @@ fn faults() -> (i64, i64) {
     (usage.ru_minflt, usage.ru_majflt)
 }
 
-/// Resident plus compressed: plain RSS leaves out what the compressor
-/// holds, which on a large tree is most of it.
+/// Resident plus compressed, now and at its highest: plain RSS leaves out
+/// what the compressor holds, which on a large tree is most of it.
 #[cfg(target_os = "macos")]
-fn footprint_mib() -> f64 {
-    // SAFETY: proc_pid_rusage fills the v2 struct it is given.
-    let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+fn footprint_mib() -> (f64, f64) {
+    // SAFETY: proc_pid_rusage fills the v4 struct it is given.
+    let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
     let pid = i32::try_from(std::process::id()).expect("a pid fits");
     // SAFETY: as above.
     unsafe {
-        libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, (&raw mut info).cast())
+        libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V4, (&raw mut info).cast())
     };
-    info.ri_phys_footprint as f64 / MIB
+    (
+        info.ri_phys_footprint as f64 / MIB,
+        info.ri_lifetime_max_phys_footprint as f64 / MIB,
+    )
 }
 
 #[cfg(target_os = "macos")]

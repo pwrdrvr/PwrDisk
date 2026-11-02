@@ -902,10 +902,11 @@ mod clone_tests {
                 .expect("private file");
         }
         let tree = scan(temp.path(), ScanOptions::default()).expect("scan");
+        let tree = tree.root();
         let selected: Vec<_> = tree
-            .children
+            .children()
             .iter()
-            .filter(|node| node.name.starts_with("worktree-"))
+            .filter(|node| node.name().starts_with("worktree-"))
             .collect();
         assert_eq!(selected.len(), 10);
         assert_eq!(
@@ -922,6 +923,7 @@ mod clone_tests {
     fn real_clones_keep_listed_bytes_and_report_sharing() {
         let temp = fixture();
         let tree = scan(temp.path(), ScanOptions::default()).expect("scan");
+        let tree = tree.root();
         assert_eq!(tree.bytes, 16 * 1024 * 1024);
         assert_eq!(tree.sharing().files, 2, "{tree:#?}");
         assert_eq!(tree.sharing().bytes, tree.bytes);
@@ -936,6 +938,7 @@ mod clone_tests {
             },
         )
         .expect("scan without clone metadata");
+        let baseline = baseline.root();
         assert_eq!(baseline.bytes, tree.bytes);
         assert_eq!(baseline.sharing().files, 0);
         let apparent = scan(
@@ -946,7 +949,7 @@ mod clone_tests {
             },
         )
         .expect("apparent scan");
-        assert_eq!(apparent.sharing().files, 0);
+        assert_eq!(apparent.root().sharing().files, 0);
     }
 
     #[test]
@@ -964,10 +967,11 @@ mod clone_tests {
             },
         )
         .expect("scan");
+        let tree = tree.root();
         let by_name = |name: &str| {
-            tree.children
+            tree.children()
                 .iter()
-                .find(|node| node.name.as_ref() == name)
+                .find(|node| node.name() == name)
                 .expect("entry")
         };
         let original = by_name("original");
@@ -985,8 +989,7 @@ mod clone_tests {
         assert_eq!(tree.sharing().reclaimable(tree.bytes), 8 * 1024 * 1024);
         for node in [original, alias, clone] {
             assert_ne!(
-                node.allocation
-                    .as_deref()
+                node.allocation()
                     .expect("allocation")
                     .clone
                     .expect("clone")
@@ -1002,14 +1005,15 @@ mod clone_tests {
         let fork = temp.path().join("clone/..namedfork/rsrc");
         fs::write(fork, vec![0x31; 4096]).expect("resource fork");
         let tree = scan(temp.path(), ScanOptions::default()).expect("scan");
+        let tree = tree.root();
         assert_eq!(tree.sharing().private_bytes, 0);
         assert_eq!(tree.sharing().reclaimable(tree.bytes), 8 * 1024 * 1024);
         assert_eq!(tree.sharing().possible(tree.bytes), 8 * 1024 * 1024 + 4096);
         assert_eq!(tree.sharing().duplicate_bytes, 8 * 1024 * 1024);
         let clone = tree
-            .children
+            .children()
             .iter()
-            .find(|node| node.name.as_ref() == "clone")
+            .find(|node| node.name() == "clone")
             .expect("clone");
         assert_eq!(clone.sharing().reclaimable(clone.bytes), 0);
         assert_eq!(clone.sharing().possible(clone.bytes), 4096);
@@ -1038,6 +1042,7 @@ mod clone_tests {
                 },
             )
             .expect("scan");
+            let tree = tree.root();
             assert_eq!(tree.sharing().files, 2, "{tree:#?}");
             assert!(tree.sharing().private_bytes >= 4096);
             assert!(tree.sharing().private_bytes < tree.sharing().bytes);

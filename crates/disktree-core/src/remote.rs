@@ -301,9 +301,9 @@ fn serve_request_with_progress(
 #[cfg(not(unix))]
 fn write_node(
     out: &mut impl Write,
-    node: &crate::tree::Node,
+    node: crate::tree::Node<'_>,
 ) -> io::Result<()> {
-    for child in &node.children {
+    for child in node.children() {
         write_node(out, child)?;
     }
     let kind = match node.kind {
@@ -315,17 +315,17 @@ fn write_node(
     send(
         out,
         &Record(
-            if node.name.contains('/') {
+            if node.name().contains('/') {
                 "root".into()
             } else {
-                node.name.to_string()
+                node.name().to_string()
             },
             kind,
             node.own_bytes(),
             node.own_files(),
             node.modified,
             node.read_error,
-            node.children.len(),
+            node.children().len(),
         ),
     )
 }
@@ -363,8 +363,7 @@ fn read_snapshot_with_progress(
     };
     *shared.lock().expect("remote progress lock") = progress.clone();
     let mut published = Instant::now();
-    let mut tree = Tree::try_build(|herd| {
-        let member = herd.get();
+    let mut tree = Tree::try_build(|builder| {
         let mut stack = Vec::<Built<'_>>::new();
         let mut line = String::new();
         let seen = crate::tree::Seen::new();
@@ -470,7 +469,7 @@ fn read_snapshot_with_progress(
                 modified,
                 ..Facts::entry(kind, bytes)
             };
-            stack.push(member.directory(&name, facts, None, children));
+            stack.push(builder.directory(&name, facts, None, children));
             let mut preview_changed = false;
             if !ancestors.is_empty() {
                 if kind.is_dir() {
@@ -961,8 +960,8 @@ mod tests {
         let handle =
             RemoteScan::spawn_command(command, "fixture", &request).unwrap();
         let snapshot = wait(&handle).unwrap();
-        assert_eq!(snapshot.tree.bytes, 5);
-        assert_eq!(snapshot.tree.files, 1);
+        assert_eq!(snapshot.tree.root().bytes, 5);
+        assert_eq!(snapshot.tree.root().files, 1);
         assert_eq!(std::fs::read(dir.path().join("keep")).unwrap(), b"hello");
     }
 
@@ -1056,8 +1055,8 @@ mod tests {
             )
             .unwrap();
             let snapshot = wait(&handle).unwrap();
-            assert_eq!(snapshot.tree.bytes, 10);
-            assert_eq!(snapshot.tree.files, 2);
+            assert_eq!(snapshot.tree.root().bytes, 10);
+            assert_eq!(snapshot.tree.root().files, 2);
             assert_eq!(handle.progress().files, 2);
             assert!(snapshot.header.identity.is_some());
             assert_eq!(std::fs::read(&cached).unwrap(), bytes);
@@ -1133,15 +1132,15 @@ mod tests {
         .unwrap();
         let snapshot =
             wait_for(&scan, std::time::Duration::from_mins(3)).unwrap();
-        assert!(snapshot.tree.is_dir());
+        assert!(snapshot.tree.root().is_dir());
         assert!(snapshot.header.root.is_absolute());
         println!(
             "SSH {}: {} — {} bytes, {} files, {} directories; space: {:?}",
             host,
             snapshot.header.root.display(),
-            snapshot.tree.bytes,
-            snapshot.tree.files,
-            snapshot.tree.dirs,
+            snapshot.tree.root().bytes,
+            snapshot.tree.root().files,
+            snapshot.tree.root().dirs,
             snapshot.header.space,
         );
     }
@@ -1173,10 +1172,10 @@ mod tests {
     fn unix_names_with_backslashes_and_colons_reach_every_client() {
         let snapshot = read_snapshot(&mut unix_stream("linux").as_slice())
             .expect("a Unix host's names are accepted");
-        assert_eq!(snapshot.tree.files, 2);
+        assert_eq!(snapshot.tree.root().files, 2);
         let style = PathStyle::Posix;
         for name in [r"a\b", "c:d"] {
-            assert!(snapshot.tree.child_named(name).is_some());
+            assert!(snapshot.tree.root().child_named(name).is_some());
             let path = style.join(&snapshot.header.root, name);
             assert_eq!(path.to_str().unwrap(), format!("/srv/{name}"));
         }
@@ -1229,8 +1228,8 @@ mod tests {
         let mut data = Vec::new();
         serve(&mut input.as_slice(), &mut data).unwrap();
         let snapshot = read_snapshot(&mut data.as_slice()).unwrap();
-        assert_eq!(snapshot.tree.bytes, 1);
-        assert!(snapshot.tree.child_named(r"back\slash").is_some());
+        assert_eq!(snapshot.tree.root().bytes, 1);
+        assert!(snapshot.tree.root().child_named(r"back\slash").is_some());
     }
 
     #[cfg(unix)]
@@ -1285,7 +1284,7 @@ mod tests {
         }
         output.write_all(&tail).unwrap();
         let snapshot = worker.join().unwrap().unwrap();
-        assert_eq!(snapshot.tree.bytes, 5);
+        assert_eq!(snapshot.tree.root().bytes, 5);
         assert_eq!(shared.lock().unwrap().stage, Stage::Finalizing);
     }
 
@@ -1325,11 +1324,11 @@ mod tests {
             let snapshot =
                 read_snapshot_with_progress(&mut data.as_slice(), &shared)
                     .unwrap();
-            assert_eq!(snapshot.tree.bytes, if dedup { 10 } else { 15 });
-            assert_eq!(snapshot.tree.files, 3);
+            assert_eq!(snapshot.tree.root().bytes, if dedup { 10 } else { 15 });
+            assert_eq!(snapshot.tree.root().files, 3);
             let progress = shared.lock().unwrap();
-            assert_eq!(progress.bytes, snapshot.tree.bytes);
-            assert_eq!(progress.files, snapshot.tree.files);
+            assert_eq!(progress.bytes, snapshot.tree.root().bytes);
+            assert_eq!(progress.files, snapshot.tree.root().files);
             // Only the Unix streaming walker emits live-tree records; the
             // Windows fallback sends the completed tree without a preview.
             assert_eq!(progress.preview.is_some(), cfg!(unix));
@@ -1343,7 +1342,7 @@ mod tests {
                 assert_eq!(nested.files, 1);
                 assert_eq!(
                     preview.entries.iter().map(|e| e.bytes).sum::<u64>(),
-                    snapshot.tree.bytes
+                    snapshot.tree.root().bytes
                 );
             }
         }
@@ -1394,8 +1393,8 @@ mod tests {
         .unwrap();
         send(&mut data, &"done").unwrap();
         let snapshot = read_snapshot(&mut data.as_slice()).unwrap();
-        assert_eq!(snapshot.tree.files, count + 1);
-        assert_eq!(snapshot.tree.bytes, count);
+        assert_eq!(snapshot.tree.root().files, count + 1);
+        assert_eq!(snapshot.tree.root().bytes, count);
     }
 
     // The helper runs on this machine, which must be a Unix host.
@@ -1419,9 +1418,9 @@ mod tests {
         serve(&mut input.as_slice(), &mut data).unwrap();
         assert!(!data.windows(11).any(|part| part == b"\"directory\""));
         let snapshot = read_snapshot(&mut data.as_slice()).unwrap();
-        assert_eq!(snapshot.tree.bytes, 5);
-        assert_eq!(snapshot.tree.files, 1);
-        assert!(snapshot.tree.child_named("empty").unwrap().is_dir());
+        assert_eq!(snapshot.tree.root().bytes, 5);
+        assert_eq!(snapshot.tree.root().files, 1);
+        assert!(snapshot.tree.root().child_named("empty").unwrap().is_dir());
         data.truncate(data.len() - 7);
         assert!(read_snapshot(&mut data.as_slice()).is_err());
         assert!(dir.path().join("a ' file").exists());
