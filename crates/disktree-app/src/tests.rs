@@ -1274,6 +1274,55 @@ fn right_click_selects_the_tile_and_reveals_it(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn find_field_never_draws_over_the_legend(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (_view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    press(cx, "/");
+    // Matches bring the longest hint, "enter shows only these".
+    cx.simulate_input("BLOB");
+    cx.run_until_parked();
+    // The minimum window width up to a wide one, at 100%, 150% and 200%.
+    for width in [900., 1100., 1440.] {
+        for rem in [16., 24., 32.] {
+            cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
+            cx.update(|window, _| window.set_rem_size(px(rem)));
+            draw(cx);
+            let at = format!("{width}x900 at rem {rem}");
+            let field = cx.debug_bounds("find-field").expect("find drawn");
+            let hint = cx.debug_bounds("find-hint").expect("hint drawn");
+            let legend = cx.debug_bounds("legend").expect("legend drawn");
+            // Half a pixel for rounding where two edges meet. A hint with
+            // no width left draws nothing, wherever its origin falls.
+            assert!(
+                hint.size.width <= px(0.5)
+                    || hint.right() <= field.right() + px(0.5),
+                "{at}: the hint stays inside the field: {hint:?} {field:?}"
+            );
+            assert!(
+                legend.size.width <= px(0.5)
+                    || field.right() <= legend.left() + px(0.5),
+                "{at}: field {field:?} overlaps legend {legend:?}"
+            );
+            assert!(
+                field.right() <= px(width) + px(0.5),
+                "{at}: the field stays in the window: {field:?}"
+            );
+        }
+    }
+    // At the size the overlap was seen, the hint is there to read and
+    // the legend still shows beside it.
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    cx.update(|window, _| window.set_rem_size(px(16.)));
+    draw(cx);
+    let hint = cx.debug_bounds("find-hint").expect("hint drawn");
+    let legend = cx.debug_bounds("legend").expect("legend drawn");
+    assert!(hint.size.width > px(100.), "hint readable: {hint:?}");
+    assert!(legend.size.width > px(0.), "legend kept: {legend:?}");
+}
+
+#[gpui_kit::test]
 fn typing_filters_live_and_enter_shows_only_the_matches(
     cx: &mut TestAppContext,
 ) {

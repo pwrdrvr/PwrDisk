@@ -1875,6 +1875,13 @@ fn trail_and_legend(
     row.child(div().flex_1()).child(legend(app, theme, cx))
 }
 
+/// How much more readily the legend gives up width than the find field.
+/// Flex shrinking is proportional, so with equal weights the field lost
+/// width while the legend was still drawn and its no-wrap hint spilled
+/// over "Reclaimable". A weight this lopsided makes the legend clip away
+/// first; only once it is gone does the field's hint start to truncate.
+const LEGEND_YIELDS: f32 = 1000.;
+
 /// What the whole scan found, as one quiet line; unreadable paths are
 /// flagged in the warning colour when there are any.
 fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
@@ -1967,11 +1974,13 @@ fn legend(app: &Disktree, theme: &Theme, cx: &App) -> Div {
     let ground = palette::category_fill(theme, Category::Other, 0);
     let hatch = cx.omarchy().bright.opacity(0.5);
     div()
+        .debug_selector(|| "legend".into())
         .flex()
         .flex_row()
         .items_center()
         .gap(space::MD)
         .min_w_0()
+        .flex_shrink(LEGEND_YIELDS)
         .overflow_hidden()
         .child(item(widgets::hatch_swatch(hatch, ground), "Reclaimable"))
         .child(lane)
@@ -3491,7 +3500,11 @@ fn find_field(app: &Disktree, theme: &Theme) -> Div {
         .gap(space::SM)
         .px(space::SM)
         .py(space::XS)
+        .debug_selector(|| "find-field".into())
+        // Shrinks only after the legend has gone, and then clips its own
+        // content rather than drawing past its border.
         .min_w_0()
+        .overflow_hidden()
         .border_1()
         .border_color(if app.find_open {
             theme.accent
@@ -3504,6 +3517,7 @@ fn find_field(app: &Disktree, theme: &Theme) -> Div {
         .text_size(text::BODY)
         .child(
             gpui_omarchy::icon(gpui_omarchy::IconName::Search)
+                .flex_shrink_0()
                 .size(icon::SM)
                 .text_color(if app.filter_applied {
                     highlight
@@ -3513,10 +3527,16 @@ fn find_field(app: &Disktree, theme: &Theme) -> Div {
         )
         .child(if app.find.is_empty() {
             div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
                 .text_color(theme.secondary.opacity(0.7))
                 .child("Filter by name")
         } else {
-            div().text_color(theme.bright).child(app.find.clone())
+            div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .text_color(theme.bright)
+                .child(app.find.clone())
         })
         .when(!summary.is_empty(), |this| {
             this.child(
@@ -3527,15 +3547,20 @@ fn find_field(app: &Disktree, theme: &Theme) -> Div {
                     } else {
                         theme.secondary
                     })
+                    .flex_shrink_0()
                     .whitespace_nowrap()
                     .child(summary),
             )
         })
+        // The hint is the first thing in the field to give way: what was
+        // typed and what it matched stay whole, the hint ends in "…".
         .child(
             div()
+                .debug_selector(|| "find-hint".into())
+                .min_w_0()
+                .truncate()
                 .text_size(text::CAPTION)
                 .text_color(theme.secondary.opacity(0.6))
-                .whitespace_nowrap()
                 .child(hint),
         )
 }
