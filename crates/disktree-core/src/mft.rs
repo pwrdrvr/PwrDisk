@@ -1086,20 +1086,33 @@ impl Table<'_> {
         };
         let entries = self.entries(number);
         // See `tree::PARALLEL_LEVELS`: parallel only near the top.
-        let children = if depth < crate::tree::PARALLEL_LEVELS {
+        let found: Vec<Child<'_, 'h>> = if depth < crate::tree::PARALLEL_LEVELS
+        {
             entries
                 .par_iter()
                 .filter_map(child)
                 .collect::<Result<_, _>>()?
         } else {
             // Sized up front: nearly every entry becomes a child, and a
-            // list grown by doubling copies its nodes over and over.
-            let mut children = Vec::with_capacity(entries.len());
+            // list grown by doubling copies its entries over and over.
+            let mut found = Vec::with_capacity(entries.len());
             for node in entries.iter().filter_map(child) {
-                children.push(node?);
+                found.push(node?);
             }
-            children
+            found
         };
+        // A directory's files go into the tree under one lock, as the
+        // walk's do: every worker adds to the same buffers, and a lock per
+        // file would have them queue on it.
+        let mut children =
+            builder.leaves(found.iter().filter_map(|child| match child {
+                Child::Leaf(name, facts) => Some((*name, *facts, None)),
+                Child::Directory(_) => None,
+            }));
+        children.extend(found.into_iter().filter_map(|child| match child {
+            Child::Directory(built) => Some(built),
+            Child::Leaf(..) => None,
+        }));
         Ok(builder.directory(name, Facts::directory(), None, children))
     }
 
@@ -1110,7 +1123,7 @@ impl Table<'_> {
         entry: &Entry,
         depth: usize,
         descend: bool,
-    ) -> Result<Option<Built<'h>>, Stop> {
+    ) -> Result<Option<Child<'_, 'h>>, Stop> {
         // The root is its own parent.
         if entry.child == entry.parent || entry.child < FIRST_USER_RECORD {
             return Ok(None);
@@ -1136,7 +1149,7 @@ impl Table<'_> {
             }
             return self
                 .directory(builder, entry.child, name, depth + 1)
-                .map(Some);
+                .map(|built| Some(Child::Directory(built)));
         }
         let size = if self.options.apparent_size {
             info.apparent
@@ -1154,8 +1167,15 @@ impl Table<'_> {
             facts.inode = NonZeroU64::new(u64::from(entry.child))
                 .map(|record| (0, record));
         }
-        Ok(Some(builder.leaf(name, facts, None)))
+        Ok(Some(Child::Leaf(name, facts)))
     }
+}
+
+/// What an entry becomes: a file, still to be added with its siblings,
+/// or a directory already built.
+enum Child<'t, 'h> {
+    Leaf(&'t str, Facts),
+    Directory(Built<'h>),
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
