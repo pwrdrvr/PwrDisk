@@ -37,6 +37,13 @@ use crate::classify::{Category, Reclaim};
 use crate::sharing::{Allocation, Sharing};
 use crate::tree::{Draft, Metric, NodeKind};
 
+/// The longest name a tree holds.
+///
+/// A local file system allows a few hundred bytes, even decoded lossily;
+/// anything read from elsewhere, such as an SSH host's stream, is refused
+/// past this before it is built.
+pub const MAX_NAME_BYTES: usize = 4096;
+
 /// Everything about a node that is plain data, and so free to write.
 ///
 /// `bytes` and `files` are the subtree totals the treemap draws. A disk
@@ -218,10 +225,13 @@ impl Store {
     fn push_name(&mut self, name: &str) -> u32 {
         let at = u32::try_from(self.names.len())
             .expect("a tree's names fit in four gigabytes");
+        // `MAX_NAME_BYTES` is far below the first length that is not a
+        // `char`, 55,296, where the surrogates begin.
+        assert!(name.len() <= MAX_NAME_BYTES, "a name of {}", name.len());
         let len = u32::try_from(name.len())
             .ok()
             .and_then(char::from_u32)
-            .expect("a file name is shorter than 55,296 bytes");
+            .expect("a length below the surrogates");
         self.names.push(len);
         self.names.push_str(name);
         at

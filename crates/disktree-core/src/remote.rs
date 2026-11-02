@@ -439,6 +439,12 @@ fn read_snapshot_with_progress(
                     "remote name cannot be represented safely: {name:?}"
                 )));
             }
+            if name.len() > crate::tree::MAX_NAME_BYTES {
+                return Err(io::Error::other(format!(
+                    "remote name is {} bytes long; no file system allows that",
+                    name.len()
+                )));
+            }
             if count > stack.len() {
                 return Err(io::Error::other(format!(
                     "incomplete remote directory {name:?}: \
@@ -1181,6 +1187,27 @@ mod tests {
             let path = style.join(&snapshot.header.root, name);
             assert_eq!(path.to_str().unwrap(), format!("/srv/{name}"));
         }
+    }
+
+    /// A name no file system could hold is refused as a broken stream, not
+    /// taken into the tree.
+    #[test]
+    fn an_impossibly_long_remote_name_is_refused() {
+        let mut data = Vec::new();
+        let header: Header = serde_json::from_slice(
+            unix_stream("linux")
+                .split(|&byte| byte == b'\n')
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        send(&mut data, &header).unwrap();
+        let name = "x".repeat(crate::tree::MAX_NAME_BYTES + 1);
+        send(&mut data, &Record(name, 1, 5, 1, 0, false, 0)).unwrap();
+        send(&mut data, &Record("root".into(), 0, 0, 0, 0, false, 1)).unwrap();
+        send(&mut data, &"done").unwrap();
+        let error = read_snapshot(&mut data.as_slice()).unwrap_err();
+        assert!(error.to_string().contains("bytes long"), "{error}");
     }
 
     /// Remote paths are joined as POSIX paths, so a Windows host is refused

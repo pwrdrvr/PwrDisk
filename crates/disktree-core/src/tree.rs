@@ -61,8 +61,8 @@ impl Metric {
 }
 
 pub use crate::index::{
-    Block, Builder, Built, Children, Facts, Iter, Node, NodeMut, Sibling,
-    StorageBytes, Tree,
+    Block, Builder, Built, Children, Facts, Iter, MAX_NAME_BYTES, Node,
+    NodeMut, Sibling, StorageBytes, Tree,
 };
 
 /// A node and everything beneath it, owned and on the heap.

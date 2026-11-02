@@ -4,6 +4,10 @@
 //! Hashes every node's name, totals, category and reclaim reason depth
 //! first, in child order, then again after re-ranking by file count, so
 //! two trees agree only if their shape, figures and order all do.
+//!
+//! Which name of a hardlinked file is charged depends on which worker
+//! reaches it first, so set `NODEDUP=1` to compare two builds exactly.
+//! `DUMP=1` prints one line per node as well, to find where they differ.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
