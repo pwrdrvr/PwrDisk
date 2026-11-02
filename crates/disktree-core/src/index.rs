@@ -817,6 +817,12 @@ fn bottom_up<L, D>(
     );
 }
 
+/// Whether the prototype was asked to keep build order.
+#[doc(hidden)]
+pub fn no_relayout() -> bool {
+    std::env::var_os("DISKTREE_NO_RELAYOUT").is_some()
+}
+
 /// Where a tree is built: nodes are appended under a lock, so any number
 /// of workers can build at once. `'h` brands what it builds with the
 /// build it belongs to.
@@ -1004,7 +1010,12 @@ impl Tree {
         store.root = Store::index(store.nodes.len());
         store.nodes.push(root);
         let started = std::time::Instant::now();
-        store.relayout();
+        // The prototype's switch, to measure a tree left in build order;
+        // `par_bottom_up` needs the relayout, so it also makes `aggregate`
+        // sequential.
+        if !no_relayout() {
+            store.relayout();
+        }
         if std::env::var_os("DISKTREE_INDEX_TIMING").is_some() {
             eprintln!(
                 "relayout={:.2}s nodes={}",

@@ -300,14 +300,35 @@ impl Node<'_> {
 /// hardlink de-duplication rewrites a leaf's weight, and every total above
 /// it follows without a second pass.
 pub fn aggregate(tree: &mut Tree, metric: Metric) {
+    let started = std::time::Instant::now();
     aggregate_tree(tree, metric, None);
+    let totals = started.elapsed().as_secs_f64();
     crate::sharing::refresh(&mut tree.root_mut());
+    if std::env::var_os("DISKTREE_INDEX_TIMING").is_some() {
+        eprintln!(
+            "aggregate: totals={totals:.2}s refresh={:.2}s",
+            started.elapsed().as_secs_f64() - totals
+        );
+    }
+}
+
+/// Only the totals and the order, one directory at a time: for the
+/// prototype's measurements, beside the parallel pass.
+#[doc(hidden)]
+pub fn aggregate_totals(tree: &mut Tree, metric: Metric, sequential: bool) {
+    if sequential || crate::index::no_relayout() {
+        aggregate_at(&mut tree.root_mut(), metric, None);
+    } else {
+        aggregate_tree(tree, metric, None);
+    }
 }
 
 /// The totals and the order, in parallel unless the prototype's switch
 /// asks for the one-node-at-a-time walk, to compare the two.
 fn aggregate_tree(tree: &mut Tree, metric: Metric, seen: Option<&Seen>) {
-    if std::env::var_os("DISKTREE_SEQUENTIAL_AGGREGATE").is_some() {
+    if std::env::var_os("DISKTREE_SEQUENTIAL_AGGREGATE").is_some()
+        || crate::index::no_relayout()
+    {
         aggregate_at(&mut tree.root_mut(), metric, seen);
         return;
     }

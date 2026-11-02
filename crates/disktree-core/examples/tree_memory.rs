@@ -26,6 +26,12 @@ fn main() -> std::io::Result<()> {
         .nth(1)
         .map_or_else(|| PathBuf::from("."), PathBuf::from);
 
+    println!(
+        "sizes: facts={} allocation={} sharing={}",
+        size_of::<disktree_core::tree::Facts>(),
+        size_of::<disktree_core::sharing::Allocation>(),
+        size_of::<disktree_core::sharing::Sharing>(),
+    );
     let (before, _) = footprint_mib();
     let started = Instant::now();
     let tree = scan(&root, ScanOptions::default())?;
@@ -61,6 +67,22 @@ fn main() -> std::io::Result<()> {
         now - before,
         peak - before,
     );
+    if std::env::var_os("TOTALS_BOTH").is_some() {
+        for (sequential, metric) in [
+            (true, Metric::Bytes),
+            (false, Metric::Files),
+            (true, Metric::Files),
+        ] {
+            let started = Instant::now();
+            disktree_core::tree::aggregate_totals(
+                &mut copy, metric, sequential,
+            );
+            println!(
+                "totals only: sequential={sequential} {:.2}s",
+                started.elapsed().as_secs_f64()
+            );
+        }
+    }
     timed_drop("copy", copy);
     timed_drop("scanned tree", tree);
     Ok(())
