@@ -46,12 +46,15 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
 ## Privacy and access
 
 - macOS protects Desktop, Documents, Downloads, Mail, Messages, Safari,
-  Photos and parts of `~/Library`. A scan started by the agent runs with the
-  privacy grants of the app hosting the agent, such as a terminal or an
-  editor. It may show these folders as unreadable or make macOS prompt for
-  that app.
-- A scan the PwrDisk window runs uses PwrDisk's own grants. If a protected
-  folder matters, open the window (`pwrdisk_show`) and scan from there.
+  Photos and parts of `~/Library`. In the normal desktop connection, scans
+  run in the independently launched PwrDisk app, with its privacy grants.
+  Ask the user to start PwrDisk themselves; never launch it from the agent
+  or MCP host. macOS can attribute privacy access to a responsible parent
+  application, so a caller-launched desktop is not a dependable permission
+  boundary.
+- Explicit standalone scans run in the MCP process and may use the hosting
+  application's privacy grants. Report unreadable entries. Do not switch
+  modes or launch a window to work around an access refusal.
 - Do not ask the user to give the agent's host Full Disk Access just to
   measure. Report what was unreadable and let them decide.
 

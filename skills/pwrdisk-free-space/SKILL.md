@@ -16,6 +16,26 @@ Approval to mark is never permission to remove.
 If the user only asked where their space went, use `pwrdisk-explain-usage`
 instead: a question is not a request to delete anything.
 
+## Interface ownership
+
+Normal `pwrdisk mcp` requires an already running PwrDisk desktop. Never
+launch the app from the agent or host. The desktop owns definitions,
+skills, instructions, execution, its tree and marks; the relay handles
+transport only. Status reports both versions. An explicit
+`pwrdisk mcp --standalone` connection owns its own scans and marks, never
+links a window, and cannot show, review or remove paths. Do not restart
+active sessions to resolve a harmless release difference. After an update,
+have the user reconnect MCP and rediscover tools and reread skills;
+previously loaded instructions or text may be cached. Never replay removal
+or reuse its approval after reconnecting.
+
+Relative tool paths resolve against the relay's working directory captured
+when MCP connects, independently of the desktop's launch directory or scan
+root. Initialization metadata (`pathBase`) and status report that fixed
+base. `~` refers to the server's home directory. Older relays that supply
+no base require absolute paths or `~/…`; reconnect with an updated relay
+to enable relative paths. Standalone captures its own working directory.
+
 ## Before you start
 
 Read the reference for the system `pwrdisk_status` names. Each lists what
@@ -124,14 +144,9 @@ Looking is free; acting is the user's call.
   `pwrdisk mcp` runs on. If `pwrdisk_status` says the window is on an SSH
   host, it is not followed; ask the user to choose This computer in it.
   PwrDisk does not remove files over SSH.
-- **Linking keeps the window where it is.** If marks made before linking
-  are outside the window's root, the session keeps all of them and reports
-  that the window is not followed. Call `pwrdisk_scan` on a directory
-  containing all marked paths to move the window explicitly and hand them
-  over before review. If the window accepted only part of a handover,
-  `pwrdisk_unmark` clears the requested marks there too. A newly opened
-  review window starts on a directory containing all marks. Do not unmark
-  agreed paths to force a link.
+- **Connecting keeps the window where it is.** Only an explicit scan
+  changes its root; show requires the user's request. Standalone marks
+  never migrate to a desktop connection.
 
 ## Procedure
 

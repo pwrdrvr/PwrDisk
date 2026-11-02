@@ -11,7 +11,6 @@
 use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -151,6 +150,8 @@ pub enum ScanPlan {
 #[serde(deny_unknown_fields)]
 pub struct ScanParams {
     /// Directory to scan. Default: the home directory.
+    /// Relative paths use the reported session path base; `~` uses the
+    /// server's home. Without a path base, use absolute paths or `~/…`.
     pub path: Option<PathBuf>,
     /// Scan the whole volume that `path` (or the home directory) is on.
     #[serde(default)]
@@ -177,6 +178,8 @@ pub struct ScanParams {
 #[serde(deny_unknown_fields)]
 pub struct LsParams {
     /// The directory to list, under the scanned root.
+    /// Relative paths use the reported session path base; `~` uses the
+    /// server's home. Without a path base, use absolute paths or `~/…`.
     pub path: PathBuf,
     /// How many entries to list, largest first. Default 20, at most 200.
     pub limit: Option<usize>,
@@ -285,6 +288,8 @@ pub struct RemoveParams {
 #[serde(deny_unknown_fields)]
 pub struct FindParams {
     /// Where to search. Default: the whole scanned tree.
+    /// Relative paths use the reported session path base; `~` uses the
+    /// server's home. Without a path base, use absolute paths or `~/…`.
     pub path: Option<PathBuf>,
     /// `file`, `dir` or `any` (default). A matching directory is listed
     /// once, without what is inside it.
@@ -332,8 +337,10 @@ impl FindParams {
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PathsParams {
-    /// Absolute paths under the scanned root. For `pwrdisk_unmark`, an
-    /// empty list unmarks everything.
+    /// Paths under the scanned root. Relative paths use the reported
+    /// session path base; `~` uses the server's home. Without a path base,
+    /// use absolute paths or `~/…`. For `pwrdisk_unmark`, an empty list
+    /// unmarks everything.
     #[serde(default)]
     pub paths: Vec<PathBuf>,
 }
@@ -343,12 +350,16 @@ pub struct PathsParams {
 #[serde(deny_unknown_fields)]
 pub struct ShowParams {
     /// The path to show in the window, under the scanned root.
+    /// Relative paths use the reported session path base; `~` uses the
+    /// server's home. Without a path base, use absolute paths or `~/…`.
     pub path: PathBuf,
 }
 
 /// One connected agent's state.
 pub struct Session {
     home: Option<PathBuf>,
+    /// Fixed at connection time; never inherit the desktop's launch cwd.
+    path_base: Option<PathBuf>,
     socket: PathBuf,
     launcher: Option<Launcher>,
     client: String,
@@ -368,6 +379,14 @@ pub struct Session {
     /// come up is not started twice.
     launched: Option<Instant>,
     pending_removal: Option<RemovalPreview>,
+    window_policy: WindowPolicy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowPolicy {
+    Optional,
+    Required,
+    Disabled,
 }
 
 impl std::fmt::Debug for Session {
@@ -381,26 +400,6 @@ impl std::fmt::Debug for Session {
     }
 }
 
-/// Start a PwrDisk window on `root`, detached from this process so the
-/// agent's exit does not take the window with it.
-fn launch_window(root: &Path) -> io::Result<()> {
-    let exe = std::env::current_exe()?;
-    let mut command = Command::new(exe);
-    command
-        .arg(root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        // Its own process group: a signal to the agent's group stops here.
-        command.process_group(0);
-    }
-    command.spawn()?;
-    Ok(())
-}
-
 impl Default for Session {
     fn default() -> Self {
         Self::new()
@@ -408,16 +407,43 @@ impl Default for Session {
 }
 
 impl Session {
-    /// A session over the real socket, able to launch a window.
+    /// A standalone session. Desktop ownership is selected by the host,
+    /// never discovered by silently adopting an unrelated window.
     pub fn new() -> Self {
-        // Where no window can be linked, starting one would only leave a
-        // window the agent cannot reach, and another on every retry.
-        let launcher: Option<Launcher> = if disktree_link::SUPPORTED {
-            Some(Box::new(launch_window))
-        } else {
-            None
-        };
-        Self::detached(disktree_link::socket_path(), launcher)
+        Self::standalone()
+    }
+
+    pub fn standalone() -> Self {
+        let mut session = Self::detached(disktree_link::socket_path(), None);
+        session.window_policy = WindowPolicy::Disabled;
+        session
+    }
+
+    pub fn desktop(socket: PathBuf) -> Self {
+        let mut session = Self::detached(socket, None);
+        session.window_policy = WindowPolicy::Required;
+        session.path_base = None;
+        session
+    }
+
+    /// Accept only a complete base from the relay. Missing metadata from
+    /// older relays must not silently select the desktop's directory.
+    pub(crate) fn with_path_base(
+        mut self,
+        base: Option<PathBuf>,
+    ) -> io::Result<Self> {
+        if base.as_ref().is_some_and(|path| !path.is_absolute()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "MCP session path base must be absolute",
+            ));
+        }
+        self.path_base = base.map(|path| normalize(&path));
+        Ok(self)
+    }
+
+    pub fn path_base(&self) -> Option<&Path> {
+        self.path_base.as_deref()
     }
 
     /// A session over `socket`, launching windows with `launcher` or not at
@@ -425,6 +451,7 @@ impl Session {
     pub fn detached(socket: PathBuf, launcher: Option<Launcher>) -> Self {
         Self {
             home: std::env::home_dir(),
+            path_base: std::env::current_dir().ok(),
             socket,
             launcher,
             client: "an agent".to_string(),
@@ -435,6 +462,7 @@ impl Session {
             unlinked: None,
             launched: None,
             pending_removal: None,
+            window_policy: WindowPolicy::Optional,
         }
     }
 
@@ -520,6 +548,9 @@ impl Session {
         if self.try_connect_for_request(Some(&request))? {
             Ok(ScanPlan::Window { root })
         } else {
+            if self.window_policy == WindowPolicy::Required {
+                return Err(crate::desktop::RECONNECT.into());
+            }
             Ok(ScanPlan::Local { root, options })
         }
     }
@@ -650,8 +681,7 @@ impl Session {
 
     // ── looking ─────────────────────────────────────────────────────────
 
-    /// An absolute, normalized path: `~` expanded, relative to the working
-    /// directory otherwise.
+    /// Expand `~` and resolve against this connection's fixed path base.
     fn absolute(&self, path: &Path) -> Result<PathBuf, String> {
         let expanded = if let Ok(rest) = path.strip_prefix("~") {
             let home = self.home.clone().ok_or("no home directory for ~")?;
@@ -659,10 +689,22 @@ impl Session {
         } else if path.is_absolute() {
             path.to_path_buf()
         } else {
-            std::env::current_dir()
-                .map_err(|error| format!("no working directory: {error}"))?
+            self.path_base
+                .as_ref()
+                .ok_or(
+                    "No session path base was supplied by the relay. \
+                        Use an absolute path or ~/…; update the relay and \
+                        reconnect to enable relative paths.",
+                )?
                 .join(path)
         };
+        // A Windows drive-relative prefix (C:foo) can replace the base
+        // while still depending on a process-local working directory.
+        if !expanded.is_absolute() {
+            return Err("Use an absolute path or a relative path without a \
+                        drive prefix"
+                .into());
+        }
         Ok(normalize(&expanded))
     }
 
@@ -964,6 +1006,9 @@ impl Session {
         &mut self,
         request: Option<&Request>,
     ) -> Result<bool, String> {
+        if self.window_policy == WindowPolicy::Disabled {
+            return Ok(false);
+        }
         if self.link.is_some() {
             if let Some(request) = request {
                 self.send_state_request(request)?;
@@ -1064,6 +1109,9 @@ impl Session {
 
     /// Open the link, launching a window on `root` when none answers.
     fn ensure_link(&mut self, root: &Path) -> Result<(), String> {
+        if self.window_policy == WindowPolicy::Disabled {
+            return Err("Standalone MCP cannot show, review or remove paths in a desktop. Connect with `pwrdisk mcp` after starting PwrDisk yourself.".into());
+        }
         if self.try_connect() {
             return Ok(());
         }
@@ -4051,5 +4099,145 @@ mod tests {
         assert_eq!(session.client(), "zed");
         session.set_client("");
         assert_eq!(session.client(), "an agent");
+    }
+
+    #[test]
+    fn relative_paths_require_a_known_session_base() {
+        let temp = fixture();
+        let session = Session::desktop(endpoint(temp.path()));
+        assert!(session.path_base().is_none());
+        assert!(
+            session
+                .absolute(Path::new("."))
+                .unwrap_err()
+                .contains("Use an absolute path")
+        );
+        assert_eq!(
+            session.absolute(temp.path()).expect("absolute path"),
+            temp.path()
+        );
+        let home = session.home.as_ref().expect("home");
+        assert_eq!(
+            session.absolute(Path::new("~/example")).expect("home path"),
+            home.join("example")
+        );
+        assert!(
+            Session::desktop(endpoint(temp.path()))
+                .with_path_base(Some("relative".into()))
+                .is_err()
+        );
+        let standalone = Session::standalone();
+        assert_eq!(
+            standalone.absolute(Path::new(".")).expect("standalone cwd"),
+            std::env::current_dir().expect("cwd")
+        );
+        #[cfg(windows)]
+        assert!(standalone.absolute(Path::new(r"Z:notes")).is_err());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn desktop_paths_use_the_callers_base_for_every_path_tool() {
+        let temp = fixture();
+        let socket = endpoint(temp.path());
+        let window = FakeWindow::open(&socket, temp.path());
+        assert_ne!(temp.path(), std::env::current_dir().expect("desktop cwd"));
+        let mut session = Session::desktop(socket)
+            .with_path_base(Some(temp.path().to_path_buf()))
+            .expect("absolute caller base");
+        let scan = session
+            .prepare_scan(&ScanParams {
+                path: Some(".".into()),
+                apparent_size: true,
+                ..ScanParams::default()
+            })
+            .expect("scan caller directory");
+        assert!(
+            matches!(scan, ScanPlan::Window { root } if root == temp.path())
+        );
+        let listing = session
+            .ls(&LsParams {
+                path: "src".into(),
+                ..LsParams::default()
+            })
+            .expect("relative listing");
+        assert!(listing.contains("app/"), "{listing}");
+        session
+            .find(&FindParams {
+                path: Some("notes".into()),
+                ..FindParams::default()
+            })
+            .expect("relative search");
+        assert!(window.asked().iter().any(|request| matches!(
+            request, Request::Find(params)
+                if params.path.as_deref() == Some(temp.path().join("notes").as_path())
+        )));
+        let paths = PathsParams {
+            paths: vec![".cache".into()],
+        };
+        session.mark(&paths).expect("relative mark");
+        assert_eq!(window.marks()[0].path, temp.path().join(".cache"));
+        session.unmark(&paths).expect("relative unmark");
+        assert!(window.marks().is_empty());
+        session
+            .show_path(&ShowParams { path: "src".into() })
+            .expect("explicit relative show");
+        assert!(window.asked().iter().any(|request| matches!(
+            request, Request::Show { path, .. } if *path == temp.path().join("src")
+        )));
+        // An explicit scan must not change what a later relative path means.
+        session
+            .prepare_scan(&ScanParams {
+                path: Some("notes".into()),
+                ..ScanParams::default()
+            })
+            .expect("scan subdirectory");
+        assert_eq!(
+            session.absolute(Path::new("src")).unwrap(),
+            temp.path().join("src")
+        );
+    }
+
+    #[test]
+    fn a_desktop_session_cannot_fall_back_to_a_local_scan() {
+        let temp = fixture();
+        let mut session = Session::desktop(endpoint(temp.path()));
+        let error = session
+            .prepare_scan(&ScanParams {
+                path: Some(temp.path().into()),
+                ..ScanParams::default()
+            })
+            .expect_err("desktop backend required");
+        assert!(error.contains("restart/reconnect"));
+        assert!(session.scans().is_empty());
+        assert!(session.marks().is_empty());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn explicit_standalone_never_adopts_a_running_desktop() {
+        let temp = fixture();
+        let socket = endpoint(temp.path());
+        let window = FakeWindow::open(&socket, temp.path());
+        let mut session = Session::standalone();
+        session.socket = socket;
+        scanned(&mut session, temp.path());
+        session
+            .mark(&PathsParams {
+                paths: vec![temp.path().join("src")],
+            })
+            .expect("standalone mark");
+        assert!(!session.status().contains("Window: open"));
+        assert!(
+            session
+                .show_path(&ShowParams {
+                    path: temp.path().join("src"),
+                })
+                .expect_err("no desktop access")
+                .contains("Standalone")
+        );
+        assert!(window.asked().is_empty());
+        assert!(window.marks().is_empty());
+        assert_eq!(session.marks().len(), 1);
     }
 }

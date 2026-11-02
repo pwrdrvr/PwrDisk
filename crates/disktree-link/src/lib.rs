@@ -1,10 +1,10 @@
 //! The link between a running PwrDisk window and the agent that drives it.
 //!
-//! `pwrdisk mcp` scans on its own, so an agent needs no window. When one is
-//! open, though, the agent's marks should appear in the mosaic and the
-//! free-space meter, and its `show` and `review` should move the screen.
-//! This crate is the wire between the two: one request per line of JSON
-//! over a per-user socket or Windows named pipe, one line back.
+//! The desktop hosts MCP on [`mcp_stream`], reached through an opaque stdio
+//! relay. The typed UI backend below remains a separate local channel;
+//! the desktop's own MCP handler uses it to read the tree and change marks.
+//! Legacy typed clients can still use it. Explicit standalone MCP scans
+//! never connect to either desktop endpoint.
 //!
 //! When a window is open it is the agent's source of truth: the agent lists
 //! and searches the tree the person is looking at, and its marks live in the
@@ -24,6 +24,8 @@ use disktree_core::classify::Category;
 use disktree_core::query::{Filter, Kind};
 use disktree_core::tree::Node;
 use serde::{Deserialize, Serialize};
+
+pub mod mcp_stream;
 
 #[cfg(unix)]
 mod unix;
