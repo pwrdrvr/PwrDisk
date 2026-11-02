@@ -12,7 +12,9 @@
 
 use std::borrow::Cow;
 
-use crate::tree::{Children, Node, NodeMut, Tree};
+use rayon::prelude::*;
+
+use crate::tree::{Block, Node, Tree};
 
 /// A kind of data, for colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -265,98 +267,116 @@ pub fn reclaim_of(
 ///
 /// Top-down: a node's own name wins, otherwise it inherits. Reclaimable
 /// space is inherited too, so everything under a cache is hatched.
+///
+/// Two passes, so that both can spread across workers. Writing kinds sees
+/// one directory's children at a time, but a git or pnpm store shows what
+/// it is two levels down, so a pass that only reads finds those first.
 pub fn classify(tree: &mut Tree) {
-    let mut root = tree.root_mut();
-    if let Some(category) = category_of_name(root.node().name())
-        && matches!(category, Category::FilesystemEvents | Category::Spotlight)
-    {
-        classify_below(&mut root, category, None);
-        return;
-    }
-    if is_pnpm_store(root.node()) {
-        classify_below(
-            &mut root,
-            Category::Toolchain,
-            Some(Reclaim::PackageStore),
-        );
-        return;
-    }
-    let facts = root.facts_mut();
-    facts.category = Category::Other;
-    facts.reclaim = None;
-    for index in 0..root.child_count() {
-        let siblings = root.node().children();
+    let stores = Stores::find(tree);
+    let root = tree.root();
+    // These stores belong to macOS even when an internal folder is named
+    // `cache` or `tmp`; see `kind_of`.
+    let own = category_of_name(root.name())
+        .filter(|category| {
+            matches!(category, Category::FilesystemEvents | Category::Spotlight)
+        })
+        .map(|category| (category, None))
+        .or_else(|| {
+            is_pnpm_store(root)
+                .then_some((Category::Toolchain, Some(Reclaim::PackageStore)))
+        });
+    tree.par_top_down(
+        |facts, mut block| {
+            if let Some((category, reclaim)) = own {
+                facts.category = category;
+                facts.reclaim = reclaim;
+                decide(&mut block, category, reclaim, &stores);
+            } else {
+                facts.category = Category::Other;
+                facts.reclaim = None;
+                decide_top(&mut block, &stores);
+            }
+        },
+        |facts, mut block| {
+            decide(&mut block, facts.category, facts.reclaim, &stores);
+        },
+    );
+}
+
+/// The children of a root that is nothing in particular.
+fn decide_top(block: &mut Block<'_>, stores: &Stores) {
+    for index in 0..block.len() {
+        let child = block.at(index);
+        let id = block.id(index);
         let has_sibling =
-            |wanted: &str| siblings.iter().any(|name| name.name() == wanted);
-        let child = siblings.at(index);
+            |wanted: &str| block.iter().any(|sibling| sibling.name == wanted);
         // Only evidence about this directory may become an inherited kind.
         // Guessing from a descendant can turn a whole home into scratch.
-        let category = category_of_name(child.name())
-            .or_else(|| is_git_store(child).then_some(Category::Git))
+        let category = category_of_name(child.name)
+            .or_else(|| stores.is_git(id).then_some(Category::Git))
             .unwrap_or(Category::Other);
         let reclaim = child
+            .kind
             .is_dir()
             .then(|| {
-                reclaim_of(child.name(), Category::Other, has_sibling).or_else(
-                    || is_pnpm_store(child).then_some(Reclaim::PackageStore),
+                reclaim_of(child.name, Category::Other, has_sibling).or_else(
+                    || stores.is_pnpm(id).then_some(Reclaim::PackageStore),
                 )
             })
             .flatten();
-        if let Some(mut child) = root.child_mut(index) {
-            classify_below(&mut child, category, reclaim);
-        }
+        let facts = block.facts_mut(index);
+        facts.category = category;
+        facts.reclaim = reclaim;
     }
 }
 
-/// One directory at a time: each child's kind is read from its siblings
-/// before the child is written, and a write borrows the whole tree.
-fn classify_below(
-    node: &mut NodeMut<'_>,
+/// The children of a directory that is `category`, and `reclaim`.
+fn decide(
+    block: &mut Block<'_>,
     category: Category,
     reclaim: Option<Reclaim>,
+    stores: &Stores,
 ) {
-    let facts = node.facts_mut();
-    facts.category = category;
-    facts.reclaim = reclaim;
     // Most directories hold only files, which take this one's kind as
-    // they are: no list of kinds to build, no call per file.
-    if !node.node().children().iter().any(Node::is_dir) {
-        node.for_each_child_mut(|mut child| {
-            let facts = child.facts_mut();
+    // they are: no call per file.
+    if !block.iter().any(|child| child.kind.is_dir()) {
+        block.for_each_facts_mut(|facts| {
             facts.category = category;
             facts.reclaim = reclaim;
         });
         return;
     }
-    for index in 0..node.child_count() {
+    for index in 0..block.len() {
         let (category, reclaim) =
-            kind_of(node.node().children(), index, category, reclaim);
-        if let Some(mut child) = node.child_mut(index) {
-            classify_below(&mut child, category, reclaim);
-        }
+            kind_of(block, index, category, reclaim, stores);
+        let facts = block.facts_mut(index);
+        facts.category = category;
+        facts.reclaim = reclaim;
     }
 }
 
 /// What the child at `index` is, given what its parent is: its own name
 /// wins, otherwise it inherits. A file always inherits.
 fn kind_of(
-    siblings: Children<'_>,
+    siblings: &Block<'_>,
     index: usize,
     category: Category,
     reclaim: Option<Reclaim>,
+    stores: &Stores,
 ) -> (Category, Option<Reclaim>) {
     let child = siblings.at(index);
     // These stores belong to macOS even when an internal folder is named
     // `cache` or `tmp`; raw deletion is not an appropriate cleanup method.
-    if !child.is_dir()
+    if !child.kind.is_dir()
         || matches!(category, Category::FilesystemEvents | Category::Spotlight)
     {
         return (category, reclaim);
     }
+    let id = siblings.id(index);
     let has_sibling =
-        |wanted: &str| siblings.iter().any(|name| name.name() == wanted);
-    let child_category = category_of_name(child.name())
-        .or_else(|| is_git_store(child).then_some(Category::Git))
+        |wanted: &str| siblings.iter().any(|sibling| sibling.name == wanted);
+    let child_category = category_of_name(child.name)
+        .or_else(|| stores.is_git(id).then_some(Category::Git))
         .unwrap_or(category);
     let child_reclaim = if matches!(
         child_category,
@@ -365,10 +385,54 @@ fn kind_of(
         None
     } else {
         reclaim
-            .or_else(|| reclaim_of(child.name(), category, has_sibling))
-            .or_else(|| is_pnpm_store(child).then_some(Reclaim::PackageStore))
+            .or_else(|| reclaim_of(child.name, category, has_sibling))
+            .or_else(|| stores.is_pnpm(id).then_some(Reclaim::PackageStore))
     };
     (child_category, child_reclaim)
+}
+
+/// The directories whose kind is in their shape rather than their name,
+/// by [`Node::id`], in order. There are few: a store per repository.
+struct Stores(Vec<Store>);
+
+#[derive(Clone, Copy)]
+struct Store {
+    id: u32,
+    git: bool,
+    pnpm: bool,
+}
+
+impl Stores {
+    fn find(tree: &Tree) -> Self {
+        // An ordered parallel collect keeps the ids ascending.
+        Self(
+            tree.par_nodes()
+                .filter(|node| node.is_dir())
+                .filter_map(|node| {
+                    let git = is_git_store(node);
+                    let pnpm = is_pnpm_store(node);
+                    (git || pnpm).then(|| Store {
+                        id: node.id(),
+                        git,
+                        pnpm,
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    fn get(&self, id: u32) -> Option<Store> {
+        let found = self.0.binary_search_by_key(&id, |store| store.id).ok()?;
+        Some(self.0[found])
+    }
+
+    fn is_git(&self, id: u32) -> bool {
+        self.get(id).is_some_and(|store| store.git)
+    }
+
+    fn is_pnpm(&self, id: u32) -> bool {
+        self.get(id).is_some_and(|store| store.pnpm)
+    }
 }
 
 /// pnpm's versioned content-addressable store, not its installation prefix.
