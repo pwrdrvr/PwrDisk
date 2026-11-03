@@ -12,6 +12,7 @@
 use std::rc::Rc;
 
 use disktree_core::treemap::Rect;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Bounds, ContentMask, Context, Corners, Edges, Font, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, MouseDownEvent, MouseMoveEvent,
@@ -163,6 +164,8 @@ fn mosaic_inner(
     } = mosaic;
     let canvas_origin = Rc::clone(&origin);
     let canvas_measured = Rc::clone(&measured);
+    // A hand over a tile a click would open: the selection, clicked again.
+    let opens = interactive && app.click_opens_hovered();
 
     div()
         .id("disktree-treemap")
@@ -173,6 +176,7 @@ fn mosaic_inner(
         .min_w_0()
         .overflow_hidden()
         .bg(theme.inset)
+        .when(opens, Styled::cursor_pointer)
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             if interactive && !hovered {
                 this.on_mouse_leave(cx);

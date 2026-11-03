@@ -402,6 +402,10 @@ pub struct Disktree {
     /// tile under the pointer is what Space, X and Enter act on; after an
     /// arrow or n it is the keyboard selection again.
     pub pointer_active: bool,
+    /// A press of the click sequence under way (a double or triple click)
+    /// already opened a level. Its later presses land on the level it
+    /// opened, so they are ignored rather than opening another.
+    click_opened: bool,
     pub view: View,
     /// The in-flight layout transition, if a level was just entered or left.
     pub transition: Option<LayoutTransition>,
@@ -468,6 +472,16 @@ pub struct Disktree {
     /// Free space before the removal, for the honest "what did it actually
     /// free" number rather than the sum of what was marked.
     pub space_baseline: Option<SpaceInfo>,
+    /// Rescan once the running removal finishes: Remove & rescan.
+    pub rescan_after_removal: bool,
+    /// What each removal since the last scan freed.
+    pub ledger: crate::ledger::Ledger,
+    /// The running removal as it started.
+    run_start: Option<crate::ledger::Start>,
+    /// The tree is being rebuilt without what a removal took.
+    pub pruning: bool,
+    /// Paths a later removal took while that rebuild ran: the next one.
+    prune_queue: Vec<PathBuf>,
     pub notice: Option<(String, Status)>,
     /// Toasts over the window's bottom right: the updater's answers.
     pub toasts: crate::toasts::Toasts,
@@ -655,6 +669,7 @@ impl Disktree {
             history: History::default(),
             history_hover: None,
             pointer_active: false,
+            click_opened: false,
             view: View::default(),
             transition: None,
             file_list: false,
@@ -706,6 +721,11 @@ impl Disktree {
             run_log: Vec::new(),
             space,
             space_baseline: None,
+            rescan_after_removal: false,
+            ledger: crate::ledger::Ledger::default(),
+            run_start: None,
+            pruning: false,
+            prune_queue: Vec::new(),
             notice: None,
             toasts: crate::toasts::Toasts::default(),
             toast_timer: None,
@@ -2065,6 +2085,50 @@ impl Disktree {
         self.enter(target, from, cx);
     }
 
+    /// What a click on `crumbs` opens: the child of the directory on screen
+    /// that holds it, one level down however deep the tile is drawn. A
+    /// click aims at a tile, and a tile can be several levels down; going
+    /// straight there skipped the levels between.
+    pub fn click_target(&self, crumbs: &[usize]) -> Option<Vec<usize>> {
+        let depth = self.crumbs.len();
+        if crumbs.len() <= depth || !crumbs.starts_with(&self.crumbs) {
+            return None;
+        }
+        let target = crumbs[..=depth].to_vec();
+        self.node_at(&target)
+            .is_some_and(|node| node.is_dir() && !node.children().is_empty())
+            .then_some(target)
+    }
+
+    /// Whether a click on the hovered tile would open a level: it is the
+    /// selection, and something holds it. The pointer says so.
+    pub fn click_opens_hovered(&self) -> bool {
+        self.hovered.as_deref().is_some_and(|hovered| {
+            self.selected.as_deref() == Some(hovered)
+                && self.click_target(hovered).is_some()
+        })
+    }
+
+    /// Open one level toward `crumbs`, keeping it selected when it lies
+    /// deeper, so the next click on it opens the next level. Returns whether
+    /// a level opened.
+    fn open_toward(
+        &mut self,
+        crumbs: &[usize],
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let Some(target) = self.click_target(crumbs) else {
+            return false;
+        };
+        let from = self.tile_body(&target).map(|rect| self.view.project(rect));
+        self.enter(target, from, cx);
+        if crumbs.len() > self.crumbs.len() && crumbs.starts_with(&self.crumbs)
+        {
+            self.selected = Some(crumbs.to_vec());
+        }
+        true
+    }
+
     /// Go inside one child of the current root, so that it fills the viewport.
     ///
     /// `from` is where the child was on screen, when the caller knows it.
@@ -3148,11 +3212,13 @@ impl Disktree {
     // ── removal ─────────────────────────────────────────────────────────
 
     /// The review screen's commit: move to the trash at once, or ask first for
-    /// a permanent deletion, which cannot be undone.
-    pub fn commit(&mut self, cx: &mut Context<'_, Self>) {
+    /// a permanent deletion, which cannot be undone. `rescan` is Remove &
+    /// rescan; without it the tree drops what went and stays.
+    pub fn commit(&mut self, rescan: bool, cx: &mut Context<'_, Self>) {
         if self.remote.is_some() || self.plan().is_empty() {
             return;
         }
+        self.rescan_after_removal = rescan;
         match self.removal_mode {
             RemovalMode::Trash => self.begin_removal(cx),
             RemovalMode::Permanent => {
@@ -3273,7 +3339,17 @@ impl Disktree {
             cx.notify();
             return;
         }
-        self.space_baseline = self.space.or(self.space_baseline);
+        // Measured now rather than read from the ticker, which can be a
+        // second old: the observed figure is only as good as its baseline.
+        let before = space_info(&self.root_path).ok().or(self.space);
+        self.space_baseline = before.or(self.space_baseline);
+        self.ledger.begin(self.scan_epoch);
+        self.run_start = Some(crate::ledger::Start {
+            targets: plan.targets.clone(),
+            mode: self.removal_mode,
+            before: before.map(|space| space.available),
+            started: std::time::SystemTime::now(),
+        });
         self.run_epoch += 1;
         let epoch = self.run_epoch;
         self.run_summary = RunSummary {
@@ -3361,15 +3437,164 @@ impl Disktree {
         if finished {
             self.run = None;
             self.record_removal();
+            let removed = self.record_cohort();
             self.marks.clear();
             self.unmarked = None;
             self.screen = Screen::Done;
-            // The tree on screen is now wrong; start over rather than leaving
-            // numbers that include what was just removed.
-            self.start_scan(cx);
+            if std::mem::take(&mut self.rescan_after_removal) {
+                self.start_scan(cx);
+            } else {
+                // A rescan of a whole disk takes minutes, and the removal
+                // knows what went: take that out of the tree instead.
+                self.prune_removed(&removed, cx);
+            }
         }
         cx.notify();
         !finished
+    }
+
+    /// Add the run that just finished to the ledger. Returns the paths it
+    /// removed.
+    fn record_cohort(&mut self) -> Vec<PathBuf> {
+        let Some(start) = self.run_start.take() else {
+            return Vec::new();
+        };
+        let removed = crate::ledger::removed(&start, &self.run_log);
+        let private = self.private_estimate(&removed);
+        self.ledger.push(crate::ledger::Cohort {
+            mode: start.mode,
+            removed: removed.len() as u64,
+            failed: self.run_summary.failed,
+            reported: removed.iter().map(|target| target.bytes).sum(),
+            private,
+            before: start.before,
+            after: space_info(&self.root_path)
+                .ok()
+                .map(|space| space.available),
+            started: start.started,
+            finished: std::time::SystemTime::now(),
+        });
+        removed.into_iter().map(|target| target.path).collect()
+    }
+
+    /// What the scan saw as only these targets', estimated as review does,
+    /// from the tree they were removed from. Unknown where review's is.
+    fn private_estimate(
+        &self,
+        targets: &[disktree_core::removal::Target],
+    ) -> Option<u64> {
+        if self.options.apparent_size
+            || (cfg!(target_os = "macos") && !self.options.apfs_clone_metadata)
+        {
+            return None;
+        }
+        let tree = self.tree.as_ref()?;
+        let mut resolver = crate::marks::Resolver::new(
+            &self.root_path,
+            tree.root(),
+            PathStyle::Native,
+        );
+        let nodes: Vec<_> = targets
+            .iter()
+            .filter_map(|target| {
+                resolver.resolve(&target.path).map(|(_, node)| node)
+            })
+            .collect();
+        Some(match nodes.as_slice() {
+            [] => 0,
+            [node] => node
+                .sharing()
+                .estimate
+                .map_or(node.bytes, |estimate| estimate.lower),
+            _ => disktree_core::sharing::estimate(nodes).lower,
+        })
+    }
+
+    /// Rebuild the tree without `removed`, off the UI thread: it copies
+    /// every node, a second or so on a whole disk.
+    fn prune_removed(&mut self, removed: &[PathBuf], cx: &Context<'_, Self>) {
+        // One rebuild at a time: a second, started from the same tree,
+        // would be dropped as stale when the first lands.
+        if self.pruning {
+            self.prune_queue.extend_from_slice(removed);
+            return;
+        }
+        let Some(tree) = self.tree.clone() else {
+            return;
+        };
+        let crumbs: Vec<Vec<usize>> = removed
+            .iter()
+            .filter_map(|path| self.crumbs_for_path(path))
+            .filter(|crumbs| !crumbs.is_empty())
+            .collect();
+        if crumbs.is_empty() {
+            return;
+        }
+        let source = Arc::downgrade(&tree);
+        let metric = self.options.metric;
+        let epoch = self.scan_epoch;
+        self.pruning = true;
+        let task = cx.background_executor().spawn(async move {
+            disktree_core::tree::without(&tree, &crumbs, metric)
+        });
+        cx.spawn(async move |this, cx| {
+            let pruned = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.adopt_pruned(epoch, &source, pruned, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Show the tree a removal left, keeping the place on screen where it
+    /// still exists. Not when a scan or another change replaced the tree
+    /// it was built from meanwhile: that one is newer.
+    pub(crate) fn adopt_pruned(
+        &mut self,
+        epoch: u64,
+        source: &Weak<Tree>,
+        pruned: Tree,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.pruning = false;
+        let queued = std::mem::take(&mut self.prune_queue);
+        let current = self
+            .tree
+            .as_ref()
+            .is_some_and(|tree| Weak::ptr_eq(&Arc::downgrade(tree), source));
+        if epoch != self.scan_epoch || !current {
+            discard(Some(pruned));
+            cx.notify();
+            return;
+        }
+        let directory = self.current_path();
+        let selected = self.selected.as_deref().and_then(|c| self.path_at(c));
+        self.marks.refresh(
+            &self.root_path,
+            pruned.root(),
+            self.options.metric,
+            self.path_style(),
+        );
+        discard(self.tree.replace(Arc::new(pruned)));
+        // What was on screen may have gone with the removal: the nearest
+        // directory that is left.
+        self.crumbs = directory
+            .ancestors()
+            .find_map(|path| self.crumbs_for_path(path))
+            .unwrap_or_default();
+        self.selected = selected.and_then(|path| self.crumbs_for_path(&path));
+        self.forget_hover();
+        self.crumb_menu = None;
+        self.transition = None;
+        self.cache = None;
+        self.clear_filter();
+        self.refresh_insights();
+        self.prune_history();
+        self.keep_selection_valid();
+        if !queued.is_empty() {
+            self.prune_removed(&queued, cx);
+        }
+        cx.notify();
     }
 
     /// Descend to a path found by the search field.
@@ -3833,7 +4058,7 @@ impl Disktree {
             Screen::Explore => self.on_explore_key(key, control, shift, cx),
             // No review key is a Ctrl chord, and Edit's rows replay those
             // (Select All is ctrl-a), so a chord must not act as its letter.
-            Screen::Review if !control => self.on_review_key(key, cx),
+            Screen::Review if !control => self.on_review_key(key, shift, cx),
             Screen::Review => {}
             Screen::Running => {
                 if key == "escape" {
@@ -3993,7 +4218,12 @@ impl Disktree {
         }
     }
 
-    fn on_review_key(&mut self, key: &str, cx: &mut Context<'_, Self>) {
+    fn on_review_key(
+        &mut self,
+        key: &str,
+        shift: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self.remote.is_some() && matches!(key, "m" | "p" | "enter") {
             return;
         }
@@ -4020,7 +4250,7 @@ impl Disktree {
                 self.focus_request = Some(FocusTarget::Root);
                 cx.notify();
             }
-            "enter" => self.commit(cx),
+            "enter" => self.commit(shift, cx),
             "!" => self.clear_marks(cx),
             "u" => self.undo_unmark(cx),
             "p" => {
@@ -4107,10 +4337,17 @@ impl Disktree {
         let crumbs = self.tile_at(x, y);
 
         match event.button {
+            // A later press of a double or triple click. One gesture opens
+            // at most one level: once a press of it has opened, the view
+            // has changed under the pointer, and acting on what is there
+            // now would open a second level nobody aimed at.
             MouseButton::Left if event.click_count >= 2 => {
+                if self.click_opened {
+                    return;
+                }
                 if let Some(crumbs) = crumbs {
-                    self.select(Some(crumbs), cx);
-                    self.descend(cx);
+                    self.select(Some(crumbs.clone()), cx);
+                    self.click_opened = self.open_toward(&crumbs, cx);
                 }
             }
             MouseButton::Left
@@ -4121,15 +4358,18 @@ impl Disktree {
                 }
             }
             MouseButton::Left => {
-                let activate = crumbs.as_ref().is_some_and(|crumbs| {
-                    self.selected.as_ref() == Some(crumbs)
-                        && self.node_at(crumbs).is_some_and(Node::is_dir)
-                });
-                if activate {
-                    // A second click on the selection opens it, like a file
-                    // manager, without needing a double click.
-                    self.descend(cx);
-                    return;
+                self.click_opened = false;
+                // A second click on the selection opens it, like a file
+                // manager, without needing a double click.
+                if let Some(crumbs) = crumbs
+                    .as_ref()
+                    .filter(|crumbs| self.selected.as_ref() == Some(*crumbs))
+                {
+                    let crumbs = crumbs.clone();
+                    self.click_opened = self.open_toward(&crumbs, cx);
+                    if self.click_opened {
+                        return;
+                    }
                 }
                 self.select(crumbs, cx);
             }

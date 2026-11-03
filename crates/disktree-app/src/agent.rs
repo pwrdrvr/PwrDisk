@@ -607,6 +607,38 @@ impl Disktree {
         });
     }
 
+    /// The removals since the scan on screen, for the agent: what it needs
+    /// to say how much a run of batches freed without a rescan.
+    fn agent_ledger(&self) -> Option<disktree_link::RemovalLedger> {
+        let cohorts = self.ledger.since(self.scan_epoch);
+        let totals = crate::ledger::Ledger::totals(cohorts)?;
+        let seconds = |at: std::time::SystemTime| {
+            at.duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs().cast_signed())
+        };
+        Some(disktree_link::RemovalLedger {
+            cohorts: cohorts
+                .iter()
+                .map(|cohort| disktree_link::RemovalCohort {
+                    mode: match cohort.mode {
+                        RemovalMode::Trash => "trash".to_string(),
+                        RemovalMode::Permanent => "permanent".to_string(),
+                    },
+                    removed: cohort.removed,
+                    failed: cohort.failed,
+                    reported: cohort.reported,
+                    private: cohort.private,
+                    observed: cohort.observed(),
+                    started: seconds(cohort.started),
+                    finished: seconds(cohort.finished),
+                })
+                .collect(),
+            reported: totals.reported,
+            private: totals.private,
+            observed: totals.observed,
+        })
+    }
+
     /// What the window shows, for the agent.
     pub fn agent_state(&self) -> State {
         State {
@@ -640,6 +672,7 @@ impl Disktree {
                 .agent
                 .as_ref()
                 .and_then(|agent| agent.last_removal.clone()),
+            removals: self.agent_ledger(),
             tree: self.tree.as_deref().map(|tree| TreeSummary {
                 bytes: tree.root().bytes,
                 files: tree.root().files,
