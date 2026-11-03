@@ -6147,7 +6147,7 @@ fn a_removal_keeps_the_tree_without_what_went_and_counts_it(
             temp.path().join("junk"),
             "the view stays where it was"
         );
-        let cohorts = app.ledger.since(app.scan_epoch);
+        let cohorts = app.ledger.since(app.scans_done);
         assert_eq!(app.scan_epoch, scan);
         assert_eq!(cohorts.len(), 1);
         assert_eq!(cohorts[0].removed, 1);
@@ -6173,7 +6173,7 @@ fn a_removal_keeps_the_tree_without_what_went_and_counts_it(
                 .child_named("keep")
                 .is_none()
         );
-        crate::ledger::Ledger::totals(app.ledger.since(app.scan_epoch))
+        crate::ledger::Ledger::totals(app.ledger.since(app.scans_done))
     })
     .expect("totals");
     assert_eq!(totals.count, 2);
@@ -6185,6 +6185,8 @@ fn a_removal_keeps_the_tree_without_what_went_and_counts_it(
 
     update(&view, cx, |app, cx| {
         app.screen = Screen::Explore;
+        // A scan started and stopped keeps the tree, and so the account.
+        app.scan_epoch += 1;
         cx.notify();
     });
     draw(cx);
@@ -6202,6 +6204,29 @@ fn a_removal_keeps_the_tree_without_what_went_and_counts_it(
         .since(app.scan_epoch)
         .is_empty()));
     assert!(cx.debug_bounds("freed-since-scan").is_none());
+}
+
+#[gpui_kit::test]
+fn a_tree_replaced_while_pruning_is_pruned_again(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    remove_now(&view, cx, &["junk/deeper"]);
+    // Size | Files reorders into a new tree before the rebuild lands.
+    update(&view, cx, |app, cx| {
+        assert!(app.pruning, "the rebuild is still running");
+        app.toggle_metric(cx);
+    });
+    cx.run_until_parked();
+    read(&view, cx, |app| {
+        assert!(!app.pruning);
+        assert!(
+            app.crumbs_for_path(&temp.path().join("junk/deeper"))
+                .is_none(),
+            "what was removed stays out of the tree"
+        );
+        assert!(app.crumbs_for_path(&temp.path().join("junk")).is_some());
+    });
 }
 
 #[gpui_kit::test]

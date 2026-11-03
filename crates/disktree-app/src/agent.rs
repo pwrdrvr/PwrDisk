@@ -610,7 +610,7 @@ impl Disktree {
     /// The removals since the scan on screen, for the agent: what it needs
     /// to say how much a run of batches freed without a rescan.
     fn agent_ledger(&self) -> Option<disktree_link::RemovalLedger> {
-        let cohorts = self.ledger.since(self.scan_epoch);
+        let cohorts = self.ledger.since(self.scans_done);
         let totals = crate::ledger::Ledger::totals(cohorts)?;
         let seconds = |at: std::time::SystemTime| {
             at.duration_since(std::time::UNIX_EPOCH)

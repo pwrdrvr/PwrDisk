@@ -476,6 +476,10 @@ pub struct Disktree {
     pub rescan_after_removal: bool,
     /// What each removal since the last scan freed.
     pub ledger: crate::ledger::Ledger,
+    /// Scans that finished and replaced the tree. What the ledger is
+    /// counted against: `scan_epoch` also moves when a scan starts or is
+    /// cancelled, and a cancelled widening keeps the tree it had.
+    pub scans_done: u64,
     /// The running removal as it started.
     run_start: Option<crate::ledger::Start>,
     /// The tree is being rebuilt without what a removal took.
@@ -723,6 +727,7 @@ impl Disktree {
             space_baseline: None,
             rescan_after_removal: false,
             ledger: crate::ledger::Ledger::default(),
+            scans_done: 0,
             run_start: None,
             pruning: false,
             prune_queue: Vec::new(),
@@ -1693,6 +1698,7 @@ impl Disktree {
                         self.path_style(),
                     );
                     self.tree = Some(Arc::new(node));
+                    self.scans_done += 1;
                     self.refresh_insights();
                     self.refresh_legend(cx);
                     self.select_largest(cx);
@@ -1748,6 +1754,7 @@ impl Disktree {
                     self.path_style(),
                 );
                 discard(self.tree.replace(Arc::new(node)));
+                self.scans_done += 1;
                 self.cache = None;
                 self.refresh_insights();
                 self.refresh_legend(cx);
@@ -3343,7 +3350,7 @@ impl Disktree {
         // second old: the observed figure is only as good as its baseline.
         let before = space_info(&self.root_path).ok().or(self.space);
         self.space_baseline = before.or(self.space_baseline);
-        self.ledger.begin(self.scan_epoch);
+        self.ledger.begin(self.scans_done);
         self.run_start = Some(crate::ledger::Start {
             targets: plan.targets.clone(),
             mode: self.removal_mode,
@@ -3532,7 +3539,7 @@ impl Disktree {
         }
         let source = Arc::downgrade(&tree);
         let metric = self.options.metric;
-        let epoch = self.scan_epoch;
+        let removed = removed.to_vec();
         self.pruning = true;
         let task = cx.background_executor().spawn(async move {
             disktree_core::tree::without(&tree, &crumbs, metric)
@@ -3540,19 +3547,21 @@ impl Disktree {
         cx.spawn(async move |this, cx| {
             let pruned = task.await;
             let _ = this.update(cx, |this, cx| {
-                this.adopt_pruned(epoch, &source, pruned, cx);
+                this.adopt_pruned(&source, removed, pruned, cx);
             });
         })
         .detach();
     }
 
     /// Show the tree a removal left, keeping the place on screen where it
-    /// still exists. Not when a scan or another change replaced the tree
-    /// it was built from meanwhile: that one is newer.
+    /// still exists. When the tree it was built from was replaced
+    /// meanwhile (a change of metric reorders into a new one), build again
+    /// from the one on screen: what was removed is gone from the disk
+    /// either way, and a newer scan simply no longer holds those paths.
     pub(crate) fn adopt_pruned(
         &mut self,
-        epoch: u64,
         source: &Weak<Tree>,
+        mut removed: Vec<PathBuf>,
         pruned: Tree,
         cx: &mut Context<'_, Self>,
     ) {
@@ -3562,8 +3571,10 @@ impl Disktree {
             .tree
             .as_ref()
             .is_some_and(|tree| Weak::ptr_eq(&Arc::downgrade(tree), source));
-        if epoch != self.scan_epoch || !current {
+        if !current {
             discard(Some(pruned));
+            removed.extend(queued);
+            self.prune_removed(&removed, cx);
             cx.notify();
             return;
         }
@@ -3577,11 +3588,16 @@ impl Disktree {
         );
         discard(self.tree.replace(Arc::new(pruned)));
         // What was on screen may have gone with the removal: the nearest
-        // directory that is left.
-        self.crumbs = directory
+        // directory that is left, seen whole, as entering it would be.
+        let crumbs = directory
             .ancestors()
             .find_map(|path| self.crumbs_for_path(path))
             .unwrap_or_default();
+        if self.path_at(&crumbs).as_deref() != Some(directory.as_path()) {
+            self.view = View::default();
+            self.file_page = 0;
+        }
+        self.crumbs = crumbs;
         self.selected = selected.and_then(|path| self.crumbs_for_path(&path));
         self.forget_hover();
         self.crumb_menu = None;

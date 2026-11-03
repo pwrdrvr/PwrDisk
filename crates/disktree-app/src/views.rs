@@ -3649,7 +3649,7 @@ fn administrator_line(
 /// last scan's minus what went, and this is the running account.
 fn freed_since_scan(app: &Disktree, theme: &Theme) -> Option<Div> {
     let totals =
-        crate::ledger::Ledger::totals(app.ledger.since(app.scan_epoch))?;
+        crate::ledger::Ledger::totals(app.ledger.since(app.scans_done))?;
     let noun = if totals.count == 1 {
         "removal"
     } else {

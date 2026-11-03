@@ -8,7 +8,8 @@
 //! first two; the third runs from the first cohort's start to the last
 //! one's finish, so it is a measurement and never a sum of guesses.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use disktree_core::removal::{RemovalMode, Target};
@@ -104,8 +105,10 @@ impl Ledger {
         }
     }
 
-    /// The paths each cohort removed are not kept: they are the user's, and
-    /// the tree already dropped them.
+    /// The cohorts added up: reported and private are sums, observed runs
+    /// from the first cohort's start to the last one's finish. The paths
+    /// each cohort removed are not kept: they are the user's, and the tree
+    /// already dropped them.
     pub fn totals(cohorts: &[Cohort]) -> Option<Totals> {
         let (first, last) = (cohorts.first()?, cohorts.last()?);
         Some(Totals {
@@ -120,18 +123,22 @@ impl Ledger {
     }
 }
 
-/// The paths a run removed: its targets whose outcome was success.
+/// The paths a run removed: its targets whose outcome was success. A set,
+/// since an agent can mark tens of thousands of paths and this runs on
+/// the UI thread as the removal finishes.
 pub fn removed(
     start: &Start,
     log: &[(PathBuf, Result<(), String>)],
 ) -> Vec<Target> {
+    let done: HashSet<&Path> = log
+        .iter()
+        .filter(|(_, outcome)| outcome.is_ok())
+        .map(|(path, _)| path.as_path())
+        .collect();
     start
         .targets
         .iter()
-        .filter(|target| {
-            log.iter()
-                .any(|(path, outcome)| *path == target.path && outcome.is_ok())
-        })
+        .filter(|target| done.contains(target.path.as_path()))
         .cloned()
         .collect()
 }
