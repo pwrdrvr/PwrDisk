@@ -323,6 +323,12 @@ fn visit<'a>(
     remaining: &mut usize,
     mut leaf: impl FnMut(Node<'a>),
 ) -> bool {
+    if node
+        .allocation()
+        .is_some_and(|allocation| allocation.followed)
+    {
+        return true;
+    }
     let mut stack = vec![node.children().iter()];
     if !node.is_dir() {
         if *remaining == 0 {
@@ -456,6 +462,22 @@ fn peers<'a>(
         group.references = group.references.max(info.references);
         group.seen += 1;
     });
+    // Candidate units are direct children of scope. Resolve exclusions once,
+    // rather than compare every directory against every selected path.
+    let scope_selected =
+        targets.iter().any(|target| scope.starts_with(&target.path));
+    let excluded: FxHashSet<_> = targets
+        .iter()
+        .filter_map(|target| {
+            target
+                .path
+                .strip_prefix(scope)
+                .ok()?
+                .components()
+                .next()
+                .map(|component| component.as_os_str().to_os_string())
+        })
+        .collect();
     let mut candidates = Vec::new();
     let mut candidates_found = 0;
     for child in scope_node.children() {
@@ -467,11 +489,9 @@ fn peers<'a>(
         if !child.is_dir() || child.stored_sharing().is_none() {
             continue;
         }
-        let path = scope.join(child.name());
-        // Adding an ancestor would silently include the selection itself.
-        if targets.iter().any(|target| {
-            path.starts_with(&target.path) || target.path.starts_with(&path)
-        }) {
+        if scope_selected
+            || excluded.contains(std::ffi::OsStr::new(child.name()))
+        {
             continue;
         }
         let mut related = false;
@@ -484,7 +504,7 @@ fn peers<'a>(
         if related {
             candidates_found += 1;
             if candidates.len() < limit {
-                candidates.push((path, child));
+                candidates.push((scope.join(child.name()), child));
             }
         }
     }
@@ -736,6 +756,10 @@ mod tests {
         .expect("missing private");
         assert!(report.reclaim.expect("wide bounds").partial);
         assert!(!report.metadata_complete);
+        assert_eq!(
+            report.peers.expect("peers").references_not_seen_in_scan,
+            None
+        );
         for context in [
             Context {
                 clone_metadata: false,
