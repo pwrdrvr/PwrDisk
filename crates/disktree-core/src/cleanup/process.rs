@@ -36,58 +36,12 @@ impl Identity {
 pub(super) struct SystemProbe;
 
 impl Probe for SystemProbe {
-    #[allow(
-        clippy::unnecessary_debug_formatting,
-        reason = "An executable path in a refusal must expose controls"
-    )]
     fn executable(
         &mut self,
         name: &str,
         env: &Environment,
     ) -> Result<PathBuf, String> {
-        // Windows .cmd launchers need a shell and have different quoting
-        // rules. Do not quietly run them through cmd.exe.
-        if cfg!(windows) {
-            return Err("Owner-command execution is currently supported on macOS and Linux; Windows launchers require a separate audited adapter".into());
-        }
-        let candidates = if name == "pip" {
-            vec!["pip", "pip3"]
-        } else {
-            vec![name]
-        };
-        for candidate in candidates {
-            for dir in std::env::split_paths(
-                env.variables.get("PATH").map_or("", String::as_str),
-            ) {
-                // Relative PATH entries could resolve a different project CLI.
-                if !dir.is_absolute() {
-                    continue;
-                }
-                let path = dir.join(candidate);
-                if path.is_file() {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt as _;
-                        if std::fs::metadata(&path)
-                            .map_err(|error| error.to_string())?
-                            .permissions()
-                            .mode()
-                            & 0o111
-                            == 0
-                        {
-                            return Err(format!(
-                                "Executable found but not executable: {path:?}"
-                            ));
-                        }
-                    }
-                    return std::fs::canonicalize(&path)
-                        .map_err(|error| error.to_string());
-                }
-            }
-        }
-        Err(format!(
-            "{name} command unavailable on PwrDisk's PATH (software may still be installed)"
-        ))
+        resolve_executable(name, env, 0)
     }
 
     fn output(
@@ -107,6 +61,120 @@ impl Probe for SystemProbe {
             Ok(output)
         }
     }
+}
+
+#[allow(
+    clippy::unnecessary_debug_formatting,
+    reason = "Executable refusals must expose path controls"
+)]
+fn resolve_executable(
+    name: &str,
+    env: &Environment,
+    depth: usize,
+) -> Result<PathBuf, String> {
+    if depth > 4 {
+        return Err("Unsupported recursive CLI interpreter; expose the installed executable directly".into());
+    }
+    // Windows .cmd launchers need a shell and have different quoting
+    // rules. Do not quietly run them through cmd.exe.
+    if cfg!(windows) {
+        return Err("Owner-command execution is currently supported on macOS and Linux; Windows launchers require a separate audited adapter".into());
+    }
+    let candidates = if name == "pip" {
+        vec!["pip", "pip3"]
+    } else {
+        vec![name]
+    };
+    for candidate in candidates {
+        for dir in std::env::split_paths(
+            env.variables.get("PATH").map_or("", String::as_str),
+        ) {
+            // Relative PATH entries could resolve a different project CLI.
+            if !dir.is_absolute() {
+                continue;
+            }
+            let path = dir.join(candidate);
+            if path.is_file() {
+                let resolved = std::fs::canonicalize(&path)
+                    .map_err(|error| error.to_string())?;
+                if is_shim(&path) || is_shim(&resolved) {
+                    return Err("Version-manager shim unavailable for cleanup; expose the installed executable directly on PATH. PwrDisk does not auto-install missing tools".into());
+                }
+                validate_interpreter(&resolved, env, depth)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    if std::fs::metadata(&path)
+                        .map_err(|error| error.to_string())?
+                        .permissions()
+                        .mode()
+                        & 0o111
+                        == 0
+                    {
+                        return Err(format!(
+                            "Executable found but not executable: {path:?}"
+                        ));
+                    }
+                }
+                return Ok(resolved);
+            }
+        }
+    }
+    Err(format!(
+        "{name} command unavailable on PwrDisk's PATH (software may still be installed)"
+    ))
+}
+
+fn is_shim(path: &Path) -> bool {
+    path.components().any(|part| part.as_os_str() == "shims")
+        || path.file_name().is_some_and(|name| name == "volta-shim")
+        || path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "bin")
+            && path
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == ".volta")
+}
+
+fn validate_interpreter(
+    path: &Path,
+    env: &Environment,
+    depth: usize,
+) -> Result<(), String> {
+    // An npm or Cypress script can use env's node, which must not silently
+    // dispatch through a version manager that installs a runtime on demand.
+    let mut prefix = [0; 512];
+    let length = std::fs::File::open(path)
+        .and_then(|mut file| file.read(&mut prefix))
+        .map_err(|error| error.to_string())?;
+    let header = String::from_utf8_lossy(&prefix[..length]);
+    let Some(shebang) = header
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("#!"))
+    else {
+        return Ok(());
+    };
+    let words: Vec<_> = shebang.split_whitespace().collect();
+    if words.first().is_some_and(|program| {
+        Path::new(program)
+            .file_name()
+            .is_some_and(|name| name == "env")
+    }) {
+        let [_, runtime] = words.as_slice() else {
+            return Err("Unsupported env interpreter arguments; expose a direct installed CLI".into());
+        };
+        resolve_executable(runtime, env, depth + 1)?;
+    } else if words
+        .first()
+        .is_some_and(|program| is_shim(Path::new(program)))
+    {
+        return Err("CLI interpreter is a version-manager shim; expose the installed runtime directly".into());
+    }
+    Ok(())
 }
 
 pub(super) fn run(

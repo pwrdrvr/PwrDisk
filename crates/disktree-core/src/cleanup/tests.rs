@@ -756,3 +756,57 @@ fn executable_resolution_uses_pip3_and_refuses_nonexecutable_files() {
             .contains("not executable")
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn preparation_refuses_installing_shims_and_shimmed_env_interpreters() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut fixture = executable_fixture();
+    let cache = fixture.env.home.join(".cache/uv");
+    let shims = fixture.root.join("shims");
+    std::fs::create_dir(&shims).expect("shim directory");
+    let shim = shims.join("uv");
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\nprintf installed > \"$HOME/unwanted-install\"\n",
+    )
+    .expect("installing shim fixture");
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+        .expect("executable shim");
+    fixture
+        .env
+        .variables
+        .insert("PATH".into(), shims.to_str().expect("path").into());
+    let error = prepare_with(
+        &[target(&cache)],
+        &fixture.root,
+        fixture.env.clone(),
+        &mut process::SystemProbe,
+    )
+    .expect_err("do not probe an installing shim");
+    assert!(error.contains("shim"));
+    assert!(!fixture.env.home.join("unwanted-install").exists());
+
+    let bin = fixture.executable.parent().expect("bin");
+    std::fs::write(
+        &fixture.executable,
+        "#!/usr/bin/env node\nprintf installed > \"$HOME/unwanted-install\"\n",
+    )
+    .expect("env runtime fixture");
+    std::os::unix::fs::symlink(&shim, bin.join("node")).expect("shimmed node");
+    fixture
+        .env
+        .variables
+        .insert("PATH".into(), bin.to_str().expect("bin").into());
+    assert!(
+        prepare_with(
+            &[target(&cache)],
+            &fixture.root,
+            fixture.env.clone(),
+            &mut process::SystemProbe
+        )
+        .expect_err("do not dispatch env node through a shim")
+        .contains("shim")
+    );
+    assert!(!fixture.env.home.join("unwanted-install").exists());
+}

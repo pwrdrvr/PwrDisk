@@ -27,6 +27,11 @@ versions, non-executable launchers and failed configuration queries refuse
 cleanup. A command missing from PwrDisk's inherited PATH means unavailable,
 not that the software is uninstalled. Relative PATH entries are ignored. pip resolution also accepts `pip3` when
 `pip` is unavailable.
+Known version-manager shims (including shimmed `env node` interpreters) are
+refused before version probing, because a probe can otherwise install a
+missing runtime. Expose the actual installed CLI/runtime directly on PATH.
+Relative PATH entries are removed from the captured execution environment;
+non-UTF-8 environments fail closed instead of silently losing configuration.
 Only macOS and Linux have execution adapters; Windows cache recognition
 remains available, but shell-based Windows launchers are unsupported.
 

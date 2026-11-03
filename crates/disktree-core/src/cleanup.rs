@@ -257,14 +257,24 @@ pub(crate) struct Environment {
 
 impl Environment {
     fn current() -> Result<Self, String> {
+        let mut variables: BTreeMap<_, _> = std::env::vars_os()
+            .map(|(key, value)| {
+                Ok((key.into_string().map_err(|_| "Non-UTF-8 environment keys are unsupported for cleanup")?,
+                    value.into_string().map_err(|_| "Non-UTF-8 environment values are unsupported for cleanup")?))
+            }).collect::<Result<_, String>>()?;
+        if let Some(path) = variables.get_mut("PATH") {
+            *path = std::env::join_paths(
+                std::env::split_paths(path)
+                    .filter(|directory| directory.is_absolute()),
+            )
+            .map_err(|error| error.to_string())?
+            .into_string()
+            .map_err(|_| "Non-UTF-8 executable PATH is unsupported")?;
+        }
         Ok(Self {
             home: std::env::home_dir()
                 .ok_or("Cannot identify this user's home")?,
-            variables: std::env::vars_os()
-                .filter_map(|(key, value)| {
-                    Some((key.into_string().ok()?, value.into_string().ok()?))
-                })
-                .collect(),
+            variables,
         })
     }
 }

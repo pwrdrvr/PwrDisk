@@ -4957,8 +4957,8 @@ fn review_summary(
     let mode = button_group(
         "removal-mode",
         vec![
-            ChoiceItem::new("trash", "Move to trash").disabled(!trash),
-            ChoiceItem::new("permanent", "Delete permanently"),
+            ChoiceItem::new("trash", "Trash").disabled(!trash),
+            ChoiceItem::new("permanent", "Permanent"),
             ChoiceItem::new("owner", "Owner cleanup"),
         ],
         Some(match app.removal_mode {
@@ -5309,9 +5309,15 @@ fn review_actions(
                 format!("Delete {count} {noun}\u{2026}"),
                 ButtonVariant::Danger,
             ),
-            RemovalMode::OwnerCleanup => {
-                ("Run owner cleanup\u{2026}".into(), ButtonVariant::Danger)
-            }
+            RemovalMode::OwnerCleanup => (
+                if app.cleanup_ready().is_ok() {
+                    "Run owner cleanup\u{2026}"
+                } else {
+                    "Preview owner cleanup"
+                }
+                .into(),
+                ButtonVariant::Danger,
+            ),
         };
         button("commit", label, variant, cx)
             .debug_selector(|| "commit".into())
@@ -5325,21 +5331,23 @@ fn review_actions(
     // The same removal, then a full rescan, for exact figures afterwards.
     // Secondary: a rescan of a whole disk takes minutes, and the tree is
     // already right without one.
-    let rescan = app.remote.is_none().then(|| {
-        let label = match app.removal_mode {
-            RemovalMode::Trash => "Move & rescan",
-            RemovalMode::Permanent => "Delete & rescan\u{2026}",
-            RemovalMode::OwnerCleanup => "Clean & rescan\u{2026}",
-        };
-        button("commit-rescan", label, ButtonVariant::Outline, cx)
-            .debug_selector(|| "commit-rescan".into())
-            .semantic_disabled(unavailable)
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.commit(true, cx);
-                this.apply_focus(window, cx);
-            }))
-            .into_any_element()
-    });
+    let rescan = (app.remote.is_none()
+        && app.removal_mode != RemovalMode::OwnerCleanup)
+        .then(|| {
+            let label = match app.removal_mode {
+                RemovalMode::Trash => "Move & rescan",
+                RemovalMode::Permanent => "Delete & rescan\u{2026}",
+                RemovalMode::OwnerCleanup => "Clean & rescan\u{2026}",
+            };
+            button("commit-rescan", label, ButtonVariant::Outline, cx)
+                .debug_selector(|| "commit-rescan".into())
+                .semantic_disabled(unavailable)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.commit(true, cx);
+                    this.apply_focus(window, cx);
+                }))
+                .into_any_element()
+        });
     let trailing = div()
         .flex()
         .flex_row()
