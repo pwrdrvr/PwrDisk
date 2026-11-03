@@ -3313,6 +3313,8 @@ fn over_limit_mark(
                 .debug_selector(|| "inspector-mark-more".into())
                 .aria_label("More ways to mark")
                 .tab_stop(true)
+                // At body size the glyph reads as a dot beside the label.
+                .text_size(text::HEADING)
                 .border_color(theme.warning)
                 .text_color(theme.warning)
                 .when(open, |button| button.bg(theme.warning.opacity(0.16)))
