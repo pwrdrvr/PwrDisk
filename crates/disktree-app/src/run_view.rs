@@ -127,8 +127,16 @@ pub fn running(
                 (crate::chrome::Platform::current()
                     == crate::chrome::Platform::Linux)
                     .then(|| {
-                        widgets::hint("esc", "stop after this item", cx)
-                            .into_any_element()
+                        widgets::hint(
+                            "esc",
+                            if app.removal_mode == RemovalMode::OwnerCleanup {
+                                "cancel owner command"
+                            } else {
+                                "stop after this item"
+                            },
+                            cx,
+                        )
+                        .into_any_element()
                     }),
                 None,
                 // Outlined, not danger: it loses nothing, and what was
@@ -138,6 +146,9 @@ pub fn running(
                         "stop-removal",
                         if app.stop_requested {
                             "Stopping\u{2026}"
+                        } else if app.removal_mode == RemovalMode::OwnerCleanup
+                        {
+                            "Cancel owner command"
                         } else {
                             "Stop after this item"
                         },
@@ -167,7 +178,12 @@ pub fn done(
 ) -> Div {
     let theme = cx.omarchy().clone();
     let totals = app.run_list.totals();
-    let mut subtitle = format!("{} removed", totals.removed);
+    let owner_cleanup = app.removal_mode == RemovalMode::OwnerCleanup;
+    let mut subtitle = if owner_cleanup {
+        format!("{} owner commands succeeded", totals.removed)
+    } else {
+        format!("{} removed", totals.removed)
+    };
     if totals.failed_all() > 0 {
         let _ = write!(subtitle, " \u{b7} {} failed", totals.failed_all());
     }
@@ -299,15 +315,22 @@ fn list_column(
     theme: &Theme,
     cx: &gpui_kit::Context<'_, Disktree>,
 ) -> Div {
-    let note = match phase {
-        Phase::Running => "in the order they are removed".to_string(),
-        Phase::Done if totals.failed == 1 => {
-            "1 could not be removed".to_string()
+    let note = if app.removal_mode == RemovalMode::OwnerCleanup {
+        format!(
+            "Owner commands: {} succeeded, {} failed; scope allocation is not freed space",
+            totals.removed, totals.failed
+        )
+    } else {
+        match phase {
+            Phase::Running => "in the order they are removed".to_string(),
+            Phase::Done if totals.failed == 1 => {
+                "1 could not be removed".to_string()
+            }
+            Phase::Done if totals.failed > 0 => {
+                format!("{} could not be removed", totals.failed)
+            }
+            Phase::Done => String::new(),
         }
-        Phase::Done if totals.failed > 0 => {
-            format!("{} could not be removed", totals.failed)
-        }
-        Phase::Done => String::new(),
     };
     // Only the rows in view are built: this screen redraws with every
     // report and every free-space sample, and a run can be thousands long.
@@ -356,10 +379,11 @@ fn list_column(
         .id("run-list")
         .debug_selector(|| "run-list".into())
         .role(gpui_kit::Role::List)
-        .aria_label(format!(
-            "{} items to remove; {} removed; {} failed",
-            totals.total, totals.removed, totals.failed
-        ))
+        .aria_label(if app.removal_mode == RemovalMode::OwnerCleanup {
+            format!("{} owner commands; {} succeeded; {} failed", totals.total, totals.removed, totals.failed)
+        } else { format!(
+            "{} items to remove; {} removed; {} failed", totals.total, totals.removed, totals.failed
+        ) })
         .flex()
         .flex_col()
         .flex_1()

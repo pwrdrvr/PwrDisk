@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -687,4 +689,36 @@ fn observed_space_can_decrease_and_never_equals_scope_allocation_by_assumption()
         "partial failure can still change free space"
     );
     assert_eq!(failure.error.as_deref(), Some("owner exit 17"));
+}
+
+#[cfg(unix)]
+#[test]
+fn executable_resolution_uses_pip3_and_refuses_nonexecutable_files() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixture = executable_fixture();
+    let bin = fixture.executable.parent().expect("bin");
+    let pip3 = bin.join("pip3");
+    std::fs::write(&pip3, "fixture executable identity").expect("pip3");
+    std::fs::set_permissions(&pip3, std::fs::Permissions::from_mode(0o755))
+        .expect("executable");
+    let mut env = fixture.env.clone();
+    env.variables
+        .insert("PATH".into(), format!("relative:{}", bin.display()));
+    assert_eq!(
+        process::SystemProbe
+            .executable("pip", &env)
+            .expect("pip3 fallback"),
+        pip3
+    );
+    std::fs::set_permissions(
+        &fixture.executable,
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .expect("not executable");
+    assert!(
+        process::SystemProbe
+            .executable("uv", &env)
+            .expect_err("unavailable command")
+            .contains("not executable")
+    );
 }

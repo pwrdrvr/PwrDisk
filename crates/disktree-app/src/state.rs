@@ -2851,8 +2851,15 @@ impl Disktree {
         };
         run.cancel();
         self.stop_requested = true;
-        self.notice =
-            Some(("stopping after the current item".into(), Status::Warning));
+        self.notice = Some((
+            if self.removal_mode == RemovalMode::OwnerCleanup {
+                "cancelling owner command; partial cleanup may have occurred"
+            } else {
+                "stopping after the current item"
+            }
+            .into(),
+            Status::Warning,
+        ));
         cx.notify();
     }
 

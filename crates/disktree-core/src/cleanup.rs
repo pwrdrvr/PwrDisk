@@ -16,6 +16,10 @@ mod tests;
 
 pub use recognize::inspection_reason;
 
+// Preflight must bound queued paths as well as visited entries so one
+// enormous flat directory cannot exhaust memory before the limit is seen.
+const MAX_PREFLIGHT_ENTRIES: usize = 2_000_000;
+
 /// Cache classifications never silently reach the recursive remover. Check
 /// descendants too: deleting a wrapper must not bypass an owner's policy.
 #[allow(
@@ -36,7 +40,7 @@ pub fn check_raw(targets: &[Target]) -> Result<(), String> {
     let mut visited = 0;
     while let Some(path) = pending.pop() {
         visited += 1;
-        if visited > 2_000_000 {
+        if visited > MAX_PREFLIGHT_ENTRIES {
             return Err("Raw removal inspection exceeded its bound; inspect a smaller selection".into());
         }
         let meta = match std::fs::symlink_metadata(&path) {
@@ -55,6 +59,9 @@ pub fn check_raw(targets: &[Target]) -> Result<(), String> {
             for entry in
                 std::fs::read_dir(&path).map_err(|error| error.to_string())?
             {
+                if visited + pending.len() >= MAX_PREFLIGHT_ENTRIES {
+                    return Err("Raw removal inspection exceeded its bound; inspect a smaller selection".into());
+                }
                 pending.push(entry.map_err(|error| error.to_string())?.path());
             }
         }

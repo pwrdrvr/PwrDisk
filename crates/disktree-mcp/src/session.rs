@@ -1926,7 +1926,11 @@ impl Session {
         // otherwise deletes; the agent has to say which before the user
         // presses Enter.
         let backend = detect_trash_backend();
-        let how = if backend.is_available() {
+        let how = if self.marks.iter().any(|target| {
+            disktree_core::cleanup::inspection_reason(&target.path).is_some()
+        }) {
+            "Caches require Owner cleanup. Prepare and read the owner command, whole actual scope, effects and limitations before the user confirms. Unavailable or unsupported owners need inspection; no raw deletion fallback".into()
+        } else if backend.is_available() {
             format!(
                 "Enter moves the marks to {}, where they can be recovered \
                  and their space comes back only once it is emptied; \
@@ -1999,19 +2003,30 @@ impl Session {
             }
             let _ = writeln!(
                 out,
-                "Last removal: {} \u{00b7} {} removed \u{00b7} {} failed \
+                "Last removal: {} \u{00b7} {} {} \u{00b7} {} failed \
                  \u{00b7} {} marked \u{00b7} {} \u{00b7} {}",
                 removal.mode,
                 removal.removed,
+                if removal.mode == "owner_cleanup" {
+                    "owner commands succeeded"
+                } else {
+                    "removed"
+                },
                 removal.failed,
                 human_bytes(removal.bytes),
-                removal.freed.map_or_else(
-                    || "freed space not measured".to_string(),
-                    |freed| format!(
-                        "{} freed on the volume",
-                        human_bytes(freed)
+                if removal.mode == "owner_cleanup" {
+                    "observed space is reported per owner command above".into()
+                } else {
+                    removal.freed.map_or_else(
+                        || "freed space not measured".to_string(),
+                        |freed| {
+                            format!(
+                                "{} freed on the volume",
+                                human_bytes(freed)
+                            )
+                        },
                     )
-                ),
+                },
                 age(now, removal.at),
             );
         }

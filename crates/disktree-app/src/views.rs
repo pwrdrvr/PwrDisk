@@ -311,7 +311,7 @@ pub fn root(
         root = root.child(volumes_dialog(app, window, cx));
     }
     if app.confirm_open {
-        root = root.child(delete_dialog(app, cx));
+        root = root.child(delete_dialog(app, window, cx));
     }
     root
 }
@@ -844,6 +844,7 @@ fn overlay_footer(
 /// reversible and needs no dialog.
 fn delete_dialog(
     app: &Disktree,
+    window: &Window,
     cx: &mut Context<'_, Disktree>,
 ) -> impl IntoElement {
     let plan = app.plan();
@@ -910,9 +911,20 @@ fn delete_dialog(
             cx,
         )
     });
+    let owner_cleanup = app.removal_mode == RemovalMode::OwnerCleanup;
+    let description = div()
+        .id("cleanup-confirmation-scroll")
+        .min_w_0()
+        .max_h(Rems(
+            window.viewport_size().height.as_f32() / app.rem
+                * size::CLEANUP_PREVIEW_HEIGHT_FRACTION,
+        ))
+        .overflow_scroll()
+        .child(dialog_description(body.clone(), cx));
     let popup = dialog_popup(cx)
+        .when(owner_cleanup, |popup| popup.w(size::CLEANUP_PREVIEW_WIDTH))
         .child(dialog_title(title.clone(), cx))
-        .child(dialog_description(body.clone(), cx))
+        .child(description)
         .child(dialog_footer(
             [],
             Some(cancel_button.into_any_element()),

@@ -25,7 +25,8 @@ never inferred solely from a directory name. PwrDisk does not use `npx`,
 The version is queried first. Unknown output, prereleases, unsupported
 versions, non-executable launchers and failed configuration queries refuse
 cleanup. A command missing from PwrDisk's inherited PATH means unavailable,
-not that the software is uninstalled. Relative PATH entries are ignored.
+not that the software is uninstalled. Relative PATH entries are ignored. pip resolution also accepts `pip3` when
+`pip` is unavailable.
 Only macOS and Linux have execution adapters; Windows cache recognition
 remains available, but shell-based Windows launchers are unsupported.
 

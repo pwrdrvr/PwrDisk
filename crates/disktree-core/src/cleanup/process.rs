@@ -50,32 +50,39 @@ impl Probe for SystemProbe {
         if cfg!(windows) {
             return Err("Owner-command execution is currently supported on macOS and Linux; Windows launchers require a separate audited adapter".into());
         }
-        for dir in std::env::split_paths(
-            env.variables.get("PATH").map_or("", String::as_str),
-        ) {
-            // Relative PATH entries could resolve a different project CLI.
-            if !dir.is_absolute() {
-                continue;
-            }
-            let path = dir.join(name);
-            if path.is_file() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt as _;
-                    if std::fs::metadata(&path)
-                        .map_err(|error| error.to_string())?
-                        .permissions()
-                        .mode()
-                        & 0o111
-                        == 0
-                    {
-                        return Err(format!(
-                            "Executable found but not executable: {path:?}"
-                        ));
-                    }
+        let candidates = if name == "pip" {
+            vec!["pip", "pip3"]
+        } else {
+            vec![name]
+        };
+        for candidate in candidates {
+            for dir in std::env::split_paths(
+                env.variables.get("PATH").map_or("", String::as_str),
+            ) {
+                // Relative PATH entries could resolve a different project CLI.
+                if !dir.is_absolute() {
+                    continue;
                 }
-                return std::fs::canonicalize(&path)
-                    .map_err(|error| error.to_string());
+                let path = dir.join(candidate);
+                if path.is_file() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        if std::fs::metadata(&path)
+                            .map_err(|error| error.to_string())?
+                            .permissions()
+                            .mode()
+                            & 0o111
+                            == 0
+                        {
+                            return Err(format!(
+                                "Executable found but not executable: {path:?}"
+                            ));
+                        }
+                    }
+                    return std::fs::canonicalize(&path)
+                        .map_err(|error| error.to_string());
+                }
             }
         }
         Err(format!(
@@ -218,7 +225,7 @@ pub(super) fn check_tree(root: &Path) -> Result<(), String> {
     let mut visited = 0;
     while let Some(path) = pending.pop() {
         visited += 1;
-        if visited > 2_000_000 {
+        if visited > super::MAX_PREFLIGHT_ENTRIES {
             return Err("Cache is too large for bounded owner preflight; inspect manually".into());
         }
         let meta = std::fs::symlink_metadata(&path)
@@ -251,6 +258,9 @@ pub(super) fn check_tree(root: &Path) -> Result<(), String> {
             for entry in
                 std::fs::read_dir(&path).map_err(|error| error.to_string())?
             {
+                if visited + pending.len() >= super::MAX_PREFLIGHT_ENTRIES {
+                    return Err("Cache is too large for bounded owner preflight; inspect manually".into());
+                }
                 pending.push(entry.map_err(|error| error.to_string())?.path());
             }
         }
