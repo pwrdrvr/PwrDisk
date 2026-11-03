@@ -1821,6 +1821,8 @@ fn the_panel_checks_for_a_checkout_once_per_selection(cx: &mut TestAppContext) {
     }
     assert_eq!(read(&view, cx, |app| app.selected.clone()), None);
     assert_eq!(crate::git::CHECKS.get(), 2, "the root is not checked");
+    // `git` fills only when a background ask finishes; let any finish.
+    cx.run_until_parked();
     assert!(read(&view, cx, |app| app.git.is_empty()), "no git status");
 }
 

@@ -1095,13 +1095,18 @@ fn panel_checkout(app: &mut Disktree) -> Option<std::path::PathBuf> {
     if app.remote.is_some() {
         return None;
     }
-    let target = app.action_target().filter(|target| !target.is_empty())?;
+    let target = git_target(app)?;
     let node = app.node_at(&target)?;
     if !node.is_dir() {
         return None;
     }
     let path = app.path_at(&target)?;
     app.checkout_at(&path).then_some(path)
+}
+
+/// The tile git may be asked about: a selected one, never the scan root.
+fn git_target(app: &Disktree) -> Option<Vec<usize>> {
+    app.action_target().filter(|target| !target.is_empty())
 }
 
 /// Width, in rem, below which the side panel gives the mosaic its room.
@@ -2932,7 +2937,7 @@ fn selection_section(
         && let Some(path) = &path
         // What `panel_checkout` asked about: a selected tile, never the
         // directory on screen.
-        && app.action_target().is_some()
+        && git_target(app).is_some()
         && app.known_checkout(path)
     {
         let value = match app.git.get(path) {
