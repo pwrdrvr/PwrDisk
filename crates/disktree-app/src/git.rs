@@ -300,6 +300,10 @@ fn git(
 /// against the limit, large against what a check costs.
 const POLL: Duration = Duration::from_millis(5);
 
+/// How long output is waited for after git exits, even at the limit: the
+/// reader thread needs a moment to hand over what git wrote last.
+const READ_GRACE: Duration = Duration::from_millis(50);
+
 /// Run `command` to the end, or kill it at `limit`. `Ok(None)` when it
 /// could not be started.
 fn output_within(
@@ -331,19 +335,22 @@ fn output_within(
             let _ = sender.send(out);
         });
     }
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if limit.reached() => break None,
-            Ok(None) => std::thread::sleep(POLL),
-            Err(_) => break None,
+    let ended = loop {
+        match exited(&mut child) {
+            Ok(true) => break true,
+            Ok(false) if limit.reached() => break false,
+            Ok(false) => std::thread::sleep(POLL),
+            Err(_) => break false,
         }
     };
-    let Some(status) = status else {
+    if !ended {
         stop(&mut child);
         return if limit.reached() { Err(Cut) } else { Ok(None) };
-    };
-    let stdout = match read.recv_timeout(limit.remaining()) {
+    }
+    // At least a moment, so output git finished writing just before the
+    // limit is not taken for output something else holds open.
+    let wait = limit.remaining().max(READ_GRACE);
+    let stdout = match read.recv_timeout(wait) {
         Ok(out) => out,
         // Git exited but something it started still holds its output.
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -352,11 +359,34 @@ fn output_within(
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Vec::new(),
     };
+    let Ok(status) = child.wait() else {
+        return Ok(None);
+    };
     Ok(Some(Output {
         status,
         stdout,
         stderr: Vec::new(),
     }))
+}
+
+/// Whether `child` has exited, without reaping it on Unix: until it is
+/// reaped its id, which is also its process group's, cannot go to another
+/// process, so [`stop`] cannot signal a stranger's group.
+#[cfg(unix)]
+#[allow(
+    clippy::needless_pass_by_ref_mut,
+    reason = "one signature with Windows, whose `try_wait` needs it"
+)]
+fn exited(child: &mut std::process::Child) -> std::io::Result<bool> {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    let options =
+        WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
+    Ok(waitid(WaitId::Pid(Pid::from_child(child)), options)?.is_some())
+}
+
+#[cfg(not(unix))]
+fn exited(child: &mut std::process::Child) -> std::io::Result<bool> {
+    Ok(child.try_wait()?.is_some())
 }
 
 /// Kill a probe's git and, on Unix, everything in its process group.
@@ -366,8 +396,8 @@ fn output_within(
 /// starts there talks to it over pipes, so it sees end-of-file and exits
 /// when git is killed, as `git-lfs filter-process` does.
 fn stop(child: &mut std::process::Child) {
-    // The group outlives a leader that already exited while one of its
-    // members lives, so this reaches a child holding git's output too.
+    // The leader is not reaped yet (see `exited`), so the group's id is
+    // still git's, and this reaches a child holding git's output too.
     #[cfg(unix)]
     let _ = rustix::process::kill_process_group(
         rustix::process::Pid::from_child(child),

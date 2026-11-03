@@ -1953,7 +1953,7 @@ fn count_probes(
         let counter = runs.clone();
         app.git_probe = Arc::new(move |_, _| {
             counter.fetch_add(1, Ordering::SeqCst);
-            crate::git_store::answered(answer.clone())
+            crate::git_store::ready(answer.clone())
         });
         app.git.clear();
     });

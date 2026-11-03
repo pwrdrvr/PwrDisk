@@ -4795,7 +4795,7 @@ fn default_git_probe() -> GitProbe {
 /// tests the real one.
 #[cfg(test)]
 fn default_git_probe() -> GitProbe {
-    Arc::new(|_, _| git_store::answered(git_store::Probe::Unreadable))
+    Arc::new(|_, _| git_store::ready(git_store::Probe::Unreadable))
 }
 
 /// Let go of a tree, or anything holding one, off the UI thread: freeing

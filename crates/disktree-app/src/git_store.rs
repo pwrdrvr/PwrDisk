@@ -58,14 +58,14 @@ const REFILL: Duration = Duration::from_secs(2);
 /// set, and hands back where its answer will arrive. The window's runs
 /// `git::probe` within [`PROBE_LIMIT`] on a thread of its own
 /// (`git::probe_on_thread`); tests count calls with their own and answer
-/// at once (`answered`). A channel closed without an answer reads as
+/// at once ([`ready`]). A channel closed without an answer reads as
 /// [`Probe::Unreadable`].
 pub type GitProbe =
     Arc<dyn Fn(&Path, &Arc<AtomicBool>) -> async_channel::Receiver<Probe>>;
 
 /// A probe's answer that is already there, for the tests' probes.
 #[cfg(test)]
-pub fn answered(probe: Probe) -> async_channel::Receiver<Probe> {
+pub fn ready(probe: Probe) -> async_channel::Receiver<Probe> {
     let (sender, answer) = async_channel::bounded(1);
     let _ = sender.try_send(probe);
     answer
