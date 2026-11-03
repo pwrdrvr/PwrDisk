@@ -6157,8 +6157,22 @@ fn a_removal_leaves_what_went_in_the_tree_as_removed_and_counts_it(
     });
     assert!(cx.debug_bounds("removal-ledger").is_some(), "Done lists it");
 
+    // The inspector offers no mark for it, and says why.
     update(&view, cx, |app, cx| {
         app.screen = Screen::Explore;
+        app.selected = app.crumbs_for_path(&deeper);
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("inspector-mark").is_none());
+    update(&view, cx, |app, cx| {
+        app.selected = app.crumbs_for_path(&temp.path().join("junk/blob.bin"));
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("inspector-mark").is_some(), "its neighbour");
+
+    update(&view, cx, |app, cx| {
         // What went cannot be marked again.
         let crumbs = app.crumbs_for_path(&deeper).expect("still drawn");
         app.toggle_mark(&crumbs, cx);

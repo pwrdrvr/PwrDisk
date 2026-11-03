@@ -3000,6 +3000,15 @@ fn selection_section(
 
     // Only states that change the decision earn a badge.
     let mut chips = Vec::new();
+    // Gone from the disk, still in the scan: nothing to mark until a rescan.
+    let removed = path.as_deref().is_some_and(|path| app.was_removed(path));
+    if removed {
+        chips.push(widgets::chip(
+            "Removed since the scan",
+            theme.secondary,
+            cx,
+        ));
+    }
     if marked {
         chips.push(widgets::chip("Marked", theme.danger, cx));
     }
@@ -3025,20 +3034,20 @@ fn selection_section(
     // Open is secondary: Enter already does it. Marking is the action this
     // tool exists for, so it takes the highlight.
     let mut actions = div().flex().flex_row().gap(space::SM);
-    if !is_current_root {
-        if node.is_dir() {
-            let crumbs = target.clone();
-            actions = actions.child(
-                button("open", "Open", ButtonVariant::Outline, cx)
-                    .tab_stop(true)
-                    .flex_1()
-                    .justify_center()
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.go_to(crumbs.clone(), cx);
-                        window.focus(&this.focus, cx);
-                    })),
-            );
-        }
+    if !is_current_root && node.is_dir() {
+        let crumbs = target.clone();
+        actions = actions.child(
+            button("open", "Open", ButtonVariant::Outline, cx)
+                .tab_stop(true)
+                .flex_1()
+                .justify_center()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.go_to(crumbs.clone(), cx);
+                    window.focus(&this.focus, cx);
+                })),
+        );
+    }
+    if !is_current_root && !removed {
         // Inside a marked directory there is nothing to mark on its own: it
         // goes with that directory, so the button offers to keep it by
         // unmarking the directory instead.
@@ -3053,6 +3062,7 @@ fn selection_section(
             _ => "Mark for removal".to_string(),
         };
         let mark = button("mark", label, ButtonVariant::Primary, cx)
+            .debug_selector(|| "inspector-mark".into())
             .tab_stop(true)
             .flex_1()
             .justify_center()
