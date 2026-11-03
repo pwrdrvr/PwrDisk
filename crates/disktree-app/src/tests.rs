@@ -6529,6 +6529,16 @@ fn review_rows_shorten_deep_paths_and_say_why(cx: &mut TestAppContext) {
     // The cache says it is regenerable; the plain file has nothing to say.
     assert!(cx.debug_bounds("review-kind-0").is_some(), "a kind chip");
     assert!(cx.debug_bounds("review-kind-1").is_none());
+    // What each mark is was read once: a later frame walks no directory.
+    crate::marks::work::reset();
+    update(&view, cx, |_, cx| cx.notify());
+    draw(cx);
+    assert!(crate::marks::work::RENDERS.get() > 0, "it drew again");
+    assert_eq!(
+        crate::marks::work::RESOLUTION.get(),
+        0,
+        "and walked nothing"
+    );
     let folder = read(&view, cx, |app| {
         crate::run_view::folder_line(app, &file, 40)
     });
@@ -6544,7 +6554,7 @@ fn the_removal_list_follows_the_item_in_hand_like_the_live_log(
     cx: &mut TestAppContext,
 ) {
     use crate::run_list::{Item, RunList, Status};
-    use crate::run_view::row_place;
+    use crate::run_view::focus_place;
     use std::cmp::Ordering;
     cx.update(init);
     let temp = fixture();
@@ -6567,13 +6577,8 @@ fn the_removal_list_follows_the_item_in_hand_like_the_live_log(
         cx.notify();
     });
     draw(cx);
-    let place = |cx: &mut Window, view: &Entity<Disktree>| {
-        read(view, cx, |app| {
-            app.run_list
-                .focus_row(crate::run_view::RUN_ROWS)
-                .and_then(|row| row_place(&app.run_scroll, row))
-        })
-    };
+    let place =
+        |cx: &mut Window, view: &Entity<Disktree>| read(view, cx, focus_place);
     assert_eq!(place(cx, &view), Some(Ordering::Equal), "row 0 shows");
     let settle = |cx: &mut Window, view: &Entity<Disktree>, upto| {
         update(view, cx, |app, cx| {
@@ -6593,7 +6598,9 @@ fn the_removal_list_follows_the_item_in_hand_like_the_live_log(
     settle(cx, &view, 60);
     assert_eq!(read(&view, cx, |app| app.run_list.current()), Some(60));
     assert_eq!(place(cx, &view), Some(Ordering::Equal), "row 60 shows");
-    assert!(read(&view, cx, |app| app.run_scroll.offset().y) < px(0.));
+    assert!(cx.debug_bounds("run-row-60").is_some(), "and is drawn");
+    // Only the rows in view are built, however long the run.
+    assert!(cx.debug_bounds("run-row-0").is_none(), "row 0 is not");
     assert!(cx.debug_bounds("follow-removal").is_none());
 
     // Scrolled back to the top, away from it: following pauses, the pill

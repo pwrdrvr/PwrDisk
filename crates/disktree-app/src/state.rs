@@ -340,6 +340,23 @@ struct AccountingCache {
     estimates: Vec<(Vec<PathBuf>, disktree_core::sharing::Estimate)>,
 }
 
+/// What the scan made of each marked path, for Review's rows. Resolving a
+/// path indexes every directory it passes through, which is too much to
+/// repeat on every frame of a list of marks; this keeps the answer until
+/// the tree changes. Bounded by the paths marked against one tree.
+#[derive(Default)]
+struct KindCache {
+    tree: Weak<Tree>,
+    root: PathBuf,
+    kinds: rustc_hash::FxHashMap<
+        PathBuf,
+        (
+            disktree_core::classify::Category,
+            Option<disktree_core::classify::Reclaim>,
+        ),
+    >,
+}
+
 /// Everything the app knows and everything it can do.
 pub struct Disktree {
     /// The directory the tree was scanned from.
@@ -412,6 +429,7 @@ pub struct Disktree {
     pub layout_options: LayoutOptions,
     cache: Option<LayoutCache>,
     accounting: RefCell<AccountingCache>,
+    kinds: RefCell<KindCache>,
 
     /// Mouse position in treemap-local pixels, for hit-testing and the tooltip.
     pub pointer: Option<Point<Pixels>>,
@@ -474,7 +492,7 @@ pub struct Disktree {
     /// Every target of the latest run and what happened to it, which
     /// Removing and Done draw.
     pub run_list: crate::run_list::RunList,
-    pub run_scroll: gpui_kit::ScrollHandle,
+    pub run_scroll: gpui_kit::UniformListScrollHandle,
     /// Free bytes on the scanned volume as the latest run started, for
     /// what it has freed so far.
     pub run_free_before: Option<u64>,
@@ -709,6 +727,7 @@ impl Disktree {
             },
             cache: None,
             accounting: RefCell::new(AccountingCache::default()),
+            kinds: RefCell::new(KindCache::default()),
             pointer: None,
             treemap_origin: Rc::new(Cell::new(Point::new(px(0.), px(0.)))),
             treemap_size: Rc::new(Cell::new(size(px(0.), px(0.)))),
@@ -744,7 +763,7 @@ impl Disktree {
             run_summary: RunSummary::default(),
             run_log: Vec::new(),
             run_list: crate::run_list::RunList::default(),
-            run_scroll: gpui_kit::ScrollHandle::new(),
+            run_scroll: gpui_kit::UniformListScrollHandle::new(),
             run_free_before: None,
             space,
             space_baseline: None,
@@ -3510,7 +3529,7 @@ impl Disktree {
         self.run_log.clear();
         self.run_list =
             crate::run_list::RunList::new(self.run_items(&plan.targets));
-        self.run_scroll = gpui_kit::ScrollHandle::new();
+        self.run_scroll = gpui_kit::UniformListScrollHandle::new();
         self.run_free_before = before.map(|space| space.available);
         self.stop_requested = false;
         self.screen = Screen::Running;
@@ -3555,11 +3574,14 @@ impl Disktree {
             return false;
         }
         let mut finished = false;
-        self.update_follow();
+        // Only a report, the end, or a change in following redraws: the
+        // tick itself changes nothing on screen.
+        let mut changed = self.update_follow();
         let Some(run) = &self.run else {
             return false;
         };
         while let Some(event) = run.poll() {
+            changed = true;
             match event {
                 RemovalEvent::Start { total } => self.run_summary.total = total,
                 RemovalEvent::Item {
@@ -3610,18 +3632,19 @@ impl Disktree {
                 self.start_scan(cx);
             }
         }
-        cx.notify();
+        if changed {
+            cx.notify();
+        }
         !finished
     }
 
     /// Whether a scroll by hand paused following, or one back to the item
     /// in hand resumed it: following goes on while that row is in view,
     /// as the live log does near its end.
-    pub fn update_follow(&mut self) {
-        let place = self
-            .run_list
-            .focus_row(crate::run_view::RUN_ROWS)
-            .and_then(|row| crate::run_view::row_place(&self.run_scroll, row));
+    /// Returns whether following changed.
+    pub fn update_follow(&mut self) -> bool {
+        let was = self.run_list.follow;
+        let place = crate::run_view::focus_place(self);
         if std::mem::take(&mut self.run_list.scrolled_by_hand) {
             if let Some(place) = place {
                 self.run_list.follow = place == std::cmp::Ordering::Equal;
@@ -3629,22 +3652,75 @@ impl Disktree {
         } else if place == Some(std::cmp::Ordering::Equal) {
             self.run_list.follow = true;
         }
+        self.run_list.follow != was
     }
 
-    /// The pill's click: follow the item in hand again, from here.
+    /// The pill's click: follow the item in hand again, from here. A wheel
+    /// turn not yet read by a poll is part of what the click answers.
     pub fn follow_removal(&mut self) {
         self.run_list.follow = true;
+        self.run_list.scrolled_by_hand = false;
         self.scroll_to_focus();
     }
 
     /// Bring the item in hand into view, while following.
     pub fn scroll_to_focus(&self) {
         if self.run_list.follow
-            && let Some(row) =
-                self.run_list.focus_row(crate::run_view::RUN_ROWS)
+            && let Some(focus) = self.run_list.focus()
         {
-            self.run_scroll.scroll_to_item(row);
+            // The least movement that shows it, as the log scrolls.
+            self.run_scroll
+                .scroll_to_item(focus, gpui_kit::ScrollStrategy::Nearest);
         }
+    }
+
+    /// What the scan made of each path, for Review's rows: its kind and
+    /// why it can be had back, default where the tree does not have it.
+    pub fn kinds_of<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a Path>,
+    ) -> Vec<(
+        disktree_core::classify::Category,
+        Option<disktree_core::classify::Reclaim>,
+    )> {
+        let Some(tree) = &self.tree else {
+            return paths.into_iter().map(|_| Default::default()).collect();
+        };
+        let mut cached = self.kinds.borrow_mut();
+        if !cached.tree.ptr_eq(&Arc::downgrade(tree))
+            || cached.root != self.root_path
+        {
+            *cached = KindCache {
+                tree: Arc::downgrade(tree),
+                root: self.root_path.clone(),
+                kinds: rustc_hash::FxHashMap::default(),
+            };
+        }
+        // Built only on a miss: a page already seen costs a hash lookup
+        // per row.
+        let mut resolver = None;
+        paths
+            .into_iter()
+            .map(|path| {
+                if let Some(kind) = cached.kinds.get(path) {
+                    return *kind;
+                }
+                let resolver = resolver.get_or_insert_with(|| {
+                    crate::marks::Resolver::new(
+                        &self.root_path,
+                        tree.root(),
+                        self.path_style(),
+                    )
+                });
+                let kind = resolver
+                    .resolve(path)
+                    .map_or_else(Default::default, |(_, node)| {
+                        (node.category, node.reclaim)
+                    });
+                cached.kinds.insert(path.to_path_buf(), kind);
+                kind
+            })
+            .collect()
     }
 
     /// Add the run that just finished to the ledger. Returns what it

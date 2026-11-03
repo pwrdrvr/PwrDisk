@@ -24,10 +24,6 @@ use crate::views::{
 };
 use crate::{palette, widgets};
 
-/// Rows drawn at once. The review screen draws as many; past it the list
-/// draws a block around the item in hand (see `RunList::window`).
-pub const RUN_ROWS: usize = 1200;
-
 /// Rems a row spends on everything but its name and folder: the checkbox,
 /// the swatch, the kind chip, the size and status lanes and the gaps.
 const ROW_FIXED_REMS: f32 = 22.0;
@@ -299,14 +295,7 @@ fn list_column(
     theme: &Theme,
     cx: &gpui_kit::Context<'_, Disktree>,
 ) -> Div {
-    let shown = app.run_list.window(RUN_ROWS);
     let note = match phase {
-        _ if shown.len() < totals.total => format!(
-            "showing {}\u{2013}{} of {}",
-            shown.start + 1,
-            shown.end,
-            totals.total
-        ),
         Phase::Running => "in the order they are removed".to_string(),
         Phase::Done if totals.failed == 1 => {
             "1 could not be removed".to_string()
@@ -316,10 +305,49 @@ fn list_column(
         }
         Phase::Done => String::new(),
     };
-    let current = (phase == Phase::Running)
-        .then(|| app.run_list.current())
-        .flatten();
-    let mut list = div()
+    // Only the rows in view are built: this screen redraws with every
+    // report and every free-space sample, and a run can be thousands long.
+    // Every row is two lines, so the list can be uniform.
+    let rows = gpui_kit::uniform_list(
+        "run-rows",
+        app.run_list.items.len(),
+        cx.processor(
+            move |this: &mut Disktree,
+                  range: std::ops::Range<usize>,
+                  _,
+                  cx: &mut gpui_kit::Context<'_, Disktree>| {
+                let theme = cx.omarchy().clone();
+                let app = &*this;
+                let current = (phase == Phase::Running)
+                    .then(|| app.run_list.current())
+                    .flatten();
+                range
+                    .filter_map(|index| {
+                        let item = app.run_list.items.get(index)?;
+                        let state = match &item.status {
+                            Status::Removed => Row::Removed,
+                            Status::Failed(reason) => Row::Failed(reason),
+                            Status::Waiting if current == Some(index) => {
+                                Row::Current
+                            }
+                            Status::Waiting if phase == Phase::Done => {
+                                Row::Skipped
+                            }
+                            Status::Waiting => Row::Waiting,
+                        };
+                        let folder = folder_line(app, &item.path, budget);
+                        Some(row(
+                            index, item, state, folder, compact, app, &theme,
+                            cx,
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            },
+        ),
+    )
+    .track_scroll(&app.run_scroll)
+    .size_full();
+    let list = div()
         .id("run-list")
         .debug_selector(|| "run-list".into())
         .role(gpui_kit::Role::List)
@@ -331,8 +359,7 @@ fn list_column(
         .flex_col()
         .flex_1()
         .min_h_0()
-        .overflow_y_scroll()
-        .track_scroll(&app.run_scroll)
+        .overflow_hidden()
         .border_1()
         .border_color(theme.border)
         .bg(theme.inset)
@@ -341,26 +368,8 @@ fn list_column(
         .on_scroll_wheel(cx.listener(|this, _, _, cx| {
             this.run_list.scrolled_by_hand = true;
             cx.notify();
-        }));
-    for (index, item) in app
-        .run_list
-        .items
-        .iter()
-        .enumerate()
-        .skip(shown.start)
-        .take(shown.len())
-    {
-        let state = match &item.status {
-            Status::Removed => Row::Removed,
-            Status::Failed(reason) => Row::Failed(reason),
-            Status::Waiting if current == Some(index) => Row::Current,
-            Status::Waiting if phase == Phase::Done => Row::Skipped,
-            Status::Waiting => Row::Waiting,
-        };
-        let folder = folder_line(app, &item.path, budget);
-        list = list
-            .child(row(index, item, state, folder, compact, app, theme, cx));
-    }
+        }))
+        .child(rows);
 
     let cohorts = app.ledger.cohorts();
     div()
@@ -421,21 +430,25 @@ fn list_column(
         })
 }
 
-/// Where row `row` sits against the list's viewport: `Equal` when any of
-/// it shows, `Less` above it, `Greater` below. `None` before it is laid
-/// out.
-pub fn row_place(
-    scroll: &gpui_kit::ScrollHandle,
-    row: usize,
-) -> Option<std::cmp::Ordering> {
-    let child = scroll.bounds_for_item(row)?;
-    let view = scroll.bounds();
-    // Children are laid out unscrolled; the offset moves the viewport.
-    let offset = scroll.offset().y;
-    let (top, bottom) = (view.top() - offset, view.bottom() - offset);
-    Some(if child.bottom() <= top {
+/// Where the item in hand sits against the list's viewport: `Equal` when
+/// any of it shows, `Less` above it, `Greater` below. `None` before the
+/// list is first laid out. Worked out from the rows' one height, so a row
+/// need not have been drawn to be placed.
+pub fn focus_place(app: &Disktree) -> Option<std::cmp::Ordering> {
+    let row = app.run_list.focus()?;
+    let count = app.run_list.items.len();
+    let state = app.run_scroll.0.borrow();
+    let size = state.last_item_size?;
+    if count == 0 {
+        return None;
+    }
+    let height = size.contents.height / count as f32;
+    let top = -state.base_handle.offset().y;
+    let bottom = top + size.item.height;
+    let row_top = height * row as f32;
+    Some(if row_top + height <= top {
         std::cmp::Ordering::Less
-    } else if child.top() >= bottom {
+    } else if row_top >= bottom {
         std::cmp::Ordering::Greater
     } else {
         std::cmp::Ordering::Equal
@@ -450,11 +463,7 @@ fn follow_pill(
     theme: &Theme,
     cx: &gpui_kit::Context<'_, Disktree>,
 ) -> Div {
-    let above = app
-        .run_list
-        .focus_row(RUN_ROWS)
-        .and_then(|row| row_place(&app.run_scroll, row))
-        == Some(std::cmp::Ordering::Less);
+    let above = focus_place(app) == Some(std::cmp::Ordering::Less);
     let label = format!(
         "{} Follow the removal \u{b7} {} of {}",
         if above { '\u{2191}' } else { '\u{2193}' },

@@ -131,28 +131,6 @@ impl RunList {
         self.current().or_else(|| self.next.checked_sub(1))
     }
 
-    /// Where the focus is drawn, counted from the first row drawn.
-    pub fn focus_row(&self, limit: usize) -> Option<usize> {
-        let start = self.window(limit).start;
-        self.focus().map(|focus| focus.saturating_sub(start))
-    }
-
-    /// The rows drawn when there are more than `limit`: a block around
-    /// the item in hand, or the last one reported. It moves half a block
-    /// at a time, so the rows under the pointer rarely shift.
-    pub fn window(&self, limit: usize) -> std::ops::Range<usize> {
-        let len = self.items.len();
-        if len <= limit || limit < 2 {
-            return 0..len;
-        }
-        let focus = self.focus().unwrap_or(0);
-        let step = limit / 2;
-        // A step before the focus, so what just went stays in view.
-        let start = (focus / step).saturating_sub(1) * step;
-        let start = start.min(len - limit);
-        start..start + limit
-    }
-
     pub fn totals(&self) -> Totals {
         let mut totals = Totals {
             total: self.items.len(),
@@ -296,25 +274,6 @@ mod tests {
         assert_eq!(list.settle(Path::new(""), &Err("x".into())), None);
         assert_eq!(list.settle(Path::new("/r/c"), &Ok(())), Some(2));
         assert_eq!(list.current(), None);
-    }
-
-    #[test]
-    fn a_long_run_draws_a_block_around_the_item_in_hand() {
-        let items = (0..10)
-            .map(|index| item(&format!("/r/{index}"), 1, None))
-            .collect();
-        let mut list = RunList::new(items);
-        assert_eq!(list.window(20), 0..10, "everything fits");
-        assert_eq!(list.window(4), 0..4);
-        for index in 0..5 {
-            list.settle(Path::new(&format!("/r/{index}")), &Ok(()));
-        }
-        // The item in hand is 5: the block starts a step before its own.
-        assert_eq!(list.window(4), 2..6);
-        for index in 5..10 {
-            list.settle(Path::new(&format!("/r/{index}")), &Ok(()));
-        }
-        assert_eq!(list.window(4), 6..10, "the end, once it is done");
     }
 
     #[test]

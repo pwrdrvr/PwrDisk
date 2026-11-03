@@ -4605,20 +4605,25 @@ fn review(
     let page = app
         .review_page
         .min(items.len().saturating_sub(1) / LIST_LIMIT);
-    // Each row says what the scan made of it. One resolver for the page
-    // indexes each directory it passes through once.
-    let mut resolver = app.tree().map(|root| {
-        crate::marks::Resolver::new(&app.root_path, root, app.path_style())
-    });
+    // Each row says what the scan made of it, read from a cache that
+    // lives as long as the tree: resolving indexes whole directories.
+    let kinds = app.kinds_of(
+        items
+            .iter()
+            .skip(page * LIST_LIMIT)
+            .take(LIST_LIMIT)
+            .map(|item| item.path.as_path()),
+    );
     let budget = crate::run_view::folder_budget(
         window,
         crate::run_view::REVIEW_ROW_FIXED_REMS,
     );
-    for (index, item) in items
+    for ((index, item), (category, reclaim)) in items
         .iter()
         .enumerate()
         .skip(page * LIST_LIMIT)
         .take(LIST_LIMIT)
+        .zip(kinds)
     {
         let is_covered = status.covered(&item.path);
         let blocked_reason = status.blocked(&item.path).map(str::to_owned);
@@ -4633,18 +4638,14 @@ fn review(
                     + usize::from(blocked_reason.is_some()),
             );
         }
-        let node = resolver
-            .as_mut()
-            .and_then(|resolver| resolver.resolve(&item.path))
-            .map(|(_, node)| node);
         list = list.child(mark_row(
             index,
             item,
             MarkRow {
                 covered: is_covered,
                 blocked: blocked_reason,
-                category: node.map(|node| node.category).unwrap_or_default(),
-                reclaim: node.and_then(|node| node.reclaim),
+                category,
+                reclaim,
                 folder: crate::run_view::folder_line(app, &item.path, budget),
             },
             app,
