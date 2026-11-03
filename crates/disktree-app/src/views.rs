@@ -258,7 +258,7 @@ pub fn root(
             }
             // An open menu owns the arrows before the page behind it scrolls.
             if this.app_menu_open && app_menu_key(this, event, window, cx) { return; }
-            if !this.has_modal() && this.screen == Screen::Review && crate::ui::scroll_key(&event.keystroke.key, &this.review_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
+            if !this.has_modal() && this.screen == Screen::Review && !this.editing_phrase(window, cx) && crate::ui::scroll_key(&event.keystroke.key, &this.review_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
             if this.show_help && crate::ui::scroll_key(&event.keystroke.key, &this.help_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
             if event.keystroke.key == "tab" && !event.keystroke.modifiers.control && !event.keystroke.modifiers.platform {
                 if !this.has_modal() { this.find_open = false; }

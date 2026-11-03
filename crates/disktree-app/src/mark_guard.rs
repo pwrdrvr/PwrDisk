@@ -115,8 +115,16 @@ impl Disktree {
     /// Every mark counts against it, wherever it lives: the worker checks
     /// each volume again, and over-counting only asks sooner.
     fn over_limit(&self, target: &Target, limit: Limit) -> Option<Share> {
-        let capacity = self.space?.total;
-        Share::over(self.marked_with(target), capacity, limit)
+        Share::over(self.marked_with(target), self.capacity()?, limit)
+    }
+
+    /// The scanned volume's capacity: the ticker's, or measured now when
+    /// it has no reading yet, so a mark made before the first reading is
+    /// still judged.
+    fn capacity(&self) -> Option<u64> {
+        self.space
+            .or_else(|| disktree_core::space::space_info(&self.root_path).ok())
+            .map(|space| space.total)
     }
 
     /// Whether `target`, not yet marked, may be marked now.
@@ -189,7 +197,7 @@ impl Disktree {
             return None;
         }
         let limit = self.policy().limit?;
-        Share::over(plan.bytes(), self.space?.total, limit)
+        Share::over(plan.bytes(), self.capacity()?, limit)
     }
 
     /// The phrase Review asks for `share`, in the current mode.

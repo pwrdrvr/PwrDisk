@@ -9722,6 +9722,11 @@ fn past_the_limit_marking_needs_mark_anyway_and_review_the_phrase(
     assert!(finished, "the removal finished");
     assert!(!temp.path().join("junk").exists());
     assert!(temp.path().join("keep/notes.txt").exists());
+    // The phrase confirmed that removal only: the next one asks again.
+    read(&view, cx, |app| {
+        assert!(app.over_phrase.is_none());
+        assert_eq!(app.over_ticked, None);
+    });
 }
 
 /// Settings › Safety relaxes the window, never an agent: Off gives the

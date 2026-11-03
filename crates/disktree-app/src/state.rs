@@ -2769,6 +2769,9 @@ impl Disktree {
             return;
         }
         if !self.marks.contains(&target.path, self.path_style()) {
+            // Judged afresh: the inspector's cached answer may predate a
+            // mount or a link changing under the path.
+            self.refusal_cache.replace(None);
             let check = self.mark_check(&target);
             let refused = match check {
                 crate::mark_guard::MarkCheck::OverLimit(_) => !anyway,
@@ -3426,17 +3429,14 @@ impl Disktree {
     /// a permanent deletion, which cannot be undone. `rescan` is Remove &
     /// rescan; without it the tree drops what went and stays.
     pub fn commit(&mut self, rescan: bool, cx: &mut Context<'_, Self>) {
-        if self.remote.is_some() || self.plan().is_empty() {
+        let plan = self.plan();
+        if self.remote.is_some() || plan.is_empty() {
             return;
         }
         // Past the limit the second confirmation comes first, before the
         // permanent dialog asks about recoverability; `begin_removal`
         // checks it again on the way to the worker.
-        let plan = self.plan();
-        if let Some(share) = self.removal_gate(&plan)
-            && !self.gate_met(&share, cx)
-            && let Err(notice) = self.removal_limit(&plan, cx)
-        {
+        if let Err(notice) = self.removal_limit(&plan, cx) {
             self.warn(notice, cx);
             return;
         }
@@ -3575,6 +3575,10 @@ impl Disktree {
         self.run_scroll = gpui_kit::UniformListScrollHandle::new();
         self.run_free_before = before.map(|space| space.available);
         self.stop_requested = false;
+        // A confirmation is for this removal only: the next one past the
+        // limit asks again, even for the same share and mode.
+        self.over_phrase = None;
+        self.over_ticked = None;
         self.screen = Screen::Running;
         self.run = Some(disktree_core::removal::spawn_limited(
             plan,

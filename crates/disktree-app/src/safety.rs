@@ -10,6 +10,8 @@ const FILE: &str = "removal-limit-percent";
 const CONFIRM_FILE: &str = "over-limit-confirm";
 /// Saved in place of a percent when the person turned the limit off.
 const OFF: &str = "off";
+/// What Settings saved for no limit before Off existed.
+const LEGACY_OFF: &str = "100";
 
 /// What Review asks before a removal past the limit, after Mark anyway.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -83,7 +85,9 @@ pub fn load_policy(dir: Option<&Path>) -> Result<Policy, String> {
     };
     let limit = match read(&dir.join(FILE))? {
         None => Some(Limit::default()),
-        Some(text) if text == OFF => None,
+        // 100% was the last choice before Off existed and meant the same
+        // for the window; read as Off, an agent keeps the default.
+        Some(text) if text == OFF || text == LEGACY_OFF => None,
         Some(text) => Some(
             text.parse::<u8>()
                 .map_err(|_| "Invalid removal limit in Settings > Safety")
@@ -214,6 +218,9 @@ mod tests {
         let policy = load_policy(dir).expect("saved");
         assert_eq!(policy.limit, None);
         assert_eq!(policy.confirm, Confirm::Tick);
+        assert_eq!(load(dir).expect("agent").percent(), 5);
+        std::fs::write(temp.path().join(FILE), "100\n").expect("legacy");
+        assert_eq!(load_policy(dir).expect("legacy").limit, None);
         assert_eq!(load(dir).expect("agent").percent(), 5);
     }
 

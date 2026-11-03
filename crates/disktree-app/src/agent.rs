@@ -553,6 +553,7 @@ impl Disktree {
         if self.marked_ancestor(&target.path).is_some() {
             return Ok(());
         }
+        self.refusal_cache.replace(None);
         if let Some(reason) = self.agent_mark_refusal(&target) {
             return Err(reason);
         }
