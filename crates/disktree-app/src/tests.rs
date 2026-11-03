@@ -6567,7 +6567,11 @@ fn the_removal_list_follows_the_item_in_hand_like_the_live_log(
                     path: path(index),
                     bytes: 1_000,
                     category: disktree_core::classify::Category::Other,
-                    reclaim: None,
+                    // Every other row has a kind chip, so rows differ in
+                    // what they hold.
+                    reclaim: (index % 2 == 1).then_some(
+                        disktree_core::classify::Reclaim::BuildOutput,
+                    ),
                     private: None,
                     status: Status::Waiting,
                 })
@@ -6577,6 +6581,19 @@ fn the_removal_list_follows_the_item_in_hand_like_the_live_log(
         cx.notify();
     });
     draw(cx);
+    // Every row spans the list, whatever it holds, so its size and status
+    // lanes line up with the rows around it. A virtualized row is only as
+    // wide as its content unless it says otherwise.
+    let list = cx.debug_bounds("run-list").expect("the list");
+    for index in ["run-row-0", "run-row-1"] {
+        let row = cx.debug_bounds(index).expect("a row");
+        assert!(
+            row.size.width >= list.size.width - px(4.),
+            "{index} is {:?} wide in a {:?} list",
+            row.size.width,
+            list.size.width
+        );
+    }
     let place =
         |cx: &mut Window, view: &Entity<Disktree>| read(view, cx, focus_place);
     assert_eq!(place(cx, &view), Some(Ordering::Equal), "row 0 shows");

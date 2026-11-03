@@ -543,6 +543,9 @@ fn row(
             kind.map_or_else(String::new, |kind| format!("{kind}; "))
         ))
         .relative()
+        // A virtualized row is only as wide as its content otherwise, and
+        // the size and status lanes would wander with the kind chip.
+        .w_full()
         .flex()
         .flex_row()
         .flex_shrink_0()
