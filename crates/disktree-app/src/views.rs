@@ -2526,6 +2526,9 @@ fn legend_empty(
         .child(
             div()
                 .debug_selector(|| "legend-empty".into())
+                // It sits over the mosaic; without this a press on it
+                // selected the tile beneath.
+                .occlude()
                 .flex()
                 .flex_col()
                 .items_center()
