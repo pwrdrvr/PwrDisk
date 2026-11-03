@@ -78,13 +78,26 @@ pub struct RunList {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
     pub removed: usize,
+    /// Listed items that failed, so `removed + failed` never exceeds
+    /// `total` and the rest are the ones not reached.
     pub failed: usize,
+    /// Failures reported against no listed item: the worker could not
+    /// start.
+    pub unlisted: usize,
     pub total: usize,
     pub reported_done: u64,
     pub reported_all: u64,
     /// `None` once any item's private part is unknown.
     pub private_done: Option<u64>,
     pub private_all: Option<u64>,
+}
+
+impl Totals {
+    /// Every failure the worker reported, listed or not: what the agent
+    /// and the ledger are told, so a run that never started is not clean.
+    pub const fn failed_all(&self) -> usize {
+        self.failed + self.unlisted
+    }
 }
 
 impl RunList {
@@ -156,7 +169,7 @@ impl RunList {
 
     pub fn totals(&self) -> Totals {
         let mut totals = Totals {
-            failed: self.unlisted_failures,
+            unlisted: self.unlisted_failures,
             total: self.items.len(),
             private_done: Some(0),
             private_all: Some(0),
@@ -301,9 +314,10 @@ mod tests {
         // A path it never listed settles no item, but a failure still
         // counts: it is how the worker says it could not start.
         assert_eq!(list.settle(Path::new(""), &Err("x".into())), None);
-        assert_eq!(list.totals().failed, 2);
+        assert_eq!(list.totals().failed, 1);
+        assert_eq!(list.totals().failed_all(), 2);
         assert_eq!(list.settle(Path::new(""), &Ok(())), None);
-        assert_eq!(list.totals().failed, 2);
+        assert_eq!(list.totals().failed_all(), 2);
         assert_eq!(list.settle(Path::new("/r/c"), &Ok(())), Some(2));
         assert_eq!(list.current(), None);
         let removed: Vec<_> =

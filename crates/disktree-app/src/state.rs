@@ -3589,7 +3589,7 @@ impl Disktree {
                     if (
                         totals.removed as u64,
                         totals.reported_done,
-                        totals.failed,
+                        totals.failed_all(),
                     ) != (removed, bytes, failed)
                     {
                         log::warn!(
@@ -3598,7 +3598,7 @@ impl Disktree {
                              {} failed; the worker counted otherwise",
                             totals.removed,
                             totals.reported_done,
-                            totals.failed
+                            totals.failed_all()
                         );
                     }
                     finished = true;
@@ -3718,11 +3718,12 @@ impl Disktree {
         };
         let removed: Vec<_> = self.run_list.removed().cloned().collect();
         let private = self.private_estimate(&removed);
+        let totals = self.run_list.totals();
         self.ledger.push(crate::ledger::Cohort {
             mode: start.mode,
-            removed: removed.len() as u64,
-            failed: self.run_list.totals().failed,
-            reported: removed.iter().map(|target| target.bytes).sum(),
+            removed: totals.removed as u64,
+            failed: totals.failed_all(),
+            reported: totals.reported_done,
             private,
             before: start.before,
             after: space_info(&self.root_path)

@@ -164,8 +164,8 @@ pub fn done(
     let theme = cx.omarchy().clone();
     let totals = app.run_list.totals();
     let mut subtitle = format!("{} removed", totals.removed);
-    if totals.failed > 0 {
-        let _ = write!(subtitle, " \u{b7} {} failed", totals.failed);
+    if totals.failed_all() > 0 {
+        let _ = write!(subtitle, " \u{b7} {} failed", totals.failed_all());
     }
     let skipped = totals.total - totals.removed - totals.failed;
     if skipped > 0 {

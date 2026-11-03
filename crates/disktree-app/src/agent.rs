@@ -653,7 +653,7 @@ impl Disktree {
                 RemovalMode::Permanent => "permanent".to_string(),
             },
             removed: totals.removed,
-            failed: totals.failed,
+            failed: totals.failed_all(),
             bytes: totals.reported_done,
             freed,
             at: now_seconds(),
