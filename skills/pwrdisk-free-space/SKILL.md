@@ -195,6 +195,16 @@ Looking is free; acting is the user's call.
 9. **Report.** `pwrdisk_status` reports completed and failed removals and
    measured freed space. Report that figure, not a projection. Trash is not
    guaranteed recoverable and does not guarantee an immediate space saving.
+   Removal does not rescan unless `pwrdisk_remove` is given `rescan: true`,
+   so the next batch can be found at once. Until a rescan, listings keep
+   the scan's sizes but say "removed since the scan" on what went, and
+   "N of it removed since the scan" on a directory that lost part of
+   itself; subtract that before reporting what is left. The window refuses
+   to mark removed paths again, so leave them out. Its removals since the scan are listed as
+   reported (a clone in every place), private (the scan's estimate of what
+   was theirs alone) and observed (the measured free-space change); report
+   the observed total first. Sharing figures stay the scan's until a
+   rescan.
 
 MCP removal also requires interactive confirmation from the client (form
 elicitation). An agent-supplied confirmation value does not establish human

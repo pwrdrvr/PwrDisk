@@ -358,6 +358,23 @@ impl Disktree {
         let Some(tree) = self.tree.as_deref() else {
             return Response::error("The window has no completed scan.");
         };
+        // The tree still holds what was removed since the scan, at the
+        // scan's sizes: an estimate over it would price space already
+        // gone.
+        if let Some(path) = paths.iter().find(|path| {
+            self.was_removed(path)
+                || self.removed.below(path, PathStyle::Native) > 0
+        }) {
+            return Response::error(format!(
+                "{} {} since the scan; rescan before estimating it.",
+                display_path(path, self.home.as_deref(), PathStyle::Native),
+                if self.was_removed(path) {
+                    "was removed"
+                } else {
+                    "lost part of itself to a removal"
+                },
+            ));
+        }
         let summary = self.agent_state().tree;
         let context = disktree_core::planning::Context::of(
             &self.root_path,
@@ -375,7 +392,7 @@ impl Disktree {
 
     /// What is in a directory of the tree on screen.
     fn agent_ls(&mut self, path: &Path, limit: usize) -> Response {
-        let listing = match self.agent_node(path) {
+        let mut listing = match self.agent_node(path) {
             Ok(node) => Listing::of(
                 &self.root_path,
                 self.tree.as_ref().map_or(0, |tree| tree.root().bytes),
@@ -385,6 +402,11 @@ impl Disktree {
             ),
             Err(message) => return Response::error(message),
         };
+        self.note_removal(&mut listing.entry, path);
+        for child in &mut listing.children {
+            let path = path.join(&child.name);
+            self.note_removal(child, &path);
+        }
         self.note_agent(
             None,
             format!(
@@ -405,14 +427,29 @@ impl Disktree {
             .path
             .clone()
             .unwrap_or_else(|| self.root_path.clone());
-        let found = match self.agent_node(&from) {
+        let mut found = match self.agent_node(&from) {
             Ok(node) => {
                 FoundList::of(&query::find(&from, node, &filter, request.limit))
             }
             Err(message) => return Response::error(message),
         };
+        for item in &mut found.matches {
+            self.note_removal(&mut item.entry, &item.path);
+        }
         self.note_agent(None, "searching the tree".to_string());
         Response::Found(found)
+    }
+
+    /// Say what a removal since the scan took of `path`: the tree keeps
+    /// it until a rescan, and its size is still the scan's.
+    fn note_removal(&self, entry: &mut disktree_link::Entry, path: &Path) {
+        if self.removed.is_empty() {
+            return;
+        }
+        entry.removed = self.was_removed(path);
+        if !entry.removed {
+            entry.removed_bytes = self.removed.below(path, PathStyle::Native);
+        }
     }
 
     /// Mark what the agent asks, measured from the tree on screen. A path
@@ -434,9 +471,25 @@ impl Disktree {
         for target in targets {
             // Without a tree yet, the agent's own measurement stands in;
             // `Marks::refresh` corrects it when the scan lands.
+            if self.was_removed(&target.path) {
+                refused.push(Refused {
+                    path: target.path.clone(),
+                    reason: "removed since the scan; it is still listed \
+                             until a rescan"
+                        .into(),
+                });
+                continue;
+            }
             let measured = if self.tree.is_some() {
                 match self.agent_node(&target.path) {
-                    Ok(node) => (node.bytes, node.is_dir()),
+                    // A directory part of which was removed frees only
+                    // the rest.
+                    Ok(node) => (
+                        node.bytes.saturating_sub(
+                            self.removed.below(&target.path, PathStyle::Native),
+                        ),
+                        node.is_dir(),
+                    ),
                     Err(reason) => {
                         refused.push(Refused {
                             path: target.path.clone(),
@@ -607,6 +660,38 @@ impl Disktree {
         });
     }
 
+    /// The removals since the scan on screen, for the agent: what it needs
+    /// to say how much a run of batches freed without a rescan.
+    fn agent_ledger(&self) -> Option<disktree_link::RemovalLedger> {
+        let cohorts = self.ledger.since(self.scans_done);
+        let totals = crate::ledger::Ledger::totals(cohorts)?;
+        let seconds = |at: std::time::SystemTime| {
+            at.duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs().cast_signed())
+        };
+        Some(disktree_link::RemovalLedger {
+            cohorts: cohorts
+                .iter()
+                .map(|cohort| disktree_link::RemovalCohort {
+                    mode: match cohort.mode {
+                        RemovalMode::Trash => "trash".to_string(),
+                        RemovalMode::Permanent => "permanent".to_string(),
+                    },
+                    removed: cohort.removed,
+                    failed: cohort.failed,
+                    reported: cohort.reported,
+                    private: cohort.private,
+                    observed: cohort.observed(),
+                    started: seconds(cohort.started),
+                    finished: seconds(cohort.finished),
+                })
+                .collect(),
+            reported: totals.reported,
+            private: totals.private,
+            observed: totals.observed,
+        })
+    }
+
     /// What the window shows, for the agent.
     pub fn agent_state(&self) -> State {
         State {
@@ -640,6 +725,7 @@ impl Disktree {
                 .agent
                 .as_ref()
                 .and_then(|agent| agent.last_removal.clone()),
+            removals: self.agent_ledger(),
             tree: self.tree.as_deref().map(|tree| TreeSummary {
                 bytes: tree.root().bytes,
                 files: tree.root().files,

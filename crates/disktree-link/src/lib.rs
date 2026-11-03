@@ -225,6 +225,12 @@ pub struct ConfirmedRemoval {
     pub mode: RemovalChoice,
     pub paths: Vec<PathBuf>,
     pub confirmation: String,
+    /// Rescan once the removal finishes. Without it the window keeps its
+    /// tree, with the removed paths shown as removed until a scan, which is
+    /// what an agent removing several batches wants: a rescan can take
+    /// minutes.
+    #[serde(default)]
+    pub rescan: bool,
 }
 
 /// What the agent asks of the window.
@@ -292,6 +298,23 @@ pub struct Entry {
     /// APFS clone sharing beneath it; absent when no file there is a clone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clones: Option<Clones>,
+    /// Removed since the scan, itself or with a directory holding it. The
+    /// window keeps the scanned tree until a rescan, so `bytes` is still
+    /// what the scan measured. Only a window sets it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
+    /// Scanned bytes of what was removed beneath it since the scan, when it
+    /// is not wholly removed; already inside `bytes`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub removed_bytes: u64,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_zero(bytes: &u64) -> bool {
+    *bytes == 0
 }
 
 /// How an entry's listed bytes split once APFS clones are accounted for.
@@ -362,6 +385,8 @@ impl Entry {
             modified: node.modified,
             read_error: node.read_error,
             clones: Clones::of(node),
+            removed: false,
+            removed_bytes: 0,
         }
     }
 }
@@ -563,6 +588,34 @@ pub struct Removal {
     pub at: i64,
 }
 
+/// One removal since the last scan, three ways.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalCohort {
+    /// `trash` or `permanent`.
+    pub mode: String,
+    pub removed: u64,
+    pub failed: usize,
+    /// Listed bytes of what was removed; a clone counts in every place.
+    pub reported: u64,
+    /// What the scan saw as only theirs; `None` when it could not say.
+    pub private: Option<u64>,
+    /// Free space after minus before, which other programs move too.
+    pub observed: Option<i64>,
+    /// Unix seconds.
+    pub started: i64,
+    pub finished: i64,
+}
+
+/// Every removal since the last scan, and their totals: `observed` runs
+/// from the first one's start to the last one's finish.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalLedger {
+    pub cohorts: Vec<RemovalCohort>,
+    pub reported: u64,
+    pub private: Option<u64>,
+    pub observed: Option<i64>,
+}
+
 /// What the window shows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
@@ -586,6 +639,10 @@ pub struct State {
     pub estimate: Option<SelectionEstimate>,
     pub space: Option<Space>,
     pub removal: Option<Removal>,
+    /// The removals since the scan on screen, which the tree already
+    /// leaves out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removals: Option<RemovalLedger>,
     /// The tree on screen, when there is one.
     pub tree: Option<TreeSummary>,
     /// The biggest things that could plausibly go, as the panel lists them.
@@ -796,6 +853,33 @@ mod tests {
         )
         .expect("decode");
         assert_eq!(estimate.shared, 0);
+    }
+
+    #[test]
+    fn removed_status_round_trips_and_is_absent_when_nothing_went() {
+        let root = clones(1, 2, Some(0));
+        let plain = Entry::of(root.root().children().at(1));
+        assert!(!plain.removed && plain.removed_bytes == 0);
+        let line = serde_json::to_string(&plain).expect("encode");
+        assert!(!line.contains("removed"), "older peers see no new keys");
+        let old: Entry = serde_json::from_str(&line).expect("decode");
+        assert!(!old.removed && old.removed_bytes == 0);
+        for entry in [
+            Entry {
+                removed: true,
+                ..plain.clone()
+            },
+            Entry {
+                removed_bytes: 4096,
+                ..plain
+            },
+        ] {
+            let back: Entry = serde_json::from_str(
+                &serde_json::to_string(&entry).expect("encode"),
+            )
+            .expect("decode");
+            assert_eq!(back, entry);
+        }
     }
 
     #[test]

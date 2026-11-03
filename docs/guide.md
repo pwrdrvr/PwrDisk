@@ -121,6 +121,14 @@ machine; see `crates/disktree-core/src/classify.rs`.
 Space, X, Enter and the arrows act on the tile under the mouse if the mouse
 moved last, and on the keyboard selection after you use an arrow or n.
 
+A click selects the tile under the pointer. A second click on the
+selection, slow or as a double-click, opens one level toward it: the
+directory on screen's child that holds it, however deep the tile is
+drawn, with the tile still selected so the next click opens the next
+level. One double- or triple-click never opens more than one level. The
+pointer turns into a hand over a selection a click would open, and the
+tile's hover card names the directory a click or a double-click opens.
+
 A marked tile takes the danger colour, and so does everything inside it:
 removing a directory takes its contents with it. Marking a directory absorbs
 any marks already inside it, and something inside a marked directory cannot be
@@ -151,12 +159,27 @@ there, then choose:
 - **Delete permanently** — `rm -rf` semantics. It always asks first, in a dialog
   that names what goes and how much comes back.
 
-The commit is the footer's right-hand button, beside **Back**; **Export**
-and **Unmark all** sit on its left. While a removal runs, **Stop after this
-item** (or `esc`) ends it once the item in hand is done.
+The commit is the footer's right-hand button; beside it, **Move & rescan**
+(**Delete & rescan…** in permanent mode, `shift enter`) does the same and
+then scans again. **Back** is beside them; **Export** and **Unmark all** sit
+on the left. While a removal runs, **Stop after this item** (or `esc`) ends
+it once the item in hand is done.
 
-When it finishes, PwrDisk scans again so the numbers on screen match the disk,
-and shows how much free space was actually gained.
+Without a rescan, the tree stays as the scan found it, so the next batch
+can be marked straight away; a rescan of a whole disk takes minutes. What
+was removed stays where it was, greyed out, with its hover card saying
+**Removed since the scan**, and cannot be marked again. Every size on
+screen is still the scan's; a directory marked around something already
+removed counts only what is left in it. The next scan clears all of it.
+
+The Done screen lists every removal since the last scan three ways:
+**reported**, the listed size of what went, a clone counted in every place
+it appears; **private**, what the scan saw as theirs alone; and
+**observed**, the volume's free space after minus before, which other
+programs change too. With more than one removal, a total row adds the
+first two and measures the third from the first removal's start to the
+last one's end. The Disk section keeps the total as **Freed since scan**
+until the next scan.
 
 ## Keys
 
@@ -164,6 +187,7 @@ and shows how much free space was actually gained.
 | --- | --- |
 | `space` / `x` | mark or unmark the tile you point at |
 | `ctrl`-click (`⌘`-click on macOS) | mark without moving the selection |
+| click, then click again (or double-click) | select a tile, then open one level toward it |
 | `enter` | open that directory, at any depth |
 | `⌫` / `esc` | go up one directory |
 | `alt ←` `alt →` | back and forward through where you have been |
@@ -456,6 +480,14 @@ works headless and says so. A window showing an SSH server is not followed:
 the agent's tools measure this computer, and PwrDisk does not remove files
 over SSH.
 
+`pwrdisk_remove` does not rescan unless asked (`rescan: true`), so the
+agent can find and mark the next batch at once. Until a rescan,
+`pwrdisk_ls` and `pwrdisk_find` still list removed paths with the scan's
+sizes, but say **removed since the scan** on each, and on a directory that
+lost part of itself, how much of it went; marking a removed path is
+refused. `pwrdisk_status` lists every removal since the scan,
+reported, private and observed, with their total.
+
 The tools: `pwrdisk_status`, `pwrdisk_scan`, `pwrdisk_ls`,
 `pwrdisk_find`, `pwrdisk_show`, `pwrdisk_mark`, `pwrdisk_unmark` and
 `pwrdisk_review`, `pwrdisk_removal_preview` and `pwrdisk_remove`. Each `mark` answers with the real plan: what the guards
@@ -494,10 +526,17 @@ once from **Restart to update**. Nothing is sent but the request for the
 release list.
 
 **Check for Updates…** (in the PwrDisk menu on macOS, the strip's menu
-elsewhere) checks at once and answers in a toast at the bottom left of the
-main window: up to date, an update ready to install with **Restart to
-update**, or why the check failed. A check on its own says nothing unless it
-has downloaded an update, and then says so once for each version.
+elsewhere) checks at once and answers in a toast at the lower left of the
+main window, above the screen's buttons. While it works the toast says so,
+and while it downloads it shows how far along it is. Then it answers: up
+to date, an update ready to install, or why the check failed. An answer
+goes after eight seconds; resting the pointer on it holds it.
+
+An update ready to install, found by any check, stays in a toast with
+**Restart to update** until you restart or choose **Later**. Later puts away
+that version only: a newer one, or Check for Updates…, brings it back. The
+title strip offers it too, as **0.15.0 ready · Restart**, Later or not.
+Restarting forgets your marks, and it waits while a removal runs.
 
 **Shift-U** opens the Updates panel: the version, what the last check found,
 **Check now**, and the release channel:

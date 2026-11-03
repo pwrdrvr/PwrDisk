@@ -29,6 +29,52 @@ pub fn display(path: &Path, home: Option<&Path>) -> String {
     }
 }
 
+/// The removals since the window's scan, each three ways, then the total:
+/// what to report after several batches, since the tree is not rescanned.
+pub fn ledger(ledger: &disktree_link::RemovalLedger, now: i64) -> String {
+    let observed = |delta: Option<i64>| {
+        delta.map_or_else(
+            || "not measured".to_string(),
+            |delta| {
+                let sign = if delta < 0 { "-" } else { "+" };
+                format!("{sign}{}", human_bytes(delta.unsigned_abs()))
+            },
+        )
+    };
+    let private = |bytes: Option<u64>| {
+        bytes.map_or_else(|| "unknown".into(), human_bytes)
+    };
+    let mut out = String::from(
+        "Removed since the scan (the tree already leaves these out; \
+         reported counts a clone in every place, private is what the scan \
+         saw as theirs alone, observed is the volume's measured change):\n",
+    );
+    for (index, cohort) in ledger.cohorts.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "  {}. {} \u{00b7} {} removed \u{00b7} {} failed \u{00b7} {} \
+             reported \u{00b7} {} private \u{00b7} {} observed \u{00b7} {}",
+            index + 1,
+            cohort.mode,
+            cohort.removed,
+            cohort.failed,
+            human_bytes(cohort.reported),
+            private(cohort.private),
+            observed(cohort.observed),
+            age(now, cohort.finished),
+        );
+    }
+    let _ = writeln!(
+        out,
+        "  Total: {} reported \u{00b7} {} private \u{00b7} {} observed, \
+         from the first removal's start to the last one's end",
+        human_bytes(ledger.reported),
+        private(ledger.private),
+        observed(ledger.observed),
+    );
+    out
+}
+
 /// How long ago `then` was, from `now`, in one unit: `3 d`, `2 mo`.
 pub fn age(now: i64, then: i64) -> String {
     if then <= 0 {
@@ -47,6 +93,15 @@ pub fn age(now: i64, then: i64) -> String {
 /// What an entry is, in one phrase after its name.
 pub fn describe(entry: &Entry, now: i64) -> String {
     let mut parts = Vec::new();
+    // First, since it changes what the rest means: the size is the scan's.
+    if entry.removed {
+        parts.push("removed since the scan".to_string());
+    } else if entry.removed_bytes > 0 {
+        parts.push(format!(
+            "{} of it removed since the scan",
+            human_bytes(entry.removed_bytes)
+        ));
+    }
     if entry.is_dir {
         parts.push(format!("{} files", human_count(entry.files)));
     }
@@ -201,7 +256,30 @@ mod tests {
             modified: 0,
             read_error: false,
             clones,
+            removed: false,
+            removed_bytes: 0,
         }
+    }
+
+    #[test]
+    fn removed_entries_say_so_first() {
+        let gone = Entry {
+            removed: true,
+            ..entry(None)
+        };
+        assert_eq!(
+            describe(&gone, 0),
+            "removed since the scan \u{00b7} 12 files \u{00b7} age unknown"
+        );
+        let part = Entry {
+            removed_bytes: 4 * 1024 * 1024,
+            ..entry(None)
+        };
+        assert_eq!(
+            describe(&part, 0),
+            "4.0 MiB of it removed since the scan \u{00b7} 12 files \u{00b7} \
+             age unknown"
+        );
     }
 
     #[test]
