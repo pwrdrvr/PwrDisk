@@ -33,6 +33,9 @@ pub const RUN_ROWS: usize = 1200;
 const ROW_FIXED_REMS: f32 = 22.0;
 /// The same, without the status lane, in a narrow window.
 const ROW_FIXED_COMPACT_REMS: f32 = 16.0;
+/// Review's rows: the icon, the swatch, the kind chip, the share bar, the
+/// size, Unmark and the gaps.
+pub const REVIEW_ROW_FIXED_REMS: f32 = 30.0;
 /// A caption character's average advance in ems, on the generous side: the
 /// shortened folder should fit, and the row clips whatever does not.
 const CAPTION_ADVANCE_EMS: f32 = 0.6;
@@ -227,17 +230,17 @@ fn body(
     cx: &gpui_kit::Context<'_, Disktree>,
 ) -> Div {
     let theme = cx.omarchy().clone();
-    let rem = window.rem_size().as_f32();
-    let width_rems = window.viewport_size().width.as_f32() / rem;
-    let compact = width_rems < REVIEW_COLUMNS_REMS;
-    // What the folder line has to itself, in caption characters.
-    let text_rems = if compact {
-        width_rems - ROW_FIXED_COMPACT_REMS
-    } else {
-        width_rems - size::REVIEW_SUMMARY.0 - ROW_FIXED_REMS
-    };
-    let budget = (text_rems / (text::CAPTION.0 * CAPTION_ADVANCE_EMS)).max(16.0)
-        as usize;
+    let compact = window.viewport_size().width.as_f32()
+        / window.rem_size().as_f32()
+        < REVIEW_COLUMNS_REMS;
+    let budget = folder_budget(
+        window,
+        if compact {
+            ROW_FIXED_COMPACT_REMS
+        } else {
+            ROW_FIXED_REMS
+        },
+    );
 
     let sidebar = sidebar(app, phase, totals, &theme, cx)
         .when(compact, |panel| panel.w_full().max_h(relative(0.45)));
@@ -253,6 +256,38 @@ fn body(
         .child(list_column(app, phase, totals, budget, compact, &theme, cx))
         .child(sidebar)
         .children(toasts)
+}
+
+/// How many caption characters a row's folder line has to itself, in a
+/// list beside the summary panel or, in a narrow window, across it.
+/// `fixed` is what the row's other lanes take, in rems.
+pub fn folder_budget(window: &Window, fixed: f32) -> usize {
+    let width =
+        window.viewport_size().width.as_f32() / window.rem_size().as_f32();
+    let list = if width < REVIEW_COLUMNS_REMS {
+        width
+    } else {
+        width - size::REVIEW_SUMMARY.0
+    };
+    // At least a name or two, however narrow: the row clips the rest.
+    ((list - fixed) / (text::CAPTION.0 * CAPTION_ADVANCE_EMS)).max(16.0)
+        as usize
+}
+
+/// The folder `path` is in, as a person reads it, shortened to `budget`.
+pub fn folder_line(
+    app: &Disktree,
+    path: &std::path::Path,
+    budget: usize,
+) -> String {
+    let style = app.path_style();
+    style.parent(path).map_or_else(String::new, |parent| {
+        crate::run_list::elide_middle(
+            &app.display_path(parent),
+            style.separator(),
+            budget,
+        )
+    })
 }
 
 fn list_column(
@@ -284,7 +319,6 @@ fn list_column(
     let current = (phase == Phase::Running)
         .then(|| app.run_list.current())
         .flatten();
-    let style = app.path_style();
     let mut list = div()
         .id("run-list")
         .debug_selector(|| "run-list".into())
@@ -302,10 +336,11 @@ fn list_column(
         .border_1()
         .border_color(theme.border)
         .bg(theme.inset)
-        // Scrolling by hand is looking at something: stop following the
-        // item in hand until the next run.
-        .on_scroll_wheel(cx.listener(|this, _, _, _| {
-            this.run_list.follow = false;
+        // The next poll reads where this left the item in hand, so the
+        // list has scrolled by then whichever handler runs first.
+        .on_scroll_wheel(cx.listener(|this, _, _, cx| {
+            this.run_list.scrolled_by_hand = true;
+            cx.notify();
         }));
     for (index, item) in app
         .run_list
@@ -322,14 +357,7 @@ fn list_column(
             Status::Waiting if phase == Phase::Done => Row::Skipped,
             Status::Waiting => Row::Waiting,
         };
-        let folder =
-            style.parent(&item.path).map_or_else(String::new, |parent| {
-                crate::run_list::elide_middle(
-                    &app.display_path(parent),
-                    style.separator(),
-                    budget,
-                )
-            });
+        let folder = folder_line(app, &item.path, budget);
         list = list
             .child(row(index, item, state, folder, compact, app, theme, cx));
     }
@@ -370,7 +398,19 @@ fn list_column(
                         .child(note),
                 ),
         )
-        .child(list)
+        .child(
+            div()
+                .relative()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(list)
+                .children(
+                    (phase == Phase::Running && !app.run_list.follow)
+                        .then(|| follow_pill(app, totals, theme, cx)),
+                ),
+        )
         .when(phase == Phase::Done && !cohorts.is_empty(), |column| {
             column.child(
                 div()
@@ -379,6 +419,76 @@ fn list_column(
                     .child(ledger_table(cohorts, theme, cx)),
             )
         })
+}
+
+/// Where row `row` sits against the list's viewport: `Equal` when any of
+/// it shows, `Less` above it, `Greater` below. `None` before it is laid
+/// out.
+pub fn row_place(
+    scroll: &gpui_kit::ScrollHandle,
+    row: usize,
+) -> Option<std::cmp::Ordering> {
+    let child = scroll.bounds_for_item(row)?;
+    let view = scroll.bounds();
+    // Children are laid out unscrolled; the offset moves the viewport.
+    let offset = scroll.offset().y;
+    let (top, bottom) = (view.top() - offset, view.bottom() - offset);
+    Some(if child.bottom() <= top {
+        std::cmp::Ordering::Less
+    } else if child.top() >= bottom {
+        std::cmp::Ordering::Greater
+    } else {
+        std::cmp::Ordering::Equal
+    })
+}
+
+/// "↓ Follow the removal · 3 of 8", while following is paused: the live
+/// log's pill. A click brings the item in hand back and follows it again.
+fn follow_pill(
+    app: &Disktree,
+    totals: &Totals,
+    theme: &Theme,
+    cx: &gpui_kit::Context<'_, Disktree>,
+) -> Div {
+    let above = app
+        .run_list
+        .focus_row(RUN_ROWS)
+        .and_then(|row| row_place(&app.run_scroll, row))
+        == Some(std::cmp::Ordering::Less);
+    let label = format!(
+        "{} Follow the removal \u{b7} {} of {}",
+        if above { '\u{2191}' } else { '\u{2193}' },
+        totals.removed + totals.failed,
+        totals.total
+    );
+    div()
+        .absolute()
+        .bottom(space::LG)
+        .left_0()
+        .right_0()
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .id("follow-removal")
+                .debug_selector(|| "follow-removal".into())
+                .role(gpui_kit::Role::Button)
+                .aria_label(label.clone())
+                .px(space::LG)
+                .py(space::XS)
+                .border_1()
+                .border_color(theme.accent)
+                .bg(theme.surface)
+                .shadow_lg()
+                .cursor_pointer()
+                .text_color(theme.accent)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(label)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.follow_removal();
+                    cx.notify();
+                })),
+        )
 }
 
 /// One item: a checkbox that fills in as it goes, its kind's colour, its

@@ -4605,6 +4605,15 @@ fn review(
     let page = app
         .review_page
         .min(items.len().saturating_sub(1) / LIST_LIMIT);
+    // Each row says what the scan made of it. One resolver for the page
+    // indexes each directory it passes through once.
+    let mut resolver = app.tree().map(|root| {
+        crate::marks::Resolver::new(&app.root_path, root, app.path_style())
+    });
+    let budget = crate::run_view::folder_budget(
+        window,
+        crate::run_view::REVIEW_ROW_FIXED_REMS,
+    );
     for (index, item) in items
         .iter()
         .enumerate()
@@ -4624,11 +4633,20 @@ fn review(
                     + usize::from(blocked_reason.is_some()),
             );
         }
+        let node = resolver
+            .as_mut()
+            .and_then(|resolver| resolver.resolve(&item.path))
+            .map(|(_, node)| node);
         list = list.child(mark_row(
             index,
             item,
-            is_covered,
-            blocked_reason,
+            MarkRow {
+                covered: is_covered,
+                blocked: blocked_reason,
+                category: node.map(|node| node.category).unwrap_or_default(),
+                reclaim: node.and_then(|node| node.reclaim),
+                folder: crate::run_view::folder_line(app, &item.path, budget),
+            },
             app,
             &theme,
             cx,
@@ -4725,36 +4743,59 @@ fn review(
         )
 }
 
-/// One marked path. Lanes are fixed, so names, bars and sizes line up down
-/// the list and sizes can be compared by eye.
+/// What a review row says beyond the mark itself.
+struct MarkRow {
+    covered: bool,
+    blocked: Option<String>,
+    category: Category,
+    reclaim: Option<disktree_core::classify::Reclaim>,
+    /// The folder it is in, already shortened to fit.
+    folder: String,
+}
+
+/// One marked path, drawn as Removing draws it so the list approved is
+/// the list watched: the icon where Removing puts its checkbox, the kind's
+/// colour, the name over its folder, why it is listed, then Review's own
+/// lanes. Lanes are fixed, so names, bars and sizes line up down the list
+/// and sizes can be compared by eye.
 fn mark_row(
     index: usize,
     item: &Target,
-    covered: bool,
-    blocked: Option<String>,
+    row: MarkRow,
     app: &Disktree,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Stateful<Div> {
+    let MarkRow {
+        covered,
+        blocked,
+        category,
+        reclaim,
+        folder,
+    } = row;
     let root_value = app.tree().map_or(0, |tree| tree.bytes);
-    let path_text = app.display_path(&item.path);
+    let full = app.display_path(&item.path);
+    let accent = palette::category_accent(theme, category);
+    let kind = crate::run_list::kind(category, reclaim);
     let color = if blocked.is_some() || covered {
         theme.secondary
     } else {
-        theme.foreground
+        theme.bright
     };
     let explanation = blocked.as_deref().unwrap_or(if covered {
         "inside a marked directory"
     } else {
         "included in removal plan"
     });
-    div()
+    let row = div()
         .id(crate::file_list::path_id(&item.path))
+        .debug_selector(move || format!("review-row-{index}"))
         .role(gpui_kit::Role::ListItem)
         .aria_label(format!(
-            "{}; {} bytes; marked; {explanation}",
+            "{}; {} bytes; {}marked; {explanation}",
             item.path.display(),
-            item.bytes
+            item.bytes,
+            kind.map_or_else(String::new, |kind| format!("{kind}; "))
         ))
         .flex()
         .flex_row()
@@ -4766,26 +4807,37 @@ fn mark_row(
         .py(space::SM)
         .border_b_1()
         .border_color(theme.divider())
+        .when(covered, |row| row.opacity(0.6))
         .child(
-            gpui_omarchy::icon(if item.is_dir {
-                gpui_omarchy::IconName::FolderOpen
-            } else {
-                gpui_omarchy::IconName::File
-            })
-            .size(icon::SM)
-            .flex_shrink_0()
-            .text_color(theme.secondary),
+            // As wide as Removing's checkbox, which takes its place.
+            div()
+                .flex_shrink_0()
+                .size(icon::MD)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    gpui_omarchy::icon(if item.is_dir {
+                        gpui_omarchy::IconName::FolderOpen
+                    } else {
+                        gpui_omarchy::IconName::File
+                    })
+                    .size(icon::SM)
+                    .text_color(theme.secondary),
+                ),
         )
+        .child(div().flex_shrink_0().w(px(2.)).h(space::XL).bg(accent))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(space::XXS)
-                .min_w(relative(0.5))
+                .min_w(relative(0.4))
                 .flex_1()
                 .child(
                     div()
-                        .min_w_0()
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
                         .text_color(color)
                         .child(short_name(&item.path, app.path_style())),
                 )
@@ -4793,9 +4845,17 @@ fn mark_row(
                     div()
                         .text_size(text::CAPTION)
                         .text_color(theme.secondary)
-                        .child(path_text),
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(folder),
                 ),
         )
+        .children(kind.map(|kind| {
+            widgets::chip(kind, accent, cx)
+                .flex_shrink_0()
+                .debug_selector(move || format!("review-kind-{index}"))
+        }))
         .children(covered.then(|| {
             widgets::chip("Inside a marked directory", theme.secondary, cx)
         }))
@@ -4833,7 +4893,8 @@ fn mark_row(
                 let path = item.path.clone();
                 move |this, _, _, cx| this.unmark(&path.clone(), cx)
             })),
-        )
+        );
+    with_tooltip(row, full)
 }
 
 fn review_summary(

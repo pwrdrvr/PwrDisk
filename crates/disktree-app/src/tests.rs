@@ -6494,6 +6494,133 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
     assert!(temp.path().join("keep/notes.txt").exists());
 }
 
+/// Review draws its rows as Removing does: a deep path is shortened from
+/// the middle onto one line, so its row is as tall as a short one's, and
+/// the row says why the path is listed.
+#[gpui_kit::test]
+fn review_rows_shorten_deep_paths_and_say_why(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let deep: PathBuf = (0..30)
+        .map(|level| format!("nested-directory-{level:02}"))
+        .collect();
+    let file = temp.path().join(&deep).join("leaf.bin");
+    std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&file, vec![b'x'; 5_000]).expect("write");
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_paths(&view, cx, &[temp.path().join(".cache"), file.clone()]);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+    let rows: Vec<_> = (0..2)
+        .map(|index| {
+            let selector: &'static str =
+                Box::leak(format!("review-row-{index}").into_boxed_str());
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        })
+        .collect();
+    assert_eq!(
+        rows[0].size.height, rows[1].size.height,
+        "the deep path does not wrap: {rows:?}"
+    );
+    // The cache says it is regenerable; the plain file has nothing to say.
+    assert!(cx.debug_bounds("review-kind-0").is_some(), "a kind chip");
+    assert!(cx.debug_bounds("review-kind-1").is_none());
+    let folder = read(&view, cx, |app| {
+        crate::run_view::folder_line(app, &file, 40)
+    });
+    assert!(folder.contains('\u{2026}'), "{folder}");
+    assert!(folder.ends_with("nested-directory-29"), "{folder}");
+}
+
+/// A long run scrolls with the item in hand, as the live log follows its
+/// newest line: scrolling it out of view pauses that and shows the pill,
+/// and the pill follows again.
+#[gpui_kit::test]
+fn the_removal_list_follows_the_item_in_hand_like_the_live_log(
+    cx: &mut TestAppContext,
+) {
+    use crate::run_list::{Item, RunList, Status};
+    use crate::run_view::row_place;
+    use std::cmp::Ordering;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let path = |index: usize| temp.path().join(format!("dir-{index:03}"));
+    update(&view, cx, |app, cx| {
+        app.run_list = RunList::new(
+            (0..80)
+                .map(|index| Item {
+                    path: path(index),
+                    bytes: 1_000,
+                    category: disktree_core::classify::Category::Other,
+                    reclaim: None,
+                    private: None,
+                    status: Status::Waiting,
+                })
+                .collect(),
+        );
+        app.screen = Screen::Running;
+        cx.notify();
+    });
+    draw(cx);
+    let place = |cx: &mut Window, view: &Entity<Disktree>| {
+        read(view, cx, |app| {
+            app.run_list
+                .focus_row(crate::run_view::RUN_ROWS)
+                .and_then(|row| row_place(&app.run_scroll, row))
+        })
+    };
+    assert_eq!(place(cx, &view), Some(Ordering::Equal), "row 0 shows");
+    let settle = |cx: &mut Window, view: &Entity<Disktree>, upto| {
+        update(view, cx, |app, cx| {
+            app.update_follow();
+            for index in 0..upto {
+                if app.run_list.settle(&path(index), &Ok(())).is_some() {
+                    app.scroll_to_focus();
+                }
+            }
+            cx.notify();
+        });
+        draw(cx);
+        draw(cx);
+    };
+
+    // Most of the way down: the list went with it.
+    settle(cx, &view, 60);
+    assert_eq!(read(&view, cx, |app| app.run_list.current()), Some(60));
+    assert_eq!(place(cx, &view), Some(Ordering::Equal), "row 60 shows");
+    assert!(read(&view, cx, |app| app.run_scroll.offset().y) < px(0.));
+    assert!(cx.debug_bounds("follow-removal").is_none());
+
+    // Scrolled back to the top, away from it: following pauses, the pill
+    // shows, and the list stays where it was put.
+    let list = cx.debug_bounds("run-list").expect("the list");
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: list.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+            px(0.),
+            px(100_000.),
+        )),
+        ..Default::default()
+    });
+    draw(cx);
+    settle(cx, &view, 65);
+    assert!(!read(&view, cx, |app| app.run_list.follow), "paused");
+    assert_eq!(place(cx, &view), Some(Ordering::Greater));
+    assert!(cx.debug_bounds("follow-removal").is_some(), "the pill");
+
+    // The pill follows again.
+    click_on(cx, "follow-removal");
+    draw(cx);
+    assert!(read(&view, cx, |app| app.run_list.follow));
+    assert_eq!(place(cx, &view), Some(Ordering::Equal), "row 65 shows");
+    assert!(cx.debug_bounds("follow-removal").is_none());
+}
+
 #[gpui_kit::test]
 fn a_removal_leaves_what_went_in_the_tree_as_removed_and_counts_it(
     cx: &mut TestAppContext,

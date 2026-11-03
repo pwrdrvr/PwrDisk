@@ -38,10 +38,19 @@ impl Item {
     /// Why it is on the list, in the words the legend and "Worth a look"
     /// use: the reclaim reason when there is one, else its kind.
     pub fn kind(&self) -> Option<&'static str> {
-        self.reclaim.map(Reclaim::label).or_else(|| {
-            (self.category != Category::Other).then(|| self.category.name())
-        })
+        kind(self.category, self.reclaim)
     }
+}
+
+/// Why a path is listed, as Review and Removing both say it: the reclaim
+/// reason when the scan has one, else its kind, else nothing.
+pub fn kind(
+    category: Category,
+    reclaim: Option<Reclaim>,
+) -> Option<&'static str> {
+    reclaim
+        .map(Reclaim::label)
+        .or_else(|| (category != Category::Other).then(|| category.name()))
 }
 
 /// The run's items in the order the worker takes them.
@@ -50,8 +59,13 @@ pub struct RunList {
     pub items: Vec<Item>,
     /// Where the next report is expected: the worker goes in plan order.
     next: usize,
-    /// Keep the item in hand in view. Off once the person scrolls.
+    /// Keep the item in hand in view, as the live log keeps its newest
+    /// line: paused while the person has scrolled it out of view, and on
+    /// again once it is back in view or they ask.
     pub follow: bool,
+    /// The wheel moved the list since the last poll, which then decides
+    /// whether that paused following.
+    pub scrolled_by_hand: bool,
 }
 
 /// The run's figures so far, beside what the whole run would come to.
@@ -73,6 +87,7 @@ impl RunList {
             items,
             next: 0,
             follow: true,
+            scrolled_by_hand: false,
         }
     }
 
@@ -110,6 +125,18 @@ impl RunList {
             .map(|offset| self.next + offset)
     }
 
+    /// The item to keep in view: the one in hand, or the last one
+    /// reported once there is none.
+    pub fn focus(&self) -> Option<usize> {
+        self.current().or_else(|| self.next.checked_sub(1))
+    }
+
+    /// Where the focus is drawn, counted from the first row drawn.
+    pub fn focus_row(&self, limit: usize) -> Option<usize> {
+        let start = self.window(limit).start;
+        self.focus().map(|focus| focus.saturating_sub(start))
+    }
+
     /// The rows drawn when there are more than `limit`: a block around
     /// the item in hand, or the last one reported. It moves half a block
     /// at a time, so the rows under the pointer rarely shift.
@@ -118,9 +145,7 @@ impl RunList {
         if len <= limit || limit < 2 {
             return 0..len;
         }
-        let focus = self
-            .current()
-            .unwrap_or_else(|| self.next.saturating_sub(1));
+        let focus = self.focus().unwrap_or(0);
         let step = limit / 2;
         // A step before the focus, so what just went stays in view.
         let start = (focus / step).saturating_sub(1) * step;

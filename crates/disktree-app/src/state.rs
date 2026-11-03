@@ -3551,10 +3551,14 @@ impl Disktree {
         if epoch != self.run_epoch {
             return false;
         }
+        if self.run.is_none() {
+            return false;
+        }
+        let mut finished = false;
+        self.update_follow();
         let Some(run) = &self.run else {
             return false;
         };
-        let mut finished = false;
         while let Some(event) = run.poll() {
             match event {
                 RemovalEvent::Start { total } => self.run_summary.total = total,
@@ -3569,19 +3573,8 @@ impl Disktree {
                     } else {
                         self.run_summary.failed += 1;
                     }
-                    if let Some(index) = self.run_list.settle(&path, &outcome)
-                        && self.run_list.follow
-                    {
-                        // The next item is the one in hand; the last one
-                        // reported once there is none.
-                        // Rows are drawn from the window's start.
-                        let next = self.run_list.current().unwrap_or(index);
-                        let start = self
-                            .run_list
-                            .window(crate::run_view::RUN_ROWS)
-                            .start;
-                        self.run_scroll
-                            .scroll_to_item(next.saturating_sub(start));
+                    if self.run_list.settle(&path, &outcome).is_some() {
+                        self.scroll_to_focus();
                     }
                     self.run_log.push((path, outcome));
                 }
@@ -3619,6 +3612,39 @@ impl Disktree {
         }
         cx.notify();
         !finished
+    }
+
+    /// Whether a scroll by hand paused following, or one back to the item
+    /// in hand resumed it: following goes on while that row is in view,
+    /// as the live log does near its end.
+    pub fn update_follow(&mut self) {
+        let place = self
+            .run_list
+            .focus_row(crate::run_view::RUN_ROWS)
+            .and_then(|row| crate::run_view::row_place(&self.run_scroll, row));
+        if std::mem::take(&mut self.run_list.scrolled_by_hand) {
+            if let Some(place) = place {
+                self.run_list.follow = place == std::cmp::Ordering::Equal;
+            }
+        } else if place == Some(std::cmp::Ordering::Equal) {
+            self.run_list.follow = true;
+        }
+    }
+
+    /// The pill's click: follow the item in hand again, from here.
+    pub fn follow_removal(&mut self) {
+        self.run_list.follow = true;
+        self.scroll_to_focus();
+    }
+
+    /// Bring the item in hand into view, while following.
+    pub fn scroll_to_focus(&self) {
+        if self.run_list.follow
+            && let Some(row) =
+                self.run_list.focus_row(crate::run_view::RUN_ROWS)
+        {
+            self.run_scroll.scroll_to_item(row);
+        }
     }
 
     /// Add the run that just finished to the ledger. Returns what it
