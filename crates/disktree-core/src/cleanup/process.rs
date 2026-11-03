@@ -100,6 +100,15 @@ fn resolve_executable(
                 if is_shim(&path) || is_shim(&resolved) {
                     return Err("Version-manager shim unavailable for cleanup; expose the installed executable directly on PATH. PwrDisk does not auto-install missing tools".into());
                 }
+                // npm's distributed CLI resolves to npm-cli.js. A proxy
+                // such as Corepack can download npm even for --version.
+                if name == "npm"
+                    && resolved
+                        .file_name()
+                        .is_none_or(|name| name != "npm-cli.js")
+                {
+                    return Err("npm proxy/wrapper launchers are unsupported; expose the installed npm-cli.js through its npm symlink on PATH".into());
+                }
                 validate_interpreter(&resolved, env, depth)?;
                 #[cfg(unix)]
                 {

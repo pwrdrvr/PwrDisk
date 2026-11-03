@@ -30,6 +30,8 @@ not that the software is uninstalled. Relative PATH entries are ignored. pip res
 Known version-manager shims (including shimmed `env node` interpreters) are
 refused before version probing, because a probe can otherwise install a
 missing runtime. Expose the actual installed CLI/runtime directly on PATH.
+npm must resolve to its installed `npm-cli.js`; downloading proxy launchers
+such as Corepack are unsupported.
 Relative PATH entries are removed from the captured execution environment;
 non-UTF-8 environments fail closed instead of silently losing configuration.
 Only macOS and Linux have execution adapters; Windows cache recognition

@@ -810,3 +810,33 @@ fn preparation_refuses_installing_shims_and_shimmed_env_interpreters() {
     );
     assert!(!fixture.env.home.join("unwanted-install").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn npm_installing_proxy_is_not_invoked_even_for_version_discovery() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut fixture = executable_fixture();
+    let cache = fixture.dir(".npm/_cacache");
+    let bin = fixture.executable.parent().expect("bin");
+    let proxy = bin.join("npm");
+    std::fs::write(
+        &proxy,
+        "#!/bin/sh\nprintf installed > \"$HOME/unwanted-install\"\n",
+    )
+    .expect("proxy fixture");
+    std::fs::set_permissions(&proxy, std::fs::Permissions::from_mode(0o755))
+        .expect("executable proxy");
+    fixture
+        .env
+        .variables
+        .insert("PATH".into(), bin.to_str().expect("bin").into());
+    let error = prepare_with(
+        &[target(&cache)],
+        &fixture.root,
+        fixture.env.clone(),
+        &mut process::SystemProbe,
+    )
+    .expect_err("no automatic npm install");
+    assert!(error.contains("proxy/wrapper"));
+    assert!(!fixture.env.home.join("unwanted-install").exists());
+}
