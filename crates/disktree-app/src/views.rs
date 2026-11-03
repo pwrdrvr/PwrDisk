@@ -3103,7 +3103,13 @@ fn selection_section(
                 }
                 window.focus(&this.focus, cx);
             }));
-        let filled = !marked && covered_by.is_none();
+        // A detection that is not a suggestion advises another route, such
+        // as the VM's own app, so Mark stays available but is not the lead.
+        let detected_only = artifact.is_some_and(|detection| {
+            detection.disposition
+                == disktree_core::artifact::Disposition::Detected
+        });
+        let filled = !marked && covered_by.is_none() && !detected_only;
         actions = actions.child(if filled {
             let on = palette::on_highlight(theme);
             let hover_fill = palette::mix(theme.background, highlight, 0.85);
@@ -3129,29 +3135,7 @@ fn selection_section(
         .child(grid)
         .children(badges)
         .children(artifact.map(|detection| {
-            let selector = match detection.disposition {
-                disktree_core::artifact::Disposition::Detected => {
-                    "artifact-detected"
-                }
-                disktree_core::artifact::Disposition::Suggested => {
-                    "artifact-suggested"
-                }
-            };
-            div()
-                .id(selector)
-                .debug_selector(move || selector.into())
-                .flex()
-                .flex_col()
-                .gap(space::SM)
-                .text_size(text::CAPTION)
-                .text_color(theme.secondary)
-                .child(format!(
-                    "{}: {}",
-                    detection.status(),
-                    detection.kind.label()
-                ))
-                .child(format!("Evidence: {}", detection.evidence_label()))
-                .child(detection.guidance())
+            artifact_assessment(detection, node.category, theme, cx)
         }))
         .child(actions)
         .children(match node.category {
@@ -3167,6 +3151,71 @@ fn selection_section(
             )),
             _ => None,
         })
+}
+
+/// What a recognized artifact is, how it was told, and what to do first.
+/// It sits just above the actions so the guidance is read before Mark.
+fn artifact_assessment(
+    detection: disktree_core::artifact::Detection,
+    category: Category,
+    theme: &Theme,
+    cx: &Context<'_, Disktree>,
+) -> Stateful<Div> {
+    use disktree_core::artifact::{Disposition, Evidence};
+    let (selector, status) = match detection.disposition {
+        // A fact, not a warning: the guidance carries any caution.
+        Disposition::Detected => ("artifact-detected", theme.accent),
+        // The colour Worth a look gives suggestions, never a go-ahead: the
+        // guidance still says what to check first.
+        Disposition::Suggested => {
+            ("artifact-suggested", palette::highlight(theme))
+        }
+    };
+    // Said as a sentence: neither is a confidence that removal is safe.
+    let evidence = match detection.evidence {
+        Evidence::Name => "Identified by its name",
+        Evidence::Layout => "Identified by its tool layout",
+    };
+    div()
+        .id(selector)
+        .debug_selector(move || selector.into())
+        .flex()
+        .flex_col()
+        .gap(space::XS)
+        .pl(space::SM)
+        .border_l_2()
+        .border_color(palette::category_accent(theme, category))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(space::SM)
+                .child(
+                    widgets::chip(detection.status(), status, cx)
+                        .flex_shrink_0()
+                        .debug_selector(move || format!("{selector}-status")),
+                )
+                .child(
+                    div()
+                        .text_color(theme.bright)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(detection.kind.label()),
+                ),
+        )
+        .child(
+            div()
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(evidence),
+        )
+        .child(
+            div()
+                .text_size(text::CAPTION)
+                .text_color(theme.foreground)
+                .child(detection.guidance()),
+        )
 }
 
 fn service_guidance(
@@ -3329,7 +3378,9 @@ fn worth_section(
                 .text_size(text::CAPTION)
                 .text_color(theme.secondary)
                 .child(if app.tree().is_some() {
-                    "Nothing obviously disposable"
+                    // Listed rows are suggestions for review, so an empty
+                    // list must not imply that they were disposable.
+                    "No cleanup suggestions"
                 } else {
                     "Waiting for the scan"
                 }),
@@ -4773,6 +4824,9 @@ fn review(
         )
 }
 
+/// Review's reminder on a marked path the scan places in VM data.
+const VM_CAUTION: &str = "may hold unique work";
+
 /// What a review row says beyond the mark itself.
 struct MarkRow {
     covered: bool,
@@ -4817,15 +4871,19 @@ fn mark_row(
     } else {
         "included in removal plan"
     });
+    // Repeated where removal is approved: VM data is detected, never
+    // suggested, and the inspector's guidance may not have been read.
+    let caution = (category == Category::VirtualMachine).then_some(VM_CAUTION);
     let row = div()
         .id(crate::file_list::path_id(&item.path))
         .debug_selector(move || format!("review-row-{index}"))
         .role(gpui_kit::Role::ListItem)
         .aria_label(format!(
-            "{}; {} bytes; {}marked; {explanation}",
+            "{}; {} bytes; {}{}marked; {explanation}",
             item.path.display(),
             item.bytes,
-            kind.map_or_else(String::new, |kind| format!("{kind}; "))
+            kind.map_or_else(String::new, |kind| format!("{kind}; ")),
+            caution.map_or_else(String::new, |caution| format!("{caution}; "))
         ))
         .flex()
         .flex_row()
@@ -4885,6 +4943,11 @@ fn mark_row(
             widgets::chip(kind, accent, cx)
                 .flex_shrink_0()
                 .debug_selector(move || format!("review-kind-{index}"))
+        }))
+        .children(caution.map(|caution| {
+            widgets::chip(caution, theme.warning, cx)
+                .flex_shrink_0()
+                .debug_selector(move || format!("review-caution-{index}"))
         }))
         .children(covered.then(|| {
             widgets::chip("Inside a marked directory", theme.secondary, cx)

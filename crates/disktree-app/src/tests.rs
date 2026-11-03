@@ -133,6 +133,10 @@ fn artifact_assessments_render_and_vm_data_stays_out_of_cleanup_filters(
         draw(cx);
         assert!(cx.debug_bounds(shown).is_some(), "{path}");
         assert!(cx.debug_bounds(absent).is_none(), "{path}");
+        // The status is a chip of its own, not a run of caption text.
+        let status: &'static str =
+            Box::leak(format!("{shown}-status").into_boxed_str());
+        assert!(cx.debug_bounds(status).is_some(), "{path}");
     }
     click_on(cx, "legend-reclaimable");
     cx.run_until_parked();
@@ -143,6 +147,43 @@ fn artifact_assessments_render_and_vm_data_stays_out_of_cleanup_filters(
         "{drawn:?}"
     );
     assert!(read(&view, cx, |app| app.marks.is_empty()));
+}
+
+/// Review repeats the VM caution where removal is approved, and only on
+/// VM data: a suggested build cache carries its kind alone.
+#[gpui_kit::test]
+fn review_cautions_on_marked_vm_data_only(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    for path in ["target/debug/deps/libapp.rlib", "guest.vmss"] {
+        let path = temp.path().join(path);
+        std::fs::create_dir_all(path.parent().expect("parent")).unwrap();
+        std::fs::write(path, vec![b'x'; 200_000]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    let vm = temp.path().join("guest.vmss");
+    mark_paths(
+        &view,
+        cx,
+        &[temp.path().join("target/debug/deps"), vm.clone()],
+    );
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+    let at = read(&view, cx, |app| {
+        app.marks.items().iter().position(|item| item.path == vm)
+    })
+    .expect("the VM file is marked");
+    let caution = |index: usize| -> &'static str {
+        Box::leak(format!("review-caution-{index}").into_boxed_str())
+    };
+    assert!(cx.debug_bounds(caution(at)).is_some(), "VM row cautions");
+    assert!(cx.debug_bounds(caution(1 - at)).is_none(), "cache row");
+    // A reminder, not a gate: both stay in the plan.
+    assert_eq!(read(&view, cx, |app| app.plan().targets.len()), 2);
 }
 
 #[gpui_kit::test]
@@ -9157,7 +9198,7 @@ fn a_legend_filter_that_keeps_nothing_says_so(cx: &mut TestAppContext) {
     );
     // Compact List view draws no legend, so its header says what filters.
     let note = read(&view, cx, Disktree::list_filter_note);
-    assert!(note.contains("reclaimable Toolchains"), "{note}");
+    assert!(note.contains("suggested Toolchains"), "{note}");
     click_on(cx, "legend-empty-clear");
     cx.run_until_parked();
     draw(cx);
