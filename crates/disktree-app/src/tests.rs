@@ -6228,6 +6228,33 @@ fn a_removal_leaves_what_went_in_the_tree_as_removed_and_counts_it(
 }
 
 #[gpui_kit::test]
+fn removing_a_directory_after_part_of_it_counts_only_the_rest(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    remove_now(&view, cx, &["junk/deeper"]);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Explore;
+        cx.notify();
+    });
+    remove_now(&view, cx, &["junk"]);
+    read(&view, cx, |app| {
+        let cohorts = app.ledger.since(app.scans_done);
+        assert_eq!(cohorts.len(), 2);
+        let rest = cohorts[1].reported;
+        assert!(
+            cohorts[1].private.is_none_or(|private| private <= rest),
+            "{:?} private of {rest} reported",
+            cohorts[1].private
+        );
+        let totals = crate::ledger::Ledger::totals(cohorts).unwrap();
+        assert!(totals.private.is_none_or(|p| p <= totals.reported));
+    });
+}
+
+#[gpui_kit::test]
 fn what_was_removed_stays_removed_across_a_metric_change(
     cx: &mut TestAppContext,
 ) {

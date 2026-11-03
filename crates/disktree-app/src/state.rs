@@ -1303,6 +1303,30 @@ impl Disktree {
         self.insights = self.tree.as_deref().map_or_else(Vec::new, |tree| {
             worth_a_look(tree.root(), self.scanned_at, INSIGHT_LIMIT)
         });
+        self.forget_removed_insights();
+    }
+
+    /// Drop suggestions a removal since the scan already took, and take
+    /// what went out of those it took part of.
+    fn forget_removed_insights(&mut self) {
+        if self.removed.is_empty() {
+            return;
+        }
+        let style = self.path_style();
+        let mut insights = std::mem::take(&mut self.insights);
+        insights.retain_mut(|candidate| {
+            let Some(path) = self.path_at(&candidate.crumbs) else {
+                return false;
+            };
+            if self.was_removed(&path) {
+                return false;
+            }
+            candidate.bytes = candidate
+                .bytes
+                .saturating_sub(self.removed.below(&path, style));
+            candidate.bytes > 0
+        });
+        self.insights = insights;
     }
 
     /// Ask git about `path` once, off the UI thread, if it is a checkout.
@@ -3522,6 +3546,7 @@ impl Disktree {
             self.removed.toggle(target, style);
             self.removed.absorb(&path, style);
         }
+        self.forget_removed_insights();
     }
 
     /// Whether `path` was removed since the scan, itself or with a
@@ -3555,14 +3580,19 @@ impl Disktree {
                 resolver.resolve(&target.path).map(|(_, node)| node)
             })
             .collect();
-        Some(match nodes.as_slice() {
+        let estimate = match nodes.as_slice() {
             [] => 0,
             [node] => node
                 .sharing()
                 .estimate
                 .map_or(node.bytes, |estimate| estimate.lower),
             _ => disktree_core::sharing::estimate(nodes).lower,
-        })
+        };
+        // The scan's figures still hold what an earlier removal took from
+        // inside these targets; their reported bytes already leave it out,
+        // and nothing private can exceed what is reported.
+        let reported = targets.iter().map(|target| target.bytes).sum();
+        Some(estimate.min(reported))
     }
 
     /// Descend to a path found by the search field.
