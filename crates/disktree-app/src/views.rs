@@ -3326,33 +3326,26 @@ fn over_limit_mark(
 
 /// What the chevron holds: Mark anyway, which names its cost, and the
 /// way to the setting. Drawn in the panel's flow, below the actions, so
-/// the panel's scroll never clips it.
+/// the panel's scroll never clips it; its rows are buttons, so Tab and a
+/// screen reader reach them as they reach Mark.
 fn mark_menu(
     share: &Share,
     crumbs: Vec<usize>,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Stateful<Div> {
-    let item = |id: &'static str, label: &'static str| {
-        div()
-            .id(id)
-            .debug_selector(move || id.into())
-            .flex()
-            .flex_col()
-            .gap(space::XXS)
-            .px(space::MD)
-            .py(space::SM)
-            .cursor_pointer()
-            .hover(|style| style.bg(theme.hover_fill()))
-            .child(div().text_color(theme.bright).child(label))
-    };
+    let cost = format!(
+        "{}% of this disk \u{00b7} Review will ask you to confirm",
+        share.percent
+    );
     div()
         .id("mark-menu")
         .debug_selector(|| "mark-menu".into())
         .occlude()
         .flex()
         .flex_col()
-        .py(space::XS)
+        .gap(space::SM)
+        .p(space::SM)
         .border_1()
         .border_color(theme.border)
         .bg(theme.surface)
@@ -3362,30 +3355,39 @@ fn mark_menu(
             cx.notify();
         }))
         .child(
-            item("mark-anyway", "Mark anyway")
-                .child(
-                    div()
-                        .text_size(text::CAPTION)
-                        .text_color(theme.secondary)
-                        .child(format!(
-                            "{}% of this disk \u{00b7} Review will ask you \
-                             to confirm",
-                            share.percent
-                        )),
-                )
+            button("mark-anyway", "Mark anyway", ButtonVariant::Outline, cx)
+                .debug_selector(|| "mark-anyway".into())
+                .aria_description(cost.clone())
+                .tab_stop(true)
+                .justify_center()
+                .border_color(theme.warning)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.mark_anyway(&crumbs, cx);
                     window.focus(&this.focus, cx);
                 })),
         )
-        .child(div().h(px(1.)).my(space::XS).bg(theme.divider()))
-        .child(item("mark-safety", "Safety settings\u{2026}").on_click(
-            cx.listener(|this, _, window, cx| {
+        .child(
+            div()
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(cost),
+        )
+        .child(
+            button(
+                "mark-safety",
+                "Safety settings\u{2026}",
+                ButtonVariant::Outline,
+                cx,
+            )
+            .debug_selector(|| "mark-safety".into())
+            .tab_stop(true)
+            .justify_center()
+            .on_click(cx.listener(|this, _, window, cx| {
                 this.mark_menu = None;
                 crate::settings::open(crate::settings::Pane::Safety, cx);
                 window.focus(&this.focus, cx);
-            }),
-        ))
+            })),
+        )
 }
 
 fn service_guidance(
