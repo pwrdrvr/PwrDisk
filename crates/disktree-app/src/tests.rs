@@ -8658,6 +8658,14 @@ fn marking_a_worktree_trio_one_by_one_frees_one_copy_at_the_end(
         // Allocated sizes: the helper's apparent sizes project nothing.
         Disktree::with_tree(path.clone(), root, ScanOptions::default(), 3, cx)
     });
+    // 30 GiB of synthetic worktrees on whatever disk runs the tests: past
+    // 5% of a small CI disk, which is not what this test is about.
+    update(&view, cx, |app, _| {
+        app.safety_policy.replace(Some(crate::safety::Policy {
+            limit: None,
+            ..crate::safety::Policy::default()
+        }));
+    });
     draw(cx);
     let mut seen = Vec::new();
     for name in ["wt-a", "wt-b", "wt-c"] {
