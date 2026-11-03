@@ -1294,8 +1294,9 @@ fn find_field_never_draws_over_the_legend(cx: &mut TestAppContext) {
             let legend = cx.debug_bounds("legend").expect("legend drawn");
             // Half a pixel for rounding where two edges meet. The field
             // clips what it holds, so its own bounds are what is drawn.
+            // The legend has its own row under the field's.
             assert!(
-                legend.size.width <= px(0.5)
+                field.bottom() <= legend.top() + px(0.5)
                     || field.right() <= legend.left() + px(0.5),
                 "{at}: field {field:?} overlaps legend {legend:?}"
             );
@@ -7651,6 +7652,118 @@ fn marking_a_partly_shown_folder_says_it_takes_all_of_it(
     update(&view, cx, |app, _| app.selected = Some(junk));
     draw(cx);
     assert!(cx.debug_bounds("selection-partly-shown").is_none());
+}
+
+/// Every chip is a filter, so none may be clipped away: the legend wraps
+/// instead, at any width and text size, in both colour modes.
+#[gpui_kit::test]
+fn every_legend_chip_stays_inside_the_window(cx: &mut TestAppContext) {
+    use crate::legend::ChipId;
+    use disktree_core::classify::Category;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    for age in [false, true] {
+        update(&view, cx, |app, cx| {
+            app.color_mode = if age {
+                crate::state::ColorMode::Age
+            } else {
+                crate::state::ColorMode::Kind
+            };
+            cx.notify();
+        });
+        let chips: Vec<ChipId> = if age {
+            (0..crate::palette::AGE_BUCKETS.len())
+                .map(ChipId::Age)
+                .collect()
+        } else {
+            (0..Category::LEGEND.len()).map(ChipId::Kind).collect()
+        };
+        for width in [900., 1100., 1440.] {
+            for rem in [16., 24., 32.] {
+                cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
+                cx.update(|window, _| window.set_rem_size(px(rem)));
+                draw(cx);
+                let legend = cx.debug_bounds("legend").expect("legend");
+                for id in chips.iter().copied().chain([ChipId::Reclaimable]) {
+                    let at = format!("{id:?} at {width} rem {rem}");
+                    let key = Box::leak(id.key().into_boxed_str());
+                    let chip = cx.debug_bounds(key).expect(&at);
+                    assert!(
+                        chip.right() <= px(width) + px(0.5)
+                            && chip.left() >= px(0.)
+                            && chip.size.width > px(0.),
+                        "{at}: {chip:?}"
+                    );
+                    // Clipped chips used to run on past the legend's edge,
+                    // under the side panel, while still inside the window.
+                    assert!(
+                        chip.right() <= legend.right() + px(0.5)
+                            && chip.bottom() <= legend.bottom() + px(0.5),
+                        "{at}: {chip:?} inside the legend {legend:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A filter that keeps nothing in the folder on screen says so, says
+/// whether anything elsewhere passes, and offers Show all, in the mosaic
+/// and in List view alike.
+#[gpui_kit::test]
+fn a_legend_filter_that_keeps_nothing_says_so(cx: &mut TestAppContext) {
+    use crate::legend::ChipId;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    assert!(cx.debug_bounds("legend-empty").is_none());
+
+    // Reclaimable toolchains: the fixture's only reclaimable tree is a
+    // cache, so nothing anywhere passes.
+    update(&view, cx, |app, cx| {
+        app.cycle_legend(ChipId::Reclaimable, cx);
+        app.cycle_legend(ChipId::Kind(2), cx);
+    });
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(read(&view, cx, Disktree::legend_empty_here), Some((0, 0)));
+    assert!(cx.debug_bounds("legend-empty").is_some(), "in the mosaic");
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("legend-empty").is_some(), "in List view");
+    click_on(cx, "legend-empty-clear");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(!read(&view, cx, |app| app.legend.is_active()));
+    assert!(cx.debug_bounds("legend-empty").is_none());
+
+    // Reclaimable alone, from inside `keep`: nothing here, but `.cache`
+    // passes elsewhere.
+    let keep = read(&view, cx, |app| {
+        app.crumbs_for_path(&temp.path().join("keep"))
+            .expect("keep")
+    });
+    update(&view, cx, |app, cx| {
+        app.file_list = false;
+        app.crumbs = keep;
+        app.selected = None;
+        app.cycle_legend(ChipId::Reclaimable, cx);
+    });
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(
+        read(&view, cx, Disktree::legend_empty_here),
+        Some((300_000, 1))
+    );
+    assert!(cx.debug_bounds("legend-empty").is_some());
 }
 
 /// The age chips judge by the scan's clock, as the age colours do, and

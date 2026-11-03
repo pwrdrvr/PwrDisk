@@ -79,7 +79,9 @@ a root. Explicit command-line paths and `--disk` still start directly;
   their share and size, to jump sideways (arrows and Enter work too). Above
   the scanned root a crumb is dimmer, and clicking it widens the scan to
   there (see [The whole disk](#the-whole-disk)).
-- **Under it:** the scan totals, the filter when one is typed, and the legend.
+- **Under it:** the scan totals and the filter when one is typed, and on
+  its own row the legend, which wraps onto another line rather than hide
+  an entry.
 - **Mosaic:** colour is the *kind* of data — code, agent scratch,
   toolchains, synced files, git, media, documents, caches — at one muted
   level, lighter with depth. A diagonal hatch is space that can be had back
@@ -94,6 +96,8 @@ a root. Explicit command-line paths and `--disk` still start directly;
   out only what passes, at its own size, and a folder that only partly
   passes says so: `48G of 196G`. Kind and age filters apply together, so
   "old code" is a click in each mode. **Show all** or `esc` clears them.
+  When nothing in the folder on screen passes, the mosaic or list says
+  so, and whether anything elsewhere in the scan does.
   A filter changes what is shown, never what a mark takes: marking a
   folder that is only partly shown marks all of it, and the panel says so.
 - **Panel:** the selection (its size set large, share of the scan, files,

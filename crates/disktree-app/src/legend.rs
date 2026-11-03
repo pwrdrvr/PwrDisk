@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use disktree_core::classify::Category;
-use disktree_core::filter::{Rule, filter_with};
+use disktree_core::filter::{Keep, Rule, filter_with};
 use gpui_kit::Context;
 
 use crate::palette::AGE_BUCKETS;
@@ -268,6 +268,28 @@ impl Disktree {
             self.refresh_matches(cx);
         }
         cx.notify();
+    }
+
+    /// When the legend leaves nothing of the directory on screen: what it
+    /// keeps in the whole scan, bytes and files, so the view can say
+    /// whether going elsewhere would show anything. `None` while there is
+    /// something to show, or while the filter is still being worked out.
+    pub fn legend_empty_here(&self) -> Option<(u64, u64)> {
+        if self.filter_applied
+            || self.legend_pending
+            || !self.legend.is_active()
+        {
+            return None;
+        }
+        let matches = self.legend_matches.as_deref()?;
+        match matches.keep(&self.crumbs) {
+            // The scanned root is never recorded, only summed: nothing
+            // passed when that sum is empty.
+            None | Some(Keep::Partial { bytes: 0, files: 0 }) => {
+                Some((matches.bytes, matches.files))
+            }
+            Some(_) => None,
+        }
     }
 
     /// The rule the legend sets, when it sets one. Ages are measured from

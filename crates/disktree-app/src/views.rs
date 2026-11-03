@@ -996,10 +996,24 @@ fn explore(
             scanning_panel(app, &theme, cx).into_any_element()
         }
     } else {
-        if app.file_list {
+        let view = if app.file_list {
             crate::file_list::list(app, window, cx).into_any_element()
         } else {
             treemap_view::mosaic(mosaic, app, window, cx).into_any_element()
+        };
+        // A filter that keeps nothing here says so over the empty view,
+        // rather than leave a blank mosaic or list to puzzle over.
+        match app.legend_empty_here() {
+            Some(kept) => div()
+                .relative()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .child(view)
+                .child(legend_empty(app, kept, &theme, cx))
+                .into_any_element(),
+            None => view,
         }
     };
 
@@ -2274,8 +2288,8 @@ fn power_popup(
 
 // ── trail and legend ────────────────────────────────────────────────────
 
-/// Where you are, as a clickable trail, and what the colours mean, on one
-/// row over the mosaic.
+/// What the scan holds and the search, on one row over the mosaic, and
+/// what the colours mean on the row under it.
 fn trail_and_legend(
     app: &Disktree,
     theme: &Theme,
@@ -2286,13 +2300,21 @@ fn trail_and_legend(
         .flex_row()
         .items_center()
         .gap(space::LG)
-        .px(space::LG)
-        .py(space::SM)
         .child(scan_totals(app, theme));
     if app.find_open || !app.find.is_empty() {
         row = row.child(find_field(app, theme));
     }
-    row.child(div().flex_1()).child(legend(app, theme, cx))
+    // The legend has a row of its own: its chips are filters, so each
+    // must stay reachable, and sharing the row with the search clipped
+    // the last of them whenever the window was not wide.
+    div()
+        .flex()
+        .flex_col()
+        .gap(space::XS)
+        .px(space::LG)
+        .py(space::SM)
+        .child(row)
+        .child(legend(app, theme, cx))
 }
 
 /// What the whole scan found, as one quiet line; unreadable paths are
@@ -2368,41 +2390,26 @@ fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
         })
 }
 
-/// How much more readily the legend gives up width than the find field.
-/// Flex shrinking is proportional, so with equal weights the field lost
-/// width while the legend was still drawn and its no-wrap hint spilled
-/// over "Reclaimable". A weight this lopsided makes the legend clip away
-/// first; only once it is gone does the field narrow, clipping its hint.
-const LEGEND_YIELDS: f32 = 1000.;
-
 /// The key to the colours, and the filter: the categories, or the age
 /// ramp in age mode, each a chip that cycles shown → only → hidden (see
-/// `legend.rs`). Clipped from the trailing end when the row runs out of
-/// room, but Show all and the pill for the other set never are.
+/// `legend.rs`). It wraps onto another line rather than clip a chip.
 fn legend(app: &Disktree, theme: &Theme, cx: &Context<'_, Disktree>) -> Div {
     use crate::legend::ChipId;
     let ground = palette::category_fill(theme, Category::Other, 0);
     let hatch = cx.omarchy().bright.opacity(0.5);
-    let mut lane = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(space::XS)
-        .min_w_0()
-        .overflow_hidden()
-        .child(legend_chip(
-            app,
-            theme,
-            ChipId::Reclaimable,
-            widgets::hatch_swatch(hatch, ground),
-            cx,
-        ));
+    let mut chips = vec![legend_chip(
+        app,
+        theme,
+        ChipId::Reclaimable,
+        widgets::hatch_swatch(hatch, ground),
+        cx,
+    )];
     // The set of chips that is not on screen still filters, so it shows as
     // one pill that clears it.
     let (off_screen, pill) = if app.color_mode == ColorMode::Age {
         for (index, _) in palette::AGE_BUCKETS.iter().enumerate() {
             let color = palette::age_accent(theme, index);
-            lane = lane.child(legend_chip(
+            chips.push(legend_chip(
                 app,
                 theme,
                 ChipId::Age(index),
@@ -2414,7 +2421,7 @@ fn legend(app: &Disktree, theme: &Theme, cx: &Context<'_, Disktree>) -> Div {
     } else {
         for (index, category) in Category::LEGEND.iter().enumerate() {
             let color = palette::category_accent(theme, *category);
-            lane = lane.child(legend_chip(
+            chips.push(legend_chip(
                 app,
                 theme,
                 ChipId::Kind(index),
@@ -2446,18 +2453,82 @@ fn legend(app: &Disktree, theme: &Theme, cx: &Context<'_, Disktree>) -> Div {
             |this, cx| this.clear_legend(None, cx),
         )
     });
+    // One wrapping row: Show all and the pill lead, so they are never the
+    // part that moves to another line.
     div()
         .debug_selector(|| "legend".into())
         .flex()
         .flex_row()
+        .flex_wrap()
         .items_center()
-        .gap(space::SM)
+        .gap(space::XS)
         .min_w_0()
-        .flex_shrink(LEGEND_YIELDS)
-        .overflow_hidden()
         .children(clear)
         .children(pill)
-        .child(lane)
+        .children(chips)
+}
+
+/// Over a mosaic or list the legend has emptied: that nothing here
+/// passes, whether anything elsewhere in the scan does, and Show all.
+fn legend_empty(
+    app: &Disktree,
+    (bytes, files): (u64, u64),
+    theme: &Theme,
+    cx: &Context<'_, Disktree>,
+) -> Div {
+    // The scanned root sums everything that passed, so it is only empty
+    // when nothing did; anywhere else, what passed is in other folders.
+    let elsewhere = if files == 0 {
+        "Nothing in the scan passes it.".to_owned()
+    } else {
+        format!(
+            "{} in {} {} elsewhere in the scan passes it; \u{232b} goes up.",
+            human_bytes(bytes),
+            widgets::human_count(files),
+            if files == 1 { "file" } else { "files" }
+        )
+    };
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .debug_selector(|| "legend-empty".into())
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(space::SM)
+                .p(space::LG)
+                .bg(theme.surface)
+                .border_1()
+                .border_color(theme.divider())
+                .child(
+                    div().text_size(text::BODY).text_color(theme.bright).child(
+                        format!(
+                            "Nothing here passes the filter: {}",
+                            app.legend.summary()
+                        ),
+                    ),
+                )
+                .child(
+                    div()
+                        .text_size(text::CAPTION)
+                        .text_color(theme.secondary)
+                        .child(elsewhere),
+                )
+                .child(legend_button(
+                    "legend-empty-clear",
+                    "Show all \u{00d7}".into(),
+                    false,
+                    "Show everything again · esc",
+                    theme,
+                    cx,
+                    |this, cx| this.clear_legend(None, cx),
+                )),
+        )
 }
 
 /// A chip's square: filled while it shows, hollow once hidden.
@@ -4285,9 +4356,8 @@ fn find_field(app: &Disktree, theme: &Theme) -> Div {
         .px(space::SM)
         .py(space::XS)
         .debug_selector(|| "find-field".into())
-        // Gives up width only once the legend has (see `LEGEND_YIELDS`),
-        // and then clips its own content rather than drawing past its
-        // border.
+        // Narrows with the window, and then clips its own content rather
+        // than drawing past its border.
         .min_w_0()
         .overflow_hidden()
         .border_1()
