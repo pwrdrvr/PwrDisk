@@ -1307,7 +1307,7 @@ fn find_field_never_draws_over_the_legend(cx: &mut TestAppContext) {
         }
     }
     // Where the overlap was seen, and narrower: the whole hint reads, and
-    // the legend still shows beside it.
+    // the legend, on its own row now, is still drawn.
     for width in [1000., 1440.] {
         cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
         cx.update(|window, _| window.set_rem_size(px(16.)));
@@ -7739,6 +7739,13 @@ fn a_legend_filter_that_keeps_nothing_says_so(cx: &mut TestAppContext) {
     });
     draw(cx);
     assert!(cx.debug_bounds("legend-empty").is_some(), "in List view");
+    assert!(
+        cx.debug_bounds("legend-empty-status").is_some(),
+        "announced"
+    );
+    // Compact List view draws no legend, so its header says what filters.
+    let note = read(&view, cx, Disktree::list_filter_note);
+    assert!(note.contains("reclaimable Toolchains"), "{note}");
     click_on(cx, "legend-empty-clear");
     cx.run_until_parked();
     draw(cx);

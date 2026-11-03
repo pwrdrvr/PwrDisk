@@ -76,6 +76,19 @@ impl Disktree {
         self.pointer_active = false;
         self.select(Some(crumbs), cx);
     }
+    /// What the list's header adds when a filter thins it. Compact, the
+    /// legend row is not drawn, so the list itself says what the legend
+    /// keeps; a search says so in its own field.
+    pub fn list_filter_note(&self) -> String {
+        if self.filter_applied {
+            " · filtered".to_owned()
+        } else if self.legend.is_active() {
+            format!(" · filtered: {} (esc clears)", self.legend.summary())
+        } else {
+            String::new()
+        }
+    }
+
     /// An entry's size as its row says it. A partly shown folder says what
     /// passed and what it holds in all, as its tile does: "48 MiB of 196
     /// MiB".
@@ -169,17 +182,13 @@ pub fn list(
     let page = app.file_page.min(count.saturating_sub(1) / PAGE_SIZE);
     let start = page * PAGE_SIZE;
     let end = (start + PAGE_SIZE).min(count);
+    let filtered = app.list_filter_note();
     let summary = format!(
-        "{} · {} entries · showing {}–{}{}",
+        "{} · {} entries · showing {}–{}{filtered}",
         app.current_path().display(),
         count,
         usize::from(count > 0) + start,
         end,
-        if app.layout_filter().is_some() {
-            " · filtered"
-        } else {
-            ""
-        }
     );
     let mut rows = div().id("file-rows").role(Role::ListBox)
         .track_focus(&app.file_focus)
@@ -310,7 +319,7 @@ pub fn list(
                                 ),
                         )
                         .child(div().flex_shrink_0().child(format!(
-                            "{count} entries · {}–{end}",
+                            "{count} entries · {}–{end}{filtered}",
                             usize::from(count > 0) + start
                         )))
                 })

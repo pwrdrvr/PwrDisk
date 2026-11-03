@@ -2442,17 +2442,10 @@ fn legend(app: &Disktree, theme: &Theme, cx: &Context<'_, Disktree>) -> Div {
             move |this, cx| this.clear_legend(Some(off_screen), cx),
         )
     });
-    let clear = app.legend.is_active().then(|| {
-        legend_button(
-            "legend-clear",
-            "Show all \u{00d7}".into(),
-            false,
-            "Show everything again · esc",
-            theme,
-            cx,
-            |this, cx| this.clear_legend(None, cx),
-        )
-    });
+    let clear = app
+        .legend
+        .is_active()
+        .then(|| show_all_button("legend-clear", theme, cx));
     // One wrapping row: Show all and the pill lead, so they are never the
     // part that moves to another line.
     div()
@@ -2476,6 +2469,8 @@ fn legend_empty(
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
+    let headline =
+        format!("Nothing here passes the filter: {}", app.legend.summary());
     // The scanned root sums everything that passed, so it is only empty
     // when nothing did; anywhere else, what passed is in other folders.
     let elsewhere = if files == 0 {
@@ -2505,13 +2500,20 @@ fn legend_empty(
                 .bg(theme.surface)
                 .border_1()
                 .border_color(theme.divider())
+                // Announced as it appears: the mosaic emptying says
+                // nothing to someone who cannot see it.
                 .child(
-                    div().text_size(text::BODY).text_color(theme.bright).child(
-                        format!(
-                            "Nothing here passes the filter: {}",
-                            app.legend.summary()
-                        ),
-                    ),
+                    crate::semantics::status(
+                        "legend-empty-status",
+                        format!("{headline}. {elsewhere}"),
+                    )
+                    .debug_selector(|| "legend-empty-status".into()),
+                )
+                .child(
+                    div()
+                        .text_size(text::BODY)
+                        .text_color(theme.bright)
+                        .child(headline),
                 )
                 .child(
                     div()
@@ -2519,16 +2521,25 @@ fn legend_empty(
                         .text_color(theme.secondary)
                         .child(elsewhere),
                 )
-                .child(legend_button(
-                    "legend-empty-clear",
-                    "Show all \u{00d7}".into(),
-                    false,
-                    "Show everything again · esc",
-                    theme,
-                    cx,
-                    |this, cx| this.clear_legend(None, cx),
-                )),
+                .child(show_all_button("legend-empty-clear", theme, cx)),
         )
+}
+
+/// Show all: clears every chip of the legend.
+fn show_all_button(
+    id: &'static str,
+    theme: &Theme,
+    cx: &Context<'_, Disktree>,
+) -> Stateful<Div> {
+    legend_button(
+        id,
+        "Show all \u{00d7}".into(),
+        false,
+        "Show everything again · esc",
+        theme,
+        cx,
+        |this, cx| this.clear_legend(None, cx),
+    )
 }
 
 /// A chip's square: filled while it shows, hollow once hidden.
