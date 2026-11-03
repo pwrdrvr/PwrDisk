@@ -7991,7 +7991,6 @@ fn a_toast_hides_the_treemap_under_it(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_export_menu_hides_the_list_under_it(cx: &mut TestAppContext) {
     use gpui_kit::Modifiers;
-    use std::time::Duration;
     const TIP: &str = "omarchy-tooltip-surface";
     cx.update(init);
     let temp = fixture();
@@ -7999,20 +7998,14 @@ fn the_export_menu_hides_the_list_under_it(cx: &mut TestAppContext) {
     // Short enough that the menu, which opens upward from the footer,
     // reaches the first row.
     cx.simulate_resize(gpui_kit::size(px(900.), px(300.)));
-    let rest = |cx: &mut Window, at| {
-        cx.simulate_mouse_move(at, None, Modifiers::none());
-        cx.executor().advance_clock(Duration::from_millis(600));
-        cx.run_until_parked();
-        draw(cx);
-    };
     draw(cx);
     let row = cx.debug_bounds("review-row-0").expect("the marked row");
 
     // The row's own tooltip, so its absence below means something.
-    rest(cx, row.center());
+    rest_at(cx, row.center());
     assert!(cx.debug_bounds(TIP).is_some(), "the row names its path");
     let back = cx.debug_bounds("back").expect("Back");
-    rest(cx, back.center());
+    rest_at(cx, back.center());
 
     click_on(cx, "export");
     let menu = cx.debug_bounds("export-menu").expect("the menu");
@@ -8020,7 +8013,7 @@ fn the_export_menu_hides_the_list_under_it(cx: &mut TestAppContext) {
     let on_menu = menu.origin + Point::new(px(24.), px(2.));
     assert!(row.contains(&on_menu), "{menu:?} over {row:?}");
 
-    rest(cx, on_menu);
+    rest_at(cx, on_menu);
     assert!(
         cx.debug_bounds(TIP).is_none(),
         "the pointer is on the menu, not the row under it"
@@ -8034,6 +8027,15 @@ fn the_export_menu_hides_the_list_under_it(cx: &mut TestAppContext) {
         cx.debug_bounds("export-menu").is_some(),
         "a press inside the menu leaves it open"
     );
+}
+
+/// Rest the pointer at `at` past a tooltip's delay, and draw what shows.
+fn rest_at(cx: &mut Window, at: Point<Pixels>) {
+    cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::none());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(600));
+    cx.run_until_parked();
+    draw(cx);
 }
 
 /// The first log line drawn, by its number: it moves when the list scrolls.
@@ -8187,8 +8189,6 @@ fn the_empty_filter_note_hides_the_treemap_under_it(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_follow_pill_hides_the_row_under_it(cx: &mut TestAppContext) {
     use crate::run_list::{Item, RunList, Status};
-    use gpui_kit::Modifiers;
-    use std::time::Duration;
     const TIP: &str = "omarchy-tooltip-surface";
     cx.update(init);
     let temp = fixture();
@@ -8233,18 +8233,12 @@ fn the_follow_pill_hides_the_row_under_it(cx: &mut TestAppContext) {
     scroll_at(cx, list.center(), 100_000.);
     settle(cx, &view, 65);
     let pill = cx.debug_bounds("follow-removal").expect("the pill");
-    let rest = |cx: &mut Window, at| {
-        cx.simulate_mouse_move(at, None, Modifiers::none());
-        cx.executor().advance_clock(Duration::from_millis(600));
-        cx.run_until_parked();
-        draw(cx);
-    };
 
     // A row's own tooltip, so its absence below means something.
-    rest(cx, Point::new(list.left() + px(40.), pill.center().y));
+    rest_at(cx, Point::new(list.left() + px(40.), pill.center().y));
     assert!(cx.debug_bounds(TIP).is_some(), "the row names its path");
-    rest(cx, list.origin - Point::new(px(4.), px(4.)));
-    rest(cx, pill.origin + Point::new(px(4.), px(4.)));
+    rest_at(cx, list.origin - Point::new(px(4.), px(4.)));
+    rest_at(cx, pill.origin + Point::new(px(4.), px(4.)));
     assert!(
         cx.debug_bounds(TIP).is_none(),
         "the pointer is on the pill, not the row under it"
