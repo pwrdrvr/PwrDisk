@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use crate::tree::{Node, Tree};
 
 mod reclaim;
-pub(crate) use reclaim::additions;
+pub(crate) use reclaim::Selected;
 pub use reclaim::{Estimate, estimate};
 
 /// Sparse allocation facts survive hardlink weight de-duplication.

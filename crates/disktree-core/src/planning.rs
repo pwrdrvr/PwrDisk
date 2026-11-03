@@ -183,11 +183,15 @@ pub fn estimate(
         .iter()
         .filter_map(|target| resolve(tree, &context.root, &target.path))
         .collect();
+    let accounting = sharing::Selected::new(nodes.iter().copied());
     plan.estimate_selection(|targets| {
-        let mut value =
+        let mut value = if targets.len() == nodes.len() {
+            accounting.estimate()
+        } else {
             sharing::estimate(targets.iter().filter_map(|target| {
                 resolve(tree, &context.root, &target.path)
-            }));
+            }))
+        };
         value.partial |= context.limited();
         value
     });
@@ -255,6 +259,7 @@ pub fn estimate(
             tree,
             &context,
             &nodes,
+            &accounting,
             &plan.targets,
             &scope,
             scope_node,
@@ -379,6 +384,7 @@ fn peers<'a>(
     tree: &'a Tree,
     context: &Context,
     selected: &[Node<'a>],
+    accounting: &sharing::Selected,
     targets: &[Target],
     scope: &Path,
     scope_node: Node<'a>,
@@ -411,7 +417,7 @@ fn peers<'a>(
             group.selected += 1;
         });
     }
-    let mut base = sharing::estimate(selected.iter().copied());
+    let mut base = accounting.estimate();
     base.partial |= context.limited();
     if groups.is_empty() {
         return Peers {
@@ -496,7 +502,7 @@ fn peers<'a>(
     candidates
         .retain(|(path, _)| allowed.targets.iter().any(|t| t.path == *path));
     let nodes: Vec<_> = candidates.iter().map(|(_, node)| *node).collect();
-    let (answers, mut combined) = sharing::additions(selected, &nodes);
+    let (answers, mut combined) = accounting.additions(&nodes);
     combined.partial |= context.limited();
     let candidates = candidates
         .into_iter()

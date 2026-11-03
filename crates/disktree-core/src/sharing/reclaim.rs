@@ -312,35 +312,43 @@ const fn replace(total: &mut Estimate, before: Estimate, after: Estimate) {
 ///
 /// Callers cache this scan-derived answer; removal authorization must still be checked afresh.
 pub fn estimate<'a>(nodes: impl IntoIterator<Item = Node<'a>>) -> Estimate {
-    let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
-    for node in nodes {
-        total.merge(gather(node));
-    }
-    total.estimate()
+    Selected::new(nodes).estimate()
 }
 
-/// Evaluate bounded, disjoint additions without gathering the selection for
-/// every candidate. The same accounting, including hardlinks, applies to each
-/// union. Results are alternatives, never additive per-directory savings.
-pub fn additions<'a>(
-    selected: &[Node<'a>],
-    candidates: &[Node<'a>],
-) -> (Vec<(Estimate, Estimate)>, Estimate) {
-    let mut base = Accumulator::new(super::MAX_CLONE_GROUPS);
-    for node in selected {
-        base.merge(gather(*node));
+/// Reuse one gathered selection for its total, attribution and bounded peers.
+pub struct Selected(Accumulator);
+
+impl Selected {
+    pub fn new<'a>(nodes: impl IntoIterator<Item = Node<'a>>) -> Self {
+        let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
+        for node in nodes {
+            total.merge(gather(node));
+        }
+        Self(total)
     }
-    let mut combined = base.clone();
-    let mut answers = Vec::with_capacity(candidates.len());
-    for node in candidates {
-        let addition = gather(*node);
-        let alone = addition.estimate();
-        let mut union = base.clone();
-        union.merge(addition.clone());
-        combined.merge(addition);
-        answers.push((alone, union.estimate()));
+
+    pub const fn estimate(&self) -> Estimate {
+        self.0.estimate()
     }
-    (answers, combined.estimate())
+
+    /// Disjoint alternatives and their combined union use the same engine.
+    /// Only candidates are gathered here; the selected tree is never re-walked.
+    pub fn additions(
+        &self,
+        candidates: &[Node<'_>],
+    ) -> (Vec<(Estimate, Estimate)>, Estimate) {
+        let mut combined = self.0.clone();
+        let mut answers = Vec::with_capacity(candidates.len());
+        for node in candidates {
+            let addition = gather(*node);
+            let alone = addition.estimate();
+            let mut union = self.0.clone();
+            union.merge(addition.clone());
+            combined.merge(addition);
+            answers.push((alone, union.estimate()));
+        }
+        (answers, combined.estimate())
+    }
 }
 
 fn gather(node: Node<'_>) -> Accumulator {
@@ -680,7 +688,9 @@ mod addition_tests {
             aggregate(&mut tree, Metric::Bytes);
             let nodes: Vec<_> = tree.root().children().iter().collect();
             WORK.set(0);
-            let (alternatives, together) = additions(&nodes[..1], &nodes[1..]);
+            let (alternatives, together) =
+                Selected::new(nodes[..1].iter().copied())
+                    .additions(&nodes[1..]);
             assert!(alternatives.iter().all(|(_, union)| union.upper == 0));
             assert_eq!(together.lower, count * 4096);
             let operations = WORK.get();

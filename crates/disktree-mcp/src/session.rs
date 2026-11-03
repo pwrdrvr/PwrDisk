@@ -846,7 +846,15 @@ impl Session {
                 .scans
                 .iter()
                 .rev()
-                .find(|scan| paths[0].starts_with(&scan.root))
+                .find(|scan| {
+                    paths.iter().all(|path| path.starts_with(&scan.root))
+                })
+                .or_else(|| {
+                    self.scans
+                        .iter()
+                        .rev()
+                        .find(|scan| paths[0].starts_with(&scan.root))
+                })
                 .or_else(|| self.scans.last())
                 .ok_or_else(|| {
                     "Nothing is scanned yet. Call pwrdisk_scan first."
@@ -2726,10 +2734,10 @@ mod tests {
         let temp = fixture();
         let socket = endpoint(temp.path());
         let window_root = temp.path().join("src");
-        let window = FakeWindow::open(&socket, &window_root);
-        let mut session = Session::detached(socket, None);
+        let mut session = Session::detached(socket.clone(), None);
         // A stale, broader local tree and offline cart must not be adopted.
         scanned(&mut session, temp.path());
+        let window = FakeWindow::open(&socket, &window_root);
         let kept = Target {
             path: temp.path().join("Downloads"),
             bytes: 1,
