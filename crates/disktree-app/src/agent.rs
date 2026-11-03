@@ -434,9 +434,25 @@ impl Disktree {
         for target in targets {
             // Without a tree yet, the agent's own measurement stands in;
             // `Marks::refresh` corrects it when the scan lands.
+            if self.was_removed(&target.path) {
+                refused.push(Refused {
+                    path: target.path.clone(),
+                    reason: "removed since the scan; it is still listed \
+                             until a rescan"
+                        .into(),
+                });
+                continue;
+            }
             let measured = if self.tree.is_some() {
                 match self.agent_node(&target.path) {
-                    Ok(node) => (node.bytes, node.is_dir()),
+                    // A directory part of which was removed frees only
+                    // the rest.
+                    Ok(node) => (
+                        node.bytes.saturating_sub(
+                            self.removed.below(&target.path, PathStyle::Native),
+                        ),
+                        node.is_dir(),
+                    ),
                     Err(reason) => {
                         refused.push(Refused {
                             path: target.path.clone(),

@@ -165,11 +165,12 @@ then scans again. **Back** is beside them; **Export** and **Unmark all** sit
 on the left. While a removal runs, **Stop after this item** (or `esc`) ends
 it once the item in hand is done.
 
-Without a rescan, PwrDisk takes what was removed out of the tree it has and
-derives every total again, so the treemap is right at once and the next
-batch can be marked straight away; a rescan of a whole disk takes minutes.
-The sharing figures stay those of the last scan: a clone whose twin was
-removed still counts as shared, so savings err low until you rescan.
+Without a rescan, the tree stays as the scan found it, so the next batch
+can be marked straight away; a rescan of a whole disk takes minutes. What
+was removed stays where it was, greyed out, with its hover card saying
+**Removed since the scan**, and cannot be marked again. Every size on
+screen is still the scan's; a directory marked around something already
+removed counts only what is left in it. The next scan clears all of it.
 
 The Done screen lists every removal since the last scan three ways:
 **reported**, the listed size of what went, a clone counted in every place
@@ -479,9 +480,10 @@ works headless and says so. A window showing an SSH server is not followed:
 the agent's tools measure this computer, and PwrDisk does not remove files
 over SSH.
 
-`pwrdisk_remove` does not rescan unless asked (`rescan: true`): the window
-drops the removed paths from its tree, so the agent can find and mark the
-next batch at once. `pwrdisk_status` lists every removal since the scan,
+`pwrdisk_remove` does not rescan unless asked (`rescan: true`), so the
+agent can find and mark the next batch at once. Removed paths are still
+listed by `pwrdisk_ls` and `pwrdisk_find`, with the scan's sizes, until a
+rescan; marking one is refused. `pwrdisk_status` lists every removal since the scan,
 reported, private and observed, with their total.
 
 The tools: `pwrdisk_status`, `pwrdisk_scan`, `pwrdisk_ls`,

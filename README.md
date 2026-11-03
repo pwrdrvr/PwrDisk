@@ -120,8 +120,9 @@ does not update itself; download the next release.
    of, then **Enter** moves the rest to the Trash or Recycle Bin. **p**
    deletes permanently instead, after asking.
 5. **See the result.** PwrDisk shows how much space you actually got
-   back and takes what went out of the treemap, without scanning again;
-   **Move & rescan** (shift-Enter) scans afterwards instead.
+   back, without scanning again: what went stays in the treemap, greyed
+   out, until you rescan. **Move & rescan** (shift-Enter) scans afterwards
+   instead.
 
 | key | does |
 | --- | --- |

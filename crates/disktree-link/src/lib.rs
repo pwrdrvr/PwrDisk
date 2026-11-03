@@ -225,9 +225,10 @@ pub struct ConfirmedRemoval {
     pub mode: RemovalChoice,
     pub paths: Vec<PathBuf>,
     pub confirmation: String,
-    /// Rescan once the removal finishes. Without it the window takes the
-    /// removed paths out of its tree and keeps going, which is what an
-    /// agent removing several batches wants: a rescan can take minutes.
+    /// Rescan once the removal finishes. Without it the window keeps its
+    /// tree, with the removed paths shown as removed until a scan, which is
+    /// what an agent removing several batches wants: a rescan can take
+    /// minutes.
     #[serde(default)]
     pub rescan: bool,
 }

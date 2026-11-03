@@ -420,6 +420,9 @@ pub struct Disktree {
     pub treemap_size: Rc<Cell<Size<Pixels>>>,
 
     pub marks: Marks,
+    /// Paths removed since the scan. They stay in the tree, drawn as
+    /// removed, until the next scan, and cannot be marked again.
+    pub removed: Marks,
     /// What Unmark all took, so one key or ⌘Z can put it back. Dropped
     /// wherever the marks stop meaning this machine's paths.
     pub unmarked: Option<Vec<Target>>,
@@ -482,10 +485,6 @@ pub struct Disktree {
     pub scans_done: u64,
     /// The running removal as it started.
     run_start: Option<crate::ledger::Start>,
-    /// The tree is being rebuilt without what a removal took.
-    pub pruning: bool,
-    /// Paths a later removal took while that rebuild ran: the next one.
-    prune_queue: Vec<PathBuf>,
     pub notice: Option<(String, Status)>,
     /// Toasts over the window's bottom right: the updater's answers.
     pub toasts: crate::toasts::Toasts,
@@ -694,6 +693,7 @@ impl Disktree {
             treemap_origin: Rc::new(Cell::new(Point::new(px(0.), px(0.)))),
             treemap_size: Rc::new(Cell::new(size(px(0.), px(0.)))),
             marks: Marks::default(),
+            removed: Marks::default(),
             unmarked: None,
             export_menu_open: false,
             export_menu_was_open: false,
@@ -729,8 +729,6 @@ impl Disktree {
             ledger: crate::ledger::Ledger::default(),
             scans_done: 0,
             run_start: None,
-            pruning: false,
-            prune_queue: Vec::new(),
             notice: None,
             toasts: crate::toasts::Toasts::default(),
             toast_timer: None,
@@ -1211,6 +1209,7 @@ impl Disktree {
         if self.remote != self.volumes_source {
             // Absolute paths only identify marks within one machine.
             self.marks.clear();
+            self.removed.clear();
             self.unmarked = None;
             self.history = History::default();
             self.remote_identity = None;
@@ -1645,6 +1644,7 @@ impl Disktree {
         // Old marks must not acquire that machine's freshly captured guard.
         if self.remote_identity != identity {
             self.unmarked = None;
+            self.removed.clear();
         }
         if self.remote_identity != identity && !self.marks.is_empty() {
             self.marks.clear();
@@ -1699,6 +1699,7 @@ impl Disktree {
                     );
                     self.tree = Some(Arc::new(node));
                     self.scans_done += 1;
+                    self.removed.clear();
                     self.refresh_insights();
                     self.refresh_legend(cx);
                     self.select_largest(cx);
@@ -1755,6 +1756,7 @@ impl Disktree {
                 );
                 discard(self.tree.replace(Arc::new(node)));
                 self.scans_done += 1;
+                self.removed.clear();
                 self.cache = None;
                 self.refresh_insights();
                 self.refresh_legend(cx);
@@ -2579,6 +2581,17 @@ impl Disktree {
             return;
         };
         self.notice = None;
+        if self.was_removed(&target.path) {
+            self.notice = Some((
+                format!(
+                    "{} was removed; rescan to see the disk as it is now",
+                    self.display_path(&target.path)
+                ),
+                Status::Warning,
+            ));
+            cx.notify();
+            return;
+        }
         if !self.marks.contains(&target.path, self.path_style())
             && let Some(ancestor) = self.marked_ancestor(&target.path)
         {
@@ -2623,10 +2636,14 @@ impl Disktree {
     pub fn target_at(&self, crumbs: &[usize]) -> Option<Target> {
         let node = self.node_at(crumbs)?;
         let path = self.path_at(crumbs)?;
+        // A directory part of which was removed frees only the rest.
+        let bytes = node
+            .bytes
+            .saturating_sub(self.removed.below(&path, self.path_style()));
         Some(Target {
             hidden: is_hidden(&path, self.path_style()),
             path,
-            bytes: node.bytes,
+            bytes,
             is_dir: node.is_dir(),
         })
     }
@@ -2802,6 +2819,10 @@ impl Disktree {
             || Arc::new(FxHashSet::default()),
             |tree| self.marks.crumbs(&self.root_path, tree, metric, style),
         );
+        let removed = self.tree.as_ref().map_or_else(
+            || Arc::new(FxHashSet::default()),
+            |tree| self.removed.crumbs(&self.root_path, tree, metric, style),
+        );
 
         let Some(tiles) = self.layout().map(<[Tile]>::to_vec) else {
             return Mosaic {
@@ -2863,6 +2884,10 @@ impl Disktree {
             let is_covered = !marked.is_empty()
                 && (1..crumbs.len())
                     .any(|length| marked.contains(&crumbs[..length]));
+            // Removed since the scan, itself or with a directory holding it.
+            let is_removed = !removed.is_empty()
+                && (1..=crumbs.len())
+                    .any(|length| removed.contains(&crumbs[..length]));
             let decoration = TileDeco {
                 rect: self.animated_rect(tile.rect),
                 depth: tile.depth,
@@ -2873,6 +2898,7 @@ impl Disktree {
                 unreadable: node.is_some_and(|n| n.read_error),
                 marked: is_marked,
                 covered: is_covered,
+                removed: is_removed,
                 hovered: hovered.as_deref() == Some(crumbs),
                 selected: selected.as_deref() == Some(crumbs),
             };
@@ -2924,7 +2950,7 @@ impl Disktree {
                             .header
                             .map(|header| self.animated_rect(header)),
                         depth: tile.depth,
-                        dim: filtered == Filtered::Out,
+                        dim: filtered == Filtered::Out || is_removed,
                         marked: is_marked || is_covered,
                         size_text: partial.map_or_else(
                             || crate::widgets::short_value(node, metric),
@@ -3175,6 +3201,7 @@ impl Disktree {
                 metric,
                 style,
             );
+            self.marks.discount(&self.removed, style);
         }
         self.crumbs = self.crumbs_for_path(&directory).unwrap_or_default();
         self.selected = selected.and_then(|path| self.crumbs_for_path(&path));
@@ -3448,21 +3475,20 @@ impl Disktree {
             self.marks.clear();
             self.unmarked = None;
             self.screen = Screen::Done;
+            // What went stays drawn, as removed, until a scan: a rescan
+            // of a whole disk takes minutes and is asked for, never implied.
+            self.note_removed(removed);
             if std::mem::take(&mut self.rescan_after_removal) {
                 self.start_scan(cx);
-            } else {
-                // A rescan of a whole disk takes minutes, and the removal
-                // knows what went: take that out of the tree instead.
-                self.prune_removed(&removed, cx);
             }
         }
         cx.notify();
         !finished
     }
 
-    /// Add the run that just finished to the ledger. Returns the paths it
+    /// Add the run that just finished to the ledger. Returns what it
     /// removed.
-    fn record_cohort(&mut self) -> Vec<PathBuf> {
+    fn record_cohort(&mut self) -> Vec<disktree_core::removal::Target> {
         let Some(start) = self.run_start.take() else {
             return Vec::new();
         };
@@ -3481,7 +3507,29 @@ impl Disktree {
             started: start.started,
             finished: std::time::SystemTime::now(),
         });
-        removed.into_iter().map(|target| target.path).collect()
+        removed
+    }
+
+    /// Keep what a removal took, so the tree shows it as gone and it is
+    /// never marked again before a scan.
+    fn note_removed(&mut self, removed: Vec<disktree_core::removal::Target>) {
+        let style = self.path_style();
+        for target in removed {
+            if self.was_removed(&target.path) {
+                continue;
+            }
+            let path = target.path.clone();
+            self.removed.toggle(target, style);
+            self.removed.absorb(&path, style);
+        }
+    }
+
+    /// Whether `path` was removed since the scan, itself or with a
+    /// directory holding it.
+    pub fn was_removed(&self, path: &Path) -> bool {
+        let style = self.path_style();
+        self.removed.contains(path, style)
+            || self.removed.ancestor(path, style).is_some()
     }
 
     /// What the scan saw as only these targets', estimated as review does,
@@ -3515,102 +3563,6 @@ impl Disktree {
                 .map_or(node.bytes, |estimate| estimate.lower),
             _ => disktree_core::sharing::estimate(nodes).lower,
         })
-    }
-
-    /// Rebuild the tree without `removed`, off the UI thread: it copies
-    /// every node, a second or so on a whole disk.
-    fn prune_removed(&mut self, removed: &[PathBuf], cx: &Context<'_, Self>) {
-        // One rebuild at a time: a second, started from the same tree,
-        // would be dropped as stale when the first lands.
-        if self.pruning {
-            self.prune_queue.extend_from_slice(removed);
-            return;
-        }
-        let Some(tree) = self.tree.clone() else {
-            return;
-        };
-        let crumbs: Vec<Vec<usize>> = removed
-            .iter()
-            .filter_map(|path| self.crumbs_for_path(path))
-            .filter(|crumbs| !crumbs.is_empty())
-            .collect();
-        if crumbs.is_empty() {
-            return;
-        }
-        let source = Arc::downgrade(&tree);
-        let metric = self.options.metric;
-        let removed = removed.to_vec();
-        self.pruning = true;
-        let task = cx.background_executor().spawn(async move {
-            disktree_core::tree::without(&tree, &crumbs, metric)
-        });
-        cx.spawn(async move |this, cx| {
-            let pruned = task.await;
-            let _ = this.update(cx, |this, cx| {
-                this.adopt_pruned(&source, removed, pruned, cx);
-            });
-        })
-        .detach();
-    }
-
-    /// Show the tree a removal left, keeping the place on screen where it
-    /// still exists. When the tree it was built from was replaced
-    /// meanwhile (a change of metric reorders into a new one), build again
-    /// from the one on screen: what was removed is gone from the disk
-    /// either way, and a newer scan simply no longer holds those paths.
-    pub(crate) fn adopt_pruned(
-        &mut self,
-        source: &Weak<Tree>,
-        mut removed: Vec<PathBuf>,
-        pruned: Tree,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.pruning = false;
-        let queued = std::mem::take(&mut self.prune_queue);
-        let current = self
-            .tree
-            .as_ref()
-            .is_some_and(|tree| Weak::ptr_eq(&Arc::downgrade(tree), source));
-        if !current {
-            discard(Some(pruned));
-            removed.extend(queued);
-            self.prune_removed(&removed, cx);
-            cx.notify();
-            return;
-        }
-        let directory = self.current_path();
-        let selected = self.selected.as_deref().and_then(|c| self.path_at(c));
-        self.marks.refresh(
-            &self.root_path,
-            pruned.root(),
-            self.options.metric,
-            self.path_style(),
-        );
-        discard(self.tree.replace(Arc::new(pruned)));
-        // What was on screen may have gone with the removal: the nearest
-        // directory that is left, seen whole, as entering it would be.
-        let crumbs = directory
-            .ancestors()
-            .find_map(|path| self.crumbs_for_path(path))
-            .unwrap_or_default();
-        if self.path_at(&crumbs).as_deref() != Some(directory.as_path()) {
-            self.view = View::default();
-            self.file_page = 0;
-        }
-        self.crumbs = crumbs;
-        self.selected = selected.and_then(|path| self.crumbs_for_path(&path));
-        self.forget_hover();
-        self.crumb_menu = None;
-        self.transition = None;
-        self.cache = None;
-        self.clear_filter();
-        self.refresh_insights();
-        self.prune_history();
-        self.keep_selection_valid();
-        if !queued.is_empty() {
-            self.prune_removed(&queued, cx);
-        }
-        cx.notify();
     }
 
     /// Descend to a path found by the search field.

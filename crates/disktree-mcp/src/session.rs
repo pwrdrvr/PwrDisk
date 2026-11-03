@@ -292,9 +292,10 @@ pub struct RemoveParams {
     /// Only after explicit user confirmation: MOVE TO TRASH or PERMANENTLY DELETE,
     /// matching the preview. Approval to mark is not approval to remove.
     pub confirmation: String,
-    /// Rescan once the removal finishes. Default false: the window drops
-    /// the removed paths from its tree, so the next batch can be found and
-    /// marked at once; a rescan of a large volume takes minutes.
+    /// Rescan once the removal finishes. Default false, so the next batch
+    /// can be found and marked at once; a rescan of a large volume takes
+    /// minutes. Until one, removed paths are still listed, and the window
+    /// refuses to mark them.
     #[serde(default)]
     pub rescan: bool,
 }

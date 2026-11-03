@@ -5374,11 +5374,9 @@ fn done(app: &Disktree, cx: &gpui_kit::Context<'_, Disktree>) -> Div {
 
     let note = if app.scan.is_some() {
         "Rescanning so the numbers on screen match the disk again."
-    } else if app.pruning {
-        "Taking what was removed out of the treemap\u{2026}"
     } else {
-        "The treemap no longer shows what was removed. Sharing figures are \
-         from the last scan until you rescan."
+        "What was removed stays in the treemap, greyed out, until you \
+         rescan; it cannot be marked again."
     };
     let mut body = div()
         .flex()
@@ -5790,12 +5788,18 @@ pub fn hover_tooltip(app: &Disktree, cx: &gpui_kit::App) -> Option<Div> {
         .and_then(|target| app.node_at(&target))
         .map(|node| node.name().to_string());
     let selected = app.selected.as_deref() == Some(crumbs);
+    // What was removed since the scan cannot be marked again.
+    let mark = if app.path_at(crumbs).is_some_and(|p| app.was_removed(&p)) {
+        "rescan to update"
+    } else {
+        "space mark"
+    };
     let keys = match opens {
-        Some(name) if selected => format!("click opens {name} · space mark"),
+        Some(name) if selected => format!("click opens {name} · {mark}"),
         Some(name) => {
-            format!("click select · double-click opens {name} · space mark")
+            format!("click select · double-click opens {name} · {mark}")
         }
-        None => "click select · space mark".to_string(),
+        None => format!("click select · {mark}"),
     };
     node_card(app, crumbs, &keys, cx)
 }
@@ -5818,6 +5822,7 @@ fn node_card(
         .is_some_and(|path| app.marks.contains(path, app.path_style()));
     let hidden = node.name().starts_with('.');
     let covered = marks_ancestor(app, path.as_deref());
+    let removed = path.as_deref().is_some_and(|path| app.was_removed(path));
 
     let mut tip =
         div()
@@ -5908,6 +5913,13 @@ fn node_card(
     let mut badges = div().flex().flex_row().gap(space::XS).flex_wrap();
     if hidden {
         badges = badges.child(widgets::chip("Hidden", theme.secondary, cx));
+    }
+    if removed {
+        badges = badges.child(widgets::chip(
+            "Removed since the scan",
+            theme.secondary,
+            cx,
+        ));
     }
     if marked {
         badges =

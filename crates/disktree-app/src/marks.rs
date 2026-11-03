@@ -190,6 +190,27 @@ impl Marks {
         &self.items
     }
 
+    /// Bytes of the items strictly below `path`, as they were recorded.
+    pub fn below(&self, path: &Path, style: PathStyle) -> u64 {
+        self.items
+            .iter()
+            .filter(|item| style.is_below(&item.path, path))
+            .map(|item| item.bytes)
+            .sum()
+    }
+
+    /// Take `gone`'s bytes out of every item that holds some of it: a
+    /// directory marked after part of it was removed frees only the rest.
+    pub fn discount(&mut self, gone: &Self, style: PathStyle) {
+        if gone.is_empty() {
+            return;
+        }
+        for item in &mut self.items {
+            item.bytes =
+                item.bytes.saturating_sub(gone.below(&item.path, style));
+        }
+    }
+
     pub const fn len(&self) -> usize {
         self.items.len()
     }

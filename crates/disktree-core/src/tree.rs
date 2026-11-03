@@ -456,54 +456,6 @@ pub fn path_of(
     path
 }
 
-/// A copy of `tree` without the nodes at `removed`, with every total and
-/// sharing figure derived again from the leaves that are left.
-///
-/// What a removal leaves behind, without walking the disk again: a full
-/// rescan of a large volume takes minutes, and the removal already knows
-/// exactly which paths went. Only the directories on the way to a removed
-/// node are rebuilt; everything else is copied whole. A remaining clone
-/// keeps the reference count the scan read, so one whose twin was removed
-/// still counts as shared until the next scan: savings err low.
-pub fn without(tree: &Tree, removed: &[Vec<usize>], metric: Metric) -> Tree {
-    let removed: Vec<&[usize]> = removed.iter().map(Vec::as_slice).collect();
-    let mut pruned =
-        Tree::build(|builder| keep(builder, tree.root(), &removed, 0));
-    aggregate(&mut pruned, metric);
-    pruned
-}
-
-/// `node`, which is `depth` levels down and an ancestor of every crumb in
-/// `removed`, rebuilt without them.
-fn keep<'h>(
-    builder: &'h Builder,
-    node: Node<'_>,
-    removed: &[&[usize]],
-    depth: usize,
-) -> Built<'h> {
-    if removed.is_empty() {
-        return builder.copy(node);
-    }
-    let children = node
-        .children()
-        .iter()
-        .enumerate()
-        .filter_map(|(index, child)| {
-            let below: Vec<&[usize]> = removed
-                .iter()
-                .copied()
-                .filter(|crumbs| crumbs.get(depth) == Some(&index))
-                .collect();
-            // The child is itself one of the removed nodes.
-            if below.iter().any(|crumbs| crumbs.len() == depth + 1) {
-                return None;
-            }
-            Some(keep(builder, child, &below, depth + 1))
-        })
-        .collect();
-    builder.directory(node.name(), *node.facts(), node.allocation(), children)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,63 +500,6 @@ mod tests {
         let mut tree = Tree::from(root);
         aggregate_deduped(&mut tree, Metric::Bytes, &Seen::new());
         assert_eq!(tree.root().bytes, 4096 + 8192);
-    }
-
-    #[test]
-    fn without_drops_removed_subtrees_and_derives_totals_again() {
-        let mut root = Draft::directory("root");
-        let mut build = Draft::directory("build");
-        let mut cache = Draft::directory("cache");
-        cache.children.push(leaf("index", 70));
-        cache.children.push(leaf("blobs", 30));
-        build.children.push(cache);
-        build.children.push(leaf("obj", 40));
-        root.children.push(build);
-        root.children.push(leaf("notes", 5));
-        let mut tree = Tree::from(root);
-        aggregate(&mut tree, Metric::Bytes);
-
-        let (index, _) = tree
-            .root()
-            .descend(Path::new("build/cache/index"))
-            .expect("index");
-        let (notes, _) =
-            tree.root().descend(Path::new("notes")).expect("notes");
-        let pruned = without(&tree, &[index, notes], Metric::Bytes);
-
-        let root = pruned.root();
-        assert_eq!(root.bytes, 30 + 40, "what is left, and nothing else");
-        assert_eq!(root.files, 2);
-        assert!(root.child_named("notes").is_none());
-        let build = root.child_named("build").expect("build stays");
-        assert_eq!(build.bytes, 70);
-        assert_eq!(
-            build.children().at(0).name(),
-            "obj",
-            "children are ordered again by what they now hold"
-        );
-        let cache = build.child_named("cache").expect("cache stays");
-        assert_eq!(cache.bytes, 30);
-        assert!(cache.child_named("index").is_none());
-        assert_eq!(tree.root().bytes, 145, "the original is untouched");
-    }
-
-    #[test]
-    fn without_a_whole_directory_leaves_its_parent() {
-        let mut root = Draft::directory("root");
-        let mut build = Draft::directory("build");
-        build.children.push(leaf("a", 1));
-        build.children.push(leaf("b", 2));
-        root.children.push(build);
-        root.children.push(leaf("keep", 3));
-        let mut tree = Tree::from(root);
-        aggregate(&mut tree, Metric::Bytes);
-        let (build, _) = tree.root().descend(Path::new("build")).expect("dir");
-
-        let pruned = without(&tree, &[build], Metric::Bytes);
-        assert_eq!(pruned.root().bytes, 3);
-        assert_eq!(pruned.root().dirs, 1, "only the root is a directory now");
-        assert_eq!(pruned.root().children().len(), 1);
     }
 
     #[test]

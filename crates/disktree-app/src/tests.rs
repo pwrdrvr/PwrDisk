@@ -6114,7 +6114,7 @@ fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
 }
 
 #[gpui_kit::test]
-fn a_removal_keeps_the_tree_without_what_went_and_counts_it(
+fn a_removal_leaves_what_went_in_the_tree_as_removed_and_counts_it(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
@@ -6136,16 +6136,17 @@ fn a_removal_keeps_the_tree_without_what_went_and_counts_it(
 
     remove_now(&view, cx, &["junk/deeper"]);
     assert!(read(&view, cx, |app| app.scan.is_none()), "no rescan");
-    cx.run_until_parked();
     draw(cx);
-    read(&view, cx, |app| {
-        assert!(!app.pruning);
+    let deeper = temp.path().join("junk/deeper");
+    update(&view, cx, |app, _| {
         let root = app.tree.as_ref().expect("a tree").root();
-        assert_eq!(root.bytes, before - 100_000, "totals follow the removal");
-        assert_eq!(
-            app.current_path(),
-            temp.path().join("junk"),
-            "the view stays where it was"
+        assert_eq!(root.bytes, before, "the scan's figures stay");
+        assert!(app.crumbs_for_path(&deeper).is_some(), "and so does it");
+        assert!(app.was_removed(&deeper));
+        assert_eq!(app.current_path(), temp.path().join("junk"));
+        assert!(
+            app.prepare().tiles.iter().any(|tile| tile.removed),
+            "it is drawn as removed"
         );
         let cohorts = app.ledger.since(app.scans_done);
         assert_eq!(app.scan_epoch, scan);
@@ -6156,23 +6157,28 @@ fn a_removal_keeps_the_tree_without_what_went_and_counts_it(
     });
     assert!(cx.debug_bounds("removal-ledger").is_some(), "Done lists it");
 
-    // A second batch, still without a scan: two rows and a total.
     update(&view, cx, |app, cx| {
         app.screen = Screen::Explore;
-        cx.notify();
+        // What went cannot be marked again.
+        let crumbs = app.crumbs_for_path(&deeper).expect("still drawn");
+        app.toggle_mark(&crumbs, cx);
+        assert!(app.marks.is_empty());
+        let notice = app.notice.as_ref().map(|(text, _)| text.as_str());
+        assert!(notice.is_some_and(|text| text.contains("was removed")));
+        // Its directory can, for what is left in it.
+        let junk = app.crumbs_for_path(&temp.path().join("junk")).unwrap();
+        let listed = app.node_at(&junk).unwrap().bytes;
+        app.toggle_mark(&junk, cx);
+        assert_eq!(app.marks.items()[0].bytes, listed - 100_000);
+        app.toggle_mark(&junk, cx);
+        assert!(app.marks.is_empty());
     });
+
+    // A second batch, still without a scan: two rows and a total.
     remove_now(&view, cx, &["keep"]);
-    cx.run_until_parked();
     draw(cx);
     let totals = read(&view, cx, |app| {
-        assert!(
-            app.tree
-                .as_ref()
-                .unwrap()
-                .root()
-                .child_named("keep")
-                .is_none()
-        );
+        assert!(app.was_removed(&temp.path().join("keep/notes.txt")));
         crate::ledger::Ledger::totals(app.ledger.since(app.scans_done))
     })
     .expect("totals");
@@ -6195,37 +6201,44 @@ fn a_removal_keeps_the_tree_without_what_went_and_counts_it(
         "the Disk section keeps the account"
     );
 
-    // A rescan starts a new account.
+    // A rescan starts a new account and forgets what was removed.
     update(&view, cx, Disktree::start_scan);
     finish_scan(&view, cx);
     draw(cx);
-    assert!(read(&view, cx, |app| app
-        .ledger
-        .since(app.scan_epoch)
-        .is_empty()));
+    read(&view, cx, |app| {
+        assert!(app.ledger.since(app.scans_done).is_empty());
+        assert!(app.removed.is_empty());
+        assert!(app.crumbs_for_path(&deeper).is_none(), "the disk now");
+    });
     assert!(cx.debug_bounds("freed-since-scan").is_none());
 }
 
 #[gpui_kit::test]
-fn a_tree_replaced_while_pruning_is_pruned_again(cx: &mut TestAppContext) {
+fn what_was_removed_stays_removed_across_a_metric_change(
+    cx: &mut TestAppContext,
+) {
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
     remove_now(&view, cx, &["junk/deeper"]);
-    // Size | Files reorders into a new tree before the rebuild lands.
+    let junk = temp.path().join("junk");
     update(&view, cx, |app, cx| {
-        assert!(app.pruning, "the rebuild is still running");
+        app.screen = Screen::Explore;
+        let crumbs = app.crumbs_for_path(&junk).unwrap();
+        app.toggle_mark(&crumbs, cx);
+        // Size | Files reorders the tree and re-reads every mark's size.
+        app.toggle_metric(cx);
         app.toggle_metric(cx);
     });
-    cx.run_until_parked();
     read(&view, cx, |app| {
-        assert!(!app.pruning);
-        assert!(
-            app.crumbs_for_path(&temp.path().join("junk/deeper"))
-                .is_none(),
-            "what was removed stays out of the tree"
+        assert!(app.was_removed(&junk.join("deeper")));
+        let crumbs = app.crumbs_for_path(&junk).unwrap();
+        let listed = app.node_at(&crumbs).unwrap().bytes;
+        assert_eq!(
+            app.marks.items()[0].bytes,
+            listed - 100_000,
+            "a mark around it still leaves it out"
         );
-        assert!(app.crumbs_for_path(&temp.path().join("junk")).is_some());
     });
 }
 
@@ -6506,11 +6519,11 @@ fn focus_review_delete_cancel_enter_preserves_the_fixture(
     assert!(finished, "focused Delete completes the contrived removal");
     assert!(!temp.path().join("junk").exists());
     assert!(temp.path().join("keep/notes.txt").exists());
-    cx.run_until_parked();
     read(&view, cx, |app| {
         assert!(app.scan.is_none(), "Delete alone does not rescan");
         let root = app.tree.as_ref().expect("a tree").root();
-        assert!(root.child_named("junk").is_none(), "the tree drops it");
+        assert!(root.child_named("junk").is_some(), "the tree keeps it");
+        assert!(app.was_removed(&temp.path().join("junk")), "as removed");
     });
 }
 
