@@ -8078,6 +8078,20 @@ fn the_app_menu_hides_the_treemap_under_it(cx: &mut TestAppContext) {
         "a press or a scroll on the menu leaves the mosaic alone"
     );
     assert!(read(&view, cx, |app| app.app_menu_open), "still open");
+
+    // The menu is taller than its cap, and still scrolls itself.
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: on_menu,
+        delta: gpui_kit::ScrollDelta::Lines(Point::new(0., -3.)),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    draw(cx);
+    assert!(
+        read(&view, cx, |app| app.menu_scroll.offset().y) < px(0.),
+        "the list scrolled"
+    );
+    assert_eq!(read(&view, cx, |app| app.view), zoom, "the mosaic did not");
 }
 
 /// The ready card gives way while a removal runs (Restart would wait for
