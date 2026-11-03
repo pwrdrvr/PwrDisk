@@ -332,6 +332,16 @@ pub fn settings_dir() -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// The download running now: what a progress tick changed, without
+/// cloning the rest of the state.
+pub fn download() -> Option<Download> {
+    STATE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .download
+        .clone()
+}
+
 /// The updater's state as it stands.
 pub fn state() -> State {
     STATE.lock().unwrap_or_else(PoisonError::into_inner).clone()
@@ -499,9 +509,17 @@ fn restart_to_update() -> Result<(), String> {
                 .get_update_pending_restart()
                 .ok_or_else(|| "no downloaded update to install".to_owned())?,
         };
-    manager
-        .apply_updates_and_restart(&pending)
-        .map_err(|e| e.to_string())
+    // The quit hook hands the same package off too. This runs off the GPUI
+    // thread, so a Quit can land before Velopack exits the process: claim
+    // the hand-off, or two updaters race for Velopack's lock.
+    if !first_hand_off(&HANDED_OFF) {
+        return Err("PwrDisk is already quitting to install it".to_owned());
+    }
+    manager.apply_updates_and_restart(&pending).map_err(|e| {
+        // Nothing was handed off: the next quit or restart may try.
+        HANDED_OFF.store(false, Ordering::SeqCst);
+        e.to_string()
+    })
 }
 
 /// [`restart_to_update`] on a thread of its own: Velopack exits this
@@ -724,7 +742,7 @@ fn check_and_download(trigger: Trigger) -> Outcome {
     match manager.check_for_updates() {
         Ok(UpdateCheck::UpdateAvailable(update)) => {
             let target = &update.TargetFullRelease;
-            if let Err(error) = download(&manager, &update, switch_back) {
+            if let Err(error) = fetch(&manager, &update, switch_back) {
                 return Outcome::Failed(error.to_string());
             }
             let held = Held {
@@ -751,7 +769,7 @@ fn check_and_download(trigger: Trigger) -> Outcome {
 /// Downloads `update`, keeping [`State::download`]'s percent current. Each
 /// whole percent is one [`Change::Progress`], so Velopack's finer reports
 /// cost nothing on the GPUI thread.
-fn download(
+fn fetch(
     manager: &UpdateManager,
     update: &velopack::UpdateInfo,
     switch_back: bool,

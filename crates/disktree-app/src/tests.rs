@@ -6868,7 +6868,9 @@ fn a_toast_never_covers_the_review_footer(cx: &mut TestAppContext) {
 }
 
 /// The ready card gives way while a removal runs (Restart would wait for
-/// it anyway); the strip's chip still offers the release.
+/// it anyway); the strip's chip still offers the release. The pointer that
+/// rested on the card is forgotten with it, so the next answer still runs
+/// out.
 #[gpui_kit::test]
 fn a_removal_keeps_the_ready_card_down(cx: &mut TestAppContext) {
     use crate::update_channel::Slot;
@@ -6880,6 +6882,13 @@ fn a_removal_keeps_the_ready_card_down(cx: &mut TestAppContext) {
         update_state(1, Outcome::Downloaded("0.15.0".into()), Some("0.15.0"));
     update(&view, cx, |app, cx| {
         app.follow_updates(ready, "0.14.0", Slot::default(), cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("toast-update").is_some());
+    update(&view, cx, |app, cx| {
+        // The pointer is on the card when the removal starts.
+        let now = cx.background_executor().now();
+        app.toasts.set_hovered(true, now);
         app.run = Some(disktree_core::removal::spawn(
             disktree_core::removal::Plan::default(),
             RemovalMode::Trash,
@@ -6888,6 +6897,10 @@ fn a_removal_keeps_the_ready_card_down(cx: &mut TestAppContext) {
     draw(cx);
     assert!(cx.debug_bounds("toast-update").is_none());
     assert!(cx.debug_bounds(crate::views::UPDATE_CHIP_ID).is_some());
+    assert!(
+        !read(&view, cx, |app| app.toasts.is_hovered()),
+        "a stack that is not drawn holds no pointer"
+    );
     update(&view, cx, |app, _| app.run = None);
 }
 

@@ -4608,7 +4608,8 @@ fn review(
             // The toasts sit over the list's lower left, outside the
             // scroll so they stay put, above the hints and the footer.
             div().relative().flex().flex_col().flex_1().min_h_0()
-                .child(div().id("review-scroll").debug_selector(|| "review-scroll".into())
+                .child(div().id("review-scroll")
+                    .debug_selector(|| "review-scroll".into())
                     .overflow_y_scroll().track_scroll(&app.review_scroll)
                     .flex()
                     .flex_row().when(compact, gpui_kit::Styled::flex_col)

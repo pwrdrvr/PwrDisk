@@ -191,10 +191,11 @@ impl Toasts {
         self.hovered = hovered;
     }
 
-    /// The stack is not drawn while empty, or while it holds only cards
-    /// [`UpdateWatch`] draws, so it never hears the pointer leave: a click
-    /// on × takes the card away from under the pointer. Left set, every
-    /// later answer would wait for a hover that never ends.
+    /// A stack that is not drawn never hears the pointer leave: a click on
+    /// × takes the card from under it, and a ready card can step aside for
+    /// a removal or another channel. Left set, every later answer would
+    /// wait for a hover that never ends, so [`stack`] calls this whenever
+    /// it draws nothing.
     pub const fn forget_hover(&mut self) {
         self.hovered = false;
     }
@@ -271,8 +272,6 @@ pub struct UpdateWatch {
     /// what the window draws from.
     seen: State,
     ready: Option<Held>,
-    /// The slot in force as of the last change, for the answer's words.
-    slot: Slot,
     /// `PWRDISK_UPDATE_FIXTURE` drew a set state: the updater is ignored.
     fixture: bool,
 }
@@ -293,7 +292,6 @@ impl UpdateWatch {
         &mut self,
         state: State,
         ready: Option<Held>,
-        slot: Slot,
     ) -> Option<Outcome> {
         let settled = self.asked.and_then(|after| {
             if state.checking || state.finished <= after {
@@ -304,7 +302,6 @@ impl UpdateWatch {
         });
         self.seen = state;
         self.ready = ready;
-        self.slot = slot;
         settled
     }
 
@@ -573,7 +570,7 @@ impl Disktree {
             return;
         }
         if change == Change::Progress {
-            self.update_watch.follow_progress(updater::state().download);
+            self.update_watch.follow_progress(updater::download());
             if self.update_watch.is_asking() {
                 cx.notify();
             }
@@ -596,8 +593,7 @@ impl Disktree {
         let failed_before = self.update_watch.seen().restart_failed.clone();
         let ready = updater::ready(&state, installed, slot);
         let failed_now = state.restart_failed.clone();
-        if let Some(outcome) =
-            self.update_watch.follow(state, ready.clone(), slot)
+        if let Some(outcome) = self.update_watch.follow(state, ready.clone())
             && let Some(toast) = answer(&outcome, ready.as_ref(), slot)
         {
             self.show_toast(toast, cx);
@@ -622,9 +618,6 @@ impl Disktree {
 
     pub fn dismiss_toast(&mut self, key: &str, cx: &mut Context<'_, Self>) {
         if self.toasts.dismiss(key) {
-            if self.toasts.is_empty() {
-                self.toasts.forget_hover();
-            }
             self.schedule_toasts(cx);
             cx.notify();
         }
@@ -633,9 +626,6 @@ impl Disktree {
     /// Later, or × on the Ready card.
     pub fn later(&mut self, cx: &mut Context<'_, Self>) {
         self.update_watch.later();
-        if self.toasts.is_empty() {
-            self.toasts.forget_hover();
-        }
         cx.notify();
     }
 
@@ -666,7 +656,6 @@ impl Disktree {
 
     fn run_toast_action(
         &mut self,
-        key: &'static str,
         action: &Action,
         cx: &mut Context<'_, Self>,
     ) {
@@ -683,8 +672,7 @@ impl Disktree {
             Action::OpenLogs => cx.defer(crate::logs_window::open),
             Action::CheckAgain => self.check_for_updates(cx),
             Action::Restart { .. } => self.restart_to_update(cx),
-            Action::Later if key == UPDATE => self.later(cx),
-            Action::Later => self.dismiss_toast(key, cx),
+            Action::Later => self.later(cx),
         }
     }
 
@@ -790,14 +778,16 @@ pub fn update_card(app: &Disktree) -> Option<Toast> {
 /// The stack, lower left of the screen's content (the caller anchors it
 /// there, above the footer); `None` when there is nothing to show.
 pub fn stack(
-    app: &Disktree,
+    app: &mut Disktree,
     window: &Window,
     cx: &mut Context<'_, Disktree>,
 ) -> Option<AnyElement> {
     let derived = update_card(app);
     if app.toasts.is_empty() && derived.is_none() {
+        app.toasts.forget_hover();
         return None;
     }
+    let app = &*app;
     let now = cx.background_executor().now();
     let moving = app
         .toasts
@@ -882,7 +872,7 @@ fn card(
             primary_seen = true;
             actions = actions.child(div().flex_1());
         }
-        actions = actions.child(action_button(app, key, action, cx));
+        actions = actions.child(action_button(app, action, cx));
     }
     // A live status, as the window's other notices are, so a screen reader
     // speaks the answer as well as showing it. A live card's percent is
@@ -1000,7 +990,6 @@ fn countdown(key: &'static str, left: f32, color: Hsla) -> Div {
 
 fn action_button(
     app: &Disktree,
-    key: &'static str,
     action: &Action,
     cx: &Context<'_, Disktree>,
 ) -> AnyElement {
@@ -1036,7 +1025,7 @@ fn action_button(
         .semantic_disabled(disabled)
         .on_click(cx.listener(move |this, _, _, cx| {
             if !disabled {
-                this.run_toast_action(key, &action, cx);
+                this.run_toast_action(&action, cx);
             }
         }))
         .into_any_element()
@@ -1123,20 +1112,19 @@ mod tests {
     #[test]
     fn only_a_menu_check_raises_a_card_until_a_release_is_ready() {
         let mut watch = UpdateWatch::default();
-        let slot = Slot::default();
         // The startup check runs and finds nothing: no card.
         let mut state = State {
             checking: true,
             ..State::default()
         };
-        assert_eq!(watch.follow(state.clone(), None, slot), None);
+        assert_eq!(watch.follow(state.clone(), None), None);
         assert_eq!(watch.live(), None);
         finished(&mut state, Outcome::UpToDate("0.14.0".into()));
-        assert_eq!(watch.follow(state.clone(), None, slot), None);
+        assert_eq!(watch.follow(state.clone(), None), None);
         assert_eq!(watch.offer(), None);
         // A background download that lands is offered.
         state.held = Some(held("0.15.0"));
-        watch.follow(state, Some(held("0.15.0")), slot);
+        watch.follow(state, Some(held("0.15.0")));
         assert_eq!(watch.offer(), Some(&held("0.15.0")));
     }
 
@@ -1147,7 +1135,7 @@ mod tests {
         let mut state = State::default();
         watch.ask(state.finished);
         state.checking = true;
-        assert_eq!(watch.follow(state.clone(), None, slot), None);
+        assert_eq!(watch.follow(state.clone(), None), None);
         assert_eq!(watch.live(), Some(Live::Checking));
         let download = Download {
             version: "0.15.0".into(),
@@ -1169,7 +1157,7 @@ mod tests {
         assert_eq!(card.timeout, None, "work under way has no countdown");
 
         finished(&mut state, Outcome::Failed("timed out".into()));
-        let outcome = watch.follow(state, None, slot).expect("settles");
+        let outcome = watch.follow(state, None).expect("settles");
         assert_eq!(watch.live(), None);
         let failed = answer(&outcome, None, slot).expect("an answer");
         assert_eq!(failed.tone, Tone::Danger);
@@ -1180,7 +1168,6 @@ mod tests {
     #[test]
     fn a_menu_check_waits_for_the_check_already_running() {
         let mut watch = UpdateWatch::default();
-        let slot = Slot::default();
         let mut state = State {
             checking: true,
             finished: 3,
@@ -1188,10 +1175,10 @@ mod tests {
         };
         watch.ask(state.finished);
         // The running check has not ended: still waiting.
-        assert_eq!(watch.follow(state.clone(), None, slot), None);
+        assert_eq!(watch.follow(state.clone(), None), None);
         assert!(watch.is_asking());
         finished(&mut state, Outcome::UpToDate("0.14.0".into()));
-        assert!(watch.follow(state, None, slot).is_some());
+        assert!(watch.follow(state, None).is_some());
         assert!(!watch.is_asking());
     }
 
@@ -1204,7 +1191,7 @@ mod tests {
         finished(&mut state, Outcome::Downloaded("0.15.0".into()));
         let ready = held("0.15.0");
         let outcome = watch
-            .follow(state.clone(), Some(ready.clone()), slot)
+            .follow(state.clone(), Some(ready.clone()))
             .expect("settles");
         assert_eq!(
             answer(&outcome, Some(&ready), slot),
@@ -1218,11 +1205,11 @@ mod tests {
         assert_eq!(watch.ready(), Some(&ready), "the chip still offers it");
         // The next background check finds the same download: still down.
         finished(&mut state, Outcome::Pending("0.15.0".into()));
-        watch.follow(state.clone(), Some(ready), slot);
+        watch.follow(state.clone(), Some(ready));
         assert_eq!(watch.offer(), None);
         // A newer release comes back up.
         finished(&mut state, Outcome::Downloaded("0.15.1".into()));
-        watch.follow(state.clone(), Some(held("0.15.1")), slot);
+        watch.follow(state.clone(), Some(held("0.15.1")));
         assert_eq!(watch.offer(), Some(&held("0.15.1")));
         // And asking again brings back one put away.
         watch.later();
