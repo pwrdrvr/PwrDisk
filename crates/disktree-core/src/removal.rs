@@ -602,8 +602,8 @@ fn refuse(
     {
         return Some("the home directory cannot be removed".into());
     }
-    // On Linux `/home` is usually a mount point of its own and refused as
-    // one; on macOS `/Users` is on the same volume as `/`, and removing it
+    // On Linux `/home` is often a mount point of its own and refused as
+    // one, though not always; on macOS `/Users` is on the same volume as `/`, and removing it
     // would empty the home directory before failing on `/Users` itself.
     if home_key.is_some_and(|home| home.starts_with(&key)) {
         return Some("it contains the home directory".into());
@@ -623,15 +623,8 @@ fn refuse(
     // Linux keeps them in /home, which is often a volume of its own and so
     // refused as a mount point, but just as often a folder on `/`, where
     // another account's home is a folder like any other.
-    for profiles in profiles_keys() {
-        // The folder itself holds every account's home, the operator's
-        // included, wherever this process's own home happens to be.
-        if key == *profiles {
-            return Some(format!("it holds every {PROFILE}"));
-        }
-        if is_profile(path, &key, profiles) {
-            return Some(format!("a {PROFILE} cannot be removed"));
-        }
+    if let Some(reason) = profile_refusal(path, &key, profiles_keys()) {
+        return Some(reason);
     }
     // By spelling too: the Data volume's root keeps its name as a key, while
     // everything under it is keyed as under `/`.
@@ -997,6 +990,26 @@ const PROFILE: &str = "user's home folder";
 /// Nowhere else has a profiles folder; never shown.
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 const PROFILE: &str = "";
+
+/// Why `path`, keyed `key`, is refused as a profiles folder or a profile
+/// in one, judged against every name the folder has.
+fn profile_refusal(
+    path: &Path,
+    key: &Path,
+    profiles: &[PathBuf],
+) -> Option<String> {
+    for profiles in profiles {
+        // The folder itself holds every account's home, the operator's
+        // included, wherever this process's own home happens to be.
+        if key == profiles {
+            return Some(format!("it holds every {PROFILE}"));
+        }
+        if is_profile(path, key, profiles) {
+            return Some(format!("a {PROFILE} cannot be removed"));
+        }
+    }
+    None
+}
 
 /// Whether `path`, keyed `key`, is a profile: a directory directly in
 /// `profiles`. A file or a link there is no profile and stays removable.
@@ -3118,14 +3131,14 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).expect("symlink");
         let keys = linux_profiles_keys(&link);
         assert_eq!(keys.len(), 2, "{keys:?}");
+        let refused = |path: &Path| {
+            profile_refusal(path, &guard_key(path), &keys).unwrap_or_default()
+        };
         for folder in [&link, &real] {
+            assert!(refused(folder).contains("every user"));
             let path = folder.join("guest");
             assert!(
-                keys.iter().any(|key| is_profile(
-                    &path,
-                    &guard_key(&path),
-                    key
-                )),
+                refused(&path).contains("home folder"),
                 "{} is an account's folder",
                 path.display()
             );
