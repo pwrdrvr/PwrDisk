@@ -2966,11 +2966,7 @@ fn selection_section(
     {
         let shown = app.git.shown(path);
         let value = match shown {
-            Shown::Answer(Probe::Known(state)) => state.summary(),
-            Shown::Answer(Probe::Unreadable) => "not readable".to_string(),
-            // Git was stopped at its time limit: say so rather than
-            // leave "asking" up, or claim it is clean.
-            Shown::Answer(Probe::TimedOut) => "too large to check".to_string(),
+            Shown::Answer(probe) => probe.summary(),
             Shown::Asking => "asking\u{2026}".to_string(),
         };
         let clean = matches!(

@@ -71,6 +71,13 @@ pub enum Ask {
 }
 
 impl Ask {
+    /// Whether the wish came from the selection rather than the pointer.
+    /// There is one of each at a time, so a newer wish from the same one
+    /// makes an older wish for another checkout moot.
+    const fn by_selection(self) -> bool {
+        !matches!(self, Self::Dwell)
+    }
+
     /// How long a wish lasts in the queue without being repeated. A
     /// frame repeats it while the tile is still the one shown, so this is
     /// how long after the user moves on that the wish lapses.
@@ -94,6 +101,17 @@ pub enum Probe {
 }
 
 impl Probe {
+    /// The Git figure's value.
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Known(state) => state.summary(),
+            Self::Unreadable => "not readable".to_string(),
+            // Stopped at its limit: say so rather than leave "asking" up,
+            // or call it clean.
+            Self::TimedOut => "too large to check".to_string(),
+        }
+    }
+
     const fn fresh_for(&self) -> Duration {
         match self {
             Self::Known(_) => FRESH_FOR,
@@ -168,6 +186,13 @@ impl GitStore {
 
     /// A frame would like to know about `path`.
     pub fn want(&mut self, path: &Path, ask: Ask, now: Instant) -> Wanted {
+        // Arrowing through a row of checkouts selects each for a moment;
+        // only where the selection stops is still wanted. What already
+        // runs finishes and is remembered.
+        self.queue.retain(|waiting| {
+            waiting.path == path
+                || waiting.ask.by_selection() != ask.by_selection()
+        });
         if self.running.contains_key(path) {
             return Wanted::Pending;
         }
@@ -321,6 +346,17 @@ mod tests {
         PathBuf::from("/checkouts").join(name)
     }
 
+    /// Take every slot with a probe of its own: each is selected and
+    /// started before the next, as a selection that stays would be.
+    fn fill_slots(store: &mut GitStore, now: Instant) -> Vec<Job> {
+        (0..MAX_RUNNING)
+            .flat_map(|n| {
+                store.want(&path(&format!("busy-{n}")), Ask::Direct, now);
+                store.next_jobs(now)
+            })
+            .collect()
+    }
+
     #[test]
     fn a_selection_runs_once_and_then_reads_the_answer() {
         let t0 = Instant::now();
@@ -353,53 +389,66 @@ mod tests {
     fn no_more_than_the_limit_run_at_once() {
         let t0 = Instant::now();
         let mut store = GitStore::new(t0);
-        let paths: Vec<_> =
-            (0..5).map(|n| path(&format!("checkout-{n}"))).collect();
-        for path in &paths {
-            store.want(path, Ask::Direct, t0);
-        }
+        // A selection and a hover start; a third wish waits.
+        store.want(&path("selected"), Ask::Direct, t0);
+        store.want(&path("hovered"), Ask::Dwell, t0);
         let first = store.next_jobs(t0);
         assert_eq!(first.len(), MAX_RUNNING);
+        store.want(&path("next"), Ask::Direct, t0);
         assert!(store.next_jobs(t0).is_empty(), "the slots are full");
 
-        // One finishing frees one slot, taken by the newest wish.
+        // One finishing frees one slot for the wish that waited.
         assert!(store.finish(&first[0], clean(), t0));
         let next = store.next_jobs(t0);
         assert_eq!(next.len(), 1);
+        assert_eq!(next[0].path, path("next"));
     }
 
     #[test]
-    fn the_newest_wish_runs_first_and_a_selection_before_a_hover() {
+    fn a_selection_runs_before_a_hover() {
         let t0 = Instant::now();
         let mut store = GitStore::new(t0);
-        let blocker: Vec<_> = (0..MAX_RUNNING)
-            .map(|n| path(&format!("busy-{n}")))
-            .collect();
-        for path in &blocker {
-            store.want(path, Ask::Direct, t0);
-        }
-        let busy = store.next_jobs(t0);
+        let busy = fill_slots(&mut store, t0);
 
         let t1 = t0 + Duration::from_millis(100);
         store.want(&path("hovered"), Ask::Dwell, t1);
-        store.want(&path("older"), Ask::Direct, t1);
         let t2 = t1 + Duration::from_millis(100);
-        store.want(&path("newer"), Ask::Direct, t2);
+        store.want(&path("selected"), Ask::Direct, t2);
 
         assert!(store.finish(&busy[0], clean(), t2));
-        assert_eq!(store.next_jobs(t2)[0].path, path("newer"));
+        assert_eq!(store.next_jobs(t2)[0].path, path("selected"));
         assert!(store.finish(&busy[1], clean(), t2));
-        assert_eq!(store.next_jobs(t2)[0].path, path("older"));
+        assert_eq!(store.next_jobs(t2)[0].path, path("hovered"));
+    }
+
+    #[test]
+    fn arrowing_through_checkouts_runs_only_where_the_selection_stops() {
+        let t0 = Instant::now();
+        let mut store = GitStore::new(t0);
+        let busy = fill_slots(&mut store, t0);
+        let mut now = t0;
+        for n in 0..10 {
+            now += Duration::from_millis(30);
+            store.want(&path(&format!("passed-{n}")), Ask::Direct, now);
+        }
+        // The pointer's wish is not the selection's to drop.
+        store.want(&path("hovered"), Ask::Dwell, now);
+        for job in &busy {
+            assert!(store.finish(job, clean(), now));
+        }
+        let started: Vec<_> = store
+            .next_jobs(now)
+            .into_iter()
+            .map(|job| job.path)
+            .collect();
+        assert_eq!(started, [path("passed-9"), path("hovered")]);
     }
 
     #[test]
     fn a_lapsed_wish_is_dropped_at_the_head_of_the_queue() {
         let t0 = Instant::now();
         let mut store = GitStore::new(t0);
-        for n in 0..MAX_RUNNING {
-            store.want(&path(&format!("slow-{n}")), Ask::Direct, t0);
-        }
-        let slow = store.next_jobs(t0);
+        let slow = fill_slots(&mut store, t0);
         // The pointer rested here, then moved on and never came back.
         store.want(&path("passed"), Ask::Dwell, t0);
 
@@ -414,10 +463,7 @@ mod tests {
     fn a_wish_repeated_by_each_frame_does_not_lapse() {
         let t0 = Instant::now();
         let mut store = GitStore::new(t0);
-        for n in 0..MAX_RUNNING {
-            store.want(&path(&format!("slow-{n}")), Ask::Direct, t0);
-        }
-        let slow = store.next_jobs(t0);
+        let slow = fill_slots(&mut store, t0);
         let selected = path("selected");
         let mut now = t0;
         for _ in 0..10 {
@@ -504,11 +550,8 @@ mod tests {
     fn clearing_stops_what_runs_and_ignores_its_answer() {
         let t0 = Instant::now();
         let mut store = GitStore::new(t0);
-        let alpha = path("alpha");
-        store.want(&alpha, Ask::Direct, t0);
-        store.want(&path("queued"), Ask::Direct, t0);
-        store.want(&path("queued-too"), Ask::Direct, t0);
-        let jobs = store.next_jobs(t0);
+        let jobs = fill_slots(&mut store, t0);
+        assert_eq!(jobs.len(), MAX_RUNNING);
         store.want(&path("still-waiting"), Ask::Direct, t0);
 
         store.clear();
@@ -516,6 +559,13 @@ mod tests {
         assert!(!store.finish(&jobs[0], clean(), t0), "an old generation");
         assert_eq!(store.shown(&jobs[0].path), Shown::Asking);
         assert!(store.next_jobs(t0).is_empty(), "the queue went too");
+    }
+
+    #[test]
+    fn the_figure_says_when_git_was_stopped() {
+        assert_eq!(Probe::TimedOut.summary(), "too large to check");
+        assert_eq!(Probe::Unreadable.summary(), "not readable");
+        assert_eq!(clean().summary(), "clean, no stash");
     }
 
     #[test]

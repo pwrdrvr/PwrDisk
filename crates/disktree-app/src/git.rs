@@ -89,6 +89,10 @@ impl Limit {
     fn reached(&self) -> bool {
         self.cancel.load(Ordering::Relaxed) || Instant::now() >= self.deadline
     }
+
+    fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
 }
 
 /// A probe stopped at its [`Limit`] before git finished.
@@ -288,14 +292,18 @@ fn output_within(
         return Ok(None);
     };
     // Read as it is written: a `status` listing more than a pipe holds
-    // would otherwise wait on us while we wait on it.
-    let reader = child.stdout.take().map(|mut stdout| {
+    // would otherwise wait on us while we wait on it. The reader is never
+    // joined: anything git started that kept the pipe open would keep it
+    // reading past the limit, so the output is waited for on a channel
+    // instead, within what is left of the limit.
+    let (sender, read) = std::sync::mpsc::channel();
+    if let Some(mut stdout) = child.stdout.take() {
         std::thread::spawn(move || {
             let mut out = Vec::new();
             let _ = stdout.read_to_end(&mut out);
-            out
-        })
-    });
+            let _ = sender.send(out);
+        });
+    }
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
@@ -305,17 +313,16 @@ fn output_within(
         }
     };
     let Some(status) = status else {
-        // Killing closes the pipe, so the reader returns too.
         let _ = child.kill();
         let _ = child.wait();
-        if let Some(reader) = reader {
-            let _ = reader.join();
-        }
         return if limit.reached() { Err(Cut) } else { Ok(None) };
     };
-    let stdout = reader
-        .and_then(|reader| reader.join().ok())
-        .unwrap_or_default();
+    let stdout = match read.recv_timeout(limit.remaining()) {
+        Ok(out) => out,
+        // Git exited but something it started still holds its output.
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err(Cut),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Vec::new(),
+    };
     Ok(Some(Output {
         status,
         stdout,
@@ -353,6 +360,23 @@ mod tests {
         let limit = Limit::new(Duration::from_mins(1), cancel);
         let ran = output_within(Command::new("sleep").arg("30"), &limit);
         assert_eq!(ran.map(|output| output.is_some()), Err(Cut));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_held_open_after_exit_is_cut_at_the_limit() {
+        // The shell exits at once, leaving a child that keeps stdout open.
+        let limit = Limit::new(Duration::from_millis(200), Arc::default());
+        let started = Instant::now();
+        let ran = output_within(
+            Command::new("sh").args(["-c", "sleep 30 & echo started"]),
+            &limit,
+        );
+        assert_eq!(ran.map(|output| output.is_some()), Err(Cut));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "it did not wait for the child holding the pipe"
+        );
     }
 
     #[cfg(unix)]

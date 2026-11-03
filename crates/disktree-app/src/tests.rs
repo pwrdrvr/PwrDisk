@@ -1937,11 +1937,13 @@ fn checkouts() -> tempfile::TempDir {
     temp
 }
 
-/// Give the window a probe that counts its runs and finds every checkout
-/// clean, in place of git. Anything the real one started is forgotten.
+/// Give the window a probe that counts its runs and gives `answer` for
+/// every checkout, in place of git. Anything the real one started is
+/// forgotten.
 fn count_probes(
     view: &Entity<Disktree>,
     cx: &mut Window,
+    answer: crate::git_store::Probe,
 ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1951,7 +1953,7 @@ fn count_probes(
         let counter = runs.clone();
         app.git_probe = Arc::new(move |_, _| {
             counter.fetch_add(1, Ordering::SeqCst);
-            crate::git_store::Probe::Known(clean_checkout())
+            answer.clone()
         });
         app.git.clear();
     });
@@ -2007,7 +2009,7 @@ fn a_sweep_over_checkouts_asks_nothing_and_a_rest_asks_once(
     // Nothing selected, so only the pointer chooses what the panel shows.
     press(cx, "escape");
     assert_eq!(read(&view, cx, |app| app.selected.clone()), None);
-    let runs = count_probes(&view, cx);
+    let runs = count_probes(&view, cx, Probe::Known(clean_checkout()));
 
     for name in ["alpha", "beta", "gamma", "alpha", "beta"] {
         hover_on(&view, cx, &temp.path().join(name));
@@ -2042,11 +2044,13 @@ fn a_sweep_over_checkouts_asks_nothing_and_a_rest_asks_once(
 fn selecting_a_checkout_asks_once_and_then_reads_the_answer(
     cx: &mut TestAppContext,
 ) {
+    use crate::git_store::Probe;
+
     cx.update(init);
     let temp = checkouts();
     let (view, cx) = view_over(temp.path(), cx);
     cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
-    let runs = count_probes(&view, cx);
+    let runs = count_probes(&view, cx, Probe::Known(clean_checkout()));
     let alpha = temp.path().join("alpha");
     let beta = temp.path().join("beta");
     let crumbs = |path: &Path| {
@@ -2080,6 +2084,28 @@ fn selecting_a_checkout_asks_once_and_then_reads_the_answer(
     draw(cx);
     cx.run_until_parked();
     assert_eq!(probe_runs(&runs), 2, "alpha's answer is remembered");
+}
+
+/// A checkout git could not read within its limit is drawn as such, and
+/// not asked again on the frames that follow.
+#[gpui_kit::test]
+fn a_timed_out_checkout_is_drawn_and_not_asked_again(cx: &mut TestAppContext) {
+    use crate::git_store::{Probe, Shown};
+
+    cx.update(init);
+    let temp = checkouts();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
+    let runs = count_probes(&view, cx, Probe::TimedOut);
+    for _ in 0..5 {
+        draw(cx);
+        cx.run_until_parked();
+    }
+    assert_eq!(probe_runs(&runs), 1);
+    let alpha = temp.path().join("alpha");
+    assert!(read(&view, cx, |app| {
+        app.git.shown(&alpha) == Shown::Answer(&Probe::TimedOut)
+    }));
 }
 
 /// The side panel asks whether the selection is a checkout once per
