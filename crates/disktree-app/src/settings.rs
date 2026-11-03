@@ -173,9 +173,9 @@ pub struct SettingsWindow {
     copied: Option<&'static str>,
     /// Why the last pick could not be saved.
     pub note: Option<String>,
-    /// The saved removal limit, as Safety shows it: read when the pane
-    /// opens and after a pick is saved, never while drawing, which runs
-    /// on every frame.
+    /// The saved removal limit, as Safety shows it: read when the window
+    /// opens, whenever Safety is shown and after a pick is saved, never
+    /// while drawing, which runs on every frame.
     pub safety: Result<Limit, String>,
     focus: FocusHandle,
     pub pane_scroll: gpui_kit::ScrollHandle,
