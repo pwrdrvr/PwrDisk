@@ -95,6 +95,56 @@ fn fixture() -> tempfile::TempDir {
     temp
 }
 
+#[gpui_kit::test]
+fn artifact_assessments_render_and_vm_data_stays_out_of_cleanup_filters(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    for path in [
+        "target/debug/deps/libapp.rlib",
+        "guest.utm/cache/state",
+        "guest.vmss",
+    ] {
+        let path = temp.path().join(path);
+        std::fs::create_dir_all(path.parent().expect("parent")).unwrap();
+        std::fs::write(path, vec![b'x'; 200_000]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    for (path, shown, absent) in [
+        (
+            "target/debug/deps",
+            "artifact-suggested",
+            "artifact-detected",
+        ),
+        ("guest.utm", "artifact-detected", "artifact-suggested"),
+        ("guest.vmss", "artifact-detected", "artifact-suggested"),
+    ] {
+        update(&view, cx, |app, cx| {
+            let (crumbs, _) =
+                app.tree().unwrap().descend(Path::new(path)).unwrap();
+            app.selected = Some(crumbs);
+            app.hovered = None;
+            app.pointer_active = false;
+            app.show_selection = true;
+            cx.notify();
+        });
+        draw(cx);
+        assert!(cx.debug_bounds(shown).is_some(), "{path}");
+        assert!(cx.debug_bounds(absent).is_none(), "{path}");
+    }
+    click_on(cx, "legend-reclaimable");
+    cx.run_until_parked();
+    let drawn = laid_out(&view, cx);
+    assert!(drawn.iter().any(|name| name == "deps"), "{drawn:?}");
+    assert!(
+        !drawn.iter().any(|name| name.starts_with("guest")),
+        "{drawn:?}"
+    );
+    assert!(read(&view, cx, |app| app.marks.is_empty()));
+}
+
 /// Apparent sizes, so the assertions are about the tree and not about how the
 /// filesystem rounds a small file up to a block.
 fn options() -> ScanOptions {
@@ -7177,7 +7227,13 @@ fn tab_reaches_file_navigation_without_changing_selection(
     let navigation = read(&view, cx, |app| app.file_focus.clone());
     let selected = read(&view, cx, |app| app.selected.clone());
     let mut reached = false;
-    for _ in 0..20 {
+    // Each legend chip adds a tab stop alongside the platform's chrome
+    // and navigation controls. Growing the inventory must not make this
+    // reachability check depend on a fixed number of categories.
+    let tab_budget = 16
+        + disktree_core::classify::Category::LEGEND.len()
+        + crate::palette::AGE_BUCKETS.len();
+    for _ in 0..tab_budget {
         press(cx, "tab");
         if cx.update(|window, _| navigation.is_focused(window)) {
             reached = true;

@@ -2818,6 +2818,9 @@ fn selection_section(
         );
     };
     let path = app.path_at(&target);
+    let artifact = path.as_deref().and_then(|path| {
+        disktree_core::artifact::assess(path, app.path_style(), node)
+    });
     let root_value = app.tree().map_or(0, |tree| tree.bytes);
     let marked = path
         .as_deref()
@@ -3124,6 +3127,31 @@ fn selection_section(
         .child(measure)
         .child(grid)
         .children(badges)
+        .children(artifact.map(|detection| {
+            let selector = match detection.disposition {
+                disktree_core::artifact::Disposition::Detected => {
+                    "artifact-detected"
+                }
+                disktree_core::artifact::Disposition::Suggested => {
+                    "artifact-suggested"
+                }
+            };
+            div()
+                .id(selector)
+                .debug_selector(move || selector.into())
+                .flex()
+                .flex_col()
+                .gap(space::SM)
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(format!(
+                    "{}: {}",
+                    detection.status(),
+                    detection.kind.label()
+                ))
+                .child(format!("Evidence: {}", detection.evidence_label()))
+                .child(detection.guidance())
+        }))
         .child(actions)
         .children(match node.category {
             Category::FilesystemEvents => Some(service_guidance(

@@ -237,6 +237,7 @@ pub enum CategoryName {
     Media,
     Documents,
     Cache,
+    VirtualMachines,
     Other,
 }
 
@@ -251,6 +252,7 @@ impl From<CategoryName> for Category {
             CategoryName::Media => Self::Media,
             CategoryName::Documents => Self::Documents,
             CategoryName::Cache => Self::Cache,
+            CategoryName::VirtualMachines => Self::VirtualMachine,
             CategoryName::Other => Self::Other,
         }
     }
@@ -2595,9 +2597,10 @@ mod tests {
                 ..FindParams::default()
             })
             .expect("find");
-        // The topmost reclaimable directory, once, without its contents.
+        // A manifest does not make a standalone profile binary disposable.
+        // Keep the topmost cache once, without its contents.
         assert!(reclaim.contains(".cache/"), "{reclaim}");
-        assert!(reclaim.contains("target/"), "{reclaim}");
+        assert!(!reclaim.contains("target/"), "{reclaim}");
         assert!(!reclaim.contains("blob.bin"), "{reclaim}");
 
         let named = session
@@ -3873,7 +3876,7 @@ mod tests {
             })
             .expect("find over the link");
         assert!(reclaim.contains(".cache/"), "{reclaim}");
-        assert!(reclaim.contains("target/"), "{reclaim}");
+        assert!(!reclaim.contains("target/"), "{reclaim}");
 
         // The window measures the mark; a path it does not have is refused.
         let plan = session
