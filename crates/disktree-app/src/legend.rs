@@ -270,11 +270,13 @@ impl Disktree {
         cx.notify();
     }
 
-    /// The rule the legend sets, when it sets one.
+    /// The rule the legend sets, when it sets one. Ages are measured from
+    /// the scan, as the age colours are, so a chip keeps exactly the tiles
+    /// drawn in its colour however long the window has been open.
     pub fn legend_rule(&self) -> Option<Rule> {
         self.legend
             .is_active()
-            .then(|| self.legend.rule(crate::state::now_seconds()))
+            .then(|| self.legend.rule(self.scanned_at))
     }
 
     /// Work out what the legend keeps, from the scanned root down, off the

@@ -2431,11 +2431,9 @@ fn legend(app: &Disktree, theme: &Theme, cx: &Context<'_, Disktree>) -> Div {
             true,
             "Click to clear this filter",
             theme,
+            cx,
+            move |this, cx| this.clear_legend(Some(off_screen), cx),
         )
-        .on_click(cx.listener(move |this, _, window, cx| {
-            this.clear_legend(Some(off_screen), cx);
-            window.focus(&this.focus, cx);
-        }))
     });
     let clear = app.legend.is_active().then(|| {
         legend_button(
@@ -2444,11 +2442,9 @@ fn legend(app: &Disktree, theme: &Theme, cx: &Context<'_, Disktree>) -> Div {
             false,
             "Show everything again · esc",
             theme,
+            cx,
+            |this, cx| this.clear_legend(None, cx),
         )
-        .on_click(cx.listener(|this, _, window, cx| {
-            this.clear_legend(None, cx);
-            window.focus(&this.focus, cx);
-        }))
     });
     div()
         .debug_selector(|| "legend".into())
@@ -2548,21 +2544,41 @@ fn legend_chip(
     )
 }
 
-/// Show all, or the pill that stands for the chips not on screen.
+/// Show all, or the pill that stands for the chips not on screen. A tab
+/// stop that Space and Enter press, like the chips beside it.
 fn legend_button(
     id: &'static str,
     label: String,
     filled: bool,
     hint: &'static str,
     theme: &Theme,
+    cx: &Context<'_, Disktree>,
+    press: impl Fn(&mut Disktree, &mut Context<'_, Disktree>) + Clone + 'static,
 ) -> Stateful<Div> {
     let hover = theme.foreground.opacity(0.1);
+    let on_key = press.clone();
     with_tooltip(
         div()
             .id(id)
             .debug_selector(move || id.into())
             .role(gpui_kit::Role::Button)
             .aria_label(label.clone())
+            .focusable()
+            .tab_stop(true)
+            .on_key_down(cx.listener(
+                move |this, event: &KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                    {
+                        on_key(this, cx);
+                        window.focus(&this.focus, cx);
+                        cx.stop_propagation();
+                    }
+                },
+            ))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                press(this, cx);
+                window.focus(&this.focus, cx);
+            }))
             .flex()
             .flex_row()
             .items_center()
@@ -3710,6 +3726,9 @@ fn marked_total(
                     .debug_selector(|| "marked-frees".into())
                     .text_size(text::TITLE)
                     .line_height(text::TITLE)
+                    // Lifts the smaller line onto the figure's baseline: a
+                    // fifth of the size gap is about the descender space the
+                    // figure's line keeps below its digits.
                     .pb(gpui_kit::Rems((text::FIGURE.0 - text::TITLE.0) * 0.2))
                     .text_color(highlight)
                     .whitespace_nowrap()

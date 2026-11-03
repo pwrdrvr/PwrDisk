@@ -7653,6 +7653,81 @@ fn marking_a_partly_shown_folder_says_it_takes_all_of_it(
     assert!(cx.debug_bounds("selection-partly-shown").is_none());
 }
 
+/// The age chips judge by the scan's clock, as the age colours do, and
+/// a partly shown folder's row in List view says what share passed.
+#[gpui_kit::test]
+fn the_age_filter_keeps_the_scan_clock_and_lists_partial_shares(
+    cx: &mut TestAppContext,
+) {
+    use crate::legend::ChipId;
+
+    cx.update(init);
+    let temp = fixture();
+    // Two years old: in the Older bucket, unlike everything else.
+    let old = std::time::SystemTime::now()
+        - std::time::Duration::from_hours(800 * 24);
+    std::fs::File::options()
+        .write(true)
+        .open(temp.path().join("junk/deeper/more.bin"))
+        .and_then(|file| file.set_modified(old))
+        .expect("age the file");
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        app.scanned_at -= 3 * 86_400;
+        app.cycle_legend(ChipId::Age(4), cx);
+    });
+    cx.run_until_parked();
+    let (now, scanned) = read(&view, cx, |app| {
+        (app.legend_rule().map(|rule| rule.now), app.scanned_at)
+    });
+    assert_eq!(now, Some(scanned), "ages measured from the scan");
+
+    let junk = read(&view, cx, |app| {
+        app.crumbs_for_path(&temp.path().join("junk"))
+            .expect("junk")
+    });
+    let size = read(&view, cx, |app| {
+        app.entry_size(&junk, app.node_at(&junk).expect("junk"))
+    });
+    assert!(size.contains(" of "), "partly shown: {size}");
+    let keep = read(&view, cx, |app| {
+        app.crumbs_for_path(&temp.path().join("keep"))
+            .expect("keep")
+    });
+    let listed = read(&view, cx, Disktree::file_entries);
+    assert!(
+        !listed.contains(keep.last().expect("a child")),
+        "{listed:?}"
+    );
+}
+
+/// Switching size and file count reorders every folder, so the legend's
+/// result, keyed by position, is dropped at once and worked out again.
+#[gpui_kit::test]
+fn switching_the_metric_recomputes_the_legend(cx: &mut TestAppContext) {
+    use crate::legend::ChipId;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    update(&view, cx, |app, cx| {
+        app.cycle_legend(ChipId::Reclaimable, cx);
+    });
+    cx.run_until_parked();
+    assert!(read(&view, cx, |app| app.legend_matches.is_some()));
+    update(&view, cx, |app, cx| {
+        app.toggle_metric(cx);
+        assert!(app.legend_matches.is_none(), "old positions dropped");
+    });
+    cx.run_until_parked();
+    let drawn = laid_out(&view, cx);
+    assert!(drawn.contains(&".cache".to_string()), "{drawn:?}");
+    assert!(!drawn.contains(&"junk".to_string()), "{drawn:?}");
+}
+
 #[gpui_kit::test]
 fn the_marked_total_is_pinned_above_the_disk_with_the_review(
     cx: &mut TestAppContext,

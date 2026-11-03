@@ -5,6 +5,7 @@ use crate::semantics::AccessibleButton as _;
 use std::fmt::Write as _;
 use std::path::Path;
 
+use disktree_core::filter::Keep;
 use disktree_core::size::human_bytes;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -75,18 +76,41 @@ impl Disktree {
         self.pointer_active = false;
         self.select(Some(crumbs), cx);
     }
+    /// An entry's size as its row says it. A partly shown folder says what
+    /// passed and what it holds in all, as its tile does: "48 MiB of 196
+    /// MiB".
+    pub fn entry_size(
+        &self,
+        crumbs: &[usize],
+        node: disktree_core::tree::Node<'_>,
+    ) -> String {
+        match self.layout_filter().and_then(|m| m.keep(crumbs)) {
+            Some(Keep::Partial { bytes, .. }) => {
+                format!("{} of {}", human_bytes(bytes), human_bytes(node.bytes))
+            }
+            _ => human_bytes(node.bytes),
+        }
+    }
+
     pub fn file_entries(&self) -> Vec<usize> {
-        self.current().map_or_else(Vec::new, |node| {
-            (0..node.children().len())
-                .filter(|index| {
-                    let mut crumbs = self.crumbs.clone();
-                    crumbs.push(*index);
-                    self.layout_filter().is_none_or(|m| {
-                        m.keep_at(&crumbs, node.children().at(*index)).is_some()
-                    })
-                })
-                .collect()
-        })
+        let Some(node) = self.current() else {
+            return Vec::new();
+        };
+        let children = node.children();
+        let Some(filter) = self.layout_filter() else {
+            return (0..children.len()).collect();
+        };
+        // One buffer for every child: under a filter this runs per frame,
+        // in directories that can hold millions of files.
+        let mut crumbs = self.crumbs.clone();
+        crumbs.push(0);
+        let last = crumbs.len() - 1;
+        (0..children.len())
+            .filter(|index| {
+                crumbs[last] = *index;
+                filter.keep_at(&crumbs, children.at(*index)).is_some()
+            })
+            .collect()
     }
 
     pub fn file_step(&mut self, step: isize, cx: &mut Context<'_, Self>) {
@@ -194,6 +218,7 @@ pub fn list(
             .matches
             .as_ref()
             .is_some_and(|m| m.keep_at(&crumbs, node).is_none());
+        let size = app.entry_size(&crumbs, node);
         // Clone blocks are not what removing the entry frees; say so
         // where the size is read, and nowhere when there are none.
         let split = crate::views::clone_split(node);
@@ -207,7 +232,7 @@ pub fn list(
             "{}; {}; {} ({} bytes){}; {}; last written {}; {}{}{}",
             path.display(),
             if node.is_dir() { "directory" } else { "file" },
-            human_bytes(node.bytes),
+            size,
             node.bytes,
             spoken,
             node.category.label(),
@@ -242,7 +267,7 @@ pub fn list(
                 "{}{} · {}{clones} · {}",
                 if node.is_dir() { "▸ " } else { "" },
                 node.name(),
-                human_bytes(node.bytes),
+                size,
                 if marked {
                     "Marked"
                 } else {

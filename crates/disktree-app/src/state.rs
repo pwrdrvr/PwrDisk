@@ -3111,6 +3111,10 @@ impl Disktree {
         self.crumb_menu = None;
         self.transition = None;
         self.refresh_insights();
+        // Every crumb moved, so the legend's result points at other
+        // children now; drop it rather than lay it out until the new one
+        // comes back.
+        self.legend_matches = None;
         self.refresh_legend(cx);
         self.clear_filter();
         self.cache = None;
