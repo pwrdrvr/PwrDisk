@@ -972,7 +972,7 @@ fn profiles_keys() -> &'static [PathBuf] {
 
 /// The keys of `home` as spelled and, if a link leads elsewhere, as it
 /// really is.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", all(test, unix)))]
 fn linux_profiles_keys(home: &Path) -> Vec<PathBuf> {
     let mut keys = vec![guard_key(home)];
     if let Ok(real) = fs::canonicalize(home) {
