@@ -101,6 +101,9 @@ Looking is free; acting is the user's call.
   and refuses an operation with unknown capacity or unreadable selection.
   Do not raise the setting, split a selection into batches, or retry an
   ambiguous result to evade the guard. Ask the user how to proceed.
+  `pwrdisk_mark` refuses a mark that would take the list past the limit;
+  only the person can mark past it, in the window, and agents keep the 5%
+  default even when the window's limit is off.
 - **The guards are not your safety net.** `pwrdisk_mark` refuses the home
   directory, mount points, the scanned root, system trees and a user
   profile, and says why. Anything else it will mark. You decide what to

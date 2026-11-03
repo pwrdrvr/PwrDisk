@@ -546,6 +546,9 @@ pub struct Disktree {
     /// which takes a process's memory back whole when it exits.
     quitting: bool,
     _on_quit: gpui_kit::Subscription,
+    /// Settings › Safety saved: read the policy again before the next
+    /// mark is judged.
+    _on_safety: gpui_kit::Subscription,
     /// A trail crumb's sibling menu, when open.
     pub crumb_menu: Option<CrumbMenu>,
 
@@ -598,6 +601,18 @@ pub struct Disktree {
     pub picker_error: Option<String>,
     pub picker_host: Option<Entity<InputState>>,
     pub picker_path: Option<Entity<InputState>>,
+    /// Settings › Safety as last read; see [`Self::policy`].
+    pub safety_policy: RefCell<Option<crate::safety::Policy>>,
+    /// The guards' answer for the last path asked about.
+    pub refusal_cache: RefCell<crate::mark_guard::RefusalCache>,
+    /// The path whose Mark ▾ menu is open, which holds Mark anyway. Kept
+    /// by path so a menu never stays open over another selection.
+    pub mark_menu: Option<PathBuf>,
+    /// Review's field for the over-limit phrase, made when first shown.
+    pub over_phrase: Option<Entity<InputState>>,
+    /// The share and mode the over-limit box was ticked for: a tick says
+    /// "20%, to the trash", and means nothing once either changes.
+    pub over_ticked: Option<(u8, RemovalMode)>,
     roots_job: Option<disktree_core::remote::RemoteRoots>,
     volume_epoch: u64,
     pub volumes: Vec<disktree_core::space::Volume>,
@@ -802,6 +817,11 @@ impl Disktree {
             picker_error: None,
             picker_host: None,
             picker_path: None,
+            safety_policy: RefCell::new(None),
+            refusal_cache: RefCell::new(None),
+            mark_menu: None,
+            over_phrase: None,
+            over_ticked: None,
             roots_job: None,
             volume_epoch: 0,
             volumes: Vec::new(),
@@ -819,6 +839,12 @@ impl Disktree {
                 this.quitting = true;
                 std::future::ready(())
             }),
+            _on_safety: cx.observe_global::<crate::safety::Saved>(
+                |this, cx| {
+                    this.safety_policy.replace(None);
+                    cx.notify();
+                },
+            ),
         };
         if local && start {
             tree.device = device_for(&tree.root_path);
@@ -2701,6 +2727,18 @@ impl Disktree {
         crumbs: &[usize],
         cx: &mut Context<'_, Self>,
     ) {
+        self.toggle_mark_checked(crumbs, false, cx);
+    }
+
+    /// [`Self::toggle_mark`], with `anyway` for the inspector's Mark
+    /// anyway: a new mark past the limit is made only with it, and a
+    /// protected path never is.
+    pub fn toggle_mark_checked(
+        &mut self,
+        crumbs: &[usize],
+        anyway: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
         let Some(target) = self.target_at(crumbs) else {
             return;
         };
@@ -2729,6 +2767,21 @@ impl Disktree {
             ));
             cx.notify();
             return;
+        }
+        if !self.marks.contains(&target.path, self.path_style()) {
+            let check = self.mark_check(&target);
+            let refused = match check {
+                crate::mark_guard::MarkCheck::OverLimit(_) => !anyway,
+                crate::mark_guard::MarkCheck::Protected(_) => true,
+                crate::mark_guard::MarkCheck::Allowed => false,
+            };
+            if refused {
+                if let Some(notice) = self.mark_refusal_notice(&target, &check)
+                {
+                    self.warn(notice, cx);
+                }
+                return;
+            }
         }
         let path = target.path.clone();
         let style = self.path_style();
@@ -3376,6 +3429,17 @@ impl Disktree {
         if self.remote.is_some() || self.plan().is_empty() {
             return;
         }
+        // Past the limit the second confirmation comes first, before the
+        // permanent dialog asks about recoverability; `begin_removal`
+        // checks it again on the way to the worker.
+        let plan = self.plan();
+        if let Some(share) = self.removal_gate(&plan)
+            && !self.gate_met(&share, cx)
+            && let Err(notice) = self.removal_limit(&plan, cx)
+        {
+            self.warn(notice, cx);
+            return;
+        }
         self.rescan_after_removal = rescan;
         match self.removal_mode {
             RemovalMode::Trash => self.begin_removal(cx),
@@ -3476,17 +3540,14 @@ impl Disktree {
             cx.notify();
             return;
         }
-        let limit =
-            match crate::safety::load(self.removal_settings_dir.as_deref())
-                .and_then(|limit| limit.check(&plan.targets).map(|_| limit))
-            {
-                Ok(limit) => limit,
-                Err(reason) => {
-                    self.notice = Some((reason, Status::Warning));
-                    cx.notify();
-                    return;
-                }
-            };
+        let limit = match self.removal_limit(&plan, cx) {
+            Ok(limit) => limit,
+            Err(reason) => {
+                self.notice = Some((reason, Status::Warning));
+                cx.notify();
+                return;
+            }
+        };
         // This window quits once the prompt is answered yes, and quitting
         // would stop a permanent delete halfway.
         if self.restarting {

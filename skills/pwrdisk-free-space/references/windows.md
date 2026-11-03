@@ -91,7 +91,9 @@ paths and mode from `pwrdisk_removal_preview` before the destructive
 emptied, but is not guaranteed; permanent deletion cannot be undone through
 PwrDisk. Both modes use the existing removal guards and Settings > Safety's
 per-operation limit, 5% of each volume's capacity by default. Never bypass a
-refusal, increase the setting or split batches to evade it.
+refusal, increase the setting or split batches to evade it. A mark that
+would take the list past the limit is refused: only the person can mark
+past it, in the window. Say so, and let them decide.
 
 MCP removal also requires interactive confirmation from the client (form
 elicitation). An agent-supplied confirmation value does not establish human
