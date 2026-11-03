@@ -108,6 +108,28 @@ pub fn probe(path: &Path, limit: &Limit) -> Probe {
     }
 }
 
+/// Run [`probe`] within `within` on a thread of its own. It spends most
+/// of that waiting on git, which would otherwise hold one of the threads
+/// GPUI's background work shares; `git_store::MAX_RUNNING` bounds how
+/// many there are at once.
+pub fn probe_on_thread(
+    path: &Path,
+    within: Duration,
+    cancel: Arc<AtomicBool>,
+) -> async_channel::Receiver<Probe> {
+    let (sender, answer) = async_channel::bounded(1);
+    let path = path.to_path_buf();
+    // If no thread can be made the sender goes with the closure, and the
+    // window reads the closed channel as an unreadable checkout.
+    let _ = std::thread::Builder::new()
+        .name("git probe".to_string())
+        .spawn(move || {
+            let limit = Limit::new(within, cancel);
+            let _ = sender.send_blocking(probe(&path, &limit));
+        });
+    answer
+}
+
 /// `None` when `path` is not a checkout or git is not installed.
 fn state(path: &Path, limit: &Limit) -> Result<Option<GitState>, Cut> {
     if !is_checkout(path) || !git_installed() {
@@ -288,6 +310,11 @@ fn output_within(
     if limit.reached() {
         return Err(Cut);
     }
+    // Its own process group, so a cut stops what git started too: a
+    // user-level filter such as `git-lfs filter-process` would otherwise
+    // keep hashing after git was killed.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(command, 0);
     let Ok(mut child) = command.stdout(Stdio::piped()).spawn() else {
         return Ok(None);
     };
@@ -313,14 +340,16 @@ fn output_within(
         }
     };
     let Some(status) = status else {
-        let _ = child.kill();
-        let _ = child.wait();
+        stop(&mut child);
         return if limit.reached() { Err(Cut) } else { Ok(None) };
     };
     let stdout = match read.recv_timeout(limit.remaining()) {
         Ok(out) => out,
         // Git exited but something it started still holds its output.
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err(Cut),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            stop(&mut child);
+            return Err(Cut);
+        }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Vec::new(),
     };
     Ok(Some(Output {
@@ -328,6 +357,24 @@ fn output_within(
         stdout,
         stderr: Vec::new(),
     }))
+}
+
+/// Kill a probe's git and, on Unix, everything in its process group.
+///
+/// Windows has no process group to signal; a job object would need Win32
+/// calls this crate keeps out (`unsafe` lives in `disktree-core`). What git
+/// starts there talks to it over pipes, so it sees end-of-file and exits
+/// when git is killed, as `git-lfs filter-process` does.
+fn stop(child: &mut std::process::Child) {
+    // The group outlives a leader that already exited while one of its
+    // members lives, so this reaches a child holding git's output too.
+    #[cfg(unix)]
+    let _ = rustix::process::kill_process_group(
+        rustix::process::Pid::from_child(child),
+        rustix::process::Signal::KILL,
+    );
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(test)]
@@ -379,6 +426,37 @@ mod tests {
         );
     }
 
+    /// Whether a process with this id is still running.
+    #[cfg(unix)]
+    fn alive(pid: &str) -> bool {
+        Command::new("kill")
+            .args(["-0", pid])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cut_stops_what_the_command_started() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_file = dir.path().join("child");
+        let script =
+            format!("sleep 30 & echo $! > '{}'; wait", pid_file.display());
+        let limit = Limit::new(Duration::from_millis(300), Arc::default());
+        let ran =
+            output_within(Command::new("sh").args(["-c", &script]), &limit);
+        assert_eq!(ran.map(|output| output.is_some()), Err(Cut));
+        let pid = std::fs::read_to_string(&pid_file).expect("the child ran");
+        let pid = pid.trim();
+        // Killed, it is reaped by whoever adopted it; give that a moment.
+        let gone = (0..200).any(|_| {
+            std::thread::sleep(Duration::from_millis(10));
+            !alive(pid)
+        });
+        assert!(gone, "the child {pid} outlived the cut");
+    }
+
     #[cfg(unix)]
     #[test]
     fn output_larger_than_a_pipe_is_read_while_it_runs() {
@@ -391,6 +469,14 @@ mod tests {
         .expect("it ran");
         assert!(output.status.success());
         assert_eq!(output.stdout.len(), 1_000_000);
+    }
+
+    #[test]
+    fn a_probe_on_its_own_thread_answers_on_the_channel() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let answer =
+            probe_on_thread(dir.path(), Duration::from_mins(1), Arc::default());
+        assert_eq!(answer.recv_blocking(), Ok(Probe::Unreadable));
     }
 
     #[test]
