@@ -786,7 +786,7 @@ impl Session {
         ))
     }
 
-    /// List a directory, largest first.
+    /// Estimate without adopting or handing over marks from either side.
     pub fn estimate_paths(
         &self,
         params: &EstimateParams,
