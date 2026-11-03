@@ -1131,7 +1131,7 @@ fn a_permanent_deletion_asks_in_an_alert_dialog_then_removes(
     assert!(finished, "the removal finished");
     draw(cx);
 
-    let summary = read(&view, cx, |app| app.run_summary.clone());
+    let summary = read(&view, cx, |app| app.run_list.totals());
     assert_eq!(summary.removed, 1, "{summary:?}");
     assert_eq!(summary.failed, 0, "{summary:?}");
     assert!(
@@ -1898,6 +1898,350 @@ fn settings_updates_picks_a_channel_and_keeps_the_keys(
 
     // The selection is process-wide; leave the default for other tests.
     let _ = crate::updater::set_selection(UpdateSettings::default(), None);
+}
+
+/// Settings › Safety reads the saved limit when the pane opens and after
+/// a pick is saved, not on every frame, and shows the pick once saved.
+#[gpui_kit::test]
+fn settings_safety_reads_the_limit_once_and_shows_a_saved_pick(
+    cx: &mut TestAppContext,
+) {
+    use crate::settings::{Pane, SettingsWindow, work};
+    use disktree_core::removal_limit::Limit;
+
+    cx.update(init);
+    let saved_in = tempfile::TempDir::new().expect("tempdir");
+    crate::safety::save(
+        Some(saved_in.path()),
+        Limit::new(25).expect("a limit"),
+    )
+    .expect("save the starting limit");
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let view = SettingsWindow::new(Pane::Updates, cx);
+        window.focus(&cx.focus_handle(), cx);
+        view
+    });
+    cx.update(|_, cx| {
+        view.update(cx, |view, _| {
+            view.updates_dir = Some(saved_in.path().to_path_buf());
+        });
+    });
+    let shown = |cx: &mut Window| {
+        view.read_with(cx, |view, _| {
+            view.safety.as_ref().map(|limit| limit.percent()).ok()
+        })
+    };
+    draw(cx);
+    work::SAFETY_LOADS.set(0);
+    click_on(cx, Pane::Safety.nav_id());
+    assert_eq!(view.read_with(cx, |view, _| view.pane), Pane::Safety);
+    for _ in 0..5 {
+        draw(cx);
+    }
+    assert_eq!(shown(cx), Some(25));
+    assert_eq!(work::SAFETY_LOADS.get(), 1, "opening the pane reads it");
+
+    // 1 5 10 25 50 100: 10% is the third segment.
+    let limits = cx.debug_bounds("safety-limit").expect("the limit control");
+    cx.simulate_click(
+        gpui_kit::point(
+            limits.origin.x + limits.size.width * 2.5 / 6.,
+            limits.center().y,
+        ),
+        gpui_kit::Modifiers::none(),
+    );
+    for _ in 0..5 {
+        draw(cx);
+    }
+    assert_eq!(shown(cx), Some(10), "the pane shows the pick once saved");
+    assert_eq!(work::SAFETY_LOADS.get(), 2, "and read it back once");
+    assert_eq!(
+        crate::safety::load(Some(saved_in.path()))
+            .expect("saved limit")
+            .percent(),
+        10
+    );
+}
+
+/// Three checkouts side by side: each a worktree's `.git` file and some
+/// data, largest first, so the first is selected when the window opens.
+fn checkouts() -> tempfile::TempDir {
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    for (name, bytes) in
+        [("alpha", 300_000), ("beta", 200_000), ("gamma", 100_000)]
+    {
+        let dir = temp.path().join(name);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join(".git"), "gitdir: elsewhere").expect("write");
+        std::fs::write(dir.join("data.bin"), vec![b'x'; bytes]).expect("write");
+    }
+    temp
+}
+
+/// Give the window a probe that counts its runs and gives `answer` for
+/// every checkout, in place of git. Anything the real one started is
+/// forgotten.
+fn count_probes(
+    view: &Entity<Disktree>,
+    cx: &mut Window,
+    answer: crate::git_store::Probe,
+) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let runs = Arc::new(AtomicUsize::new(0));
+    update(view, cx, |app, _| {
+        let counter = runs.clone();
+        app.git_probe = Arc::new(move |_, _| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            crate::git_store::ready(answer.clone())
+        });
+        app.git.clear();
+    });
+    cx.run_until_parked();
+    runs
+}
+
+fn clean_checkout() -> crate::git::GitState {
+    crate::git::GitState {
+        changed: Some(0),
+        unpushed: Some(0),
+        ..crate::git::GitState::default()
+    }
+}
+
+/// Move the pointer onto the drawn tile for the directory `path`: onto its
+/// name band when it has children, where no child tile is.
+fn hover_on(view: &Entity<Disktree>, cx: &mut Window, path: &Path) {
+    let at = update(view, cx, |app, _| {
+        let crumbs = app.crumbs_for_path(path).expect("a path in the tree");
+        let tile = app
+            .layout()
+            .and_then(|tiles| {
+                tiles.iter().find(|tile| tile.crumbs() == crumbs).cloned()
+            })
+            .expect("the tile is drawn");
+        let screen = app.view.project(tile.header.unwrap_or(tile.rect));
+        let (x, y) = (screen.x + screen.w / 2.0, screen.y + screen.h / 2.0);
+        assert_eq!(app.tile_at(x, y), Some(crumbs), "the pointer is on it");
+        let origin = app.treemap_origin.get();
+        Point::new(origin.x + px(x), origin.y + px(y))
+    });
+    cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::default());
+    draw(cx);
+}
+
+fn probe_runs(runs: &std::sync::atomic::AtomicUsize) -> usize {
+    runs.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Sweeping the pointer across checkouts runs no git; resting on one runs
+/// it once, and the panel shows the answer.
+#[gpui_kit::test]
+fn a_sweep_over_checkouts_asks_nothing_and_a_rest_asks_once(
+    cx: &mut TestAppContext,
+) {
+    use crate::git_store::{DWELL, Probe, Shown};
+
+    cx.update(init);
+    let temp = checkouts();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
+    // Nothing selected, so only the pointer chooses what the panel shows.
+    press(cx, "escape");
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), None);
+    let runs = count_probes(&view, cx, Probe::Known(clean_checkout()));
+
+    for name in ["alpha", "beta", "gamma", "alpha", "beta"] {
+        hover_on(&view, cx, &temp.path().join(name));
+        cx.run_until_parked();
+    }
+    assert_eq!(probe_runs(&runs), 0, "a sweep asks nothing");
+
+    // The pointer stays on beta.
+    cx.executor().advance_clock(DWELL);
+    cx.run_until_parked();
+    draw(cx);
+    cx.run_until_parked();
+    assert_eq!(probe_runs(&runs), 1, "resting asks once");
+    let beta = temp.path().join("beta");
+    assert!(read(&view, cx, |app| {
+        app.git.shown(&beta) == Shown::Answer(&Probe::Known(clean_checkout()))
+    }));
+
+    // Resting longer asks nothing more.
+    for _ in 0..3 {
+        cx.executor().advance_clock(DWELL);
+        cx.run_until_parked();
+        draw(cx);
+        cx.run_until_parked();
+    }
+    assert_eq!(probe_runs(&runs), 1);
+}
+
+/// Selecting a checkout runs git once at once; selecting it again reads
+/// the answer instead.
+#[gpui_kit::test]
+fn selecting_a_checkout_asks_once_and_then_reads_the_answer(
+    cx: &mut TestAppContext,
+) {
+    use crate::git_store::Probe;
+
+    cx.update(init);
+    let temp = checkouts();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
+    let runs = count_probes(&view, cx, Probe::Known(clean_checkout()));
+    let alpha = temp.path().join("alpha");
+    let beta = temp.path().join("beta");
+    let crumbs = |path: &Path| {
+        read(&view, cx, |app| app.crumbs_for_path(path)).expect("in the tree")
+    };
+    let (alpha_at, beta_at) = (crumbs(&alpha), crumbs(&beta));
+    assert_eq!(
+        read(&view, cx, |app| app.selected.clone()),
+        Some(alpha_at.clone()),
+        "the largest is selected"
+    );
+
+    for _ in 0..5 {
+        draw(cx);
+        cx.run_until_parked();
+    }
+    assert_eq!(probe_runs(&runs), 1, "five frames, one probe");
+
+    let select = |at: &Vec<usize>, cx: &mut Window| {
+        let at = at.clone();
+        update(&view, cx, move |app, cx| {
+            app.selected = Some(at);
+            cx.notify();
+        });
+        draw(cx);
+        cx.run_until_parked();
+    };
+    select(&beta_at, cx);
+    assert_eq!(probe_runs(&runs), 2, "another checkout, another probe");
+    select(&alpha_at, cx);
+    draw(cx);
+    cx.run_until_parked();
+    assert_eq!(probe_runs(&runs), 2, "alpha's answer is remembered");
+}
+
+/// A checkout left selected is not asked again while the window is in
+/// the background, however stale its answer gets; it is refreshed once
+/// when the window comes back.
+#[gpui_kit::test]
+fn a_background_window_leaves_a_stale_answer_until_it_is_active(
+    cx: &mut TestAppContext,
+) {
+    use crate::git_store::{FRESH_FOR, Probe};
+
+    cx.update(init);
+    let temp = checkouts();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
+    // A test window opens in the background; bring it to the front.
+    cx.update(|window, _| window.activate_window());
+    let runs = count_probes(&view, cx, Probe::Known(clean_checkout()));
+    draw(cx);
+    cx.run_until_parked();
+    assert!(cx.update(|window, _| window.is_window_active()));
+    assert_eq!(probe_runs(&runs), 1, "the selection is asked about");
+
+    cx.deactivate_window();
+    for _ in 0..5 {
+        cx.executor().advance_clock(FRESH_FOR);
+        cx.run_until_parked();
+        draw(cx);
+        cx.run_until_parked();
+    }
+    assert_eq!(probe_runs(&runs), 1, "nobody is looking");
+
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    draw(cx);
+    cx.run_until_parked();
+    assert_eq!(probe_runs(&runs), 2, "back in front, it is refreshed");
+    draw(cx);
+    cx.run_until_parked();
+    assert_eq!(probe_runs(&runs), 2, "once");
+}
+
+/// A checkout git could not read within its limit is drawn as such, and
+/// not asked again on the frames that follow.
+#[gpui_kit::test]
+fn a_timed_out_checkout_is_drawn_and_not_asked_again(cx: &mut TestAppContext) {
+    use crate::git_store::{Probe, Shown};
+
+    cx.update(init);
+    let temp = checkouts();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
+    let runs = count_probes(&view, cx, Probe::TimedOut);
+    for _ in 0..5 {
+        draw(cx);
+        cx.run_until_parked();
+    }
+    assert_eq!(probe_runs(&runs), 1);
+    let alpha = temp.path().join("alpha");
+    assert!(read(&view, cx, |app| {
+        app.git.shown(&alpha) == Shown::Answer(&Probe::TimedOut)
+    }));
+}
+
+/// The side panel asks whether the selection is a checkout once per
+/// selection, not on every frame it draws.
+#[gpui_kit::test]
+fn the_panel_checks_for_a_checkout_once_per_selection(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    // Opening the window draws its first frame, so count from before it.
+    crate::git::CHECKS.set(0);
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
+    for _ in 0..5 {
+        draw(cx);
+    }
+    assert!(
+        cx.debug_bounds("side-panel-scroll").is_some(),
+        "the panel is shown"
+    );
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), Some(vec![0]));
+    assert_eq!(crate::git::CHECKS.get(), 1, "five frames, one check");
+
+    // Another directory is another question, asked once.
+    update(&view, cx, |app, cx| {
+        app.selected = Some(vec![1]);
+        cx.notify();
+    });
+    for _ in 0..5 {
+        draw(cx);
+    }
+    let next_is_dir = read(&view, cx, |app| {
+        app.node_at(&[1])
+            .is_some_and(disktree_core::index::Node::is_dir)
+    });
+    assert!(next_is_dir, "the fixture's second entry is a directory");
+    assert_eq!(crate::git::CHECKS.get(), 2);
+
+    // With nothing selected the panel describes the scan root, which is
+    // never asked about: not even its `.git`, let alone `git status`.
+    std::fs::create_dir(temp.path().join(".git")).expect("mkdir .git");
+    press(cx, "escape");
+    for _ in 0..5 {
+        draw(cx);
+    }
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), None);
+    assert_eq!(crate::git::CHECKS.get(), 2, "the root is not checked");
+    // `git` fills only when a background ask finishes; let any finish.
+    cx.run_until_parked();
+    let root = temp.path().to_path_buf();
+    assert!(
+        read(&view, cx, |app| {
+            app.git.shown(&root) == crate::git_store::Shown::Asking
+        }),
+        "no git status"
+    );
 }
 
 /// Shift-U, which opened the Updates panel, opens Settings › Updates in
@@ -5577,7 +5921,7 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     assert!(!root.join("junk").exists());
     assert!(root.join("keep/notes.txt").exists());
     assert!(root.join(".cache/blob.bin").exists());
-    assert_eq!(read(&view, cx, |app| app.run_summary.failed), 0);
+    assert_eq!(read(&view, cx, |app| app.run_list.totals().failed), 0);
 
     // Hanging up takes the name out of the header.
     drop(link);
@@ -6152,6 +6496,238 @@ fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
         }
     }
     panic!("the removal did not finish");
+}
+
+/// The run's list is on screen from Removing's first frame, says what
+/// each item is, and stays on Done, every item checked off, rather than
+/// only the names of what already went.
+#[gpui_kit::test]
+fn the_removal_list_stays_on_screen_from_start_to_done(
+    cx: &mut TestAppContext,
+) {
+    use crate::run_list::Status;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let epoch = update(&view, cx, |app, cx| {
+        for name in [".cache", "junk/deeper"] {
+            let crumbs = app
+                .crumbs_for_path(&app.root_path.join(name))
+                .expect("in the tree");
+            app.toggle_mark(&crumbs, cx);
+        }
+        app.removal_mode = RemovalMode::Permanent;
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice);
+        app.run_epoch
+    });
+    draw(cx);
+    // Nothing is reported until the poll: both are listed, waiting, and
+    // the first is the one in hand.
+    assert!(cx.debug_bounds("run-list").is_some());
+    assert!(cx.debug_bounds("run-row-0").is_some());
+    assert!(cx.debug_bounds("run-row-1").is_some());
+    assert!(cx.debug_bounds("run-summary").is_some());
+    update(&view, cx, |app, _| {
+        let items = &app.run_list.items;
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|item| item.status == Status::Waiting));
+        assert_eq!(app.run_list.current(), Some(0));
+        let cache = items
+            .iter()
+            .find(|item| item.target.path.ends_with(".cache"))
+            .expect("the cache is listed");
+        assert_eq!(cache.kind(), Some("regenerable"), "and says why");
+        assert_eq!(cache.target.bytes, 300_000);
+    });
+
+    let mut finished = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        finished = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if finished {
+            break;
+        }
+    }
+    assert!(finished, "the removal finished");
+    draw(cx);
+    assert!(
+        cx.debug_bounds("run-row-0").is_some(),
+        "Done keeps the list"
+    );
+    assert!(cx.debug_bounds("run-row-1").is_some());
+    update(&view, cx, |app, _| {
+        assert!(
+            app.run_list
+                .items
+                .iter()
+                .all(|item| item.status == Status::Removed),
+            "every item is checked off"
+        );
+        let totals = app.run_list.totals();
+        assert_eq!((totals.removed, totals.failed), (2, 0));
+        assert_eq!(totals.reported_done, 400_000);
+    });
+    assert!(!temp.path().join(".cache").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// Review draws its rows as Removing does: a deep path is shortened from
+/// the middle onto one line, so its row is as tall as a short one's, and
+/// the row says why the path is listed.
+#[gpui_kit::test]
+fn review_rows_shorten_deep_paths_and_say_why(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let deep: PathBuf = (0..30)
+        .map(|level| format!("nested-directory-{level:02}"))
+        .collect();
+    let file = temp.path().join(&deep).join("leaf.bin");
+    std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&file, vec![b'x'; 5_000]).expect("write");
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_paths(&view, cx, &[temp.path().join(".cache"), file.clone()]);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+    let rows: Vec<_> = (0..2)
+        .map(|index| {
+            let selector: &'static str =
+                Box::leak(format!("review-row-{index}").into_boxed_str());
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        })
+        .collect();
+    assert_eq!(
+        rows[0].size.height, rows[1].size.height,
+        "the deep path does not wrap: {rows:?}"
+    );
+    // The cache says it is regenerable; the plain file has nothing to say.
+    assert!(cx.debug_bounds("review-kind-0").is_some(), "a kind chip");
+    assert!(cx.debug_bounds("review-kind-1").is_none());
+    // What each mark is was read once: a later frame walks no directory.
+    crate::marks::work::reset();
+    update(&view, cx, |_, cx| cx.notify());
+    draw(cx);
+    assert!(crate::marks::work::RENDERS.get() > 0, "it drew again");
+    assert_eq!(
+        crate::marks::work::RESOLUTION.get(),
+        0,
+        "and walked nothing"
+    );
+    let folder = read(&view, cx, |app| {
+        crate::run_view::folder_line(app, &file, 40)
+    });
+    assert!(folder.contains('\u{2026}'), "{folder}");
+    assert!(folder.ends_with("nested-directory-29"), "{folder}");
+}
+
+/// A long run scrolls with the item in hand, as the live log follows its
+/// newest line: scrolling it out of view pauses that and shows the pill,
+/// and the pill follows again.
+#[gpui_kit::test]
+fn the_removal_list_follows_the_item_in_hand_like_the_live_log(
+    cx: &mut TestAppContext,
+) {
+    use crate::run_list::{Item, RunList, Status};
+    use crate::run_view::focus_place;
+    use std::cmp::Ordering;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let path = |index: usize| temp.path().join(format!("dir-{index:03}"));
+    update(&view, cx, |app, cx| {
+        app.run_list = RunList::new(
+            (0..80)
+                .map(|index| Item {
+                    target: disktree_core::removal::Target {
+                        path: path(index),
+                        bytes: 1_000,
+                        is_dir: true,
+                        hidden: false,
+                    },
+                    category: disktree_core::classify::Category::Other,
+                    // Every other row has a kind chip, so rows differ in
+                    // what they hold.
+                    reclaim: (index % 2 == 1).then_some(
+                        disktree_core::classify::Reclaim::BuildOutput,
+                    ),
+                    private: None,
+                    status: Status::Waiting,
+                })
+                .collect(),
+        );
+        app.screen = Screen::Running;
+        cx.notify();
+    });
+    draw(cx);
+    // Every row spans the list, whatever it holds, so its size and status
+    // lanes line up with the rows around it. A virtualized row is only as
+    // wide as its content unless it says otherwise.
+    let list = cx.debug_bounds("run-list").expect("the list");
+    for index in ["run-row-0", "run-row-1"] {
+        let row = cx.debug_bounds(index).expect("a row");
+        assert!(
+            row.size.width >= list.size.width - px(4.),
+            "{index} is {:?} wide in a {:?} list",
+            row.size.width,
+            list.size.width
+        );
+    }
+    let place =
+        |cx: &mut Window, view: &Entity<Disktree>| read(view, cx, focus_place);
+    assert_eq!(place(cx, &view), Some(Ordering::Equal), "row 0 shows");
+    let settle = |cx: &mut Window, view: &Entity<Disktree>, upto| {
+        update(view, cx, |app, cx| {
+            app.update_follow();
+            for index in 0..upto {
+                if app.run_list.settle(&path(index), &Ok(())).is_some() {
+                    app.scroll_to_focus();
+                }
+            }
+            cx.notify();
+        });
+        draw(cx);
+        draw(cx);
+    };
+
+    // Most of the way down: the list went with it.
+    settle(cx, &view, 60);
+    assert_eq!(read(&view, cx, |app| app.run_list.current()), Some(60));
+    assert_eq!(place(cx, &view), Some(Ordering::Equal), "row 60 shows");
+    assert!(cx.debug_bounds("run-row-60").is_some(), "and is drawn");
+    // Only the rows in view are built, however long the run.
+    assert!(cx.debug_bounds("run-row-0").is_none(), "row 0 is not");
+    assert!(cx.debug_bounds("follow-removal").is_none());
+
+    // Scrolled back to the top, away from it: following pauses, the pill
+    // shows, and the list stays where it was put.
+    let list = cx.debug_bounds("run-list").expect("the list");
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: list.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+            px(0.),
+            px(100_000.),
+        )),
+        ..Default::default()
+    });
+    draw(cx);
+    settle(cx, &view, 65);
+    assert!(!read(&view, cx, |app| app.run_list.follow), "paused");
+    assert_eq!(place(cx, &view), Some(Ordering::Greater));
+    assert!(cx.debug_bounds("follow-removal").is_some(), "the pill");
+
+    // The pill follows again.
+    click_on(cx, "follow-removal");
+    draw(cx);
+    assert!(read(&view, cx, |app| app.run_list.follow));
+    assert_eq!(place(cx, &view), Some(Ordering::Equal), "row 65 shows");
+    assert!(cx.debug_bounds("follow-removal").is_none());
 }
 
 #[gpui_kit::test]

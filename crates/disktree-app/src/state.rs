@@ -34,9 +34,9 @@ use gpui_kit::{
     ScrollDelta, ScrollWheelEvent, Size, Window, px, size,
 };
 use gpui_omarchy::{ActiveTheme as _, Status};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 
-use crate::git::GitState;
+use crate::git_store::{self, Ask, GitProbe, GitStore, Wanted};
 
 use crate::marks::{Marks, is_hidden};
 use crate::treemap_view::{Mosaic, TileDeco};
@@ -319,15 +319,6 @@ pub struct History {
 /// through, and small enough that pruning after a scan costs nothing.
 const HISTORY_DEPTH: usize = 100;
 
-/// Result of the removal run, summarised for the final screen.
-#[derive(Clone, Debug, Default)]
-pub struct RunSummary {
-    pub total: usize,
-    pub removed: u64,
-    pub bytes: u64,
-    pub failed: usize,
-}
-
 /// Scan-derived display estimates; never cached removal authorization.
 #[derive(Default)]
 struct AccountingCache {
@@ -335,6 +326,23 @@ struct AccountingCache {
     root: PathBuf,
     // Total and scanned-volume subsets only: bounded by the current marks.
     estimates: Vec<(Vec<PathBuf>, disktree_core::sharing::Estimate)>,
+}
+
+/// What the scan made of each marked path, for Review's rows. Resolving a
+/// path indexes every directory it passes through, which is too much to
+/// repeat on every frame of a list of marks; this keeps the answer until
+/// the tree changes. Bounded by the paths marked against one tree.
+#[derive(Default)]
+struct KindCache {
+    tree: Weak<Tree>,
+    root: PathBuf,
+    kinds: rustc_hash::FxHashMap<
+        PathBuf,
+        (
+            disktree_core::classify::Category,
+            Option<disktree_core::classify::Reclaim>,
+        ),
+    >,
 }
 
 /// Everything the app knows and everything it can do.
@@ -409,6 +417,7 @@ pub struct Disktree {
     pub layout_options: LayoutOptions,
     cache: Option<LayoutCache>,
     accounting: RefCell<AccountingCache>,
+    kinds: RefCell<KindCache>,
 
     /// Mouse position in treemap-local pixels, for hit-testing and the tooltip.
     pub pointer: Option<Point<Pixels>>,
@@ -466,8 +475,13 @@ pub struct Disktree {
     /// Stop was asked for: the removal ends after the current item.
     pub stop_requested: bool,
     pub run_epoch: u64,
-    pub run_summary: RunSummary,
-    pub run_log: Vec<(PathBuf, Result<(), String>)>,
+    /// Every target of the latest run and what happened to it: what
+    /// Removing and Done draw, and the run's only record of its outcome.
+    pub run_list: crate::run_list::RunList,
+    pub run_scroll: gpui_kit::UniformListScrollHandle,
+    /// Free bytes on the scanned volume as the latest run started, for
+    /// what it has freed so far.
+    pub run_free_before: Option<u64>,
     pub space: Option<SpaceInfo>,
     /// Free space before the removal, for the honest "what did it actually
     /// free" number rather than the sum of what was marked.
@@ -535,10 +549,21 @@ pub struct Disktree {
     pub color_mode: ColorMode,
     /// The largest things worth clearing, recomputed when a scan lands.
     pub insights: Vec<Candidate>,
-    /// What git knows about each checkout that has been selected; `None`
-    /// once asked and found not to be one.
-    pub git: FxHashMap<PathBuf, Option<GitState>>,
-    git_pending: FxHashSet<PathBuf>,
+    /// What git knows about the checkouts looked at, and which to ask
+    /// next: see `git_store`.
+    pub git: GitStore,
+    /// Runs one probe, off the UI thread. Tests count calls with a fake.
+    pub git_probe: GitProbe,
+    /// Draws again when a dwell, a token or a stale answer comes due, so
+    /// a pointer resting still is still answered.
+    git_wake: Option<(Instant, gpui_kit::Task<()>)>,
+    /// When the pointer came to the tile it is on: a hover asks git only
+    /// once it has stayed `git_store::DWELL`.
+    hover_since: Option<Instant>,
+    /// Whether the directory the panel describes is a checkout, by path.
+    /// Finding out is a `stat`, and the panel draws on every frame, so it
+    /// is asked again only when the selection or the tree changes.
+    checkout: Option<(PathBuf, bool)>,
     /// The device the scanned volume is mounted from.
     pub device: Option<String>,
     /// Whether macOS lets this process read everything: asked once, since a
@@ -688,6 +713,7 @@ impl Disktree {
             },
             cache: None,
             accounting: RefCell::new(AccountingCache::default()),
+            kinds: RefCell::new(KindCache::default()),
             pointer: None,
             treemap_origin: Rc::new(Cell::new(Point::new(px(0.), px(0.)))),
             treemap_size: Rc::new(Cell::new(size(px(0.), px(0.)))),
@@ -720,8 +746,9 @@ impl Disktree {
             run: None,
             stop_requested: false,
             run_epoch: 0,
-            run_summary: RunSummary::default(),
-            run_log: Vec::new(),
+            run_list: crate::run_list::RunList::default(),
+            run_scroll: gpui_kit::UniformListScrollHandle::new(),
+            run_free_before: None,
             space,
             space_baseline: None,
             rescan_after_removal: false,
@@ -752,8 +779,11 @@ impl Disktree {
             crumb_menu: None,
             color_mode: ColorMode::Kind,
             insights: Vec::new(),
-            git: FxHashMap::default(),
-            git_pending: FxHashSet::default(),
+            git: GitStore::new(cx.background_executor().now()),
+            git_probe: default_git_probe(),
+            git_wake: None,
+            hover_since: None,
+            checkout: None,
             device: None,
             full_disk_access: None,
             administrator: disktree_core::access::administrator(),
@@ -1214,7 +1244,7 @@ impl Disktree {
             self.remote_identity = None;
             self.remote_platform.clear();
             self.git.clear();
-            self.git_pending.clear();
+            self.checkout = None;
             self.space = None;
             self.space_baseline = None;
             self.disk_root = None;
@@ -1328,33 +1358,101 @@ impl Disktree {
         self.insights = insights;
     }
 
-    /// Ask git about `path` once, off the UI thread, if it is a checkout.
-    pub fn ensure_git(&mut self, path: &Path, cx: &Context<'_, Self>) {
-        if self.remote.is_some()
-            || self.git.contains_key(path)
-            || self.git_pending.contains(path)
+    /// Whether `path` is the top of a checkout, going to the disk only
+    /// when it is not the path asked about last.
+    pub fn checkout_at(&mut self, path: &Path) -> bool {
+        if let Some((known, checkout)) = &self.checkout
+            && known == path
         {
+            return *checkout;
+        }
+        let checkout = crate::git::is_checkout(path);
+        self.checkout = Some((path.to_path_buf(), checkout));
+        checkout
+    }
+
+    /// What [`Self::checkout_at`] last found for `path`, without asking:
+    /// for drawing code, which only reads the window's state.
+    pub fn known_checkout(&self, path: &Path) -> bool {
+        matches!(&self.checkout, Some((known, true)) if known == path)
+    }
+
+    /// The panel shows the checkout at `path`: say so to the git store,
+    /// and start what it lets run. A selection asks at once; a hover only
+    /// once the pointer has rested on it for `git_store::DWELL`.
+    ///
+    /// While the window is not `active` a known answer is left as it is,
+    /// stale or not, and nothing is set to wake for it: a checkout left
+    /// selected behind other windows would otherwise be walked by git every
+    /// `FRESH_FOR`. Activation draws the window again, which refreshes it.
+    pub fn want_git(
+        &mut self,
+        path: &Path,
+        active: bool,
+        cx: &Context<'_, Self>,
+    ) {
+        if self.remote.is_some() || (!active && self.git.answered(path)) {
             return;
         }
-        let path = path.to_path_buf();
-        self.git_pending.insert(path.clone());
-        let epoch = self.scan_epoch;
-        let task = cx.background_executor().spawn({
-            let path = path.clone();
-            async move { crate::git::state(&path) }
-        });
-        cx.spawn(async move |this, cx| {
-            let state = task.await;
+        let now = cx.background_executor().now();
+        let hovering = self.pointer_active
+            && self.hovered.is_some()
+            && self.hovered != self.selected;
+        let ask = if hovering {
+            let settled = self.hover_since.unwrap_or(now) + git_store::DWELL;
+            if now < settled {
+                self.wake_git(settled, cx);
+                return;
+            }
+            Ask::Dwell
+        } else {
+            Ask::Direct
+        };
+        match self.git.want(path, ask, now) {
+            Wanted::Refused { retry_at } => self.wake_git(retry_at, cx),
+            // Only the selection refreshes, so only it wakes for that.
+            Wanted::Answered { stale_at } if ask == Ask::Direct => {
+                self.wake_git(stale_at, cx);
+            }
+            Wanted::Answered { .. } | Wanted::Pending => {}
+        }
+        self.run_git(cx);
+    }
+
+    /// Start every probe the store lets run now.
+    fn run_git(&mut self, cx: &Context<'_, Self>) {
+        let now = cx.background_executor().now();
+        for job in self.git.next_jobs(now) {
+            let answer = (self.git_probe)(&job.path, &job.cancel);
+            cx.spawn(async move |this, cx| {
+                let answer =
+                    answer.recv().await.unwrap_or(git_store::Probe::Unreadable);
+                let _ = this.update(cx, |this, cx| {
+                    let now = cx.background_executor().now();
+                    if this.git.finish(&job, answer, now) {
+                        cx.notify();
+                    }
+                    this.run_git(cx);
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Draw again at `at`, unless a wake already comes sooner.
+    fn wake_git(&mut self, at: Instant, cx: &Context<'_, Self>) {
+        if self.git_wake.as_ref().is_some_and(|(due, _)| *due <= at) {
+            return;
+        }
+        let wait = at.saturating_duration_since(cx.background_executor().now());
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
             let _ = this.update(cx, |this, cx| {
-                if this.scan_epoch != epoch || this.remote.is_some() {
-                    return;
-                }
-                this.git_pending.remove(&path);
-                this.git.insert(path, state);
+                this.git_wake = None;
                 cx.notify();
             });
-        })
-        .detach();
+        });
+        self.git_wake = Some((at, task));
     }
 
     /// Select the largest entry of the current root, so the selection line, the
@@ -1610,7 +1708,8 @@ impl Disktree {
         self.cache = None;
         self.insights.clear();
         self.git.clear();
-        self.git_pending.clear();
+        // Every new tree arrives through here, removal's rescan included.
+        self.checkout = None;
         self.clear_filter();
         self.scan_started = Some(Instant::now());
         self.scan_elapsed = None;
@@ -3401,18 +3500,16 @@ impl Disktree {
         self.space_baseline = before.or(self.space_baseline);
         self.ledger.begin(self.scans_done);
         self.run_start = Some(crate::ledger::Start {
-            targets: plan.targets.clone(),
             mode: self.removal_mode,
             before: before.map(|space| space.available),
             started: std::time::SystemTime::now(),
         });
         self.run_epoch += 1;
         let epoch = self.run_epoch;
-        self.run_summary = RunSummary {
-            total: plan.targets.len(),
-            ..RunSummary::default()
-        };
-        self.run_log.clear();
+        self.run_list =
+            crate::run_list::RunList::new(self.run_items(&plan.targets));
+        self.run_scroll = gpui_kit::UniformListScrollHandle::new();
+        self.run_free_before = before.map(|space| space.available);
         self.stop_requested = false;
         self.screen = Screen::Running;
         self.run = Some(disktree_core::removal::spawn_limited(
@@ -3452,40 +3549,56 @@ impl Disktree {
         if epoch != self.run_epoch {
             return false;
         }
+        if self.run.is_none() {
+            return false;
+        }
+        let mut finished = false;
+        // Only a report, the end, or a change in following redraws: the
+        // tick itself changes nothing on screen.
+        let mut changed = self.update_follow();
         let Some(run) = &self.run else {
             return false;
         };
-        let mut finished = false;
         while let Some(event) = run.poll() {
+            changed = true;
             match event {
-                RemovalEvent::Start { total } => self.run_summary.total = total,
-                RemovalEvent::Item {
-                    path,
-                    bytes,
-                    outcome,
-                } => {
-                    if outcome.is_ok() {
-                        self.run_summary.removed += 1;
-                        self.run_summary.bytes += bytes;
-                    } else {
-                        self.run_summary.failed += 1;
+                // The list was built from the plan, so it already holds
+                // the total the worker announces.
+                RemovalEvent::Start { .. } => {}
+                RemovalEvent::Item { path, outcome, .. } => {
+                    if self.run_list.settle(&path, &outcome).is_some() {
+                        self.scroll_to_focus();
                     }
-                    self.run_log.push((path, outcome));
                 }
                 RemovalEvent::Done {
                     removed,
                     bytes,
                     failed,
                 } => {
-                    self.run_summary.removed = removed;
-                    self.run_summary.bytes = bytes;
-                    self.run_summary.failed = failed;
                     // Counts only: the paths removed are the user's.
                     log::info!(
                         target: "pwrdisk::removal",
                         "removal finished: {removed} removed, {bytes} bytes, \
                          {failed} failed"
                     );
+                    // The worker's own tally, kept only to check the list:
+                    // a report the list could not place would show here.
+                    let totals = self.run_list.totals();
+                    if (
+                        totals.removed as u64,
+                        totals.reported_done,
+                        totals.failed_all(),
+                    ) != (removed, bytes, failed)
+                    {
+                        log::warn!(
+                            target: "pwrdisk::removal",
+                            "the run's list counts {} removed, {} bytes, \
+                             {} failed; the worker counted otherwise",
+                            totals.removed,
+                            totals.reported_done,
+                            totals.failed_all()
+                        );
+                    }
                     finished = true;
                 }
             }
@@ -3504,8 +3617,95 @@ impl Disktree {
                 self.start_scan(cx);
             }
         }
-        cx.notify();
+        if changed {
+            cx.notify();
+        }
         !finished
+    }
+
+    /// Whether a scroll by hand paused following, or one back to the item
+    /// in hand resumed it: following goes on while that row is in view,
+    /// as the live log does near its end.
+    /// Returns whether following changed.
+    pub fn update_follow(&mut self) -> bool {
+        let was = self.run_list.follow;
+        let place = crate::run_view::focus_place(self);
+        if std::mem::take(&mut self.run_list.scrolled_by_hand) {
+            if let Some(place) = place {
+                self.run_list.follow = place == std::cmp::Ordering::Equal;
+            }
+        } else if place == Some(std::cmp::Ordering::Equal) {
+            self.run_list.follow = true;
+        }
+        self.run_list.follow != was
+    }
+
+    /// The pill's click: follow the item in hand again, from here. A wheel
+    /// turn not yet read by a poll is part of what the click answers.
+    pub fn follow_removal(&mut self) {
+        self.run_list.follow = true;
+        self.run_list.scrolled_by_hand = false;
+        self.scroll_to_focus();
+    }
+
+    /// Bring the item in hand into view, while following.
+    pub fn scroll_to_focus(&self) {
+        if self.run_list.follow
+            && let Some(focus) = self.run_list.focus()
+        {
+            // The least movement that shows it, as the log scrolls.
+            self.run_scroll
+                .scroll_to_item(focus, gpui_kit::ScrollStrategy::Nearest);
+        }
+    }
+
+    /// What the scan made of each path, for Review's rows: its kind and
+    /// why it can be had back, default where the tree does not have it.
+    pub fn kinds_of<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a Path>,
+    ) -> Vec<(
+        disktree_core::classify::Category,
+        Option<disktree_core::classify::Reclaim>,
+    )> {
+        let Some(tree) = &self.tree else {
+            return paths.into_iter().map(|_| Default::default()).collect();
+        };
+        let mut cached = self.kinds.borrow_mut();
+        if !cached.tree.ptr_eq(&Arc::downgrade(tree))
+            || cached.root != self.root_path
+        {
+            *cached = KindCache {
+                tree: Arc::downgrade(tree),
+                root: self.root_path.clone(),
+                kinds: rustc_hash::FxHashMap::default(),
+            };
+        }
+        // Built only on a miss: a page already seen costs a hash lookup
+        // per row.
+        let mut resolver = None;
+        paths
+            .into_iter()
+            .map(|path| {
+                if let Some(kind) = cached.kinds.get(path) {
+                    return *kind;
+                }
+                let resolver = resolver.get_or_insert_with(|| {
+                    crate::marks::Resolver::new(
+                        &self.root_path,
+                        tree.root(),
+                        self.path_style(),
+                    )
+                });
+                let kind = resolver
+                    .resolve(path)
+                    .map_or_else(Default::default, |(_, node)| {
+                        (node.category, node.reclaim)
+                    });
+                cached.kinds.insert(path.to_path_buf(), kind);
+                kind
+            })
+            .collect()
     }
 
     /// Add the run that just finished to the ledger. Returns what it
@@ -3514,13 +3714,14 @@ impl Disktree {
         let Some(start) = self.run_start.take() else {
             return Vec::new();
         };
-        let removed = crate::ledger::removed(&start, &self.run_log);
+        let removed: Vec<_> = self.run_list.removed().cloned().collect();
         let private = self.private_estimate(&removed);
+        let totals = self.run_list.totals();
         self.ledger.push(crate::ledger::Cohort {
             mode: start.mode,
-            removed: removed.len() as u64,
-            failed: self.run_summary.failed,
-            reported: removed.iter().map(|target| target.bytes).sum(),
+            removed: totals.removed as u64,
+            failed: totals.failed_all(),
+            reported: totals.reported_done,
             private,
             before: start.before,
             after: space_info(&self.root_path)
@@ -3555,15 +3756,62 @@ impl Disktree {
             || self.removed.ancestor(path, style).is_some()
     }
 
+    /// Whether the scan can say what is private: not in an apparent-size
+    /// scan, nor on macOS without clone metadata.
+    const fn private_known(&self) -> bool {
+        !(self.options.apparent_size
+            || (cfg!(target_os = "macos") && !self.options.apfs_clone_metadata))
+    }
+
+    /// The run's list as it starts: each target with what the scan says it
+    /// is and what it holds alone. A target the tree no longer has keeps
+    /// its marked size and no kind.
+    fn run_items(
+        &self,
+        targets: &[disktree_core::removal::Target],
+    ) -> Vec<crate::run_list::Item> {
+        let private_known = self.private_known();
+        let mut resolver = self.tree.as_ref().map(|tree| {
+            crate::marks::Resolver::new(
+                &self.root_path,
+                tree.root(),
+                self.path_style(),
+            )
+        });
+        targets
+            .iter()
+            .map(|target| {
+                let node = resolver
+                    .as_mut()
+                    .and_then(|resolver| resolver.resolve(&target.path))
+                    .map(|(_, node)| node);
+                crate::run_list::Item {
+                    target: target.clone(),
+                    category: node
+                        .map(|node| node.category)
+                        .unwrap_or_default(),
+                    reclaim: node.and_then(|node| node.reclaim),
+                    // As `private_estimate` reads one node, and never more
+                    // than was reported for it.
+                    private: node.filter(|_| private_known).map(|node| {
+                        node.sharing()
+                            .estimate
+                            .map_or(node.bytes, |estimate| estimate.lower)
+                            .min(target.bytes)
+                    }),
+                    status: crate::run_list::Status::Waiting,
+                }
+            })
+            .collect()
+    }
+
     /// What the scan saw as only these targets', estimated as review does,
     /// from the tree they were removed from. Unknown where review's is.
     fn private_estimate(
         &self,
         targets: &[disktree_core::removal::Target],
     ) -> Option<u64> {
-        if self.options.apparent_size
-            || (cfg!(target_os = "macos") && !self.options.apfs_clone_metadata)
-        {
+        if !self.private_known() {
             return None;
         }
         let tree = self.tree.as_ref()?;
@@ -4305,6 +4553,9 @@ impl Disktree {
         self.pointer_active = true;
         let previous = self.hovered.clone();
         self.hovered = self.tile_at(local.x.as_f32(), local.y.as_f32());
+        if self.hovered != previous {
+            self.hover_since = Some(cx.background_executor().now());
+        }
         // The cursor tooltip is positioned from `pointer`, so a move *within*
         // one tile still has to repaint — otherwise the tooltip sticks where
         // the tile was first entered until the hover target changes.
@@ -4686,6 +4937,27 @@ impl Drop for Disktree {
             discard(Some(held));
         }
     }
+}
+
+/// Git, on a thread of its own per probe.
+#[cfg(not(test))]
+fn default_git_probe() -> GitProbe {
+    Arc::new(|path, cancel| {
+        crate::git::probe_on_thread(
+            path,
+            git_store::PROBE_LIMIT,
+            cancel.clone(),
+        )
+    })
+}
+
+/// In the window tests, an answer at once and no git: a probe's own thread
+/// would wake GPUI's deterministic test executor from outside it. Tests
+/// that count probes put in their own (`tests::count_probes`); `git.rs`
+/// tests the real one.
+#[cfg(test)]
+fn default_git_probe() -> GitProbe {
+    Arc::new(|_, _| git_store::ready(git_store::Probe::Unreadable))
 }
 
 /// Let go of a tree, or anything holding one, off the UI thread: freeing
