@@ -58,7 +58,7 @@ impl Probe for SystemProbe {
         if output.len() as u64 >= OUTPUT_LIMIT {
             Err("Owner probe output exceeded its bound".into())
         } else {
-            Ok(output)
+            String::from_utf8(output).map_err(|_| "Owner probe returned non-UTF-8 output; cannot resolve an exact cache root".into())
         }
     }
 }
@@ -191,7 +191,7 @@ pub(super) fn run(
     env: &Environment,
     cancel: &AtomicBool,
     timeout: Duration,
-) -> Result<String, String> {
+) -> Result<Vec<u8>, String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("Cancelled before command start".into());
     }
@@ -268,7 +268,7 @@ pub(super) fn run(
                 ));
             }
             let output = output.as_ref().map_err(ToString::to_string)?;
-            return Ok(String::from_utf8_lossy(output).into_owned());
+            return Ok(output.clone());
         }
         std::thread::sleep(Duration::from_millis(40));
     }

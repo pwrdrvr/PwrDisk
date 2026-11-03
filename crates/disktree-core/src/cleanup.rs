@@ -496,8 +496,15 @@ fn resolve_owner(
         _ => return Err("Owner is inspection-only".into()),
     });
     let output = probe.output(&command, env)?;
-    let cache_root = PathBuf::from(output.trim());
-    if !cache_root.is_absolute() || output.trim().lines().count() != 1 {
+    // Remove the CLI's line terminator, never whitespace that can be part
+    // of a real directory name. Guessing here can select a different tree.
+    let value = output
+        .strip_suffix("\r\n")
+        .or_else(|| output.strip_suffix('\n'))
+        .unwrap_or(&output);
+    let cache_root = PathBuf::from(value);
+    if !cache_root.is_absolute() || value.contains('\n') || value.contains('\r')
+    {
         return Err("Owner returned an ambiguous or relative cache root".into());
     }
     if cache_root

@@ -840,3 +840,60 @@ fn npm_installing_proxy_is_not_invoked_even_for_version_discovery() {
     assert!(error.contains("proxy/wrapper"));
     assert!(!fixture.env.home.join("unwanted-install").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn configured_root_whitespace_cannot_redirect_cleanup_to_a_similar_path() {
+    let fixture = Fixture::new();
+    let selected = fixture.dir("custom-cache");
+    let configured = fixture.dir("custom-cache ");
+    let mut probe = fixture.probe("uv", "uv 0.11.0", &configured);
+    assert!(
+        prepare_with(
+            &[target(&selected)],
+            &fixture.root,
+            fixture.env.clone(),
+            &mut probe
+        )
+        .is_err(),
+        "a trailing space is part of the configured path, not output padding"
+    );
+    let mut probe = fixture.probe("uv", "uv 0.11.0", &configured);
+    let prepared = prepare_with(
+        &[target(&configured)],
+        &fixture.root,
+        fixture.env.clone(),
+        &mut probe,
+    )
+    .expect("exact configured path");
+    assert_eq!(prepared.operations[0].scope, configured);
+    assert_eq!(
+        prepared.operations[0]
+            .command
+            .arguments
+            .last()
+            .expect("cache argument"),
+        configured.to_str().expect("path")
+    );
+    assert!(selected.join("payload").exists());
+    assert!(configured.join("payload").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_probe_output_is_refused_without_lossy_path_conversion() {
+    let fixture = executable_fixture();
+    let cache = fixture.env.home.join(".cache/uv");
+    std::fs::write(&fixture.executable, "#!/bin/sh\nprintf '\\377\\n'\n")
+        .expect("non-UTF-8 fixture probe");
+    let error = prepare_with(
+        &[target(&cache)],
+        &fixture.root,
+        fixture.env.clone(),
+        &mut process::SystemProbe,
+    )
+    .expect_err("unambiguous probe output required");
+    assert!(error.contains("non-UTF-8"));
+    assert!(cache.join("payload").exists());
+    assert!(!fixture.env.home.join("invocation").exists());
+}
