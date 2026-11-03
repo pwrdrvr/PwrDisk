@@ -251,7 +251,8 @@ impl Server {
 
     /// List a scanned directory, largest first: each entry's share, size,
     /// kind of data, whether its space can be had back and why, and when it
-    /// was last written. Never changes the directory shown in the window.
+    /// was last written. Sorts by listed allocation, not predicted recovery;
+    /// compare explicit candidates with `pwrdisk_rank`. Never moves the view.
     #[tool(
         name = "pwrdisk_ls",
         annotations(title = "List a directory", read_only_hint = true)
@@ -267,7 +268,8 @@ impl Server {
     /// every scanned root: files over a size, everything reclaimable
     /// (caches, build output, package stores), one kind of data, a name,
     /// or what nobody has written to in a while. A matching directory is
-    /// listed once, without its contents.
+    /// listed once, without its contents. Sorts by listed allocation;
+    /// compare explicit candidates with `pwrdisk_rank` before recommending.
     #[tool(
         name = "pwrdisk_find",
         annotations(title = "Find the largest matches", read_only_hint = true)
@@ -387,7 +389,7 @@ impl Server {
             .supported_elicitation_modes()
             .contains(&rmcp::service::ElicitationMode::Form)
         {
-            return Err("This MCP client does not support interactive form confirmation. No removal started. Use human review in PwrDisk; never approve it through computer use.".into());
+            return Err("This MCP client does not support interactive form confirmation. No MCP removal request was sent; check pwrdisk_status for any native UI operation. Use human review in PwrDisk; never approve it through computer use.".into());
         }
         let requested_schema = ElicitationSchema::builder().required_property(
             "confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new().with_default(false)

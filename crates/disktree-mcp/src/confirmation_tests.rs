@@ -30,6 +30,8 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
         (true, "cancel", false, 4, 0), // Unrelated preview.
         (true, "cancel", false, 5, 0), // Different mode.
         (true, "cancel", false, 6, 0), // Different path list.
+        (true, "error", false, 0, 0),  // Proxy/client lifecycle failure.
+        (true, "error", false, 2, 0),  // UI completion before form error.
     ] {
         let temp = tempfile::tempdir().expect("fixture");
         let file = temp.path().join("candidate");
@@ -191,6 +193,12 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
                 assert!(message.contains("cannot be undone"));
                 assert!(message.contains("5% of each volume"));
                 native_state.store(native, Ordering::SeqCst);
+                if action == "error" {
+                    send(&mut output, json!({"jsonrpc":"2.0","id":response["id"],"error":{
+                        "code":-32603,"message":"fixture client disconnected"
+                    }})).await;
+                    continue;
+                }
                 // This simulates the client's user response, never model input.
                 send(
                     &mut output,

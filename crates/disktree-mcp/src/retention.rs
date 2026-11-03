@@ -4,6 +4,13 @@ use std::path::Path;
 
 const LIMITS: &str = "Retained bytes for the selected paths: unknown. Immediate recovered bytes: unknown. Time Machine snapshot presence is a plausible retention mechanism, not proof of attribution. This does not enumerate every APFS snapshot, open file or later volume write. Even no listed Time Machine snapshots cannot guarantee recovery. Do not alter snapshots or retry removal to chase a projection.";
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(
+        clippy::unused_async,
+        reason = "The MCP handler uses the same async API as macOS's bounded command"
+    )
+)]
 pub async fn inspect(path: &Path) -> Result<String, String> {
     if !path.is_absolute() {
         return Err("Supply an absolute path on the volume to inspect.".into());

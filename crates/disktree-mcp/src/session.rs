@@ -941,7 +941,23 @@ impl Session {
             }
             candidates.push(report);
         }
-        let candidates = rank_candidates(candidates, params.by);
+        let candidates: Vec<_> = rank_candidates(candidates, params.by)
+            .into_iter()
+            .map(|candidate| {
+                let report = candidate.estimate;
+                serde_json::json!({
+                    "value": candidate.value,
+                    "paths": report.accepted,
+                    "refused": report.refused,
+                    "listed_bytes": report.listed_bytes,
+                    "apparent_size": report.context.apparent_size,
+                    "private_allocation": report.private_allocation,
+                    "reclaim": report.reclaim,
+                    "metadata_complete": report.metadata_complete,
+                    "scan_complete": report.scan_complete,
+                })
+            })
+            .collect();
         let json = serde_json::to_string_pretty(&serde_json::json!({
             "rank_by": params.by, "candidates": candidates, "selection_union": selection,
         })).map_err(|e| e.to_string())?;
@@ -2055,6 +2071,8 @@ impl Session {
             self.client
         );
         out.push_str(&system_line());
+        out.push_str(retention_notice());
+        out.push('\n');
         out.push_str(&self.window_line());
         out.push('\n');
         if self.scans.is_empty() {
@@ -2181,7 +2199,6 @@ fn version_notice(window: &State) -> String {
     }
 }
 
-#[derive(serde::Serialize)]
 struct RankedCandidate {
     value: Option<u64>,
     estimate: disktree_core::planning::Report,
@@ -2845,7 +2862,7 @@ mod tests {
         let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
             .expect("fixture");
         let root = temp.path().canonicalize().expect("root");
-        let scan = clone_copies(&root, 3);
+        let scan = clone_copies_with_plain(&root, 3, 6 * 1024 * 1024);
         let mut context = Context::of(&root, &scan.options, scan.at, 0);
         // Synthetic clone metadata on every test host; no real clone probe.
         context.clone_metadata = true;
@@ -2861,7 +2878,7 @@ mod tests {
         };
         let clone = estimate("copy-a");
         let plain = estimate("plain");
-        assert_eq!(clone.listed_bytes, plain.listed_bytes);
+        assert!(clone.listed_bytes > plain.listed_bytes);
         let mut unknown = clone.clone();
         unknown.private_allocation = None;
         unknown.reclaim = None;
@@ -3715,6 +3732,14 @@ mod tests {
     /// Three directories, each holding one full clone of a group APFS
     /// counts `references` members of, beside a plain directory.
     fn clone_copies(root: &Path, references: u32) -> Scan {
+        clone_copies_with_plain(root, references, 12 * 1024 * 1024)
+    }
+
+    fn clone_copies_with_plain(
+        root: &Path,
+        references: u32,
+        plain_bytes: u64,
+    ) -> Scan {
         use disktree_core::sharing::{Allocation, CloneInfo};
         use disktree_core::tree::{Metric, NodeKind, aggregate};
         const MIB: u64 = 1024 * 1024;
@@ -3722,7 +3747,15 @@ mod tests {
         for name in ["copy-a", "copy-b", "copy-c", "plain"] {
             std::fs::create_dir(root.join(name)).expect("fixture directory");
             let mut dir = Draft::directory(name);
-            let mut file = Draft::entry("data", NodeKind::File, 12 * MIB);
+            let mut file = Draft::entry(
+                "data",
+                NodeKind::File,
+                if name == "plain" {
+                    plain_bytes
+                } else {
+                    12 * MIB
+                },
+            );
             if name != "plain" {
                 file.allocation = Some(Box::new(Allocation {
                     bytes: 12 * MIB,
