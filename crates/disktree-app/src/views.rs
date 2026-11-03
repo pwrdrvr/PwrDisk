@@ -26,7 +26,7 @@ use gpui_kit::{
 use gpui_omarchy::{
     ActiveTheme, ButtonVariant, ChoiceItem, Theme, alert_dialog, button,
     button_group, checkbox, dialog_button, dialog_description, dialog_popup,
-    dialog_title, separator, with_tooltip,
+    dialog_title, with_tooltip,
 };
 
 use gpui_kit::prelude::FluentBuilder as _;
@@ -96,7 +96,7 @@ impl<'a> ReviewStatus<'a> {
 }
 
 /// Below the list-plus-explanation width budget, review becomes one column.
-const REVIEW_COLUMNS_REMS: f32 = 65.0;
+pub const REVIEW_COLUMNS_REMS: f32 = 65.0;
 
 /// The whole window.
 pub fn root(
@@ -134,8 +134,8 @@ pub fn root(
     let body = match app.screen {
         Screen::Explore => explore(app, toasts, window, cx),
         Screen::Review => review(app, toasts, window, cx),
-        Screen::Running => running(app, toasts, cx),
-        Screen::Done => done(app, toasts, cx),
+        Screen::Running => crate::run_view::running(app, toasts, window, cx),
+        Screen::Done => crate::run_view::done(app, toasts, window, cx),
     };
     let modal = app.has_modal() || app.app_menu_open;
     let background = div().id("application-content")
@@ -735,7 +735,7 @@ fn centred_popup(card: impl IntoElement) -> Stateful<Div> {
 /// on the left; what does sits on the right, in the order the system
 /// expects: Cancel then the default on macOS, GNOME and Omarchy, so the
 /// default is in the corner; the default then Cancel on Windows.
-fn dialog_footer(
+pub fn dialog_footer(
     left: impl IntoIterator<Item = AnyElement>,
     cancel: Option<AnyElement>,
     primary: Option<AnyElement>,
@@ -5238,318 +5238,15 @@ fn review_hints(app: &Disktree, theme: &Theme, cx: &App) -> Div {
 
 /// A screen's footer band: [`dialog_footer`]'s row across the window's
 /// bottom edge.
-fn screen_footer(row: Div, theme: &Theme) -> Div {
+pub fn screen_footer(row: Div, theme: &Theme) -> Div {
     row.px(space::LG)
         .py(space::SM)
         .border_t_1()
         .border_color(theme.divider())
 }
 
-// ── running ─────────────────────────────────────────────────────────────
-
-fn running(
-    app: &Disktree,
-    toasts: Option<AnyElement>,
-    cx: &gpui_kit::Context<'_, Disktree>,
-) -> Div {
-    let theme = cx.omarchy().clone();
-    let summary = app.run_summary.clone();
-    let done = summary.removed + summary.failed as u64;
-    let progress = if summary.total == 0 {
-        0.0
-    } else {
-        done as f32 / summary.total as f32
-    };
-
-    let mut log = div()
-        .id("run-log")
-        .flex()
-        .flex_col()
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll()
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.inset);
-    for (path, outcome) in app.run_log.iter().rev().take(200) {
-        let ok = outcome.is_ok();
-        log = log.child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(space::SM)
-                .px(space::MD)
-                .py(space::XS)
-                .text_size(text::CAPTION)
-                .child(
-                    gpui_omarchy::icon(if ok {
-                        gpui_omarchy::IconName::Check
-                    } else {
-                        gpui_omarchy::IconName::X
-                    })
-                    .size(icon::SM)
-                    .text_color(if ok {
-                        theme.success
-                    } else {
-                        theme.danger
-                    }),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_color(if ok {
-                            theme.foreground
-                        } else {
-                            theme.danger
-                        })
-                        .child(short_name(path, app.path_style())),
-                )
-                .children(outcome.as_ref().err().map(|error| {
-                    div()
-                        .text_size(text::CAPTION)
-                        .text_color(theme.warning)
-                        .child(error.clone())
-                })),
-        );
-    }
-
-    div()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .min_h_0()
-        .child(screen_header(
-            "Removing",
-            &format!("{} of {} done", done, summary.total),
-            &theme,
-            cx,
-        ))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(space::MD)
-                .p(space::LG)
-                .flex_1()
-                .min_h_0()
-                .child(widgets::meter_row(
-                    "progress",
-                    format!(
-                        "{} removed · {} to free",
-                        summary.removed,
-                        human_bytes(summary.bytes)
-                    ),
-                    progress,
-                    if app.removal_mode == RemovalMode::Permanent {
-                        theme.danger
-                    } else {
-                        theme.accent
-                    },
-                    cx,
-                ))
-                .children(
-                    app.space.map(|space| widgets::space_meter(space, 0, cx)),
-                )
-                .child(log)
-                .relative()
-                .children(toasts),
-        )
-        .child(screen_footer(
-            dialog_footer(
-                [],
-                None,
-                // Outlined, not danger: it loses nothing, and what was
-                // removed stays removed either way.
-                Some(
-                    button(
-                        "stop-removal",
-                        if app.stop_requested {
-                            "Stopping\u{2026}"
-                        } else {
-                            "Stop after this item"
-                        },
-                        ButtonVariant::Outline,
-                        cx,
-                    )
-                    .debug_selector(|| "stop-removal".into())
-                    .semantic_disabled(app.stop_requested)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.stop_removal(cx);
-                        window.focus(&this.focus, cx);
-                    }))
-                    .into_any_element(),
-                ),
-            ),
-            &theme,
-        ))
-}
-
-// ── done ────────────────────────────────────────────────────────────────
-
-fn done(
-    app: &Disktree,
-    toasts: Option<AnyElement>,
-    cx: &gpui_kit::Context<'_, Disktree>,
-) -> Div {
-    let theme = cx.omarchy().clone();
-    let summary = app.run_summary.clone();
-    let cohorts = app.ledger.cohorts();
-    let latest = cohorts.last();
-
-    let mut failures = div().flex().flex_col().gap(space::XXS);
-    for (path, outcome) in app
-        .run_log
-        .iter()
-        .filter(|(_, outcome)| outcome.is_err())
-        .take(40)
-    {
-        failures = failures.child(
-            div()
-                .flex()
-                .flex_row()
-                .gap(space::SM)
-                .text_size(text::CAPTION)
-                .child(
-                    div()
-                        .text_color(theme.danger)
-                        .child(short_name(path, app.path_style())),
-                )
-                .child(div().text_color(theme.secondary).child(
-                    outcome.as_ref().err().cloned().unwrap_or_default(),
-                )),
-        );
-    }
-
-    let note = if app.scan.is_some() {
-        "Rescanning so the numbers on screen match the disk again."
-    } else {
-        "What was removed stays in the treemap, greyed out, until you \
-         rescan; it cannot be marked again."
-    };
-    let mut body = div()
-        .flex()
-        .flex_col()
-        .gap(space::MD)
-        .p(space::LG)
-        .flex_1()
-        .min_h_0()
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .gap(space::XXL)
-                .child(widgets::stat_colored(
-                    "removed",
-                    format!("{} items", summary.removed),
-                    theme.success,
-                    cx,
-                ))
-                .child(widgets::stat_colored(
-                    "failed",
-                    format!("{}", summary.failed),
-                    if summary.failed > 0 {
-                        theme.danger
-                    } else {
-                        theme.secondary
-                    },
-                    cx,
-                ))
-                .children(latest.and_then(Cohort::observed).map(|delta| {
-                    widgets::stat_colored(
-                        "volume freed",
-                        signed_bytes(delta),
-                        if delta >= 0 {
-                            theme.success
-                        } else {
-                            theme.warning
-                        },
-                        cx,
-                    )
-                })),
-        )
-        .children(
-            (!cohorts.is_empty()).then(|| ledger_table(cohorts, &theme, cx)),
-        )
-        .child(
-            div()
-                .text_size(text::CAPTION)
-                .text_color(theme.secondary)
-                .child(
-                    "Reported counts a clone in every place it appears; \
-                     private is what the scan saw as theirs alone; observed \
-                     is the volume\u{2019}s free space, which other apps \
-                     change too.",
-                ),
-        )
-        .child(
-            div()
-                .text_size(text::CAPTION)
-                .text_color(theme.secondary)
-                .child(note),
-        );
-
-    if let Some(space) = app.space {
-        body = body.child(widgets::space_meter(space, 0, cx));
-    }
-    if app.scan.is_some() {
-        body = body.child(widgets::meter_row(
-            "re-scanning",
-            format!("{} files", widgets::human_count(app.progress.files)),
-            0.0,
-            theme.accent,
-            cx,
-        ));
-    }
-    if summary.failed > 0 {
-        body = body
-            .child(separator(cx))
-            .child(widgets::section("what could not be removed", cx))
-            .child(failures);
-    }
-
-    // Rescan is offered while none runs: it is how the sharing figures
-    // catch up, and nothing else on this screen starts one.
-    let rescan = (app.scan.is_none()).then(|| {
-        button("done-rescan", "Rescan", ButtonVariant::Outline, cx)
-            .debug_selector(|| "done-rescan".into())
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.screen = Screen::Explore;
-                this.start_scan(cx);
-                window.focus(&this.focus, cx);
-            }))
-            .into_any_element()
-    });
-    div()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .min_h_0()
-        .child(screen_header("Done", "removal finished", &theme, cx))
-        .child(body.relative().children(toasts))
-        .child(screen_footer(
-            dialog_footer(
-                [],
-                rescan,
-                // An acknowledgement, the default: Enter and Escape press it.
-                Some(
-                    button("continue", "Done", ButtonVariant::Primary, cx)
-                        .debug_selector(|| "continue".into())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.screen = Screen::Explore;
-                            cx.notify();
-                            window.focus(&this.focus, cx);
-                        }))
-                        .into_any_element(),
-                ),
-            ),
-            &theme,
-        ))
-}
-
 /// `+1.2 GB` or `-300 MB`: a change in free space.
-fn signed_bytes(delta: i64) -> String {
+pub fn signed_bytes(delta: i64) -> String {
     let sign = if delta >= 0 { '+' } else { '-' };
     format!("{sign}{}", human_bytes(delta.unsigned_abs()))
 }
@@ -5564,7 +5261,11 @@ fn clock(at: std::time::SystemTime) -> String {
 /// Every removal since the scan, three ways, and their total: the last
 /// row's observed figure runs from the first removal's start to the last
 /// one's end, so it is measured rather than added up.
-fn ledger_table(cohorts: &[Cohort], theme: &Theme, cx: &gpui_kit::App) -> Div {
+pub fn ledger_table(
+    cohorts: &[Cohort],
+    theme: &Theme,
+    cx: &gpui_kit::App,
+) -> Div {
     let figure = |text: String, color: gpui_kit::Hsla| {
         div()
             .w(size::LEDGER_FIGURE)
@@ -5691,7 +5392,7 @@ fn ledger_table(cohorts: &[Cohort], theme: &Theme, cx: &gpui_kit::App) -> Div {
 
 // ── shared ──────────────────────────────────────────────────────────────
 
-fn screen_header(
+pub fn screen_header(
     title: &str,
     subtitle: &str,
     theme: &Theme,

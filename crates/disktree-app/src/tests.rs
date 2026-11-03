@@ -6417,6 +6417,83 @@ fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
     panic!("the removal did not finish");
 }
 
+/// The run's list is on screen from Removing's first frame, says what
+/// each item is, and stays on Done, every item checked off, rather than
+/// only the names of what already went.
+#[gpui_kit::test]
+fn the_removal_list_stays_on_screen_from_start_to_done(
+    cx: &mut TestAppContext,
+) {
+    use crate::run_list::Status;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let epoch = update(&view, cx, |app, cx| {
+        for name in [".cache", "junk/deeper"] {
+            let crumbs = app
+                .crumbs_for_path(&app.root_path.join(name))
+                .expect("in the tree");
+            app.toggle_mark(&crumbs, cx);
+        }
+        app.removal_mode = RemovalMode::Permanent;
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice);
+        app.run_epoch
+    });
+    draw(cx);
+    // Nothing is reported until the poll: both are listed, waiting, and
+    // the first is the one in hand.
+    assert!(cx.debug_bounds("run-list").is_some());
+    assert!(cx.debug_bounds("run-row-0").is_some());
+    assert!(cx.debug_bounds("run-row-1").is_some());
+    assert!(cx.debug_bounds("run-summary").is_some());
+    update(&view, cx, |app, _| {
+        let items = &app.run_list.items;
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|item| item.status == Status::Waiting));
+        assert_eq!(app.run_list.current(), Some(0));
+        let cache = items
+            .iter()
+            .find(|item| item.path.ends_with(".cache"))
+            .expect("the cache is listed");
+        assert_eq!(cache.kind(), Some("regenerable"), "and says why");
+        assert_eq!(cache.bytes, 300_000);
+    });
+
+    let mut finished = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        finished = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if finished {
+            break;
+        }
+    }
+    assert!(finished, "the removal finished");
+    draw(cx);
+    assert!(
+        cx.debug_bounds("run-row-0").is_some(),
+        "Done keeps the list"
+    );
+    assert!(cx.debug_bounds("run-row-1").is_some());
+    update(&view, cx, |app, _| {
+        assert!(
+            app.run_list
+                .items
+                .iter()
+                .all(|item| item.status == Status::Removed),
+            "every item is checked off"
+        );
+        let totals = app.run_list.totals();
+        assert_eq!((totals.removed, totals.failed), (2, 0));
+        assert_eq!(totals.reported_done, 400_000);
+    });
+    assert!(!temp.path().join(".cache").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
 #[gpui_kit::test]
 fn a_removal_leaves_what_went_in_the_tree_as_removed_and_counts_it(
     cx: &mut TestAppContext,

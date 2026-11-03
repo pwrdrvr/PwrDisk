@@ -471,6 +471,13 @@ pub struct Disktree {
     pub run_epoch: u64,
     pub run_summary: RunSummary,
     pub run_log: Vec<(PathBuf, Result<(), String>)>,
+    /// Every target of the latest run and what happened to it, which
+    /// Removing and Done draw.
+    pub run_list: crate::run_list::RunList,
+    pub run_scroll: gpui_kit::ScrollHandle,
+    /// Free bytes on the scanned volume as the latest run started, for
+    /// what it has freed so far.
+    pub run_free_before: Option<u64>,
     pub space: Option<SpaceInfo>,
     /// Free space before the removal, for the honest "what did it actually
     /// free" number rather than the sum of what was marked.
@@ -736,6 +743,9 @@ impl Disktree {
             run_epoch: 0,
             run_summary: RunSummary::default(),
             run_log: Vec::new(),
+            run_list: crate::run_list::RunList::default(),
+            run_scroll: gpui_kit::ScrollHandle::new(),
+            run_free_before: None,
             space,
             space_baseline: None,
             rescan_after_removal: false,
@@ -3498,6 +3508,10 @@ impl Disktree {
             ..RunSummary::default()
         };
         self.run_log.clear();
+        self.run_list =
+            crate::run_list::RunList::new(self.run_items(&plan.targets));
+        self.run_scroll = gpui_kit::ScrollHandle::new();
+        self.run_free_before = before.map(|space| space.available);
         self.stop_requested = false;
         self.screen = Screen::Running;
         self.run = Some(disktree_core::removal::spawn_limited(
@@ -3554,6 +3568,20 @@ impl Disktree {
                         self.run_summary.bytes += bytes;
                     } else {
                         self.run_summary.failed += 1;
+                    }
+                    if let Some(index) = self.run_list.settle(&path, &outcome)
+                        && self.run_list.follow
+                    {
+                        // The next item is the one in hand; the last one
+                        // reported once there is none.
+                        // Rows are drawn from the window's start.
+                        let next = self.run_list.current().unwrap_or(index);
+                        let start = self
+                            .run_list
+                            .window(crate::run_view::RUN_ROWS)
+                            .start;
+                        self.run_scroll
+                            .scroll_to_item(next.saturating_sub(start));
                     }
                     self.run_log.push((path, outcome));
                 }
@@ -3640,15 +3668,63 @@ impl Disktree {
             || self.removed.ancestor(path, style).is_some()
     }
 
+    /// Whether the scan can say what is private: not in an apparent-size
+    /// scan, nor on macOS without clone metadata.
+    const fn private_known(&self) -> bool {
+        !(self.options.apparent_size
+            || (cfg!(target_os = "macos") && !self.options.apfs_clone_metadata))
+    }
+
+    /// The run's list as it starts: each target with what the scan says it
+    /// is and what it holds alone. A target the tree no longer has keeps
+    /// its marked size and no kind.
+    fn run_items(
+        &self,
+        targets: &[disktree_core::removal::Target],
+    ) -> Vec<crate::run_list::Item> {
+        let private_known = self.private_known();
+        let mut resolver = self.tree.as_ref().map(|tree| {
+            crate::marks::Resolver::new(
+                &self.root_path,
+                tree.root(),
+                self.path_style(),
+            )
+        });
+        targets
+            .iter()
+            .map(|target| {
+                let node = resolver
+                    .as_mut()
+                    .and_then(|resolver| resolver.resolve(&target.path))
+                    .map(|(_, node)| node);
+                crate::run_list::Item {
+                    path: target.path.clone(),
+                    bytes: target.bytes,
+                    category: node
+                        .map(|node| node.category)
+                        .unwrap_or_default(),
+                    reclaim: node.and_then(|node| node.reclaim),
+                    // As `private_estimate` reads one node, and never more
+                    // than was reported for it.
+                    private: node.filter(|_| private_known).map(|node| {
+                        node.sharing()
+                            .estimate
+                            .map_or(node.bytes, |estimate| estimate.lower)
+                            .min(target.bytes)
+                    }),
+                    status: crate::run_list::Status::Waiting,
+                }
+            })
+            .collect()
+    }
+
     /// What the scan saw as only these targets', estimated as review does,
     /// from the tree they were removed from. Unknown where review's is.
     fn private_estimate(
         &self,
         targets: &[disktree_core::removal::Target],
     ) -> Option<u64> {
-        if self.options.apparent_size
-            || (cfg!(target_os = "macos") && !self.options.apfs_clone_metadata)
-        {
+        if !self.private_known() {
             return None;
         }
         let tree = self.tree.as_ref()?;
