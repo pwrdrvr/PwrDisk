@@ -39,10 +39,17 @@ impl Disktree {
     pub(crate) fn agent_prepare_removal(
         &mut self,
         mode: RemovalChoice,
+        cx: &mut Context<'_, Self>,
     ) -> Response {
         // A new preview revokes the previous one even if preparation fails.
         if let Some(agent) = &mut self.agent {
             agent.removal_preview = None;
+        }
+        if mode == RemovalChoice::OwnerCleanup && self.cleanup_ready().is_err()
+        {
+            let reason = self.cleanup_description();
+            self.prepare_cleanup(cx);
+            return Response::error(reason);
         }
         match self.prepare_removal_intent(mode) {
             Ok(prepared) => {
@@ -74,7 +81,16 @@ impl Disktree {
             return Err("Trash is unavailable; permanent deletion requires a new preview and separate user confirmation".into());
         }
         let tree = self.tree.as_ref().ok_or("No complete scan is available")?;
-        let plan = self.plan();
+        let plan = if mode == RemovalChoice::OwnerCleanup {
+            self.cleanup_ready()?.plan.clone()
+        } else {
+            // Do not let a previously selected UI mode change the meaning
+            // of an MCP raw-removal request.
+            disktree_core::removal::plan(self.marks.items(), &self.root_path)
+        };
+        if mode != RemovalChoice::OwnerCleanup {
+            disktree_core::cleanup::check_raw(&plan.targets)?;
+        }
         if !plan.blocked.is_empty() {
             return Err(format!(
                 "Removal guards refuse: {}",
@@ -113,10 +129,19 @@ impl Disktree {
                     .map(|target| target.path.clone())
                     .collect(),
                 bytes: plan.bytes(),
-                estimate: self.agent_selection_estimate(&plan),
+                estimate: if mode == RemovalChoice::OwnerCleanup {
+                    disktree_link::SelectionEstimate::unknown(&plan)
+                } else {
+                    self.agent_selection_estimate(&plan)
+                },
                 limit_percent: limit.percent(),
                 volumes,
                 expires_in_seconds: LIFETIME.as_secs(),
+                cleanup: if mode == RemovalChoice::OwnerCleanup {
+                    self.cleanup_ready()?.operations.clone()
+                } else {
+                    vec![]
+                },
             },
             marks: self.marks.items().to_vec(),
             tree: Arc::downgrade(tree),
@@ -161,6 +186,8 @@ impl Disktree {
         };
         if fresh.preview.limit_percent != preview.limit_percent
             || fresh.preview.volumes != preview.volumes
+            || fresh.preview.cleanup != preview.cleanup
+            || fresh.preview.paths != preview.paths
         {
             return Response::error(
                 "Removal policy or volume capacity changed; obtain a new preview and user confirmation",
@@ -198,6 +225,7 @@ mod tests {
                 limit_percent: 5,
                 volumes: vec![],
                 expires_in_seconds: LIFETIME.as_secs(),
+                cleanup: vec![],
             },
             marks: vec![],
             tree: Weak::new(),

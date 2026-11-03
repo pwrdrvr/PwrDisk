@@ -1,0 +1,308 @@
+//! Bounded, cancellable direct process invocation. Never invokes a shell or
+//! downloads a missing CLI. Full output is drained but only a prefix retained.
+
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
+use std::process::{Command as Process, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::time::{Duration, Instant, SystemTime};
+
+use super::{Command, Environment, Operation, Probe};
+
+const OUTPUT_LIMIT: u64 = 64 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Identity {
+    length: u64,
+    modified: SystemTime,
+}
+
+impl Identity {
+    pub(super) fn read(path: &Path) -> Result<Self, String> {
+        let meta = std::fs::metadata(path).map_err(|error| {
+            format!("Owner executable unavailable: {error}")
+        })?;
+        if !meta.is_file() {
+            return Err("Owner executable is not a file".into());
+        }
+        Ok(Self {
+            length: meta.len(),
+            modified: meta.modified().map_err(|error| error.to_string())?,
+        })
+    }
+}
+
+pub(super) struct SystemProbe;
+
+impl Probe for SystemProbe {
+    #[allow(
+        clippy::unnecessary_debug_formatting,
+        reason = "An executable path in a refusal must expose controls"
+    )]
+    fn executable(
+        &mut self,
+        name: &str,
+        env: &Environment,
+    ) -> Result<PathBuf, String> {
+        // Windows .cmd launchers need a shell and have different quoting
+        // rules. Do not quietly run them through cmd.exe.
+        if cfg!(windows) {
+            return Err("Owner-command execution is currently supported on macOS and Linux; Windows launchers require a separate audited adapter".into());
+        }
+        for dir in std::env::split_paths(
+            env.variables.get("PATH").map_or("", String::as_str),
+        ) {
+            // Relative PATH entries could resolve a different project CLI.
+            if !dir.is_absolute() {
+                continue;
+            }
+            let path = dir.join(name);
+            if path.is_file() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    if std::fs::metadata(&path)
+                        .map_err(|error| error.to_string())?
+                        .permissions()
+                        .mode()
+                        & 0o111
+                        == 0
+                    {
+                        return Err(format!(
+                            "Executable found but not executable: {path:?}"
+                        ));
+                    }
+                }
+                return std::fs::canonicalize(&path)
+                    .map_err(|error| error.to_string());
+            }
+        }
+        Err(format!(
+            "{name} command unavailable on PwrDisk's PATH (software may still be installed)"
+        ))
+    }
+
+    fn output(
+        &mut self,
+        command: &Command,
+        env: &Environment,
+    ) -> Result<String, String> {
+        let output = run(
+            command,
+            env,
+            &AtomicBool::new(false),
+            Duration::from_secs(10),
+        )?;
+        if output.len() as u64 >= OUTPUT_LIMIT {
+            Err("Owner probe output exceeded its bound".into())
+        } else {
+            Ok(output)
+        }
+    }
+}
+
+pub(super) fn run(
+    command: &Command,
+    env: &Environment,
+    cancel: &AtomicBool,
+    timeout: Duration,
+) -> Result<String, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled before command start".into());
+    }
+    let mut process = Process::new(&command.executable);
+    process
+        .args(&command.arguments)
+        .env_clear()
+        .envs(&env.variables)
+        .envs(&command.environment)
+        .current_dir(&command.working_directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Kill a subprocess group on cancellation, so a launcher cannot leave
+    // a cleaning child behind. Every supported adapter is Unix-only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        process.process_group(0);
+    }
+    let mut child = process
+        .spawn()
+        .map_err(|error| format!("Owner command could not start: {error}"))?;
+    let stdout = child.stdout.take().ok_or("Missing owner stdout")?;
+    let stderr = child.stderr.take().ok_or("Missing owner stderr")?;
+    let read = |mut pipe: Box<dyn std::io::Read + Send>| {
+        let mut bytes = Vec::new();
+        let result = (&mut pipe).take(OUTPUT_LIMIT).read_to_end(&mut bytes);
+        let _ = std::io::copy(&mut pipe, &mut std::io::sink());
+        result.map(|_| bytes)
+    };
+    let (out_send, out_recv) = mpsc::channel();
+    let (err_send, err_recv) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = out_send.send(read(Box::new(stdout)));
+    });
+    std::thread::spawn(move || {
+        let _ = err_send.send(read(Box::new(stderr)));
+    });
+    let start = Instant::now();
+    let mut status = None;
+    let mut output = None;
+    let mut errors = None;
+    loop {
+        if cancel.load(Ordering::Relaxed) || start.elapsed() >= timeout {
+            terminate(&mut child);
+            return Err("Owner command cancelled or timed out; it may have partially cleaned the cache. No deletion fallback; inspect and preview again".into());
+        }
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(value) => status = value,
+                Err(error) => {
+                    terminate(&mut child);
+                    return Err(format!(
+                        "Cannot observe owner command: {error}"
+                    ));
+                }
+            }
+        }
+        if output.is_none() {
+            output = out_recv.try_recv().ok();
+        }
+        if errors.is_none() {
+            errors = err_recv.try_recv().ok();
+        }
+        if let (Some(status), Some(output), Some(errors)) =
+            (status, output.as_ref(), errors.as_ref())
+        {
+            let errors = errors.as_ref().map_err(ToString::to_string)?;
+            if !status.success() {
+                return Err(format!(
+                    "Owner command failed ({status}): {}. It may have partially cleaned the cache; no raw deletion fallback",
+                    String::from_utf8_lossy(errors).escape_debug()
+                ));
+            }
+            let output = output.as_ref().map_err(ToString::to_string)?;
+            return Ok(String::from_utf8_lossy(output).into_owned());
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+fn terminate(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    if let Ok(pid) = i32::try_from(child.id())
+        && let Some(pid) = rustix::process::Pid::from_raw(pid)
+    {
+        let _ = rustix::process::kill_process_group(
+            pid,
+            rustix::process::Signal::KILL,
+        );
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Owners can follow links internally. Refuse any link or volume boundary
+/// inside their actual scope, rather than assuming their traversal matches
+/// PwrDisk's unlink semantics. Bound the walk and fail closed on read errors.
+#[allow(
+    clippy::unnecessary_debug_formatting,
+    reason = "Safety errors must expose path controls"
+)]
+pub(super) fn check_tree(root: &Path) -> Result<(), String> {
+    let volume =
+        crate::space::device_for(root).ok_or("Cannot identify cache volume")?;
+    let mut pending = vec![root.to_owned()];
+    let mut visited = 0;
+    while let Some(path) = pending.pop() {
+        visited += 1;
+        if visited > 2_000_000 {
+            return Err("Cache is too large for bounded owner preflight; inspect manually".into());
+        }
+        let meta = std::fs::symlink_metadata(&path)
+            .map_err(|error| error.to_string())?;
+        if meta.is_symlink() {
+            if path == root {
+                return Err(
+                    "Owner cache scope is a symlink; inspect its actual root"
+                        .into(),
+                );
+            }
+            let destination =
+                std::fs::canonicalize(&path).map_err(|error| {
+                    format!("Cannot resolve cache symlink: {error}")
+                })?;
+            let real_root = std::fs::canonicalize(root)
+                .map_err(|error| error.to_string())?;
+            if !destination.starts_with(real_root) {
+                return Err(format!(
+                    "Owner scope contains an external symlink: {path:?}; inspect manually"
+                ));
+            }
+        }
+        if meta.is_dir() {
+            if crate::space::device_for(&path).as_deref()
+                != Some(volume.as_str())
+            {
+                return Err("Owner scope crosses a volume boundary".into());
+            }
+            for entry in
+                std::fs::read_dir(&path).map_err(|error| error.to_string())?
+            {
+                pending.push(entry.map_err(|error| error.to_string())?.path());
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn check_active(operation: &Operation) -> Result<(), String> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            sysinfo::ProcessRefreshKind::everything(),
+        );
+        if system.processes().is_empty() {
+            return Err("Cannot check active owner processes".into());
+        }
+        let cache = operation
+            .cache_root
+            .to_str()
+            .ok_or("Unsupported cache path")?;
+        for (pid, process) in system.processes() {
+            if pid.as_u32() == std::process::id() {
+                continue;
+            }
+            let in_scope = process
+                .exe()
+                .is_some_and(|path| path.starts_with(&operation.scope))
+                || process
+                    .cwd()
+                    .is_some_and(|path| path.starts_with(&operation.scope));
+            let owner = operation.owner.executable();
+            let using_cache = process.cmd().iter().any(|argument| {
+                let argument = argument.to_string_lossy();
+                argument.contains(cache)
+                    || Path::new(argument.as_ref())
+                        .file_name()
+                        .is_some_and(|name| name == owner)
+            });
+            if in_scope || using_cache {
+                return Err(format!(
+                    "{} may be active (process {pid}); stop it and prepare a new preview",
+                    operation.owner.label()
+                ));
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = operation;
+        Err("Active-use checking is unsupported on this platform".into())
+    }
+}

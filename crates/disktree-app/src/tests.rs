@@ -6467,9 +6467,14 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
     use crate::run_list::Status;
     cx.update(init);
     let temp = fixture();
+    // This test exercises ordinary raw removal. Cache removal is covered
+    // separately and must go through an owner preview.
+    std::fs::rename(temp.path().join(".cache"), temp.path().join("target"))
+        .expect("ordinary removal fixture");
+    std::fs::write(temp.path().join("Cargo.toml"), "").expect("build manifest");
     let (view, cx) = view_over(temp.path(), cx);
     let epoch = update(&view, cx, |app, cx| {
-        for name in [".cache", "junk/deeper"] {
+        for name in ["target", "junk/deeper"] {
             let crumbs = app
                 .crumbs_for_path(&app.root_path.join(name))
                 .expect("in the tree");
@@ -6494,9 +6499,9 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
         assert_eq!(app.run_list.current(), Some(0));
         let cache = items
             .iter()
-            .find(|item| item.target.path.ends_with(".cache"))
-            .expect("the cache is listed");
-        assert_eq!(cache.kind(), Some("regenerable"), "and says why");
+            .find(|item| item.target.path.ends_with("target"))
+            .expect("the build output is listed");
+        assert_eq!(cache.kind(), Some("build output"), "and says why");
         assert_eq!(cache.target.bytes, 300_000);
     });
 
@@ -6530,7 +6535,7 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
         assert_eq!((totals.removed, totals.failed), (2, 0));
         assert_eq!(totals.reported_done, 400_000);
     });
-    assert!(!temp.path().join(".cache").exists());
+    assert!(!temp.path().join("target").exists());
     assert!(temp.path().join("keep/notes.txt").exists());
 }
 
@@ -9588,4 +9593,47 @@ fn the_marked_total_is_pinned_above_the_disk_with_the_review(
     );
     click_on(cx, "review");
     assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+}
+
+/// Cache classification steers review, but grants no generic deletion.
+#[gpui_kit::test]
+fn cache_review_requires_owner_preview_and_never_falls_back_to_raw_removal(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let cache = child_crumbs(app, &[], ".cache");
+        app.toggle_mark(&cache, cx);
+        app.open_review(cx);
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+        // Confirm cannot execute a missing owner preview, even if reached
+        // directly rather than through the disabled/preview UI.
+        app.confirm_delete(cx);
+        assert!(app.run.is_none());
+        assert_eq!(app.screen, Screen::Review);
+        assert!(app.cleanup_description().contains("Prepare a new"));
+        // Neither explicit raw mode can silently replace owner cleanup.
+        for mode in [RemovalMode::Permanent, RemovalMode::Trash] {
+            app.removal_mode = mode;
+            app.begin_removal(cx);
+            assert!(app.run.is_none());
+            assert!(
+                app.notice
+                    .as_ref()
+                    .expect("refusal")
+                    .0
+                    .contains("Owner cleanup")
+            );
+        }
+        app.removal_mode = RemovalMode::OwnerCleanup;
+        app.confirm_open = true;
+        app.cancel_delete(cx);
+        assert!(!app.confirm_open);
+        assert!(app.run.is_none());
+    });
+    draw(cx);
+    assert!(temp.path().join(".cache/blob.bin").exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
 }

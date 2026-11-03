@@ -262,6 +262,7 @@ impl From<CategoryName> for Category {
 pub enum RemovalModeName {
     Trash,
     Permanent,
+    OwnerCleanup,
 }
 
 impl From<RemovalModeName> for RemovalChoice {
@@ -269,6 +270,7 @@ impl From<RemovalModeName> for RemovalChoice {
         match mode {
             RemovalModeName::Trash => Self::Trash,
             RemovalModeName::Permanent => Self::Permanent,
+            RemovalModeName::OwnerCleanup => Self::OwnerCleanup,
         }
     }
 }
@@ -276,7 +278,8 @@ impl From<RemovalModeName> for RemovalChoice {
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemovalPreviewParams {
-    /// Required: trash (possibly recoverable) or permanent (cannot be undone).
+    /// Required: `owner_cleanup` for recognized caches, trash or permanent for
+    /// ordinary paths. Owner cleanup previews the entire actual command scope.
     pub mode: RemovalModeName,
 }
 
@@ -1501,6 +1504,9 @@ impl Session {
                 human_bytes(volume.capacity)
             );
         }
+        for operation in &preview.cleanup {
+            let _ = writeln!(message, "\n{}", operation.description());
+        }
         message.push_str(&estimate_report(&preview.estimate));
         message.push_str("\nApproval to mark does not authorize removal. Only these listed paths are included; directory removal includes their contents. Listed bytes are not guaranteed freed space.");
         Ok(message)
@@ -1988,6 +1994,9 @@ impl Session {
         if let Some(removal) =
             self.window.as_ref().and_then(|state| state.removal.clone())
         {
+            for report in &removal.cleanup {
+                let _ = writeln!(out, "{}", report.description());
+            }
             let _ = writeln!(
                 out,
                 "Last removal: {} \u{00b7} {} removed \u{00b7} {} failed \
@@ -2908,6 +2917,7 @@ mod tests {
                     bytes: 700_000,
                     freed: Some(690_000),
                     at: now() - 120,
+                    cleanup: vec![],
                 }),
                 removals: Some(disktree_link::RemovalLedger {
                     cohorts: vec![disktree_link::RemovalCohort {

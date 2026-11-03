@@ -210,7 +210,7 @@ impl Disktree {
             }
             Request::State => Response::State(self.agent_state()),
             Request::PrepareRemoval { mode } => {
-                self.agent_prepare_removal(*mode)
+                self.agent_prepare_removal(*mode, cx)
             }
             Request::Remove(request) => self.agent_remove(request, cx),
             Request::Show { root, path } => self.agent_show(root, path, cx),
@@ -249,7 +249,7 @@ impl Disktree {
                 if self.marks.is_empty() {
                     return Response::error("nothing is marked");
                 }
-                self.screen = Screen::Review;
+                self.open_review(cx);
                 self.confirm_open = false;
                 self.note_agent(None, "opened the review screen".to_string());
                 cx.notify();
@@ -651,12 +651,14 @@ impl Disktree {
             mode: match self.removal_mode {
                 RemovalMode::Trash => "trash".to_string(),
                 RemovalMode::Permanent => "permanent".to_string(),
+                RemovalMode::OwnerCleanup => "owner_cleanup".to_string(),
             },
             removed: totals.removed,
             failed: totals.failed_all(),
             bytes: totals.reported_done,
             freed,
             at: now_seconds(),
+            cleanup: self.cleanup_results.clone(),
         });
     }
 
@@ -676,6 +678,9 @@ impl Disktree {
                     mode: match cohort.mode {
                         RemovalMode::Trash => "trash".to_string(),
                         RemovalMode::Permanent => "permanent".to_string(),
+                        RemovalMode::OwnerCleanup => {
+                            "owner_cleanup".to_string()
+                        }
                     },
                     removed: cohort.removed,
                     failed: cohort.failed,
@@ -767,7 +772,8 @@ impl Disktree {
     ) -> SelectionEstimate {
         // Apparent lengths cannot project physical savings, and disabling
         // APFS metadata cannot establish that all listed blocks are private.
-        if self.options.apparent_size
+        if self.removal_mode == RemovalMode::OwnerCleanup
+            || self.options.apparent_size
             || (cfg!(target_os = "macos") && !self.options.apfs_clone_metadata)
         {
             return SelectionEstimate::unknown(plan);

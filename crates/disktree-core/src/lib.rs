@@ -7,6 +7,7 @@
 
 pub mod access;
 pub mod classify;
+pub mod cleanup;
 #[cfg(any(target_os = "macos", test))]
 mod clone_cache;
 pub mod deployment;

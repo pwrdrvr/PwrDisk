@@ -441,6 +441,8 @@ pub struct Disktree {
     /// pressing its button toggles instead of reopening.
     pub export_menu_was_open: bool,
     pub removal_mode: RemovalMode,
+    pub cleanup_review: Option<crate::cleanup::Review>,
+    pub cleanup_results: Vec<disktree_core::cleanup::Report>,
     pub trash_backend: TrashBackend,
     /// The permanent-deletion alert dialog is open. Trash needs no dialog: it
     /// is reversible, so it commits directly.
@@ -733,6 +735,8 @@ impl Disktree {
                 RemovalMode::Permanent
             },
             trash_backend,
+            cleanup_review: None,
+            cleanup_results: vec![],
             confirm_open: false,
             confirm_focus: cx.focus_handle(),
             overlay_return: None,
@@ -1575,6 +1579,14 @@ impl Disktree {
             ));
         } else {
             self.screen = Screen::Review;
+            if self.remote.is_none()
+                && self.marks.items().iter().any(|target| {
+                    disktree_core::cleanup::inspection_reason(&target.path)
+                        .is_some()
+                })
+            {
+                self.removal_mode = RemovalMode::OwnerCleanup;
+            }
             self.focus_request = Some(FocusTarget::Root);
         }
         cx.notify();
@@ -2866,6 +2878,11 @@ impl Disktree {
             // this computer's mounts or project an unmeasured saving.
             return selection;
         }
+        if self.removal_mode == RemovalMode::OwnerCleanup
+            && let Ok(prepared) = self.cleanup_ready()
+        {
+            return prepared.plan.clone();
+        }
         let mut plan = plan(self.marks.items(), &self.root_path);
         if let Some(tree) = &self.tree {
             let mut cached = self.accounting.borrow_mut();
@@ -3379,7 +3396,13 @@ impl Disktree {
         self.rescan_after_removal = rescan;
         match self.removal_mode {
             RemovalMode::Trash => self.begin_removal(cx),
-            RemovalMode::Permanent => {
+            RemovalMode::Permanent | RemovalMode::OwnerCleanup => {
+                if self.removal_mode == RemovalMode::OwnerCleanup
+                    && self.cleanup_ready().is_err()
+                {
+                    self.prepare_cleanup(cx);
+                    return;
+                }
                 self.confirm_open = true;
                 self.focus_request = Some(FocusTarget::Dialog);
                 cx.notify();
@@ -3471,6 +3494,23 @@ impl Disktree {
             return;
         }
         let plan = self.plan();
+        if self.removal_mode != RemovalMode::OwnerCleanup
+            && let Some((target, reason)) =
+                plan.targets.iter().find_map(|target| {
+                    disktree_core::cleanup::inspection_reason(&target.path)
+                        .map(|reason| (target, reason))
+                })
+        {
+            self.notice = Some((
+                format!(
+                    "{}: {reason}. Choose Owner cleanup and preview its actual scope.",
+                    target.path.display()
+                ),
+                Status::Warning,
+            ));
+            cx.notify();
+            return;
+        }
         if plan.is_empty() {
             self.notice = Some(("nothing is marked".into(), Status::Warning));
             cx.notify();
@@ -3497,6 +3537,18 @@ impl Disktree {
             cx.notify();
             return;
         }
+        let cleanup = if self.removal_mode == RemovalMode::OwnerCleanup {
+            match self.take_cleanup() {
+                Ok(prepared) => Some(prepared),
+                Err(reason) => {
+                    self.notice = Some((reason, Status::Warning));
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         // Measured now rather than read from the ticker, which can be a
         // second old: the observed figure is only as good as its baseline.
         let before = space_info(&self.root_path).ok().or(self.space);
@@ -3513,13 +3565,20 @@ impl Disktree {
             crate::run_list::RunList::new(self.run_items(&plan.targets));
         self.run_scroll = gpui_kit::UniformListScrollHandle::new();
         self.run_free_before = before.map(|space| space.available);
+        self.cleanup_results.clear();
         self.stop_requested = false;
         self.screen = Screen::Running;
-        self.run = Some(disktree_core::removal::spawn_limited(
-            plan,
-            self.removal_mode,
-            limit,
-        ));
+        self.run = Some(if let Some(prepared) = cleanup {
+            // Consume the exact preview before starting; a retry needs new
+            // preparation and consent even when the command fails.
+            disktree_core::removal::spawn_cleanup(prepared, limit)
+        } else {
+            disktree_core::removal::spawn_limited(
+                plan,
+                self.removal_mode,
+                limit,
+            )
+        });
         Self::poll_removal(epoch, cx);
         cx.notify();
     }
@@ -3565,6 +3624,9 @@ impl Disktree {
         while let Some(event) = run.poll() {
             changed = true;
             match event {
+                RemovalEvent::Cleanup(report) => {
+                    self.cleanup_results.push(report);
+                }
                 // The list was built from the plan, so it already holds
                 // the total the worker announces.
                 RemovalEvent::Start { .. } => {}
@@ -3615,7 +3677,13 @@ impl Disktree {
             self.screen = Screen::Done;
             // What went stays drawn, as removed, until a scan: a rescan
             // of a whole disk takes minutes and is asked for, never implied.
-            self.note_removed(removed);
+            if self.removal_mode == RemovalMode::OwnerCleanup {
+                // Owner success does not mean the cache directory vanished.
+                // Partial failure can change it too. A fresh tree is required.
+                self.rescan_after_removal = true;
+            } else {
+                self.note_removed(removed);
+            }
             if std::mem::take(&mut self.rescan_after_removal) {
                 self.start_scan(cx);
             }
@@ -3718,7 +3786,11 @@ impl Disktree {
             return Vec::new();
         };
         let removed: Vec<_> = self.run_list.removed().cloned().collect();
-        let private = self.private_estimate(&removed);
+        let private = if start.mode == RemovalMode::OwnerCleanup {
+            None
+        } else {
+            self.private_estimate(&removed)
+        };
         let totals = self.run_list.totals();
         self.ledger.push(crate::ledger::Cohort {
             mode: start.mode,
@@ -3773,7 +3845,8 @@ impl Disktree {
         &self,
         targets: &[disktree_core::removal::Target],
     ) -> Vec<crate::run_list::Item> {
-        let private_known = self.private_known();
+        let private_known = self.private_known()
+            && self.removal_mode != RemovalMode::OwnerCleanup;
         let mut resolver = self.tree.as_ref().map(|tree| {
             crate::marks::Resolver::new(
                 &self.root_path,
