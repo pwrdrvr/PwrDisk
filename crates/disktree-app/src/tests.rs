@@ -7985,6 +7985,101 @@ fn a_toast_hides_the_treemap_under_it(cx: &mut TestAppContext) {
     );
 }
 
+/// Review's export menu opens over the marked list and takes the pointer:
+/// resting on it never raises the path tooltip of the row underneath, and
+/// a press on its padding reaches no row.
+#[gpui_kit::test]
+fn the_export_menu_hides_the_list_under_it(cx: &mut TestAppContext) {
+    use gpui_kit::Modifiers;
+    use std::time::Duration;
+    const TIP: &str = "omarchy-tooltip-surface";
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _tree) = review_with_tree(temp.path(), cx);
+    // Short enough that the menu, which opens upward from the footer,
+    // reaches the first row.
+    cx.simulate_resize(gpui_kit::size(px(900.), px(300.)));
+    let rest = |cx: &mut Window, at| {
+        cx.simulate_mouse_move(at, None, Modifiers::none());
+        cx.executor().advance_clock(Duration::from_millis(600));
+        cx.run_until_parked();
+        draw(cx);
+    };
+    draw(cx);
+    let row = cx.debug_bounds("review-row-0").expect("the marked row");
+
+    // The row's own tooltip, so its absence below means something.
+    rest(cx, row.center());
+    assert!(cx.debug_bounds(TIP).is_some(), "the row names its path");
+    let back = cx.debug_bounds("back").expect("Back");
+    rest(cx, back.center());
+
+    click_on(cx, "export");
+    let menu = cx.debug_bounds("export-menu").expect("the menu");
+    // In the menu's top padding, above its first item, and over the row.
+    let on_menu = menu.origin + Point::new(px(24.), px(2.));
+    assert!(row.contains(&on_menu), "{menu:?} over {row:?}");
+
+    rest(cx, on_menu);
+    assert!(
+        cx.debug_bounds(TIP).is_none(),
+        "the pointer is on the menu, not the row under it"
+    );
+
+    let marks = read(&view, cx, |app| app.marks.len());
+    cx.simulate_click(on_menu, Modifiers::none());
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.marks.len()), marks, "no row hit");
+    assert!(
+        cx.debug_bounds("export-menu").is_some(),
+        "a press inside the menu leaves it open"
+    );
+}
+
+/// The strip's menu drops over the treemap and takes the pointer: a press
+/// on its padding selects no tile, and a scroll there zooms nothing.
+#[gpui_kit::test]
+fn the_app_menu_hides_the_treemap_under_it(cx: &mut TestAppContext) {
+    use gpui_kit::Modifiers;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, Disktree::toggle_app_menu);
+    draw(cx);
+    let menu = cx.debug_bounds("app-menu").expect("the menu");
+    let treemap = cx.debug_bounds("treemap").expect("the mosaic");
+    // On a group's heading, which is only text: just above the group's
+    // first row, in the first group drawn over the mosaic.
+    let on_menu = (1..8)
+        .filter_map(|group| {
+            let first = (0..8).find_map(|index| {
+                cx.debug_bounds(Box::leak(
+                    format!("app-menu-{group}-{index}").into_boxed_str(),
+                ))
+            })?;
+            Some(Point::new(menu.origin.x + px(24.), first.top() - px(4.)))
+        })
+        .find(|at| treemap.contains(at))
+        .unwrap_or_else(|| panic!("a heading over {treemap:?} in {menu:?}"));
+
+    let (selected, zoom) =
+        read(&view, cx, |app| (app.selected.clone(), app.view));
+    cx.simulate_click(on_menu, Modifiers::none());
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: on_menu,
+        delta: gpui_kit::ScrollDelta::Lines(Point::new(0., 3.)),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    draw(cx);
+    assert_eq!(
+        read(&view, cx, |app| (app.selected.clone(), app.view)),
+        (selected, zoom),
+        "a press or a scroll on the menu leaves the mosaic alone"
+    );
+    assert!(read(&view, cx, |app| app.app_menu_open), "still open");
+}
+
 /// The ready card gives way while a removal runs (Restart would wait for
 /// it anyway); the strip's chip still offers the release. The pointer that
 /// rested on the card is forgotten with it, so the next answer still runs
