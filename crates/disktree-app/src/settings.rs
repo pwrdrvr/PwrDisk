@@ -12,6 +12,7 @@
 
 use crate::semantics::{AccessibleButton as _, text as readable};
 use disktree_core::path_style::PathStyle;
+use disktree_core::removal_limit::Limit;
 use std::path::PathBuf;
 
 use gpui_kit::prelude::FluentBuilder as _;
@@ -172,6 +173,10 @@ pub struct SettingsWindow {
     copied: Option<&'static str>,
     /// Why the last pick could not be saved.
     pub note: Option<String>,
+    /// The saved removal limit, as Safety shows it: read when the pane
+    /// opens and after a pick is saved, never while drawing, which runs
+    /// on every frame.
+    pub safety: Result<Limit, String>,
     focus: FocusHandle,
     pub pane_scroll: gpui_kit::ScrollHandle,
     strip_drag: bool,
@@ -186,10 +191,12 @@ impl Drags for SettingsWindow {
 impl SettingsWindow {
     pub fn new(pane: Pane, cx: &Context<'_, Self>) -> Self {
         let installed = updater::installed_version();
+        let updates_dir = updater::settings_dir();
         Self {
             pane,
             updates_row: updater::selection().resolve(&installed).index(),
-            updates_dir: updater::settings_dir(),
+            safety: crate::safety::load(updates_dir.as_deref()),
+            updates_dir,
             diagnostics: diagnostics::collect(cx),
             copied: None,
             note: None,
@@ -203,7 +210,17 @@ impl SettingsWindow {
         self.pane = pane;
         self.copied = None;
         self.diagnostics = diagnostics::collect(cx);
+        if pane == Pane::Safety {
+            self.reload_safety();
+        }
         cx.notify();
+    }
+
+    /// Read the saved removal limit again.
+    fn reload_safety(&mut self) {
+        self.safety = crate::safety::load(self.updates_dir.as_deref());
+        #[cfg(test)]
+        work::SAFETY_LOADS.set(work::SAFETY_LOADS.get() + 1);
     }
 
     fn copy(
@@ -496,7 +513,7 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Div {
-        let current = crate::safety::load(self.updates_dir.as_deref());
+        let current = &self.safety;
         // One choice of six, so one control: the segments the review
         // screen uses for Trash or permanent, saved as soon as one is
         // picked. Six buttons read as six commands.
@@ -523,10 +540,7 @@ impl SettingsWindow {
                     picked,
                     move |index, window, cx| {
                         let _ = entity.update(cx, |this, cx| {
-                            this.note =
-                                disktree_core::removal_limit::Limit::new(
-                                    LIMITS[index],
-                                )
+                            this.note = Limit::new(LIMITS[index])
                                 .and_then(|limit| {
                                     crate::safety::save(
                                         this.updates_dir.as_deref(),
@@ -534,6 +548,9 @@ impl SettingsWindow {
                                     )
                                 })
                                 .err();
+                            // Read back what was written, so the pane
+                            // shows the file and not the click.
+                            this.reload_safety();
                             // Back to the window, as the other panes'
                             // controls do, so Tab keeps walking panes.
                             window.focus(&this.focus, cx);
@@ -583,7 +600,7 @@ impl SettingsWindow {
                 readable("safety-error", reason.clone())
                     .role(Role::Alert)
                     .text_color(theme.warning)
-                    .child(reason),
+                    .child(reason.clone()),
             );
         }
         if let Some(note) = &self.note {
@@ -1524,4 +1541,15 @@ fn alert_note(note: &str, theme: &Theme) -> Stateful<Div> {
         .role(Role::Alert)
         .text_color(theme.warning)
         .child(note.to_owned())
+}
+
+/// What Settings did, counted for the tests that hold it to doing it once.
+#[cfg(test)]
+pub mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// Reads of the saved removal limit.
+        pub static SAFETY_LOADS: Cell<usize> = const { Cell::new(0) };
+    }
 }

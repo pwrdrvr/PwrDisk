@@ -981,7 +981,7 @@ fn explore(
     // only gives way when the mosaic would be too narrow to read.
     let panel = (app.show_selection || app.is_indexing())
         && width_rems >= PANEL_SHOWN_REMS;
-    if panel && let Some(path) = selection_checkout(app) {
+    if panel && let Some(path) = panel_checkout(app) {
         app.ensure_git(&path, cx);
     }
 
@@ -1085,18 +1085,20 @@ fn explore(
         .child(key_bar(app, &theme, cx))
 }
 
-/// The selection, when it is a checkout git can say something about.
-fn selection_checkout(app: &Disktree) -> Option<std::path::PathBuf> {
+/// The directory the panel's Selection describes, when it is a checkout
+/// git can say something about. The same target `selection_section` draws,
+/// which reads the answer back with `known_checkout`.
+fn panel_checkout(app: &mut Disktree) -> Option<std::path::PathBuf> {
     if app.remote.is_some() {
         return None;
     }
-    let target = app.action_target()?;
+    let target = app.action_target().unwrap_or_else(|| app.crumbs.clone());
     let node = app.node_at(&target)?;
     if !node.is_dir() {
         return None;
     }
     let path = app.path_at(&target)?;
-    crate::git::is_checkout(&path).then_some(path)
+    app.checkout_at(&path).then_some(path)
 }
 
 /// Width, in rem, below which the side panel gives the mosaic its room.
@@ -2925,7 +2927,7 @@ fn selection_section(
     let fourth = if app.remote.is_none()
         && node.is_dir()
         && let Some(path) = &path
-        && crate::git::is_checkout(path)
+        && app.known_checkout(path)
     {
         let value = match app.git.get(path) {
             Some(Some(state)) => state.summary(),
