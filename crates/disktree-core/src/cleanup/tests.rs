@@ -847,6 +847,21 @@ fn configured_root_whitespace_cannot_redirect_cleanup_to_a_similar_path() {
     let fixture = Fixture::new();
     let selected = fixture.dir("custom-cache");
     let configured = fixture.dir("custom-cache ");
+    for suffix in ["\r\n", "\n\n"] {
+        let ambiguous =
+            PathBuf::from(format!("{}{suffix}", selected.display()));
+        let mut probe = fixture.probe("uv", "uv 0.11.0", &ambiguous);
+        assert!(
+            prepare_with(
+                &[target(&selected)],
+                &fixture.root,
+                fixture.env.clone(),
+                &mut probe
+            )
+            .is_err(),
+            "ambiguous line endings must not select another directory"
+        );
+    }
     let mut probe = fixture.probe("uv", "uv 0.11.0", &configured);
     assert!(
         prepare_with(
