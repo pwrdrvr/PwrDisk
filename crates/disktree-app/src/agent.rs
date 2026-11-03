@@ -358,6 +358,23 @@ impl Disktree {
         let Some(tree) = self.tree.as_deref() else {
             return Response::error("The window has no completed scan.");
         };
+        // The tree still holds what was removed since the scan, at the
+        // scan's sizes: an estimate over it would price space already
+        // gone.
+        if let Some(path) = paths.iter().find(|path| {
+            self.was_removed(path)
+                || self.removed.below(path, PathStyle::Native) > 0
+        }) {
+            return Response::error(format!(
+                "{} {} since the scan; rescan before estimating it.",
+                display_path(path, self.home.as_deref(), PathStyle::Native),
+                if self.was_removed(path) {
+                    "was removed"
+                } else {
+                    "lost part of itself to a removal"
+                },
+            ));
+        }
         let summary = self.agent_state().tree;
         let context = disktree_core::planning::Context::of(
             &self.root_path,
@@ -375,7 +392,7 @@ impl Disktree {
 
     /// What is in a directory of the tree on screen.
     fn agent_ls(&mut self, path: &Path, limit: usize) -> Response {
-        let listing = match self.agent_node(path) {
+        let mut listing = match self.agent_node(path) {
             Ok(node) => Listing::of(
                 &self.root_path,
                 self.tree.as_ref().map_or(0, |tree| tree.root().bytes),
@@ -385,7 +402,6 @@ impl Disktree {
             ),
             Err(message) => return Response::error(message),
         };
-        let mut listing = listing;
         self.note_removal(&mut listing.entry, path);
         for child in &mut listing.children {
             let path = path.join(&child.name);

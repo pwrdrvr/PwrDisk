@@ -6338,6 +6338,23 @@ fn an_agent_listing_says_what_was_removed_since_the_scan(
         .expect("still found");
     assert!(hit.entry.removed);
 
+    // An estimate over what went, or around it, would price space already
+    // gone: it asks for a rescan instead.
+    for path in [root.join("junk/deeper"), root.join("junk")] {
+        let answer = ask(
+            Request::Estimate {
+                paths: vec![path],
+                peer_scope: None,
+                peer_limit: 0,
+            },
+            cx,
+        );
+        assert!(
+            matches!(&answer, Response::Error { message } if message.contains("rescan")),
+            "{answer:?}"
+        );
+    }
+
     // A rescan sees the disk as it is, and nothing is flagged.
     update(&view, cx, Disktree::start_scan);
     finish_scan(&view, cx);
