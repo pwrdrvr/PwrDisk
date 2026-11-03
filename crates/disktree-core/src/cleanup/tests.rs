@@ -691,6 +691,40 @@ fn observed_space_can_decrease_and_never_equals_scope_allocation_by_assumption()
     assert_eq!(failure.error.as_deref(), Some("owner exit 17"));
 }
 
+#[test]
+fn active_owner_detection_recognizes_node_launchers_and_pip3() {
+    let mut operation = Operation {
+        owner: Owner::Npm,
+        version: "11.6.2".into(),
+        selected: vec![],
+        cache_root: "/fixture/.npm".into(),
+        scope: "/fixture/.npm/_cacache".into(),
+        command: Command {
+            executable: "/fixture/npm-cli.js".into(),
+            arguments: vec![],
+            environment: BTreeMap::new(),
+            working_directory: "/fixture".into(),
+        },
+        effects: String::new(),
+        limitations: String::new(),
+    };
+    assert!(process::owner_argument(
+        &operation,
+        "/other-install/npm-cli.js"
+    ));
+    assert!(process::owner_argument(
+        &operation,
+        "/other-install/npx-cli.js"
+    ));
+    assert!(!process::owner_argument(
+        &operation,
+        "/fixture/unrelated.js"
+    ));
+    operation.owner = Owner::Pip;
+    assert!(process::owner_argument(&operation, "/fixture/bin/pip3"));
+    assert!(process::owner_argument(&operation, "pip"));
+}
+
 #[cfg(unix)]
 #[test]
 fn executable_resolution_uses_pip3_and_refuses_nonexecutable_files() {

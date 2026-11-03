@@ -293,13 +293,9 @@ pub(super) fn check_active(operation: &Operation) -> Result<(), String> {
                 || process
                     .cwd()
                     .is_some_and(|path| path.starts_with(&operation.scope));
-            let owner = operation.owner.executable();
             let using_cache = process.cmd().iter().any(|argument| {
                 let argument = argument.to_string_lossy();
-                argument.contains(cache)
-                    || Path::new(argument.as_ref())
-                        .file_name()
-                        .is_some_and(|name| name == owner)
+                argument.contains(cache) || owner_argument(operation, &argument)
             });
             if in_scope || using_cache {
                 return Err(format!(
@@ -315,4 +311,26 @@ pub(super) fn check_active(operation: &Operation) -> Result<(), String> {
         let _ = operation;
         Err("Active-use checking is unsupported on this platform".into())
     }
+}
+
+/// Node launchers appear as `node .../npm-cli.js`, and Python installations
+/// commonly expose pip3. Comparing only the friendly owner name misses
+/// those live writers even though their configured cache is the same.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+pub(super) fn owner_argument(operation: &Operation, argument: &str) -> bool {
+    let path = Path::new(argument);
+    let name = path.file_name();
+    path == operation.command.executable
+        || name.is_some_and(|name| {
+            name == operation.owner.executable()
+                || Some(name) == operation.command.executable.file_name()
+                || (matches!(
+                    operation.owner,
+                    super::Owner::Npm | super::Owner::Npx
+                ) && matches!(
+                    name.to_str(),
+                    Some("npm" | "npx" | "npm-cli.js" | "npx-cli.js")
+                ))
+                || (operation.owner == super::Owner::Pip && name == "pip3")
+        })
 }
