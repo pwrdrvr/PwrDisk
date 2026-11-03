@@ -1085,14 +1085,17 @@ fn explore(
         .child(key_bar(app, &theme, cx))
 }
 
-/// The directory the panel's Selection describes, when it is a checkout
-/// git can say something about. The same target `selection_section` draws,
-/// which reads the answer back with `known_checkout`.
+/// The selected tile, when it is a checkout git can say something about;
+/// `selection_section` reads the answer back with `known_checkout`.
+///
+/// Only a selected tile: with nothing selected the panel describes the
+/// directory on screen, often the scan root, and `git status` there can
+/// walk a whole home directory tracked as a dotfiles checkout.
 fn panel_checkout(app: &mut Disktree) -> Option<std::path::PathBuf> {
     if app.remote.is_some() {
         return None;
     }
-    let target = app.action_target().unwrap_or_else(|| app.crumbs.clone());
+    let target = app.action_target().filter(|target| !target.is_empty())?;
     let node = app.node_at(&target)?;
     if !node.is_dir() {
         return None;
@@ -2927,6 +2930,9 @@ fn selection_section(
     let fourth = if app.remote.is_none()
         && node.is_dir()
         && let Some(path) = &path
+        // What `panel_checkout` asked about: a selected tile, never the
+        // directory on screen.
+        && app.action_target().is_some()
         && app.known_checkout(path)
     {
         let value = match app.git.get(path) {

@@ -1811,6 +1811,17 @@ fn the_panel_checks_for_a_checkout_once_per_selection(cx: &mut TestAppContext) {
     });
     assert!(next_is_dir, "the fixture's second entry is a directory");
     assert_eq!(crate::git::CHECKS.get(), 2);
+
+    // With nothing selected the panel describes the scan root, which is
+    // never asked about: not even its `.git`, let alone `git status`.
+    std::fs::create_dir(temp.path().join(".git")).expect("mkdir .git");
+    press(cx, "escape");
+    for _ in 0..5 {
+        draw(cx);
+    }
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), None);
+    assert_eq!(crate::git::CHECKS.get(), 2, "the root is not checked");
+    assert!(read(&view, cx, |app| app.git.is_empty()), "no git status");
 }
 
 /// Shift-U, which opened the Updates panel, opens Settings › Updates in
