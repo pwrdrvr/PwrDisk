@@ -280,13 +280,37 @@ fn detect_parts(parts: &[&str], is_dir: bool) -> Option<Detection> {
         parts.get(..parts.len().saturating_sub(1))?
     };
     if directories
-        .last()
-        .is_some_and(|name| name.eq_ignore_ascii_case(".git"))
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(".git"))
     {
         return Some(Detection::new(Artifact::GitRepo, Evidence::Name));
     }
+    if let Some(end) = pnpm_store_end(directories) {
+        return Some(Detection::new(
+            Artifact::PackageCache,
+            evidence(&directories[..end]),
+        ));
+    }
     let (end, kind) = developer(directories)?;
     Some(Detection::new(kind, evidence(&directories[..end])))
+}
+
+/// The owning store, rather than any cache that happens to contain it.
+fn pnpm_store_end(parts: &[&str]) -> Option<usize> {
+    parts.iter().enumerate().find_map(|(i, name)| {
+        step();
+        if name.eq_ignore_ascii_case(".pnpm-store") {
+            Some(i + 1)
+        } else if name.eq_ignore_ascii_case("pnpm")
+            && parts
+                .get(i + 1)
+                .is_some_and(|s| s.eq_ignore_ascii_case("store"))
+        {
+            Some(i + 2)
+        } else {
+            None
+        }
+    })
 }
 
 fn developer(parts: &[&str]) -> Option<(usize, Artifact)> {
@@ -497,14 +521,28 @@ impl Roots {
         let names = style.names(path);
         let mut parts: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
         let mut roots = Self::default();
-        if let Some(detection) = detect_parts(&parts, tree.root().is_dir()) {
+        if let Some(mut detection) = detect_parts(&parts, tree.root().is_dir())
+        {
+            // A narrow scan cannot verify a store above its root. Seeing a
+            // versioned layout inside this subtree does not verify that owner.
+            if detection.kind == Artifact::PackageCache
+                && pnpm_store_end(&parts).is_some_and(|end| end < parts.len())
+            {
+                detection.disposition = Disposition::Detected;
+            }
             roots.insert(tree.root(), detection);
             if detection.kind.is_vm() || detection.kind == Artifact::GitRepo {
                 return roots;
             }
         }
         let excluded = excluded_tool_contents(&parts);
-        Self::visit(tree.root(), &mut parts, excluded, &mut roots);
+        // The root was judged with its full path. A bounded lookback here
+        // could lose its enclosing ownership and overwrite that assessment.
+        for child in tree.root().children() {
+            parts.push(child.name());
+            Self::visit(child, &mut parts, excluded, &mut roots);
+            parts.pop();
+        }
         roots
     }
 
@@ -533,6 +571,12 @@ impl Roots {
             }
             if !node.is_dir() || excluded {
                 return None;
+            }
+            if pnpm_store_end(tail) == Some(tail.len()) {
+                return Some(Detection::new(
+                    Artifact::PackageCache,
+                    evidence(tail),
+                ));
             }
             let (end, kind) = developer(tail)?;
             (end == tail.len()).then(|| Detection::new(kind, evidence(tail)))
@@ -873,6 +917,104 @@ mod tests {
         );
         assert_eq!(service.root().category, Category::Spotlight);
         assert_eq!(service.root().child_named("index").unwrap().reclaim, None);
+    }
+
+    #[test]
+    fn narrow_git_scans_keep_enclosing_ownership_over_cache_names() {
+        use crate::query::Filter;
+
+        for path in [
+            "/repo/node_modules/pkg/.git/objects",
+            "/home/.cache/pip/pkg/.git/objects",
+            "/repo/node_modules/pkg/.git/a/b/c/d/e/f/objects",
+        ] {
+            let path = Path::new(path);
+            let mut tree = Tree::from(dir(
+                "objects",
+                vec![file("pack"), dir("node_modules", vec![file("index")])],
+            ));
+            classify_at(&mut tree, path, PathStyle::Posix);
+            let root = tree.root();
+            for node in [root, root.child_named("node_modules").unwrap()] {
+                assert_eq!(node.category, Category::Git, "{path:?}");
+                assert_eq!(node.reclaim, None, "{path:?}");
+            }
+            let assessment = assess(path, PathStyle::Posix, root).unwrap();
+            assert_eq!(assessment.kind, Artifact::GitRepo);
+            assert_eq!(assessment.disposition, Disposition::Detected);
+            let mut candidates = Vec::new();
+            Filter {
+                reclaimable: true,
+                ..Filter::default()
+            }
+            .collect(path, root, &mut candidates);
+            assert!(candidates.is_empty(), "{path:?}: {candidates:?}");
+        }
+    }
+
+    #[test]
+    fn narrow_pnpm_scans_require_evidence_at_the_owning_store() {
+        use crate::query::Filter;
+
+        for owner in [
+            "/home/me/.pnpm-store",
+            "/home/me/pnpm/store",
+            "/repo/node_modules/pkg/.pnpm-store",
+        ] {
+            let owner = Path::new(owner);
+            for verified in [false, true] {
+                let mut children = vec![dir("local-work", vec![file("notes")])];
+                if verified {
+                    children
+                        .push(dir("v10", vec![dir("files", vec![file("ab")])]));
+                }
+                let mut tree = Tree::from(dir(
+                    owner.file_name().unwrap().to_str().unwrap(),
+                    children,
+                ));
+                classify_at(&mut tree, owner, PathStyle::Posix);
+                let expected = verified.then_some(Reclaim::PackageStore);
+                assert_eq!(tree.root().reclaim, expected, "{owner:?}");
+                assert_eq!(
+                    tree.root().child_named("local-work").unwrap().reclaim,
+                    expected,
+                    "{owner:?}"
+                );
+            }
+            // Even a descendant named `store` with a versioned layout cannot
+            // verify an owning store that lies outside the scanned tree.
+            for relative in ["local-work", "a/b/c/d/e/f/local-work", "store"] {
+                let path = PathStyle::Posix.join(owner, relative);
+                let mut tree = Tree::from(dir(
+                    relative.rsplit('/').next().unwrap(),
+                    vec![
+                        file("notes"),
+                        dir("v10", vec![dir("files", vec![file("ab")])]),
+                    ],
+                ));
+                classify_at(&mut tree, &path, PathStyle::Posix);
+                let root = tree.root();
+                assert_eq!(root.reclaim, None, "{path:?}");
+                let assessment = assess(&path, PathStyle::Posix, root).unwrap();
+                assert_eq!(assessment.kind, Artifact::PackageCache);
+                assert_eq!(assessment.disposition, Disposition::Detected);
+                let mut candidates = Vec::new();
+                Filter {
+                    reclaimable: true,
+                    ..Filter::default()
+                }
+                .collect(&path, root, &mut candidates);
+                assert!(candidates.is_empty(), "{path:?}: {candidates:?}");
+            }
+        }
+        // Other recognized package caches do not require pnpm's layout.
+        let mut tree = Tree::from(dir("subtree", vec![file("cache-data")]));
+        classify_at(
+            &mut tree,
+            Path::new("/home/me/.cache/electron/subtree"),
+            PathStyle::Posix,
+        );
+        assert_eq!(tree.root().reclaim, Some(Reclaim::PackageStore));
     }
 
     #[test]

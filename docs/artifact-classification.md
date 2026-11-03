@@ -22,7 +22,9 @@ keeps cleanup candidates and excludes detected VM data.
 A distinctive name is weaker identification evidence than a documented
 multi-component layout. Neither proves that files have no local edits or
 that the owner is idle. pnpm stores retain an additional check against the
-scanned version-directory structure. Incomplete scans may omit that evidence.
+scanned version-directory structure. Scans starting below the store remain
+detection-only because they cannot verify the owning store's layout.
+Incomplete scans may also omit that evidence.
 
 VM ownership wins over cache names. Bundles and known Tart, VirtualBox,
 Minikube and Docker VM directories cannot become suggestions because a
@@ -44,6 +46,8 @@ Python, Gradle/Maven/Scala, Go, .NET, C/C++ and CMake; Ruby/Bundler,
 Composer, Dart/Flutter, Swift/Xcode, Elixir/Erlang, Haskell and Zig caches;
 Terraform provider downloads; and compiler and package-manager caches.
 Git metadata, worktree conventions and diagnostic logs are detections.
+Git ownership still applies when a scan starts inside `.git`, including
+repositories stored within dependencies or caches.
 
 The boundary is the recognized subtree, never a parent inferred from it.
 For example, `target/debug/deps` is Rust output and `target/scala-3.3` is
