@@ -145,6 +145,64 @@ fn artifact_assessments_render_and_vm_data_stays_out_of_cleanup_filters(
     assert!(read(&view, cx, |app| app.marks.is_empty()));
 }
 
+#[gpui_kit::test]
+fn artifact_guidance_scrolls_above_the_pinned_free_space_meter(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let output = temp.path().join("target/debug/deps");
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::write(output.join("libapp.rlib"), vec![b'x'; 200_000]).unwrap();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let (crumbs, _) = app
+            .tree()
+            .unwrap()
+            .descend(Path::new("target/debug/deps"))
+            .unwrap();
+        app.selected = Some(crumbs);
+        app.hovered = None;
+        app.pointer_active = false;
+        app.show_selection = true;
+        app.space = Some(SpaceInfo {
+            total: 1000,
+            free: 350,
+            available: 350,
+        });
+        cx.notify();
+    });
+    for (width, height, rem) in
+        [(1200., 600., 16.), (1400., 600., 24.), (1440., 900., 16.)]
+    {
+        cx.simulate_resize(gpui_kit::size(px(width), px(height)));
+        cx.update(|window, _| window.set_rem_size(px(rem)));
+        draw(cx);
+        draw(cx);
+        let disk = cx.debug_bounds("disk-section").unwrap();
+        assert!(disk.bottom() <= px(height), "{disk:?}");
+        assert!(disk.size.height >= px(rem * 4.0), "{disk:?}");
+        let scroll = cx.debug_bounds("side-panel-scroll").unwrap();
+        assert!(scroll.size.height > px(0.), "{scroll:?}");
+        assert!(scroll.bottom() <= disk.origin.y, "{scroll:?}, {disk:?}");
+        let guidance = cx.debug_bounds("artifact-suggested").unwrap();
+        // Scroll just far enough to read the final guidance line without
+        // moving the meter, even when the selection exceeds the viewport.
+        let distance = (guidance.bottom() - scroll.bottom()).max(px(0.));
+        cx.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: scroll.center(),
+            delta: gpui_kit::ScrollDelta::Pixels(Point::new(px(0.), -distance)),
+            modifiers: gpui_kit::Modifiers::none(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        draw(cx);
+        let scrolled = cx.debug_bounds("artifact-suggested").unwrap();
+        assert!(scrolled.bottom() <= scroll.bottom(), "{scrolled:?}");
+        assert!(scrolled.bottom() > scroll.origin.y, "{scrolled:?}");
+        assert_eq!(disk, cx.debug_bounds("disk-section").unwrap());
+    }
+}
+
 /// Apparent sizes, so the assertions are about the tree and not about how the
 /// filesystem rounds a small file up to a block.
 fn options() -> ScanOptions {

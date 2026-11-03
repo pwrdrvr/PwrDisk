@@ -2762,10 +2762,8 @@ fn side_panel(
         .border_color(theme.divider())
         .bg(theme.surface)
         .child(handle)
-        .children((!indexing).then(|| selection_section(app, theme, cx)))
-        .children((!indexing).then(rule))
-        // Progress can exceed a short, zoomed window. Let it scroll with the
-        // lists while the volume's free space stays visible below them.
+        // Selection guidance and progress can exceed a short, zoomed window.
+        // Scroll the inspector while free space stays pinned below it.
         .child(
             div()
                 .id("panel-lists")
@@ -2776,13 +2774,16 @@ fn side_panel(
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
+                .children((!indexing).then(|| {
+                    selection_section(app, theme, cx).flex_shrink_0()
+                }))
+                .children((!indexing).then(|| rule().flex_shrink_0()))
                 .children(indexing.then(|| {
                     indexing_progress(app, theme, cx).flex_shrink_0()
                 }))
                 .children(indexing.then(|| rule().flex_shrink_0()))
-                // The marked list leads: the pinned total below takes room
-                // from this scroll, and on a short window what comes last
-                // scrolls out of sight. Suggestions can; the cart cannot.
+                // The cart precedes optional suggestions; its total and
+                // Review action remain pinned below this scrolling region.
                 .child(marked_section(app, &plan, theme, cx))
                 .child(rule())
                 .child(worth_section(app, theme, cx))
