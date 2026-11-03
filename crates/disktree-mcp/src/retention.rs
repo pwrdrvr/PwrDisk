@@ -56,7 +56,10 @@ fn snapshot_count(output: &[u8]) -> Option<usize> {
     let text = std::str::from_utf8(output).ok()?;
     let mut lines = text.lines().filter(|line| !line.trim().is_empty());
     let header = lines.next()?;
-    if !header.starts_with("Snapshots for volume ") || !header.ends_with(':') {
+    if !(header.starts_with("Snapshots for disk ")
+        || header.starts_with("Snapshots for volume "))
+        || !header.ends_with(':')
+    {
         return None;
     }
     let mut count = 0;
@@ -76,12 +79,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn captured_tmutil_disk_header_accepts_empty_and_populated_listings() {
+        // Captured during PR review from:
+        // LC_ALL=C /usr/bin/tmutil listlocalsnapshots /
+        let header = b"Snapshots for disk /:\n";
+        assert_eq!(snapshot_count(header), Some(0));
+
+        // Keep the captured header, with invented snapshot names.
+        let mut listing = header.to_vec();
+        listing.extend_from_slice(
+            b"com.apple.TimeMachine.2026-11-03-100000.local\n\
+              com.apple.TimeMachine.2026-11-03-110000.local\n",
+        );
+        assert_eq!(snapshot_count(&listing), Some(2));
+    }
+
+    #[test]
     fn snapshot_presence_absence_and_unavailable_stay_distinct() {
         assert_eq!(snapshot_count(b"Snapshots for volume /:\ncom.apple.TimeMachine.2026-11-03-100000.local\ncom.apple.TimeMachine.2026-11-03-110000.local\n"), Some(2));
         assert_eq!(snapshot_count(b"Snapshots for volume /:\n"), Some(0));
         for output in [
             b"".as_slice(),
             b"Operation not permitted",
+            b"Snapshots for disk /:\nerror",
             b"Snapshots for volume /:\nerror",
             &[0xff],
         ] {
