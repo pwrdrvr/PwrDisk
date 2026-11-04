@@ -35,7 +35,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::chrome::{self, Frame};
 use crate::git_store::{Probe, Shown};
 use crate::ledger::Cohort;
-use crate::mark_guard::{MarkCheck, Share};
+use crate::mark_guard::{Gate, MarkCheck, Over, Share};
 use crate::palette;
 use crate::safety::Confirm;
 use crate::state::{
@@ -230,7 +230,6 @@ pub fn root(
         ))
         .on_action(cx.listener(
             |this, _: &crate::app_menu::ShowKeyboardShortcuts, _, cx| {
-                this.show_agent = false;
                 this.open_help(cx);
             },
         ))
@@ -242,13 +241,8 @@ pub fn root(
             },
         ))
         .on_action(cx.listener(
-            |this, _: &crate::app_menu::ConnectAgent, window, cx| {
-                if this.confirm_open || this.volumes_open { return; }
-                this.show_help = false;
-                this.show_agent = true;
-                this.focus_request = Some(crate::state::FocusTarget::Dialog);
-                this.apply_focus(window, cx);
-                cx.notify();
+            |_, _: &crate::app_menu::ConnectAgent, _, cx| {
+                open_agents_settings(cx);
             },
         ))
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -308,9 +302,6 @@ pub fn root(
     }
     if app.app_menu_open {
         root = root.child(app_menu_dropdown(app, cx));
-    }
-    if app.show_agent {
-        root = root.child(agent_overlay(app, cx));
     }
     if app.volumes_open {
         root = root.child(volumes_dialog(app, window, cx));
@@ -1004,6 +995,30 @@ fn explore(
     // only gives way when the mosaic would be too narrow to read.
     let panel = (app.show_selection || app.is_indexing())
         && width_rems >= PANEL_SHOWN_REMS;
+    let compact =
+        window.viewport_size().height.as_f32() / app.rem < COMPACT_PANEL_REMS;
+    // The legend's row is the mosaic's column, less its padding.
+    let edges = &app.content_edges;
+    let legend_room = window.viewport_size().width
+        - edges.left
+        - edges.right
+        - if panel {
+            px(app.panel_rems * app.rem)
+        } else {
+            px(0.)
+        }
+        - px(space::LG.0 * 2. * app.rem);
+    let legend_fit = legend_fit(app, legend_room, window, &theme);
+    let legend_drawn =
+        !app.file_list || !crate::file_list::compact(window, app.rem);
+    // A menu with nothing to hang from is closed, not kept for later: it
+    // would swallow the next Escape and reopen by itself when the row
+    // overflows again. Its button's hover goes with it, since the button
+    // may have left from under a resting pointer.
+    if !legend_drawn || legend_fit.more.is_empty() {
+        app.legend_menu_open = false;
+        app.legend_more_hover = false;
+    }
     if panel && let Some(path) = panel_checkout(app) {
         app.want_git(&path, window.is_window_active(), cx);
     }
@@ -1079,7 +1094,7 @@ fn explore(
                         .flex_1()
                         .min_w_0()
                         .min_h_0()
-                        .when(!app.file_list || !crate::file_list::compact(window, app.rem), |view| view.child(trail_and_legend(app, &theme, cx)))
+                        .when(legend_drawn, |view| view.child(trail_and_legend(app, &legend_fit, &theme, cx)))
                         .child(
                             div()
                                 .id("file-navigation")
@@ -1098,7 +1113,9 @@ fn explore(
                         // panel and the bands below.
                         .children(toasts),
                 )
-                .children(panel.then(|| side_panel(app, &theme, cx))),
+                .children(
+                    panel.then(|| side_panel(app, compact, &theme, cx)),
+                ),
         )
         .children((app.is_indexing() && !panel).then(|| {
             div()
@@ -1138,6 +1155,13 @@ fn git_target(app: &Disktree) -> Option<Vec<usize>> {
 
 /// Width, in rem, below which the side panel gives the mosaic its room.
 const PANEL_SHOWN_REMS: f32 = 52.0;
+/// Height, in rem, below which the side panel is compact: the selection's
+/// figures fold into one line and an idle agent line goes, so Marked and
+/// Worth a look start in sight. A 1200×600 window with an assessment
+/// selected otherwise opens on the selection alone; 48 rem is 768 px at
+/// the default size, and in rems interface zoom walks through it as a
+/// shorter window does, as the bar's tiers do across.
+const COMPACT_PANEL_REMS: f32 = 48.0;
 
 /// What the panel handle drags. The width itself lives in the app state.
 #[derive(Clone, Copy, Debug)]
@@ -1196,7 +1220,7 @@ fn title_strip(
                     .min_w(space::XXL)
                     .self_stretch(),
             )
-            .children(agent_pill(app, &theme, cx))
+            .children(agent_pill(app, &theme))
             .children(update_chip(app, &theme, cx))
             .child(view_settings(app, window, cx))
     } else {
@@ -2331,6 +2355,7 @@ fn power_popup(
 /// what the colours mean on the row under it.
 fn trail_and_legend(
     app: &Disktree,
+    fit: &LegendFit,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
@@ -2353,7 +2378,7 @@ fn trail_and_legend(
         .px(space::LG)
         .py(space::SM)
         .child(row)
-        .child(legend(app, theme, cx))
+        .child(legend(app, fit, theme, cx))
 }
 
 /// What the whole scan found, as one quiet line; unreadable paths are
@@ -2429,45 +2454,169 @@ fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
         })
 }
 
+/// Which legend chips go on the row and which in its "+N" menu.
+pub struct LegendFit {
+    /// On the row, in the legend's order.
+    pub shown: Vec<crate::legend::ChipId>,
+    /// In the menu, in the legend's order.
+    pub more: Vec<crate::legend::ChipId>,
+}
+
+/// What a chip keeps of the whole scan, once that is worked out.
+fn chip_share(app: &Disktree, id: crate::legend::ChipId) -> Option<u64> {
+    use crate::legend::ChipId;
+    let shares = app.legend_shares.as_deref()?;
+    Some(match id {
+        ChipId::Reclaimable => shares.suggested,
+        ChipId::Kind(index) => shares.kind(Category::LEGEND[index]),
+        ChipId::Age(index) => shares.ages.get(index).copied().unwrap_or(0),
+    })
+}
+
+/// A chip's size beside its name: the bytes it keeps, in the units the
+/// tiles use. Nothing until the shares are worked out.
+fn chip_size(app: &Disktree, id: crate::legend::ChipId) -> Option<String> {
+    chip_share(app, id).map(disktree_core::size::human_bytes_short)
+}
+
+/// Under this share of the scan a chip is too small to see on the mosaic
+/// (a tile of 1/1000 of it is a few pixels at most), so it goes in the menu
+/// even when the row has room. Empty chips always do.
+const LITTLE_SHARE: u64 = 1_000;
+
+/// Lay the legend out on one row of `room`: chips that are set always
+/// stay, as do the ones with data; empty and tiny ones go in the "+N"
+/// menu, and when the rest still do not fit, the smallest follow them.
+/// Widths are measured from the shaped labels, so the row never wraps
+/// and never clips a chip.
+fn legend_fit(
+    app: &Disktree,
+    room: gpui_kit::Pixels,
+    window: &Window,
+    theme: &Theme,
+) -> LegendFit {
+    use crate::legend::{Chip, ChipId};
+    let mut ids = vec![ChipId::Reclaimable];
+    if app.color_mode == ColorMode::Age {
+        ids.extend((0..palette::AGE_BUCKETS.len()).map(ChipId::Age));
+    } else {
+        ids.extend((0..Category::LEGEND.len()).map(ChipId::Kind));
+    }
+    let total = app.tree().map_or(0, |tree| tree.bytes);
+    let set = |id: ChipId| app.legend.get(id) != Chip::Shown;
+    let little = |id: ChipId| {
+        chip_share(app, id).is_some_and(|bytes| {
+            bytes == 0 || bytes.saturating_mul(LITTLE_SHARE) < total
+        })
+    };
+    let (mut shown, mut more): (Vec<_>, Vec<_>) =
+        ids.iter().partition(|id| set(**id) || !little(**id));
+
+    let rem = app.rem;
+    let font_size = px(text::CAPTION.0 * rem);
+    let font = gpui_kit::font(theme.font.clone());
+    let measure = |text: String| {
+        let run = gpui_kit::TextRun {
+            len: text.len(),
+            font: font.clone(),
+            color: theme.foreground,
+            ..gpui_kit::TextRun::default()
+        };
+        window
+            .text_system()
+            .shape_line(text.into(), font_size, &[run], None)
+            .width
+    };
+    let rems = |value: f32| px(value * rem);
+    // The chip's own box: padding, border, swatch and the gaps between its
+    // swatch, name and size (see `legend_chip`).
+    // Shaped once per chip, not once per pass of the loop below.
+    let widths: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            let size = chip_size(app, *id)
+                .map_or(px(0.), |size| measure(size) + rems(space::XS.0));
+            rems(space::XS.0.mul_add(3., size::SWATCH.0))
+                + px(2.)
+                + measure(id.label().to_owned())
+                + size
+        })
+        .collect();
+    let chip = |id: ChipId| {
+        ids.iter()
+            .position(|other| *other == id)
+            .map_or(px(0.), |index| widths[index])
+    };
+    let gap = rems(space::XS.0);
+    let button =
+        |label: String| measure(label) + rems(space::SM.0 * 2.) + px(2.);
+    let mut fixed = px(0.);
+    if app.legend.is_active() {
+        fixed += button("Show all \u{00d7}".to_owned()) + gap;
+    }
+    let off_screen = if app.color_mode == ColorMode::Age {
+        app.legend.kinds_summary()
+    } else {
+        app.legend.ages_summary()
+    };
+    if let Some(summary) = off_screen {
+        fixed += button(summary) + gap;
+    }
+    let more_button = |count: usize| {
+        button(format!("+{count}")) + rems(space::XS.0 + icon::SM.0) + gap
+    };
+    // A margin: the row is measured from the window, not laid out.
+    let room = room - rems(space::SM.0);
+    loop {
+        let row = shown.iter().fold(px(0.), |sum, id| sum + chip(*id) + gap);
+        let extra = if more.is_empty() {
+            px(0.)
+        } else {
+            more_button(more.len() + 1)
+        };
+        if fixed + row + extra <= room {
+            break;
+        }
+        // The smallest chip that is not set goes next; before the shares
+        // are known, the last one.
+        let Some(position) = shown
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| !set(**id))
+            .min_by_key(|(position, id)| {
+                (chip_share(app, **id).unwrap_or(0), usize::MAX - position)
+            })
+            .map(|(position, _)| position)
+        else {
+            break;
+        };
+        more.push(shown.remove(position));
+    }
+    more.sort_by_key(|id| ids.iter().position(|other| other == id));
+    LegendFit { shown, more }
+}
+
 /// The key to the colours, and the filter: the categories, or the age
 /// ramp in age mode, each a chip that cycles shown → only → hidden (see
-/// `legend.rs`). It wraps onto another line rather than clip a chip.
-fn legend(app: &Disktree, theme: &Theme, cx: &Context<'_, Disktree>) -> Div {
+/// `legend.rs`) with what it keeps of the scan beside it. One row: what
+/// does not fit (see [`legend_fit`]) is in the "+N" menu at its end.
+fn legend(
+    app: &Disktree,
+    fit: &LegendFit,
+    theme: &Theme,
+    cx: &Context<'_, Disktree>,
+) -> Div {
     use crate::legend::ChipId;
-    let ground = palette::category_fill(theme, Category::Other, 0);
-    let hatch = cx.omarchy().bright.opacity(0.5);
-    let mut chips = vec![legend_chip(
-        app,
-        theme,
-        ChipId::Reclaimable,
-        widgets::hatch_swatch(hatch, ground),
-        cx,
-    )];
+    let chips: Vec<_> = fit
+        .shown
+        .iter()
+        .map(|id| legend_chip(app, theme, *id, false, cx))
+        .collect();
     // The set of chips that is not on screen still filters, so it shows as
     // one pill that clears it.
     let (off_screen, pill) = if app.color_mode == ColorMode::Age {
-        for (index, _) in palette::AGE_BUCKETS.iter().enumerate() {
-            let color = palette::age_accent(theme, index);
-            chips.push(legend_chip(
-                app,
-                theme,
-                ChipId::Age(index),
-                legend_swatch(app.legend.get(ChipId::Age(index)), color),
-                cx,
-            ));
-        }
         (ChipId::Kind(0), app.legend.kinds_summary())
     } else {
-        for (index, category) in Category::LEGEND.iter().enumerate() {
-            let color = palette::category_accent(theme, *category);
-            chips.push(legend_chip(
-                app,
-                theme,
-                ChipId::Kind(index),
-                legend_swatch(app.legend.get(ChipId::Kind(index)), color),
-                cx,
-            ));
-        }
         (ChipId::Age(0), app.legend.ages_summary())
     };
     let pill = pill.map(|summary| {
@@ -2485,12 +2634,15 @@ fn legend(app: &Disktree, theme: &Theme, cx: &Context<'_, Disktree>) -> Div {
         .legend
         .is_active()
         .then(|| show_all_button("legend-clear", theme, cx));
-    // One wrapping row: Show all and the pill lead, so they are never the
-    // part that moves to another line.
+    // Show all and the pill lead, so they are never what gives way; the
+    // menu sits at the row's right end, where an overflow is looked for.
+    let more = legend_more(app, fit, theme, cx);
     div()
         .debug_selector(|| "legend".into())
         .flex()
         .flex_row()
+        // Only set chips are kept on the row whatever its width, so enough
+        // of them on a narrow window still wrap rather than clip.
         .flex_wrap()
         .items_center()
         .gap(space::XS)
@@ -2498,6 +2650,121 @@ fn legend(app: &Disktree, theme: &Theme, cx: &Context<'_, Disktree>) -> Div {
         .children(clear)
         .children(pill)
         .children(chips)
+        .when(more.is_some(), |row| row.child(div().flex_1()))
+        .children(more)
+}
+
+/// The "+N" button at the end of the legend's row, and its menu: the chips
+/// with no room on the row, each still a filter, with what it keeps.
+fn legend_more(
+    app: &Disktree,
+    fit: &LegendFit,
+    theme: &Theme,
+    cx: &Context<'_, Disktree>,
+) -> Option<Div> {
+    if fit.more.is_empty() {
+        return None;
+    }
+    let open = app.legend_menu_open;
+    let count = fit.more.len();
+    let hover = theme.foreground.opacity(0.1);
+    let button = with_tooltip(
+        div()
+            .id("legend-more")
+            .debug_selector(|| "legend-more".into())
+            .role(gpui_kit::Role::Button)
+            .aria_label(format!(
+                "{count} more legend {}",
+                if count == 1 { "chip" } else { "chips" }
+            ))
+            .aria_expanded(open)
+            .focusable()
+            .tab_stop(true)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(space::XS)
+            .flex_shrink_0()
+            .min_h(size::POINTER_TARGET)
+            .px(space::SM)
+            .border_1()
+            .border_color(if open {
+                theme.foreground.opacity(0.35)
+            } else {
+                gpui_kit::transparent_black()
+            })
+            .when(open, |button| button.bg(theme.foreground.opacity(0.14)))
+            .hover(move |style| style.bg(hover))
+            .cursor_pointer()
+            .text_size(text::CAPTION)
+            .text_color(theme.secondary)
+            .on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                this.legend_more_hover = *hovered;
+            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    this.legend_menu_open = !this.legend_menu_open;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.legend_menu_open = !this.legend_menu_open;
+                cx.notify();
+            }))
+            .child(format!("+{count}"))
+            .child(
+                gpui_omarchy::icon(gpui_omarchy::IconName::ChevronDown)
+                    .size(icon::SM),
+            ),
+        "Kinds with little or no data, and those the row has no room for",
+    );
+    let menu = open.then(|| {
+        let rows = fit
+            .more
+            .iter()
+            .map(|id| legend_chip(app, theme, *id, true, cx));
+        div().absolute().top_full().right_0().child(
+            deferred(
+                // Hung from the right edge, the row's end, so it opens
+                // inward rather than off the window.
+                anchored()
+                    .anchor(gpui_kit::Anchor::TopRight)
+                    .snap_to_window_with_margin(px(8.))
+                    .offset(gpui_kit::point(px(0.), px(4.)))
+                    .child(
+                        div()
+                            .id("legend-menu")
+                            .debug_selector(|| "legend-menu".into())
+                            .occlude()
+                            .flex()
+                            .flex_col()
+                            .min_w(size::LEGEND_MENU)
+                            .p(space::XS)
+                            .bg(theme.surface)
+                            .border_1()
+                            .border_color(theme.control_border())
+                            .shadow_lg()
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                // A press on "+N" is the button's.
+                                if !this.legend_more_hover {
+                                    this.legend_menu_open = false;
+                                    cx.notify();
+                                }
+                            }))
+                            .children(rows),
+                    ),
+            )
+            .with_priority(2),
+        )
+    });
+    Some(
+        div()
+            .relative()
+            .flex_shrink_0()
+            .child(button)
+            .children(menu),
+    )
 }
 
 /// Over a mosaic or list the legend has emptied: that nothing here
@@ -2603,21 +2870,53 @@ fn legend_chip(
     app: &Disktree,
     theme: &Theme,
     id: crate::legend::ChipId,
-    swatch: Div,
+    in_menu: bool,
     cx: &Context<'_, Disktree>,
 ) -> Stateful<Div> {
-    use crate::legend::Chip;
+    use crate::legend::{Chip, ChipId};
     let state = app.legend.get(id);
+    let swatch = match id {
+        ChipId::Reclaimable => widgets::hatch_swatch(
+            cx.omarchy().bright.opacity(0.5),
+            palette::category_fill(theme, Category::Other, 0),
+        ),
+        ChipId::Kind(index) => legend_swatch(
+            state,
+            palette::category_accent(theme, Category::LEGEND[index]),
+        ),
+        ChipId::Age(index) => {
+            legend_swatch(state, palette::age_accent(theme, index))
+        }
+    };
+    let size = chip_size(app, id);
     let only = state == Chip::Only;
     let faded = state == Chip::Shown && app.legend.narrowed(id);
     let hover = theme.foreground.opacity(0.06);
-    let key = id.key();
+    // In the menu a chip is a row of its own, under its own name, so a
+    // test or a screen reader never finds two of one chip.
+    let key = if in_menu {
+        format!("legend-menu-{}", id.key().trim_start_matches("legend-"))
+    } else {
+        id.key()
+    };
+    // The size is the whole scan's, wherever the view is, as the filter
+    // is: said so, since the mosaic beside it may show a single folder.
+    let spoken = size.as_ref().map_or_else(
+        || id.label().to_owned(),
+        |size| format!("{}, {size} in the scan", id.label()),
+    );
+    let hint = size.as_ref().map_or_else(
+        || app.legend.hint(id),
+        |size| {
+            format!("{} \u{00b7} {size} in the whole scan", app.legend.hint(id))
+        },
+    );
     with_tooltip(
         div()
             .id(ElementId::Name(key.clone().into()))
             .debug_selector(move || key)
             .role(gpui_kit::Role::Button)
-            .aria_label(id.label())
+            .aria_label(spoken)
             .aria_value(state.spoken())
             .focusable()
             .tab_stop(true)
@@ -2650,8 +2949,14 @@ fn legend_chip(
             ))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.cycle_legend(id, cx);
+                // A chip set from the menu moves to the row, where its
+                // state shows; the menu has done its job.
+                if in_menu {
+                    this.legend_menu_open = false;
+                }
                 window.focus(&this.focus, cx);
             }))
+            .when(in_menu, |row| row.w_full().px(space::SM))
             .child(swatch)
             .child(
                 div()
@@ -2662,9 +2967,16 @@ fn legend_chip(
                         theme.secondary
                     })
                     .when(state == Chip::Hidden, Styled::line_through)
+                    .when(in_menu, Styled::flex_1)
                     .child(id.label()),
-            ),
-        app.legend.hint(id),
+            )
+            .children(size.map(|size| {
+                div()
+                    .text_size(text::CAPTION)
+                    .text_color(theme.secondary.opacity(0.75))
+                    .child(size)
+            })),
+        hint,
     )
 }
 
@@ -2730,14 +3042,13 @@ fn legend_button(
 /// needs, next to the mosaic rather than under it.
 fn side_panel(
     app: &Disktree,
+    compact: bool,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
-    let indexing = app.is_indexing();
     // Once per frame: the marked list, the marked total and the disk all
     // read it, and building it reads the mount table.
     let plan = app.plan();
-    let rule = || div().h(px(1.)).bg(theme.divider());
     // A hairline to look at, a wider strip to grab; double-click resets.
     let handle = div()
         .id("panel-handle")
@@ -2770,38 +3081,228 @@ fn side_panel(
         .border_color(theme.divider())
         .bg(theme.surface)
         .child(handle)
-        .children((!indexing).then(|| selection_section(app, theme, cx)))
-        .children((!indexing).then(rule))
-        // Progress can exceed a short, zoomed window. Let it scroll with the
-        // lists while the volume's free space stays visible below them.
-        .child(
-            div()
-                .id("panel-lists")
-                .debug_selector(|| "side-panel-scroll".into())
-                .flex()
-                .flex_col()
-                .gap(space::LG)
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .children(indexing.then(|| {
-                    indexing_progress(app, theme, cx).flex_shrink_0()
-                }))
-                .children(indexing.then(|| rule().flex_shrink_0()))
-                // The marked list leads: the pinned total below takes room
-                // from this scroll, and on a short window what comes last
-                // scrolls out of sight. Suggestions can; the cart cannot.
-                .child(marked_section(app, &plan, theme, cx))
-                .child(rule())
-                .child(worth_section(app, theme, cx))
-                .children(macos_services_section(app, theme, cx)),
-        )
-        .children(notice_line(app, theme, cx))
+        // Selection guidance and progress can exceed a short, zoomed window,
+        // so both scroll with the lists while free space stays visible below.
+        .child(panel_lists(app, &plan, compact, theme, cx))
+        .children(scan_error_line(app, theme))
         .children(privacy_line(app, theme, cx))
         .children(administrator_line(app, theme, cx))
         .children(marked_total(app, &plan, theme, cx))
         .child(disk_section(app, &plan, theme, cx).flex_shrink_0())
-        .child(agent_line(app, theme, cx))
+        .children(agent_line(app, compact, theme))
+}
+
+/// The panel's scrolling lists, each under a header that stays in sight
+/// while its list scrolls ([`pinned_head`]).
+fn panel_lists(
+    app: &Disktree,
+    plan: &Plan,
+    compact: bool,
+    theme: &Theme,
+    cx: &Context<'_, Disktree>,
+) -> Div {
+    let rule = || div().h(px(1.)).bg(theme.divider()).into_any_element();
+    // Each child of the scroll, with the header it starts with, if any: the
+    // index is what the scroll handle measures by.
+    let mut lists: Vec<(AnyElement, Option<Div>)> = Vec::new();
+    // The selection leads, without a header to pin: an artifact's guidance
+    // must stay reachable above the Mark it qualifies on a short window.
+    if !app.is_indexing() {
+        lists.push((
+            selection_section(app, compact, theme, cx)
+                .flex_shrink_0()
+                .into_any_element(),
+            None,
+        ));
+        lists.push((rule(), None));
+    }
+    if app.is_indexing() {
+        lists.push((
+            indexing_progress(app, theme, cx)
+                .flex_shrink_0()
+                .into_any_element(),
+            Some(section_head(widgets::eyebrow("Indexing", cx))),
+        ));
+        lists.push((rule(), None));
+    }
+    // The marked list leads: the pinned total below takes room from this
+    // scroll, and on a short window what comes last scrolls out of sight.
+    // Suggestions can; the cart cannot.
+    lists.push((
+        marked_section(app, plan, theme, cx).into_any_element(),
+        Some(marked_head(app, theme, cx)),
+    ));
+    lists.push((rule(), None));
+    lists.push((
+        worth_section(app, theme, cx).into_any_element(),
+        Some(worth_head(app, theme, cx)),
+    ));
+    if let Some(services) = macos_services_section(app, theme, cx) {
+        lists.push((rule(), None));
+        lists.push((
+            services.into_any_element(),
+            Some(section_head(widgets::eyebrow("macOS service stores", cx))),
+        ));
+    }
+    let pinned = pinned_head(
+        &app.panel_scroll,
+        lists.iter().map(|(_, head)| head.is_some()),
+        px(size::SECTION_HEAD.0 * app.rem),
+    );
+    // `pinned_head` measures the last layout. When the lists change without
+    // a scroll (a mark, the insights, the end of indexing) that layout is
+    // a frame old, so draw again once it settles; an unchanged layout asks
+    // for nothing, so this never loops.
+    let scroll_handle = app.panel_scroll.clone();
+    let seen = app.panel_layout.clone();
+    let mut scroll = div()
+        .on_children_prepainted(move |_, window, _| {
+            let now: Vec<_> = (0..)
+                .map_while(|index| scroll_handle.bounds_for_item(index))
+                .collect();
+            if *seen.borrow() != now {
+                *seen.borrow_mut() = now;
+                window.refresh();
+            }
+        })
+        .id("panel-lists")
+        .debug_selector(|| "side-panel-scroll".into())
+        .track_scroll(&app.panel_scroll)
+        .flex()
+        .flex_col()
+        .gap(if compact { space::MD } else { space::LG })
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll();
+    let mut heads = Vec::new();
+    for (list, head) in lists {
+        scroll = scroll.child(list);
+        heads.push(head);
+    }
+    div()
+        .relative()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h_0()
+        .child(scroll)
+        .children(pinned.and_then(|(index, top)| {
+            let head = heads.get_mut(index)?.take()?;
+            Some(
+                div()
+                    .id("pinned-head")
+                    .debug_selector(|| "pinned-head".into())
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(top)
+                    // Opaque, with a hairline and never a shadow, as
+                    // PwrGit's and PwrAgnt's pinned headers are; the rows
+                    // slide under it, and a click must not reach them
+                    // through it, though a wheel over it still scrolls
+                    // the list it heads.
+                    .bg(theme.surface)
+                    .border_b_1()
+                    .border_color(theme.divider())
+                    .block_mouse_except_scroll()
+                    // A copy of the header in the list: read once.
+                    .a11y_synthetic_children(|b| b.parent_node().set_hidden())
+                    .child(head),
+            )
+        }))
+}
+
+/// Which header to pin over the panel's lists, and how far up the next
+/// section has pushed it: the section whose top has scrolled past the top
+/// of the list while some of it is still in sight. `heads` says which of
+/// the scroll's children start with a header of height `head`. Measured
+/// from the last layout, which only a change of content moves, against the
+/// current offset, which every wheel tick moves and redraws.
+fn pinned_head(
+    scroll: &gpui_kit::ScrollHandle,
+    heads: impl Iterator<Item = bool>,
+    head: gpui_kit::Pixels,
+) -> Option<(usize, gpui_kit::Pixels)> {
+    let viewport = scroll.bounds();
+    let offset = scroll.offset().y;
+    heads
+        .enumerate()
+        .filter(|(_, has_head)| *has_head)
+        .find_map(|(index, _)| {
+            let bounds = scroll.bounds_for_item(index)?;
+            let top = bounds.top() - viewport.top() + offset;
+            let bottom = bounds.bottom() - viewport.top() + offset;
+            // Pinned once its own header starts to leave; gone once the
+            // section has. Before then the next one pushes it up: the
+            // pinned header never overlaps the section after it.
+            (top < px(0.) && bottom > px(0.))
+                .then(|| (index, (bottom - head).min(px(0.))))
+        })
+}
+
+/// A section's header row, at the one height [`pinned_head`] pushes by.
+fn section_head(content: Div) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .flex_shrink_0()
+        .h(size::SECTION_HEAD)
+        .child(content)
+}
+
+fn marked_head(
+    app: &Disktree,
+    theme: &Theme,
+    cx: &Context<'_, Disktree>,
+) -> Div {
+    let count = app.marks.len();
+    if count == 0 {
+        // Empty, the section is this one line: a row under it that only
+        // says how to fill it is never worth its height.
+        return section_head(widgets::eyebrow("Marked", cx))
+            .child(head_note("Space to mark", theme));
+    }
+    section_head(widgets::eyebrow(format!("Marked · {count}"), cx))
+}
+
+/// The quiet words in an empty section's header, where a full one shows
+/// its count or total.
+fn head_note(note: &'static str, theme: &Theme) -> Div {
+    div()
+        .text_size(text::CAPTION)
+        .text_color(theme.secondary)
+        .child(note)
+}
+
+fn worth_head(
+    app: &Disktree,
+    theme: &Theme,
+    cx: &Context<'_, Disktree>,
+) -> Div {
+    let total: u64 = app.insights.iter().map(|candidate| candidate.bytes).sum();
+    let head = section_head(widgets::eyebrow("Worth a look", cx));
+    if app.insights.is_empty() {
+        // Listed rows are suggestions for review, so an empty list says
+        // there are none, never that nothing is disposable.
+        return head.child(head_note(
+            if app.tree().is_some() {
+                "none"
+            } else {
+                "after the scan"
+            },
+            theme,
+        ));
+    }
+    head.when(total > 0, |head| {
+        head.child(
+            div()
+                .text_size(text::CAPTION)
+                .text_color(palette::highlight(theme))
+                .child(human_bytes(total)),
+        )
+    })
 }
 
 /// What the keys act on: its name and place, its size set large with its
@@ -2809,23 +3310,32 @@ fn side_panel(
 /// things to do with it.
 fn selection_section(
     app: &Disktree,
+    compact: bool,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
     let section = div()
         .flex()
         .flex_col()
-        .gap(space::MD)
-        .child(widgets::eyebrow("Selection", cx));
+        // Compact, tighter, so the lists below start in sight.
+        .gap(if compact { space::SM } else { space::MD });
     let target = app.action_target().unwrap_or_else(|| app.crumbs.clone());
     let Some(node) = app.node_at(&target) else {
-        return section.child(
+        return section.child(widgets::eyebrow("Selection", cx)).child(
             div()
                 .text_color(theme.secondary)
                 .child("Point at a tile or select one with the arrows"),
         );
     };
+    // The bold name heads the section; compact, its label is the one line
+    // that says nothing the name does not.
+    let section = section.when(!compact, |section| {
+        section.child(widgets::eyebrow("Selection", cx))
+    });
     let path = app.path_at(&target);
+    let artifact = path.as_deref().and_then(|path| {
+        disktree_core::artifact::assess(path, app.path_style(), node)
+    });
     let root_value = app.tree().map_or(0, |tree| tree.bytes);
     let marked = path
         .as_deref()
@@ -2981,11 +3491,10 @@ fn selection_section(
             shown,
             Shown::Answer(Probe::Known(state)) if state.is_clean()
         );
-        widgets::figure(
+        (
             "Git",
             value,
             if clean { theme.success } else { theme.bright },
-            cx,
         )
     } else {
         let kind = node.reclaim.map_or_else(
@@ -2994,9 +3503,35 @@ fn selection_section(
                 format!("{} \u{00b7} {}", node.category.label(), reason.label())
             },
         );
-        widgets::figure("Kind", kind, theme.bright, cx)
+        ("Kind", kind, theme.bright)
     };
+    let of_scan = widgets::percent(node.bytes, root_value);
+    let written = widgets::ago(crate::state::now_seconds(), node.modified);
+    // Compact, the four figures are one line the person can open: the
+    // decision rests on the name, the size and the assessment, which stay.
+    let summary = compact.then(|| {
+        selection_summary(
+            &[
+                format!("{of_scan} of scan"),
+                match node.files {
+                    1 => "1 file".to_string(),
+                    files => format!("{} files", widgets::human_count(files)),
+                },
+                if written == "unknown" {
+                    "age unknown".to_string()
+                } else {
+                    written.clone()
+                },
+                fourth.1.clone(),
+            ],
+            app.selection_details,
+            theme,
+            cx,
+        )
+    });
+    let fourth = widgets::figure(fourth.0, fourth.1, fourth.2, cx);
     let grid = div()
+        .debug_selector(|| "selection-figures".into())
         .flex()
         .flex_col()
         .gap(space::MD)
@@ -3006,7 +3541,7 @@ fn selection_section(
                 .flex_row()
                 .child(div().flex_1().min_w_0().child(widgets::figure(
                     "Of scan",
-                    widgets::percent(node.bytes, root_value),
+                    of_scan,
                     theme.bright,
                     cx,
                 )))
@@ -3023,7 +3558,7 @@ fn selection_section(
                 .flex_row()
                 .child(div().flex_1().min_w_0().child(widgets::figure(
                     "Last write",
-                    widgets::ago(crate::state::now_seconds(), node.modified),
+                    written,
                     theme.bright,
                     cx,
                 )))
@@ -3137,7 +3672,13 @@ fn selection_section(
                 }
                 window.focus(&this.focus, cx);
             }));
-        let filled = !marked && covered_by.is_none();
+        // A detection that is not a suggestion advises another route, such
+        // as the VM's own app, so Mark stays available but is not the lead.
+        let detected_only = artifact.is_some_and(|detection| {
+            detection.disposition
+                == disktree_core::artifact::Disposition::Detected
+        });
+        let filled = !marked && covered_by.is_none() && !detected_only;
         actions = actions.child(if filled {
             let on = palette::on_highlight(theme);
             let hover_fill = palette::mix(theme.background, highlight, 0.85);
@@ -3160,8 +3701,14 @@ fn selection_section(
     section
         .child(identity)
         .child(measure)
-        .child(grid)
+        .children(summary)
+        .when(!compact || app.selection_details, |section| {
+            section.child(grid)
+        })
         .children(badges)
+        .children(artifact.map(|detection| {
+            artifact_assessment(detection, node.category, theme, cx)
+        }))
         .children(guard)
         .child(actions)
         .children(menu)
@@ -3178,6 +3725,133 @@ fn selection_section(
             )),
             _ => None,
         })
+}
+
+/// The compact panel's one line of figures: share of the scan, files, last
+/// write and kind (or git), with a chevron that opens the grid beneath it.
+fn selection_summary(
+    parts: &[String; 4],
+    open: bool,
+    theme: &Theme,
+    cx: &Context<'_, Disktree>,
+) -> Stateful<Div> {
+    let line = parts.join(" \u{00b7} ");
+    div()
+        .id("selection-summary")
+        .debug_selector(|| "selection-summary".into())
+        .role(gpui_kit::Role::Button)
+        .aria_label(format!("Details: {line}"))
+        .aria_expanded(open)
+        .focusable()
+        .tab_stop(true)
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                this.selection_details = !this.selection_details;
+                cx.notify();
+                cx.stop_propagation();
+            }
+        }))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(space::SM)
+        .py(space::XS)
+        .border_t_1()
+        .border_b_1()
+        .border_color(theme.divider())
+        .text_size(text::CAPTION)
+        .cursor_pointer()
+        .hover(|style| style.bg(theme.hover_fill()))
+        .on_click(cx.listener(|this, _, window, cx| {
+            this.selection_details = !this.selection_details;
+            window.focus(&this.focus, cx);
+            cx.notify();
+        }))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_color(theme.foreground)
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(line),
+        )
+        .child(
+            gpui_omarchy::icon(if open {
+                gpui_omarchy::IconName::ChevronDown
+            } else {
+                gpui_omarchy::IconName::ChevronRight
+            })
+            .size(icon::SM)
+            .text_color(theme.secondary)
+            .flex_shrink_0(),
+        )
+}
+
+/// What a recognized artifact is, how it was told, and what to do first.
+/// It sits just above the actions so the guidance is read before Mark.
+fn artifact_assessment(
+    detection: disktree_core::artifact::Detection,
+    category: Category,
+    theme: &Theme,
+    cx: &Context<'_, Disktree>,
+) -> Stateful<Div> {
+    use disktree_core::artifact::{Disposition, Evidence};
+    let (selector, status) = match detection.disposition {
+        // A fact, not a warning: the guidance carries any caution.
+        Disposition::Detected => ("artifact-detected", theme.accent),
+        // The colour Worth a look gives suggestions, never a go-ahead: the
+        // guidance still says what to check first.
+        Disposition::Suggested => {
+            ("artifact-suggested", palette::highlight(theme))
+        }
+    };
+    // Said as a sentence: neither is a confidence that removal is safe.
+    let evidence = match detection.evidence {
+        Evidence::Name => "Identified by its name",
+        Evidence::Layout => "Identified by its tool layout",
+    };
+    div()
+        .id(selector)
+        .debug_selector(move || selector.into())
+        .flex()
+        .flex_col()
+        .gap(space::XS)
+        .pl(space::SM)
+        .border_l_2()
+        .border_color(palette::category_accent(theme, category))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(space::SM)
+                .child(
+                    widgets::chip(detection.status(), status, cx)
+                        .flex_shrink_0()
+                        .debug_selector(move || format!("{selector}-status")),
+                )
+                .child(
+                    div()
+                        .text_color(theme.bright)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(detection.kind.label()),
+                ),
+        )
+        .child(
+            div()
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(evidence),
+        )
+        .child(
+            div()
+                .text_size(text::CAPTION)
+                .text_color(theme.foreground)
+                .child(detection.guidance()),
+        )
 }
 
 /// Why Mark is not the plain button: a rule in the warning colour, a chip
@@ -3443,15 +4117,13 @@ fn macos_services_section(
     }) {
         return None;
     }
-    let rule = || div().h(px(1.)).bg(theme.divider());
     let mut section = div()
         .id("macos-services")
         .debug_selector(|| "macos-services".into())
         .flex()
         .flex_col()
         .gap(space::SM)
-        .child(rule())
-        .child(widgets::eyebrow("macOS service stores", cx));
+        .child(section_head(widgets::eyebrow("macOS service stores", cx)));
     let mut incomplete = false;
     for (service, path, state) in stores {
         let measured = match state {
@@ -3521,42 +4193,15 @@ fn worth_section(
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
-    let total: u64 = app.insights.iter().map(|candidate| candidate.bytes).sum();
     let largest = app.insights.first().map_or(1, |candidate| candidate.bytes);
-    let highlight = palette::highlight(theme);
     let mut section = div()
         .debug_selector(|| "worth-section".into())
         .flex()
         .flex_col()
         .gap(space::XS)
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .pb(space::XS)
-                .child(widgets::eyebrow("Worth a look", cx))
-                .when(total > 0, |this| {
-                    this.child(
-                        div()
-                            .text_size(text::CAPTION)
-                            .text_color(highlight)
-                            .child(human_bytes(total)),
-                    )
-                }),
-        );
+        .child(worth_head(app, theme, cx));
     if app.insights.is_empty() {
-        return section.child(
-            div()
-                .text_size(text::CAPTION)
-                .text_color(theme.secondary)
-                .child(if app.tree().is_some() {
-                    "Nothing obviously disposable"
-                } else {
-                    "Waiting for the scan"
-                }),
-        );
+        return section;
     }
     let selected = app.action_target();
     for (index, candidate) in app.insights.iter().enumerate() {
@@ -3669,30 +4314,18 @@ fn marked_section(
     cx: &Context<'_, Disktree>,
 ) -> Div {
     let count = app.marks.len();
-    let header = div()
+    // The header leads, so it is the section's top edge: that is where
+    // `pinned_head` takes over from it.
+    let mut section = div()
+        .debug_selector(|| "marked-section".into())
         .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .child(widgets::eyebrow(
-            if count == 0 {
-                "Marked".to_string()
-            } else {
-                format!("Marked · {count}")
-            },
-            cx,
-        ));
-    let mut section = div().flex().flex_col().gap(space::XS)
+        .flex_col()
+        .gap(space::XS)
+        .child(marked_head(app, theme, cx))
         .child(crate::semantics::status("marked-summary", format!("{} marked paths; {} listed bytes; {} included, {} blocked, {} covered. Estimated reclaimable: {}. Projections use only the measured volume.",
-            count, plan.bytes(), plan.targets.len(), plan.blocked.len(), plan.covered.len(), savings(plan.reclaimable_bytes(), plan.possible_bytes()))))
-        .child(header);
+            count, plan.bytes(), plan.targets.len(), plan.blocked.len(), plan.covered.len(), savings(plan.reclaimable_bytes(), plan.possible_bytes()))));
     if count == 0 {
-        return section.child(
-            div()
-                .text_size(text::CAPTION)
-                .text_color(theme.secondary)
-                .child("Space marks the tile you point at"),
-        );
+        return section;
     }
     for (index, item) in app.marks.items().iter().take(MARKED_ROWS).enumerate()
     {
@@ -3776,14 +4409,12 @@ fn marked_section(
 /// Marked rows the panel lists before pointing at the review screen.
 const MARKED_ROWS: usize = 6;
 
-/// The last thing that happened, or a scan error, above the disk.
-fn notice_line(app: &Disktree, theme: &Theme, cx: &App) -> Option<Div> {
-    let (message, color) = if let Some(error) = &app.scan_error {
-        (error.clone(), theme.danger)
-    } else {
-        let (message, status) = app.notice.as_ref()?;
-        (message.clone(), widgets::alert_color(*status, cx))
-    };
+/// Why the scan failed, above the disk. It stays while it holds: it
+/// describes the scan, not something that just happened, which a toast
+/// says (`toasts::notice`).
+fn scan_error_line(app: &Disktree, theme: &Theme) -> Option<Div> {
+    let message = app.scan_error.clone()?;
+    let color = theme.danger;
     Some(
         div()
             .px(space::SM)
@@ -4311,6 +4942,7 @@ fn review_button(
         .hover(move |style| style.bg(highlight.opacity(0.18)))
         .active(move |style| style.bg(highlight.opacity(0.26)))
         .on_click(cx.listener(|this, _, window, cx| {
+            this.reread_disks();
             this.screen = Screen::Review;
             cx.notify();
             window.focus(&this.focus, cx);
@@ -4571,7 +5203,7 @@ fn indexing_progress(
         .gap(space::XS)
         .text_size(text::BODY)
         .text_color(theme.foreground)
-        .child(widgets::eyebrow("Indexing", cx))
+        .child(section_head(widgets::eyebrow("Indexing", cx)))
         .child(
             div()
                 .debug_selector(|| "indexing-percent".into())
@@ -5000,6 +5632,9 @@ fn review(
         )
 }
 
+/// Review's reminder on a marked path the scan places in VM data.
+const VM_CAUTION: &str = "may hold unique work";
+
 /// What a review row says beyond the mark itself.
 struct MarkRow {
     covered: bool,
@@ -5044,15 +5679,19 @@ fn mark_row(
     } else {
         "included in removal plan"
     });
+    // Repeated where removal is approved: VM data is detected, never
+    // suggested, and the inspector's guidance may not have been read.
+    let caution = (category == Category::VirtualMachine).then_some(VM_CAUTION);
     let row = div()
         .id(crate::file_list::path_id(&item.path))
         .debug_selector(move || format!("review-row-{index}"))
         .role(gpui_kit::Role::ListItem)
         .aria_label(format!(
-            "{}; {} bytes; {}marked; {explanation}",
+            "{}; {} bytes; {}{}marked; {explanation}",
             item.path.display(),
             item.bytes,
-            kind.map_or_else(String::new, |kind| format!("{kind}; "))
+            kind.map_or_else(String::new, |kind| format!("{kind}; ")),
+            caution.map_or_else(String::new, |caution| format!("{caution}; "))
         ))
         .flex()
         .flex_row()
@@ -5112,6 +5751,11 @@ fn mark_row(
             widgets::chip(kind, accent, cx)
                 .flex_shrink_0()
                 .debug_selector(move || format!("review-kind-{index}"))
+        }))
+        .children(caution.map(|caution| {
+            widgets::chip(caution, theme.warning, cx)
+                .flex_shrink_0()
+                .debug_selector(move || format!("review-caution-{index}"))
         }))
         .children(covered.then(|| {
             widgets::chip("Inside a marked directory", theme.secondary, cx)
@@ -5248,7 +5892,7 @@ fn review_summary(
         )
         .children(
             app.removal_gate(plan)
-                .map(|share| over_limit_gate(app, &share, theme, window, cx)),
+                .map(|gate| over_limit_gate(app, &gate, theme, window, cx)),
         )
         .child(
             div()
@@ -5333,7 +5977,7 @@ fn review_summary(
         // Named for the test that scrolls to the panel's end: with no
         // notice, nothing comes after it.
         .child(div().flex_1().debug_selector(|| "review-summary-end".into()))
-        .children(notice_line(app, theme, cx))
+        .children(scan_error_line(app, theme))
 }
 
 /// The list handed on instead of acted on: saved as paths, or copied as a
@@ -5450,66 +6094,42 @@ fn export_menu(
         .when(app.export_menu_open, |export| export.child(deferred(menu)))
 }
 
-/// The review screen's footer. Exporting and unmarking stay on the left,
-/// since neither leaves the screen; Back and the commit end it, on the
-/// right. Moving to the trash is the default commit, so it is the primary
-/// action; a permanent deletion is the danger action and asks first, which
-/// its ellipsis promises. Over SSH nothing is removed here: Back alone.
-/// Past the limit, Review asks again before the commit button wakes: the
-/// share of the disk against the limit, then the phrase to type or the box
-/// to tick that Settings › Safety picked.
+/// Past the limit, Review asks again before the commit button wakes: each
+/// disk past it with its share against the limit, then the phrase to type
+/// or the box to tick that Settings › Safety picked.
 fn over_limit_gate(
     app: &Disktree,
-    share: &Share,
+    gate: &Gate,
     theme: &Theme,
     window: &Window,
     cx: &mut Context<'_, Disktree>,
 ) -> Stateful<Div> {
-    let fraction = |bytes: u64| {
-        (bytes as f32 / share.capacity.max(1) as f32).clamp(0.0, 1.0)
-    };
-    // The limit's tick on the meter, so the gap reads without arithmetic.
-    let limit_at = f32::from(share.limit) / 100.0;
-    let meter = div()
-        .relative()
-        .h(size::METER)
-        .bg(theme.divider())
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left_0()
-                .w(gpui_kit::relative(fraction(share.bytes)))
-                .bg(theme.warning),
-        )
-        .child(
-            div()
-                .absolute()
-                .top(-size::METER)
-                .bottom(-size::METER)
-                .left(gpui_kit::relative(limit_at))
-                .w(px(1.))
-                .bg(theme.bright),
-        );
-    let phrase = app.gate_phrase(share);
+    let phrase = app.gate_phrase(gate);
     let policy = app.policy();
     let ask: AnyElement = match policy.confirm {
         Confirm::Nothing => div()
             .text_size(text::CAPTION)
             .text_color(theme.foreground)
             .child(format!(
-                "Your limit is {}% per removal. Settings \u{203a} Safety asks \
-                 nothing more past it.",
-                share.limit
+                "Your limit is {}% of a disk per removal. Settings \u{203a} \
+                 Safety asks nothing more past it.",
+                gate.limit
             ))
             .into_any_element(),
         Confirm::Tick => {
-            let key = (share.percent, app.removal_mode);
-            let ticked = app.over_ticked == Some(key);
+            let key = gate.ticked(app.removal_mode);
+            let ticked = app.over_ticked.as_ref() == Some(&key);
             let verb = match app.removal_mode {
                 RemovalMode::Trash => "Move",
                 RemovalMode::Permanent => "Delete",
+            };
+            let shares = crate::safety::series(
+                gate.percents().iter().map(|percent| format!("{percent}%")),
+            );
+            let disks = if gate.over.len() > 1 {
+                "these disks"
+            } else {
+                "this disk"
             };
             let entity = cx.entity().downgrade();
             div()
@@ -5521,16 +6141,15 @@ fn over_limit_gate(
                         .text_size(text::CAPTION)
                         .text_color(theme.foreground)
                         .child(format!(
-                            "Your limit is {}% per removal.",
-                            share.limit
+                            "Your limit is {}% of a disk per removal.",
+                            gate.limit
                         )),
                 )
                 .child(
                     checkbox(
                         "over-limit-tick",
                         format!(
-                            "{verb} {}% of this disk{}",
-                            share.percent,
+                            "{verb} {shares} of {disks}{}",
                             if app.removal_mode == RemovalMode::Trash {
                                 " to the trash"
                             } else {
@@ -5547,6 +6166,7 @@ fn over_limit_gate(
                     .debug_selector(|| "over-limit-tick".into())
                     .tab_stop(true)
                     .on_change(move |_, _, _, cx| {
+                        let key = key.clone();
                         let _ = entity.update(cx, |this, cx| {
                             this.over_ticked = (!ticked).then_some(key);
                             cx.notify();
@@ -5556,7 +6176,7 @@ fn over_limit_gate(
                 .into_any_element()
         }
         Confirm::Phrase => {
-            let matched = app.gate_met(share, cx);
+            let matched = app.gate_met(gate, cx);
             let field = app.over_phrase.as_ref().map(|input| {
                 gpui_omarchy::input("over-limit-phrase", input, window, cx)
                     .debug_selector(|| "over-limit-phrase".into())
@@ -5571,9 +6191,9 @@ fn over_limit_gate(
                         .text_size(text::CAPTION)
                         .text_color(theme.foreground)
                         .child(format!(
-                            "Your limit is {}% per removal. To go past it, \
-                             type \u{201c}{phrase}\u{201d}.",
-                            share.limit
+                            "Your limit is {}% of a disk per removal. To go \
+                             past it, type \u{201c}{phrase}\u{201d}.",
+                            gate.limit
                         )),
                 )
                 .children(field)
@@ -5589,13 +6209,22 @@ fn over_limit_gate(
                 .into_any_element()
         }
     };
+    let heading = match gate.over.as_slice() {
+        [one] => format!("This removes {}% of a disk", one.share.percent),
+        many => format!(
+            "This removes more than {}% of {} disks",
+            gate.limit,
+            many.len()
+        ),
+    };
     div()
         .id("over-limit-gate")
         .debug_selector(|| "over-limit-gate".into())
         .role(gpui_kit::Role::Group)
         .aria_label(format!(
-            "This removes {}% of a disk, past the {}% limit",
-            share.percent, share.limit
+            "This removes {}, past the {}% limit",
+            gate.summary(),
+            gate.limit
         ))
         .flex()
         .flex_col()
@@ -5608,8 +6237,52 @@ fn over_limit_gate(
             div()
                 .text_color(theme.bright)
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(format!("This removes {}% of a disk", share.percent)),
+                .child(heading),
         )
+        .children(
+            gate.over
+                .iter()
+                .enumerate()
+                .map(|(index, over)| over_limit_disk(index, over, theme)),
+        )
+        .child(ask)
+}
+
+/// One disk in the over-limit gate: where it is mounted, its share
+/// against its capacity, and a meter with the limit's tick on it, so the
+/// gap reads without arithmetic.
+fn over_limit_disk(index: usize, over: &Over, theme: &Theme) -> Div {
+    let share = &over.share;
+    let fraction =
+        (share.bytes as f32 / share.capacity.max(1) as f32).clamp(0.0, 1.0);
+    let limit_at = f32::from(share.limit) / 100.0;
+    let meter = div()
+        .relative()
+        .h(size::METER)
+        .bg(theme.divider())
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .w(gpui_kit::relative(fraction))
+                .bg(theme.warning),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(-size::METER)
+                .bottom(-size::METER)
+                .left(gpui_kit::relative(limit_at))
+                .w(px(1.))
+                .bg(theme.bright),
+        );
+    div()
+        .debug_selector(move || format!("over-limit-disk-{index}"))
+        .flex()
+        .flex_col()
+        .gap(space::XS)
         .child(
             div()
                 .flex()
@@ -5617,17 +6290,28 @@ fn over_limit_gate(
                 .justify_between()
                 .gap(space::SM)
                 .text_size(text::CAPTION)
-                .child(format!(
-                    "{} of {}",
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.foreground)
+                        .child(over.name.clone()),
+                )
+                .child(div().flex_none().child(format!(
+                    "{} of {} \u{b7} {}%",
                     human_bytes(share.bytes),
-                    human_bytes(share.capacity)
-                ))
-                .child(format!("limit {}%", share.limit)),
+                    human_bytes(share.capacity),
+                    share.percent
+                ))),
         )
         .child(meter)
-        .child(ask)
 }
 
+/// The review screen's footer. Exporting and unmarking stay on the left,
+/// since neither leaves the screen; Back and the commit end it, on the
+/// right. Moving to the trash is the default commit, so it is the primary
+/// action; a permanent deletion is the danger action and asks first, which
+/// its ellipsis promises. Over SSH nothing is removed here: Back alone.
 fn review_actions(
     app: &Disktree,
     plan: &disktree_core::removal::Plan,
@@ -5652,7 +6336,7 @@ fn review_actions(
             && !app.trash_backend.is_available())
         || app
             .removal_gate(plan)
-            .is_some_and(|share| !app.gate_met(&share, cx));
+            .is_some_and(|gate| !app.gate_met(&gate, cx));
     let commit = app.remote.is_none().then(|| {
         let count = plan.targets.len();
         let noun = if count == 1 { "item" } else { "items" };
@@ -6707,11 +7391,7 @@ fn update_chip(
     ))
 }
 
-fn agent_pill(
-    app: &Disktree,
-    theme: &Theme,
-    cx: &Context<'_, Disktree>,
-) -> Option<Stateful<Div>> {
+fn agent_pill(app: &Disktree, theme: &Theme) -> Option<Stateful<Div>> {
     let presence = app.agent.as_ref()?.presence.as_ref()?;
     Some(
         div()
@@ -6728,12 +7408,7 @@ fn agent_pill(
             .text_size(text::CAPTION)
             .cursor_pointer()
             .hover(|style| style.bg(theme.success.opacity(0.1)))
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.show_agent = true;
-                this.focus_request = Some(crate::state::FocusTarget::Dialog);
-                this.apply_focus(window, cx);
-                cx.notify();
-            }))
+            .on_click(|_, _, cx| open_agents_settings(cx))
             .child(div().text_color(theme.success).child("\u{25cf}"))
             .child(
                 div()
@@ -6757,10 +7432,15 @@ fn agent_pill(
 /// connect one. Quiet, since most sessions never need it.
 fn agent_line(
     app: &Disktree,
+    compact: bool,
     theme: &Theme,
-    cx: &Context<'_, Disktree>,
-) -> Stateful<Div> {
+) -> Option<Stateful<Div>> {
     let presence = app.agent.as_ref().and_then(|agent| agent.presence.clone());
+    // Idle, the line is an invitation; a short panel needs the room more,
+    // and Help › Connect an AI Agent (MCP)… is still the way in.
+    if compact && presence.is_none() {
+        return None;
+    }
     let mut line = div()
         .id("agent-line")
         .debug_selector(|| "agent-line".into())
@@ -6770,12 +7450,7 @@ fn agent_line(
         .gap(space::XS)
         .text_size(text::CAPTION)
         .cursor_pointer()
-        .on_click(cx.listener(|this, _, window, cx| {
-            this.show_agent = true;
-            this.focus_request = Some(crate::state::FocusTarget::Dialog);
-            this.apply_focus(window, cx);
-            cx.notify();
-        }));
+        .on_click(|_, _, cx| open_agents_settings(cx));
     match presence {
         Some(presence) => {
             line = line
@@ -6799,171 +7474,16 @@ fn agent_line(
             line = line
                 .text_color(theme.secondary)
                 .hover(|style| style.text_color(theme.foreground))
-                .child("Work with an AI agent \u{203a}");
+                .child("Connect an AI agent (MCP) \u{203a}");
         }
     }
-    line
+    Some(line)
 }
 
-/// How to connect an agent, and what it may do once it is: look, mark,
-/// and open the review screen. Removing stays with the person.
-fn agent_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
-    let theme = cx.omarchy().clone();
-    let exe = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("pwrdisk"));
-    // Scrolls inside the card when the window is too short for it.
-    let mut body = div()
-        .id("agent-body")
-        .flex()
-        .flex_col()
-        .gap(space::MD)
-        .min_h_0()
-        .overflow_y_scroll();
-    body = body.child(
-        div()
-            .text_size(text::BODY)
-            .text_color(theme.foreground)
-            .child(
-                "An agent such as Claude Code or Codex can run PwrDisk as \
-                 an MCP server: it scans, walks the tree and marks what \
-                 can go, and this window follows along. Removing stays \
-                 yours: the agent opens the review screen, and you press \
-                 Enter.",
-            ),
-    );
-    for (index, (label, command)) in
-        crate::agent::connect_commands(&exe).into_iter().enumerate()
-    {
-        let what = format!("the {label} command");
-        let text = command.clone();
-        body = body.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(space::XS)
-                .child(widgets::eyebrow(label, cx))
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_start()
-                        .gap(space::SM)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .px(space::SM)
-                                .py(space::XS)
-                                .bg(theme.inset)
-                                .border_1()
-                                .border_color(theme.divider())
-                                .text_size(text::CAPTION)
-                                .text_color(theme.foreground)
-                                .child(command),
-                        )
-                        .child(
-                            button(
-                                ElementId::Name(
-                                    format!("copy-connect-{index}").into(),
-                                ),
-                                "Copy",
-                                ButtonVariant::Outline,
-                                cx,
-                            )
-                            .tab_stop(true)
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.copy_connect_text(
-                                        text.clone(),
-                                        &what,
-                                        cx,
-                                    );
-                                    window.focus(&this.confirm_focus, cx);
-                                },
-                            )),
-                        ),
-                ),
-        );
-    }
-    body = body.child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(space::SM)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(text::CAPTION)
-                    .text_color(theme.secondary)
-                    .child(format!(
-                        "Then ask it: \u{201c}{}\u{201d}",
-                        crate::agent::FIRST_PROMPT
-                    )),
-            )
-            .child(
-                button("copy-prompt", "Copy", ButtonVariant::Outline, cx)
-                    .tab_stop(true)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.copy_connect_text(
-                            crate::agent::FIRST_PROMPT.to_string(),
-                            "the prompt",
-                            cx,
-                        );
-                        window.focus(&this.confirm_focus, cx);
-                    })),
-            ),
-    );
-    let status = match &app.agent {
-        Some(agent) => match &agent.presence {
-            Some(presence) => format!(
-                "{} is connected \u{00b7} {}",
-                presence.client, presence.action
-            ),
-            None => "No agent is connected to this window yet.".to_string(),
-        },
-        None => "This window cannot be driven here; an agent still scans \
-                 and marks on its own."
-            .to_string(),
-    };
-    let close: CloseOverlay = |this| this.show_agent = false;
-    overlay_backdrop(
-        "agent-backdrop",
-        div()
-            .id("agent-overlay")
-            .debug_selector(|| "agent-overlay".into())
-            .flex()
-            .flex_col()
-            .gap(space::LG)
-            .w(size::HELP)
-            .min_h_0()
-            .p(space::XL)
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.surface)
-            .child(
-                div()
-                    .text_size(text::TITLE)
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(theme.bright)
-                    .child("Work with an AI agent"),
-            )
-            .child(body)
-            .child(overlay_footer(
-                format!("{status} \u{00b7} esc closes"),
-                close,
-                cx,
-            )),
-        close,
-        cx,
-    )
-    .role(gpui_kit::Role::Dialog)
-    .aria_label("Work with an AI agent")
-    .track_focus(&app.confirm_focus)
-    .tab_group()
-    .tab_stop(false)
-    .a11y_synthetic_children(|b| b.parent_node().set_modal())
+/// Settings › Agents (MCP): how to connect an agent, who is connected,
+/// and what it may do. Deferred, since Settings may open a window.
+fn open_agents_settings(cx: &mut App) {
+    cx.defer(|cx| crate::settings::open(crate::settings::Pane::Agents, cx));
 }
 
 fn app_menu_key(

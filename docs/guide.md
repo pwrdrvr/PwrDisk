@@ -80,19 +80,23 @@ a root. Explicit command-line paths and `--disk` still start directly;
   the scanned root a crumb is dimmer, and clicking it widens the scan to
   there (see [The whole disk](#the-whole-disk)).
 - **Under it:** the scan totals and the filter when one is typed, and on
-  its own row the legend, which wraps onto another line rather than hide
-  an entry.
+  its own row the legend. Each entry carries what it holds of the whole
+  scan, in the same unit as the tiles. The row never wraps: kinds that
+  hold nothing, or less than a thousandth of the scan, and then the
+  smallest when the row runs out of room, wait in a **+N** menu at its
+  end. Setting one there moves it onto the row, where its state shows.
 - **Mosaic:** colour is the *kind* of data — code, agent scratch,
-  toolchains, synced files, git, media, documents, caches — at one muted
-  level, lighter with depth. A diagonal hatch is space that can be had back
-  (caches, sync history, package stores, build output), independent of
-  colour. Top-level directories carry a strip of their colour and a name
-  band; deeper open directories a slim label row. In **Age** mode colour is
-  the last write instead, from this week to older.
+  toolchains, synced files, git, media, documents, caches, virtual
+  machines — at one muted level, lighter with depth. A diagonal hatch is
+  a cleanup suggestion to review (caches, sync history, package stores,
+  build output), independent of colour; it never says the contents are
+  safe to lose. Top-level directories carry a strip of their colour and a
+  name band; deeper open directories a slim label row. In **Age** mode
+  colour is the last write instead, from this week to older.
 - **Legend:** each entry is also a filter. Click it once to show only that
   kind (or age), again to hide it, and a third time to show it again.
   Kinds set to only add up ("Code" and "Cache" show both), while
-  **Reclaimable** narrows them to their reclaimable part. The mosaic lays
+  **Suggested** narrows them to their cleanup suggestions. The mosaic lays
   out only what passes, at its own size, and a folder that only partly
   passes says so: `48G of 196G`. Kind and age filters apply together, so
   "old code" is a click in each mode. **Show all** or `esc` clears them.
@@ -102,19 +106,30 @@ a root. Explicit command-line paths and `--disk` still start directly;
   folder that is only partly shown marks all of it, and the panel says so.
 - **Panel:** the selection (its size set large, share of the scan, files,
   last write, and for a checkout what git says — changes, stashes, unpushed
-  commits); what is marked; *Worth a look*, the largest things that could
-  plausibly go; then, pinned above the disk, the marks taken together —
+  commits); for a recognized artifact, whether it is only *Detected* or
+  *Suggested for review*, how it was identified and what to do first, as
+  [the classification notes](artifact-classification.md) describe; what
+  is marked; *Worth a look*, the largest cleanup suggestions and agent
+  findings to review; then, pinned above the disk, the marks taken together —
   how much is marked, what removing all of it frees, and the way to the
-  review screen; and the disk, free now and after the marks. On a short
-  window *Worth a look* is what scrolls. Drag its left edge to resize it;
-  double-click the edge to reset.
+  review screen; and the disk, free now and after the marks. An empty
+  list is one line: *Marked* says "Space to mark" and *Worth a look*
+  "none". On a short window (under 48 rem, 768 px at the default size)
+  the share, files, last write and kind fold into one line under the size
+  that opens them again, the selection's label goes, and the line inviting
+  an AI agent shows only once one is connected; Help › Connect an AI Agent
+  (MCP)… is always there. The assessment and Mark never fold. What still
+  does not fit scrolls; the disk stays in view. Drag the panel's left edge
+  to resize it; double-click the edge to reset.
 
 One colour is kept apart: amber marks the selection, the main action, and
-what can be had back.
+cleanup suggestions.
 
 The kinds come from directory names and a few shapes (a bare git repository,
-`target` beside a `Cargo.toml`). Some of the names are specific to one
-machine; see `crates/disktree-core/src/classify.rs`.
+a pnpm store, and the tool layouts in
+[the classification notes](artifact-classification.md), such as
+`target/debug/deps`). Some of the names are specific to one machine; see
+`crates/disktree-core/src/classify.rs`.
 
 ## Marking
 
@@ -163,10 +178,14 @@ One removal may take only so much of a disk: 5% of the volume's capacity
 by default, counting everything marked. A mark that would pass it is not
 made by Space or **Mark for removal**: the button reads **Over 5% limit**,
 and the ▾ beside it holds **Mark anyway**, which names the share. Review
-then shows the share against the limit and keeps the commit button off
-until you type the phrase it shows, such as `delete 20% of my disk`
-(`trash …` to the trash). Removal is held to the share you typed: if what
-is marked has grown past it when the removal starts, nothing is removed.
+then shows each disk the removal takes past the limit, its share against
+the limit, and keeps the commit button off until you type the phrase it
+shows, such as `delete 20% of my disk` (`trash …` to the trash), or
+`delete 20% and 19% of my disks` when marks on a disk mounted inside the
+scan pass the limit there too. Each disk counts on its own, and removal
+holds each to the share you typed for it and every other disk to the
+limit: if what is marked has grown past that when the removal starts,
+nothing is removed.
 Settings › Safety sets the limit (1%, 5%, 10%, 25%, 50% or Off) and what
 Review asks past it (type a phrase, tick a box, or nothing more). Neither
 lets an agent past the limit.
@@ -462,9 +481,11 @@ claude mcp add --scope user pwrdisk -- pwrdisk mcp
 (Codex: `codex mcp add pwrdisk -- pwrdisk mcp`. Any other client: a
 server named `pwrdisk` with the command `pwrdisk` and the argument `mcp`.
 On macOS the command lives inside the app, at
-`PwrDisk.app/Contents/MacOS/pwrdisk`. The window's **Work with an AI
-agent** line, under the disk, and **Help › Work with an AI Agent…** on
-macOS, show each command with the binary's full path and a Copy button.)
+`PwrDisk.app/Contents/MacOS/pwrdisk`. **Settings › Agents (MCP)** shows
+the bare command line and each client's command with the binary's full
+path and a Copy button, and who is connected. **Help › Connect an AI
+Agent (MCP)…** and the **Connect an AI agent (MCP)** line under the disk
+open it; on a short window that line waits until an agent connects.)
 
 Then ask it what is eating your disk. The agent walks the tree largest
 first, lists every cache, build directory and package store at once, and
@@ -732,9 +753,10 @@ tested:
   macOS `/Users` is on the same volume as `/`, and `/opt` holds
   `/opt/homebrew`);
 - every account's folder is refused, and so is the folder holding them:
-  `/Users` and each folder in it on macOS, the profiles folder (usually
-  `C:\Users`) and each profile on Windows. What is inside one stays
-  removable;
+  `/Users` and each folder in it on macOS, `/home` and each folder in it
+  on Linux (by either name where `/home` links to `/var/home`, as on
+  Fedora's atomic editions), the profiles folder (usually `C:\Users`) and
+  each profile on Windows. What is inside one stays removable;
 - these are asked before a mark is made: the panel says why instead of
   offering **Mark for removal**, and Space marks nothing;
 - one removal may take only so much of a disk, 5% by default (see

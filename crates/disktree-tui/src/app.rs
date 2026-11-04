@@ -1480,7 +1480,7 @@ impl App {
         self.run = Some(disktree_core::removal::spawn_limited(
             plan,
             self.removal_mode,
-            limit,
+            limit.into(),
         ));
         self.screen = Screen::Running;
     }
@@ -2181,11 +2181,14 @@ mod tests {
         let blob = std::fs::File::create(cache.join("blob")).expect("file");
         blob.set_len(128 * 1024 * 1024).expect("size");
         let project = temp.path().join("Projects/app");
-        std::fs::create_dir_all(project.join("target")).expect("mkdir");
+        std::fs::create_dir_all(project.join("target/debug/deps"))
+            .expect("mkdir");
         std::fs::write(project.join("Cargo.toml"), b"[package]\n")
             .expect("manifest");
-        let build = std::fs::File::create(project.join("target/build.bin"))
-            .expect("file");
+        let build = std::fs::File::create(
+            project.join("target/debug/deps/libapp.rlib"),
+        )
+        .expect("file");
         build.set_len(96 * 1024 * 1024).expect("size");
         let temporary = temp.path().join("Downloads/tmp");
         std::fs::create_dir_all(&temporary).expect("mkdir");
@@ -2229,7 +2232,7 @@ mod tests {
                     Finding::Reclaimable(Reclaim::Regenerable)
                 ),
                 (
-                    "target".to_string(),
+                    "deps".to_string(),
                     Finding::Reclaimable(Reclaim::BuildOutput)
                 ),
                 ("tmp".to_string(), Finding::Reclaimable(Reclaim::Temporary)),

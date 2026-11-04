@@ -109,6 +109,15 @@ pub const UNDO_KEYS: &str = if cfg!(target_os = "macos") {
     "Ctrl+Z"
 };
 
+/// Who started a removal, which decides the limit its worker is held to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Remover {
+    /// The window's limit, raised only by Review's confirmation.
+    Person,
+    /// The agent limit, which nothing in the window raises.
+    Agent,
+}
+
 /// Which screen the app is showing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -398,6 +407,13 @@ pub struct Disktree {
     restore_file_focus: bool,
     pub review_page: usize,
     pub review_scroll: gpui_kit::ScrollHandle,
+    /// The side panel's lists, measured to pin their headers.
+    pub panel_scroll: gpui_kit::ScrollHandle,
+    /// Their sections' bounds as last laid out: a change asks for one more
+    /// frame, so the pinned header follows the new layout.
+    pub panel_layout: std::rc::Rc<
+        std::cell::RefCell<Vec<gpui_kit::Bounds<gpui_kit::Pixels>>>,
+    >,
     pub hovered: Option<Vec<usize>>,
     pub history: History,
     /// The history button under the pointer, `true` for `<`: its card is
@@ -496,9 +512,8 @@ pub struct Disktree {
     pub scans_done: u64,
     /// The running removal as it started.
     run_start: Option<crate::ledger::Start>,
-    pub notice: Option<(String, Status)>,
     /// Toasts over the lower left of the screen's content: the updater's
-    /// answers, which run out.
+    /// answers and the window's notices, which run out.
     pub toasts: crate::toasts::Toasts,
     /// Wakes when the next toast runs out.
     pub toast_timer: Option<gpui_kit::Task<()>>,
@@ -525,6 +540,17 @@ pub struct Disktree {
     pub legend_epoch: u64,
     /// The legend's filter is being worked out off the UI thread.
     pub legend_pending: bool,
+    /// What each legend chip would keep of the whole scan, for the sizes
+    /// beside the chips and which of them fit on the row. Worked out off
+    /// the UI thread once per tree, not per filter.
+    pub legend_shares: Option<Arc<disktree_core::filter::Shares>>,
+    /// Bumped per tree; only the newest shares are kept.
+    pub(crate) shares_epoch: u64,
+    /// The legend's "+N" menu: the chips the row has no room for.
+    pub legend_menu_open: bool,
+    /// The pointer is over the "+N" button, whose own press toggles the
+    /// menu; a press anywhere else closes it.
+    pub legend_more_hover: bool,
     /// Bumped per keystroke; only the newest search's result is kept.
     find_epoch: u64,
     /// A search is running off the UI thread.
@@ -532,12 +558,14 @@ pub struct Disktree {
     /// Enter was pressed before the search finished: apply on arrival.
     apply_pending: bool,
     pub show_help: bool,
-    /// The "work with an AI agent" overlay is open.
-    pub show_agent: bool,
     /// Off macOS, the strip's menu: the menu bar's template as one
     /// dropdown (`app_menu::menus`), since there is no global menu bar.
     pub app_menu_open: bool,
     pub show_selection: bool,
+    /// A short panel folds the selection's figures into one summary line;
+    /// this is whether the person has opened it. It stays open for the
+    /// session, whatever is selected, so it is not undone by every arrow.
+    pub selection_details: bool,
     pub focus: FocusHandle,
     /// The app is quitting: what this window holds is left to the system,
     /// which takes a process's memory back whole when it exits.
@@ -607,9 +635,16 @@ pub struct Disktree {
     pub mark_menu: Option<PathBuf>,
     /// Review's field for the over-limit phrase, made when first shown.
     pub over_phrase: Option<Entity<InputState>>,
-    /// The share and mode the over-limit box was ticked for: a tick says
-    /// "20%, to the trash", and means nothing once either changes.
-    pub over_ticked: Option<(u8, RemovalMode)>,
+    /// The shares and mode the over-limit box was ticked for: a tick says
+    /// "20% of this disk, to the trash", and means nothing once any of it
+    /// changes.
+    pub over_ticked: Option<crate::mark_guard::Ticked>,
+    /// How Review finds the disk a marked path is on. A field so a test
+    /// can stand in two disks where its fixture has one.
+    pub disk_probe: crate::mark_guard::DiskProbe,
+    /// The probe's answers for Review's frames; see
+    /// [`Self::removal_gate`].
+    pub disk_cache: RefCell<crate::mark_guard::DiskCache>,
     roots_job: Option<disktree_core::remote::RemoteRoots>,
     volume_epoch: u64,
     pub volumes: Vec<disktree_core::space::Volume>,
@@ -722,6 +757,8 @@ impl Disktree {
             restore_file_focus: false,
             review_page: 0,
             review_scroll: gpui_kit::ScrollHandle::new(),
+            panel_scroll: gpui_kit::ScrollHandle::new(),
+            panel_layout: std::rc::Rc::default(),
             layout_options: LayoutOptions {
                 max_depth: depth.clamp(1, 6),
                 ..LayoutOptions::default()
@@ -770,7 +807,6 @@ impl Disktree {
             ledger: crate::ledger::Ledger::default(),
             scans_done: 0,
             run_start: None,
-            notice: None,
             toasts: crate::toasts::Toasts::default(),
             toast_timer: None,
             update_watch: crate::toasts::UpdateWatch::default(),
@@ -783,13 +819,17 @@ impl Disktree {
             legend_matches: None,
             legend_epoch: 0,
             legend_pending: false,
+            legend_shares: None,
+            shares_epoch: 0,
+            legend_menu_open: false,
+            legend_more_hover: false,
             find_epoch: 0,
             finding: false,
             apply_pending: false,
             show_help: false,
-            show_agent: false,
             app_menu_open: false,
             show_selection: true,
+            selection_details: false,
             focus: cx.focus_handle(),
             crumb_menu: None,
             color_mode: ColorMode::Kind,
@@ -819,6 +859,8 @@ impl Disktree {
             mark_menu: None,
             over_phrase: None,
             over_ticked: None,
+            disk_probe: crate::mark_guard::disk_of,
+            disk_cache: RefCell::default(),
             roots_job: None,
             volume_epoch: 0,
             volumes: Vec::new(),
@@ -892,6 +934,7 @@ impl Disktree {
         app.tree = Some(Arc::new(tree));
         app.cache = None;
         app.refresh_insights();
+        app.refresh_shares(cx);
         app.refresh_legend(cx);
         app.select_largest(cx);
         app
@@ -1563,7 +1606,7 @@ impl Disktree {
         self.options.threads = preset.policy(self.cpu_threads);
         self.power_choice = Some(preset);
         let label = preset.label(self.cpu_threads);
-        self.notice = Some(match self.power_settings_path.as_deref() {
+        let (message, status) = match self.power_settings_path.as_deref() {
             Some(path) => match crate::power::save(path, preset) {
                 Ok(()) => (
                     format!("{label} from the next scan; r rescans now"),
@@ -1584,19 +1627,26 @@ impl Disktree {
                 ),
                 Status::Warning,
             ),
-        });
-        cx.notify();
+        };
+        // A preference that was not saved is a failure to read later.
+        if status == Status::Success {
+            self.say(message, status, cx);
+        } else {
+            self.say_until_closed(message, status, cx);
+        }
     }
 
     /// The review screen, once something is marked; until then the notice
     /// says how to mark.
     pub fn open_review(&mut self, cx: &mut Context<'_, Self>) {
         if self.marks.is_empty() {
-            self.notice = Some((
-                "mark something first: space marks the selected tile".into(),
+            self.say(
+                "mark something first: space marks the selected tile",
                 Status::Warning,
-            ));
+                cx,
+            );
         } else {
+            self.reread_disks();
             self.screen = Screen::Review;
             self.focus_request = Some(FocusTarget::Root);
         }
@@ -1616,10 +1666,11 @@ impl Disktree {
     /// fails comes back through the updater's state (`toasts.rs`).
     pub fn restart_to_update(&mut self, cx: &mut Context<'_, Self>) {
         if !self.can_restart_to_update() {
-            self.notice = Some((
-                "Restart to update once the removal has finished".into(),
+            self.say(
+                "Restart to update once the removal has finished",
                 Status::Warning,
-            ));
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -1786,6 +1837,7 @@ impl Disktree {
     pub(crate) fn update_remote_identity(
         &mut self,
         identity: Option<disktree_core::identity::HostIdentity>,
+        cx: &mut Context<'_, Self>,
     ) {
         // A stable SSH alias can be repointed to a different machine.
         // Old marks must not acquire that machine's freshly captured guard.
@@ -1795,10 +1847,11 @@ impl Disktree {
         }
         if self.remote_identity != identity && !self.marks.is_empty() {
             self.marks.clear();
-            self.notice = Some((
-                "Remote identity changed; previous marks were cleared.".into(),
+            self.say_until_closed(
+                "Remote identity changed; previous marks were cleared.",
                 Status::Warning,
-            ));
+                cx,
+            );
         }
         self.remote_identity = identity;
     }
@@ -1833,7 +1886,7 @@ impl Disktree {
                     self.disk_root = snapshot.header.disk_root;
                     self.space = snapshot.header.space;
                     self.remote_platform = snapshot.header.platform;
-                    self.update_remote_identity(snapshot.header.identity);
+                    self.update_remote_identity(snapshot.header.identity, cx);
                     self.device = self.remote.as_ref().map(|host| {
                         format!("{host} · read-only · space at scan")
                     });
@@ -1848,6 +1901,7 @@ impl Disktree {
                     self.scans_done += 1;
                     self.removed.clear();
                     self.refresh_insights();
+                    self.refresh_shares(cx);
                     self.refresh_legend(cx);
                     self.select_largest(cx);
                     self.scan_elapsed = self.scan_started.map(|t| t.elapsed());
@@ -1906,6 +1960,7 @@ impl Disktree {
                 self.removed.clear();
                 self.cache = None;
                 self.refresh_insights();
+                self.refresh_shares(cx);
                 self.refresh_legend(cx);
                 self.scan_elapsed =
                     self.scan_started.map(|started| started.elapsed());
@@ -2702,11 +2757,11 @@ impl Disktree {
             return;
         };
         if crumbs.is_empty() {
-            self.notice = Some((
-                "the scanned root cannot be removed; open a directory first"
-                    .into(),
+            self.say(
+                "the scanned root cannot be removed; open a directory first",
                 Status::Warning,
-            ));
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -2739,29 +2794,31 @@ impl Disktree {
         let Some(target) = self.target_at(crumbs) else {
             return;
         };
-        self.notice = None;
+        self.clear_notice(cx);
         if self.was_removed(&target.path) {
-            self.notice = Some((
+            self.say(
                 format!(
                     "{} was removed; rescan to see the disk as it is now",
                     self.display_path(&target.path)
                 ),
                 Status::Warning,
-            ));
+                cx,
+            );
             cx.notify();
             return;
         }
         if !self.marks.contains(&target.path, self.path_style())
             && let Some(ancestor) = self.marked_ancestor(&target.path)
         {
-            self.notice = Some((
+            self.say(
                 format!(
                     "{} goes with the marked {}; unmark that to keep it",
                     self.display_path(&target.path),
                     self.display_path(&ancestor)
                 ),
                 Status::Warning,
-            ));
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -2789,7 +2846,7 @@ impl Disktree {
             self.space_baseline = self.space_baseline.or(self.space);
             let inside = self.marks.absorb(&path, style);
             if inside > 0 {
-                self.notice = Some((
+                self.say(
                     format!(
                         "{} now covers {} mark{} inside it",
                         self.display_path(&path),
@@ -2797,7 +2854,8 @@ impl Disktree {
                         if inside == 1 { "" } else { "s" }
                     ),
                     Status::Neutral,
-                ));
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -2842,11 +2900,18 @@ impl Disktree {
         self.unmarked = Some(taken);
         // Export and Unmark all are disabled now; neither may keep focus.
         self.focus_request = Some(FocusTarget::Root);
-        self.notice = Some((
-            format!("Unmarked {count} \u{b7} u or {UNDO_KEYS} to undo"),
-            Status::Neutral,
-        ));
-        cx.notify();
+        // Undo on the card as well as on the keys: the card is where the
+        // eye is when the list empties.
+        self.show_toast(
+            crate::toasts::Toast {
+                actions: vec![crate::toasts::Action::Undo],
+                ..crate::toasts::notice(
+                    format!("Unmarked {count} \u{b7} u or {UNDO_KEYS} to undo"),
+                    Status::Neutral,
+                )
+            },
+            cx,
+        );
     }
 
     /// Put back what Unmark all took. Marks made since stay; a path that
@@ -2873,14 +2938,15 @@ impl Disktree {
             self.marks.absorb(&path, style);
             restored += 1;
         }
-        self.notice = Some((
+        self.say(
             if restored == 0 {
                 "Nothing to put back: those paths are marked again".into()
             } else {
                 format!("Marked {restored} again")
             },
             Status::Neutral,
-        ));
+            cx,
+        );
         cx.notify();
     }
 
@@ -2892,8 +2958,7 @@ impl Disktree {
         };
         run.cancel();
         self.stop_requested = true;
-        self.notice =
-            Some(("stopping after the current item".into(), Status::Warning));
+        self.say("stopping after the current item", Status::Warning, cx);
         cx.notify();
     }
 
@@ -3386,6 +3451,7 @@ impl Disktree {
         self.crumb_menu = None;
         self.transition = None;
         self.refresh_insights();
+        self.refresh_shares(cx);
         // Every crumb moved, so the legend's result points at other
         // children now; drop it rather than lay it out until the new one
         // comes back.
@@ -3527,20 +3593,36 @@ impl Disktree {
         }
     }
 
+    /// Start the person's removal of what is marked, held to the window's
+    /// limit or to the shares Review confirmed past it.
     pub fn begin_removal(&mut self, cx: &mut Context<'_, Self>) {
+        self.start_removal(Remover::Person, cx);
+    }
+
+    /// Start an agent's confirmed removal, held to the agent limit
+    /// whatever the window's limit and Review's confirmation say.
+    pub(crate) fn begin_agent_removal(&mut self, cx: &mut Context<'_, Self>) {
+        self.start_removal(Remover::Agent, cx);
+    }
+
+    fn start_removal(&mut self, by: Remover, cx: &mut Context<'_, Self>) {
         if self.remote.is_some() {
             return;
         }
         let plan = self.plan();
         if plan.is_empty() {
-            self.notice = Some(("nothing is marked".into(), Status::Warning));
+            self.say("nothing is marked", Status::Warning, cx);
             cx.notify();
             return;
         }
-        let limit = match self.removal_limit(&plan, cx) {
+        let limit = match by {
+            Remover::Person => self.removal_limit(&plan, cx),
+            Remover::Agent => self.agent_removal_limit(&plan),
+        };
+        let limit = match limit {
             Ok(limit) => limit,
             Err(reason) => {
-                self.notice = Some((reason, Status::Warning));
+                self.say_until_closed(reason, Status::Warning, cx);
                 cx.notify();
                 return;
             }
@@ -3548,10 +3630,11 @@ impl Disktree {
         // This window quits once the prompt is answered yes, and quitting
         // would stop a permanent delete halfway.
         if self.restarting {
-            self.notice = Some((
-                "not while restarting as administrator".into(),
+            self.say(
+                "not while restarting as administrator",
                 Status::Warning,
-            ));
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -3569,6 +3652,7 @@ impl Disktree {
         let epoch = self.run_epoch;
         self.run_list =
             crate::run_list::RunList::new(self.run_items(&plan.targets));
+        self.track_agent_removal();
         self.run_scroll = gpui_kit::UniformListScrollHandle::new();
         self.run_free_before = before.map(|space| space.available);
         self.stop_requested = false;
@@ -3670,8 +3754,8 @@ impl Disktree {
         }
         if finished {
             self.run = None;
-            self.record_removal();
             let removed = self.record_cohort();
+            self.record_removal();
             self.marks.clear();
             self.unmarked = None;
             self.screen = Screen::Done;
@@ -3682,6 +3766,7 @@ impl Disktree {
                 self.start_scan(cx);
             }
         }
+        self.update_agent_removal(finished);
         if changed {
             cx.notify();
         }
@@ -3963,10 +4048,11 @@ impl Disktree {
             return;
         };
         if matches.count == 0 {
-            self.notice = Some((
+            self.say(
                 format!("nothing here matches {}", matches.needle),
                 Status::Warning,
-            ));
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -3987,7 +4073,7 @@ impl Disktree {
             })
             .max_by_key(|(bytes, _)| *bytes)
             .map(|(_, crumbs)| crumbs.clone());
-        self.notice = None;
+        self.clear_notice(cx);
         cx.notify();
     }
 
@@ -4022,14 +4108,10 @@ impl Disktree {
             && !self.confirm_open
             && !self.volumes_open
             && !self.show_help
-            && !self.show_agent
     }
 
     pub const fn has_modal(&self) -> bool {
-        self.confirm_open
-            || self.volumes_open
-            || self.show_help
-            || self.show_agent
+        self.confirm_open || self.volumes_open || self.show_help
     }
 
     pub fn open_help(&mut self, cx: &mut Context<'_, Self>) {
@@ -4112,7 +4194,7 @@ impl Disktree {
     fn save_export(&mut self, script: bool, cx: &mut Context<'_, Self>) {
         let plan = self.plan();
         if plan.is_empty() {
-            self.notice = Some(("nothing to save".into(), Status::Warning));
+            self.say("nothing to save", Status::Warning, cx);
             cx.notify();
             return;
         }
@@ -4134,7 +4216,7 @@ impl Disktree {
             let Ok(Ok(Some(path))) = chosen.await else {
                 return;
             };
-            let notice = match std::fs::write(&path, list) {
+            let (message, status) = match std::fs::write(&path, list) {
                 Ok(()) => (
                     format!(
                         "saved {count} {} to {}",
@@ -4149,8 +4231,7 @@ impl Disktree {
                 ),
             };
             let _ = this.update(cx, |this, cx| {
-                this.notice = Some(notice);
-                cx.notify();
+                this.say(message, status, cx);
             });
         })
         .detach();
@@ -4173,14 +4254,13 @@ impl Disktree {
     pub fn copy_delete_script(&mut self, cx: &mut Context<'_, Self>) {
         let plan = self.plan();
         if plan.is_empty() {
-            self.notice = Some(("nothing to copy".into(), Status::Warning));
+            self.say("nothing to copy", Status::Warning, cx);
         } else {
             let script = self.delete_script(&plan.targets);
             cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(script));
-            self.notice = Some((
-                "copied delete script; previews by default, checks host before deletion".into(),
-                Status::Success,
-            ));
+            self.say(
+                "copied delete script; previews by default, checks host before deletion",
+                Status::Success, cx);
         }
         cx.notify();
     }
@@ -4190,7 +4270,7 @@ impl Disktree {
     pub fn copy_agent_prompt(&mut self, cx: &mut Context<'_, Self>) {
         let plan = self.plan();
         if plan.is_empty() {
-            self.notice = Some(("nothing to copy".into(), Status::Warning));
+            self.say("nothing to copy", Status::Warning, cx);
             cx.notify();
             return;
         }
@@ -4220,14 +4300,15 @@ impl Disktree {
         }
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(prompt));
         let count = plan.targets.len();
-        self.notice = Some((
+        self.say(
             format!(
                 "copied a prompt for your agent: {count} {}, {}",
                 if count == 1 { "path" } else { "paths" },
                 disktree_core::size::human_bytes(plan.bytes())
             ),
             Status::Success,
-        ));
+            cx,
+        );
         cx.notify();
     }
 
@@ -4243,10 +4324,11 @@ impl Disktree {
         };
         // GPUI's reveal cannot report failure, so check what it can't.
         if std::fs::symlink_metadata(&path).is_err() {
-            self.notice = Some((
+            self.say(
                 format!("{} is no longer on disk", self.display_path(&path)),
                 Status::Warning,
-            ));
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -4296,6 +4378,15 @@ impl Disktree {
             return;
         }
 
+        // The legend's "+N" menu closes before Escape clears the legend.
+        if self.legend_menu_open
+            && key == "escape"
+            && self.screen == Screen::Explore
+        {
+            self.legend_menu_open = false;
+            cx.notify();
+            return;
+        }
         if self.crumb_menu.is_some() && self.on_menu_key(key, cx) {
             return;
         }
@@ -4321,15 +4412,6 @@ impl Disktree {
             }
             return;
         }
-        if self.show_agent {
-            if matches!(key, "escape" | "q") {
-                self.show_agent = false;
-                self.focus_request = Some(FocusTarget::Root);
-                cx.notify();
-            }
-            return;
-        }
-
         // The search field takes the keyboard while it is open. It is a field
         // of three keys on purpose: no editor state to keep in sync with the
         // tree, and Escape always means "give the keyboard back".
@@ -4916,10 +4998,11 @@ impl Disktree {
                 Ok(()) => cx.quit(),
                 Err(error) => {
                     this.restarting = false;
-                    this.notice = Some((
+                    this.say_until_closed(
                         format!("still not an administrator: {error}"),
                         Status::Warning,
-                    ));
+                        cx,
+                    );
                     cx.notify();
                 }
             });

@@ -19,6 +19,8 @@ pub const MUTED: Color = Color::Rgb(132, 145, 179);
 pub const ACCENT: Color = Color::Rgb(229, 184, 105);
 pub const RED: Color = Color::Rgb(221, 111, 119);
 const MARKED: Color = Color::Rgb(92, 43, 54);
+// Other has a mosaic color even though it is outside the legend.
+const CATEGORY_COUNT: usize = Category::LEGEND.len() + 1;
 
 /// Automatic Omarchy/system colors, or an explicit terminal appearance.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -49,7 +51,7 @@ pub struct Palette {
     muted: Color,
     accent: Color,
     red: Color,
-    categories: [Color; 11],
+    categories: [Color; CATEGORY_COUNT],
     light: bool,
 }
 
@@ -73,6 +75,7 @@ impl Palette {
                 base_category_color(Category::Cache),
                 base_category_color(Category::FilesystemEvents),
                 base_category_color(Category::Spotlight),
+                base_category_color(Category::VirtualMachine),
                 base_category_color(Category::Other),
             ],
             light: false,
@@ -98,6 +101,7 @@ impl Palette {
                 Color::Rgb(141, 112, 36),
                 Color::Rgb(120, 105, 150),
                 Color::Rgb(55, 115, 130),
+                Color::Rgb(69, 92, 158),
                 Color::Rgb(126, 128, 132),
             ],
             light: true,
@@ -132,7 +136,7 @@ impl Palette {
         )
         .unwrap_or(fallback.accent);
         let red = color_key(table, &["red", "color1"]).unwrap_or(fallback.red);
-        let pairs: [&[&str]; 11] = [
+        let pairs: [&[&str]; CATEGORY_COUNT] = [
             &["blue", "color4"],
             &["orange", "color11", "color3"],
             &["green", "color2"],
@@ -143,6 +147,7 @@ impl Palette {
             &["yellow", "color3"],
             &["magenta", "color5"],
             &["cyan", "color6"],
+            &["blue", "color4"],
             &["muted", "color8"],
         ];
         let categories = std::array::from_fn(|index| {
@@ -407,6 +412,7 @@ pub const fn base_category_color(category: Category) -> Color {
         Category::Cache => Color::Rgb(197, 169, 83),
         Category::FilesystemEvents => Color::Rgb(150, 132, 180),
         Category::Spotlight => Color::Rgb(83, 155, 175),
+        Category::VirtualMachine => Color::Rgb(105, 126, 194),
         Category::Other => Color::Rgb(112, 123, 149),
     }
 }

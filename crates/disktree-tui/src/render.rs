@@ -212,9 +212,9 @@ fn header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     // Keep every category visible as a complete label. Intermediate terminals
     // have room for the mosaic, but not the desktop-length legend.
-    let short = [
+    let short: [&str; Category::LEGEND.len()] = [
         "Code", "Agent", "Tools", "Sync", "Git", "Media", "Docs", "Cache",
-        "FSE", "Idx",
+        "FSE", "Idx", "VMs",
     ];
     let (reclaim, separator) = if area.width >= 77 {
         (" / Reclaim", " ▪")

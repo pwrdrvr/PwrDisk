@@ -158,9 +158,10 @@ claude mcp add --scope user pwrdisk -- pwrdisk mcp   # Claude Code
 codex mcp add pwrdisk -- pwrdisk mcp                 # Codex
 ```
 
-On macOS the command lives inside the app. The window's **Work with an AI
-agent** line, under the disk, shows each command with the full path and a
-Copy button.
+On macOS the command lives inside the app. **Settings › Agents (MCP)**
+shows the command line and each client's command with the full path and a
+Copy button; **Help › Connect an AI Agent (MCP)…** and the line under the
+disk open it.
 
 The agent walks the tree, lists every cache and build directory, and
 proposes what can go. You can confirm in PwrDisk's review screen yourself,
@@ -177,8 +178,8 @@ same map and its marks show up as the agent makes them. More in
 Only things inside the folder you scanned can be removed, and never:
 
 - the scanned folder itself, your home folder, or a folder that holds it;
-- `/Users` on macOS or `C:\Users` on Windows, or any account's folder in
-  it (what is inside one can still be marked);
+- `/Users` on macOS, `/home` on Linux or `C:\Users` on Windows, or any
+  account's folder in it (what is inside one can still be marked);
 - system folders (`/usr`, `/etc`, `C:\Windows`, Program Files, Homebrew's
   prefix and the like), even where permissions would allow it;
 - a mount point, or anything with another disk mounted inside it;
