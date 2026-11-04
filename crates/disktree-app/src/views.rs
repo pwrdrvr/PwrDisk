@@ -5678,8 +5678,10 @@ fn review(
             &if app.removal_mode == RemovalMode::OwnerCleanup {
                 match app.cleanup_approved() {
                     Ok(approved) => format!(
-                        "{} marked \u{00b7} {} commands \u{00b7} {} to delete \u{00b7} {} skipped \u{00b7} {} scope allocation; savings unmeasured",
-                        app.marks.len(), approved.owner_steps(), approved.file_steps(), approved.skipped.len(), human_bytes(plan.bytes())
+                        "{} marked \u{00b7} {} \u{00b7} {} to delete \u{00b7} {} skipped \u{00b7} {} scope allocation; savings unmeasured",
+                        app.marks.len(),
+                        if approved.owner_steps() == 1 { "1 command".to_string() } else { format!("{} commands", approved.owner_steps()) },
+                        approved.file_steps(), approved.skipped.len(), human_bytes(plan.bytes())
                     ),
                     Err(_) => format!("{} marked \u{00b7} cache cleanup: check owners, then choose for each path", app.marks.len()),
                 }
