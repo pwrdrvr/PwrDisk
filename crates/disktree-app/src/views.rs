@@ -2616,7 +2616,8 @@ fn legend(
         .is_active()
         .then(|| show_all_button("legend-clear", theme, cx));
     // Show all and the pill lead, so they are never what gives way; the
-    // menu ends the row.
+    // menu sits at the row's right end, where an overflow is looked for.
+    let more = legend_more(app, fit, theme, cx);
     div()
         .debug_selector(|| "legend".into())
         .flex()
@@ -2627,7 +2628,8 @@ fn legend(
         .children(clear)
         .children(pill)
         .children(chips)
-        .children(legend_more(app, fit, theme, cx))
+        .when(more.is_some(), |row| row.child(div().flex_1()))
+        .children(more)
 }
 
 /// The "+N" button at the end of the legend's row, and its menu: the chips
