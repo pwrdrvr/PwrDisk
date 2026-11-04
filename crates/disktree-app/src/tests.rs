@@ -11102,9 +11102,7 @@ fn cache_cleanup_decisions_follow_a_model_of_them(cx: &mut TestAppContext) {
         )
     });
     assert_eq!(exported.lines().count(), marked);
-    let mut decisions = vec![Decision::Skip; marked];
-    let mut files = read(&view, cx, Disktree::cleanup_files);
-    let mut ticked = false;
+    let initial = read(&view, cx, Disktree::cleanup_files);
     let first = std::env::var("PWRDISK_SEED")
         .ok()
         .and_then(|seed| seed.parse().ok())
@@ -11115,7 +11113,17 @@ fn cache_cleanup_decisions_follow_a_model_of_them(cx: &mut TestAppContext) {
             now.as_secs().wrapping_mul(1_000_003)
                 ^ u64::from(now.subsec_nanos())
         });
-    for seed in first..first + 8 {
+    for seed in (0..8).map(|run| first.wrapping_add(run)) {
+        // Each seed starts from the same state, so it replays alone.
+        update(&view, cx, |app, cx| {
+            for index in 0..marked {
+                app.decide_cleanup(index, Decision::Skip, cx);
+            }
+            app.set_cleanup_files(initial, cx);
+        });
+        let mut decisions = vec![Decision::Skip; marked];
+        let mut files = initial;
+        let mut ticked = false;
         let mut state = seed;
         let mut history = vec![];
         for _ in 0..30 {

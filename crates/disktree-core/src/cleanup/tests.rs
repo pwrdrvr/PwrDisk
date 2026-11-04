@@ -527,7 +527,9 @@ fn collect(
 #[test]
 fn owner_failure_reports_error_without_deletion_and_success_does_not_mean_root_removed()
  {
-    let _execution = EXECUTION.lock().expect("fixture serialization");
+    let _execution = EXECUTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for fail in [true, false] {
         let mut fixture = executable_fixture();
         if fail {
@@ -591,7 +593,9 @@ fn owner_worker_applies_confirmed_ceilings_only_to_the_named_volume() {
     use crate::removal::{RemovalEvent, spawn_cleanup};
     use crate::removal_limit::{Ceilings, Limit, volume_of};
 
-    let _execution = EXECUTION.lock().expect("fixture serialization");
+    let _execution = EXECUTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let fixture = executable_fixture();
     let cache = fixture.env.home.join(".cache/uv");
     let prepared = prepare_with(
@@ -636,7 +640,9 @@ fn owner_worker_applies_confirmed_ceilings_only_to_the_named_volume() {
 #[cfg(unix)]
 #[test]
 fn cancellation_stops_the_owner_process_group_without_raw_deletion() {
-    let _execution = EXECUTION.lock().expect("fixture serialization");
+    let _execution = EXECUTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut fixture = executable_fixture();
     fixture
         .env
@@ -669,7 +675,9 @@ fn cancellation_stops_the_owner_process_group_without_raw_deletion() {
 #[cfg(unix)]
 #[test]
 fn changed_executable_and_active_owner_revoke_execution() {
-    let _execution = EXECUTION.lock().expect("fixture serialization");
+    let _execution = EXECUTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let fixture = executable_fixture();
     let cache = fixture.env.home.join(".cache/uv");
     let prepared = prepare_with(
@@ -740,7 +748,9 @@ fn cancelled_before_start_and_unavailable_commands_do_not_execute() {
 #[cfg(unix)]
 #[test]
 fn changed_configuration_and_capacity_failure_do_not_invoke_cleanup() {
-    let _execution = EXECUTION.lock().expect("fixture serialization");
+    let _execution = EXECUTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let fixture = executable_fixture();
     let cache = fixture.env.home.join(".cache/uv");
     let prepared = prepare_with(
@@ -825,6 +835,13 @@ fn observed_space_can_decrease_and_never_equals_scope_allocation_by_assumption()
 
 #[test]
 fn active_owner_detection_recognizes_node_launchers_and_pip3() {
+    let owned = |operation: &Operation, argument: &str| {
+        process::owner_named(
+            operation.owner,
+            Some(&operation.command.executable),
+            argument,
+        )
+    };
     let mut operation = Operation {
         owner: Owner::Npm,
         version: "11.6.2".into(),
@@ -840,26 +857,17 @@ fn active_owner_detection_recognizes_node_launchers_and_pip3() {
         effects: String::new(),
         limitations: String::new(),
     };
-    assert!(process::owner_argument(
-        &operation,
-        "/other-install/npm-cli.js"
-    ));
-    assert!(process::owner_argument(
-        &operation,
-        "/other-install/npx-cli.js"
-    ));
-    assert!(!process::owner_argument(
-        &operation,
-        "/fixture/unrelated.js"
-    ));
+    assert!(owned(&operation, "/other-install/npm-cli.js"));
+    assert!(owned(&operation, "/other-install/npx-cli.js"));
+    assert!(!owned(&operation, "/fixture/unrelated.js"));
     operation.owner = Owner::Pip;
-    assert!(process::owner_argument(&operation, "/fixture/bin/pip3"));
-    assert!(process::owner_argument(&operation, "pip"));
+    assert!(owned(&operation, "/fixture/bin/pip3"));
+    assert!(owned(&operation, "pip"));
     // Found by a_running_owner_is_recognized_in_every_launcher_form.
-    assert!(process::owner_argument(&operation, "/opt/bin/pip3.12"));
-    assert!(!process::owner_argument(&operation, "/opt/bin/pip3.x"));
+    assert!(owned(&operation, "/opt/bin/pip3.12"));
+    assert!(!owned(&operation, "/opt/bin/pip3.x"));
     operation.owner = Owner::Uv;
-    assert!(process::owner_argument(&operation, "/opt/bin/uvx"));
+    assert!(owned(&operation, "/opt/bin/uvx"));
 }
 
 #[cfg(unix)]
@@ -1369,7 +1377,9 @@ fn reports(
 #[cfg(unix)]
 #[test]
 fn a_failed_owner_command_stays_local_and_deletion_runs_only_where_chosen() {
-    let _execution = EXECUTION.lock().expect("fixture serialization");
+    let _execution = EXECUTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut fixture = executable_fixture();
     fixture
         .env
@@ -1433,7 +1443,9 @@ fn a_failed_owner_command_stays_local_and_deletion_runs_only_where_chosen() {
 #[cfg(unix)]
 #[test]
 fn stop_cancels_the_running_command_and_reports_the_rest_not_reached() {
-    let _execution = EXECUTION.lock().expect("fixture serialization");
+    let _execution = EXECUTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut fixture = executable_fixture();
     fixture
         .env
@@ -1483,7 +1495,9 @@ fn stop_cancels_the_running_command_and_reports_the_rest_not_reached() {
 #[cfg(unix)]
 #[test]
 fn deleting_files_in_use_is_refused_on_the_worker() {
-    let _execution = EXECUTION.lock().expect("fixture serialization");
+    let _execution = EXECUTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let fixture = executable_fixture();
     let busy = fixture.dir("busy-output");
     let mut holder = std::process::Command::new("/bin/sh")

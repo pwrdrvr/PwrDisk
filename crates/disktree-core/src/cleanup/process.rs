@@ -465,15 +465,6 @@ fn check_in_use(
 /// commonly expose pip3 or pip3.12, and uv's tool runner is uvx. Comparing
 /// only the friendly owner name misses those live writers even though
 /// their configured cache is the same.
-#[cfg(test)]
-pub(super) fn owner_argument(operation: &Operation, argument: &str) -> bool {
-    owner_named(
-        operation.owner,
-        Some(&operation.command.executable),
-        argument,
-    )
-}
-
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(super) fn owner_named(
     owner: Owner,

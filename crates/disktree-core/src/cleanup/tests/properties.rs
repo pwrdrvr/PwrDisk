@@ -8,10 +8,11 @@ use std::collections::BTreeSet;
 use super::*;
 use crate::test_rng::Rng;
 
-/// Where this run's seeds start: `PWRDISK_SEED` to replay a failure, the
-/// clock otherwise, so every run tries cases no earlier run tried.
-fn first_seed() -> u64 {
-    std::env::var("PWRDISK_SEED")
+/// This run's seeds, `runs` of them. They start at `PWRDISK_SEED` to
+/// replay a failure, at the clock otherwise, so every run tries cases no
+/// earlier run tried.
+fn seeds(runs: u64) -> impl Iterator<Item = u64> {
+    let first = std::env::var("PWRDISK_SEED")
         .ok()
         .and_then(|seed| seed.parse().ok())
         .unwrap_or_else(|| {
@@ -20,7 +21,8 @@ fn first_seed() -> u64 {
                 .unwrap_or_default();
             now.as_secs().wrapping_mul(1_000_003)
                 ^ u64::from(now.subsec_nanos())
-        })
+        });
+    (0..runs).map(move |run| first.wrapping_add(run))
 }
 
 fn pick<'a, T>(rng: &mut Rng, items: &'a [T]) -> &'a T {
@@ -116,8 +118,7 @@ fn an_owner_command_acts_only_on_the_root_the_owner_printed() {
         Owner::Npx => root.join("_npx"),
         _ => root.to_owned(),
     };
-    let first = first_seed();
-    for seed in first..first + 150 {
+    for seed in seeds(150) {
         let rng = &mut Rng::new(seed);
         let fixture = Fixture::new();
         let (owner, version) = *pick(rng, &OWNERS);
@@ -290,8 +291,7 @@ fn directories_under(path: &Path) -> Vec<PathBuf> {
 /// below the path, reading each one whole.
 #[test]
 fn a_cache_sign_protects_everything_under_it_and_nothing_else() {
-    let first = first_seed();
-    for seed in first..first + 120 {
+    for seed in seeds(120) {
         let rng = &mut Rng::new(seed);
         let fixture = Fixture::new();
         let mut chain = vec![fixture.env.home.join(format!("n{seed:x}"))];
@@ -391,8 +391,14 @@ fn place(
         std::fs::write(
             path,
             format!(
-                "{first_line}\nprintf '%s\\n' \"$0\" >> '{}'\nprintf '%s\\n' '{version}'\n",
-                ran.display()
+                concat!(
+                    "{first_line}\n",
+                    "printf '%s\\n' \"$0\" >> '{ran}'\n",
+                    "printf '%s\\n' '{version}'\n",
+                ),
+                first_line = first_line,
+                ran = ran.display(),
+                version = version,
             ),
         )
         .expect("script");
@@ -474,8 +480,7 @@ fn probing_never_runs_a_launcher_that_could_install() {
     let _execution = EXECUTION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let first = first_seed();
-    for seed in first..first + 60 {
+    for seed in seeds(60) {
         let rng = &mut Rng::new(seed);
         let fixture = Fixture::new();
         let (owner, name, version) = *pick(rng, &OWNERS);
@@ -613,8 +618,7 @@ fn a_running_owner_is_recognized_in_every_launcher_form() {
             _ => vec![owner.executable().into()],
         }
     };
-    let first = first_seed();
-    for seed in first..first + 400 {
+    for seed in seeds(400) {
         let rng = &mut Rng::new(seed);
         let owner = *pick(rng, &OWNERS);
         let names = launchers(owner);
@@ -779,8 +783,7 @@ fn reached(prepared: &Prepared, step: Step) -> &Path {
 /// of directories each step reaches, compared node by node.
 #[test]
 fn approval_keeps_every_decision_and_skip_means_nothing_happens() {
-    let first = first_seed();
-    for seed in first..first + 300 {
+    for seed in seeds(300) {
         let rng = &mut Rng::new(seed);
         let cleanup = generate(rng);
         let prepared = &cleanup.prepared;
