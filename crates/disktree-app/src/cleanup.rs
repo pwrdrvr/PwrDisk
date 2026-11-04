@@ -61,7 +61,7 @@ impl Disktree {
             || self.screen == Screen::Running
             || self.marks.is_empty()
         {
-            self.notice = Some(("Owner cleanup needs a complete, idle local scan and selected cache paths".into(), Status::Warning));
+            self.say("Owner cleanup needs a complete, idle local scan and selected cache paths", Status::Warning, cx);
             cx.notify();
             return;
         }

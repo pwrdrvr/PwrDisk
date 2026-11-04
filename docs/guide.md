@@ -462,9 +462,11 @@ claude mcp add --scope user pwrdisk -- pwrdisk mcp
 (Codex: `codex mcp add pwrdisk -- pwrdisk mcp`. Any other client: a
 server named `pwrdisk` with the command `pwrdisk` and the argument `mcp`.
 On macOS the command lives inside the app, at
-`PwrDisk.app/Contents/MacOS/pwrdisk`. The window's **Work with an AI
-agent** line, under the disk, and **Help › Work with an AI Agent…** on
-macOS, show each command with the binary's full path and a Copy button.)
+`PwrDisk.app/Contents/MacOS/pwrdisk`. **Settings › Agents (MCP)** shows
+the bare command line and each client's command with the binary's full
+path and a Copy button, and who is connected. **Help › Connect an AI
+Agent (MCP)…** and the **Connect an AI agent (MCP)** line under the disk
+open it.)
 
 Then ask it what is eating your disk. The agent walks the tree largest
 first, lists every cache, build directory and package store at once, and
@@ -732,9 +734,10 @@ tested:
   macOS `/Users` is on the same volume as `/`, and `/opt` holds
   `/opt/homebrew`);
 - every account's folder is refused, and so is the folder holding them:
-  `/Users` and each folder in it on macOS, the profiles folder (usually
-  `C:\Users`) and each profile on Windows. What is inside one stays
-  removable;
+  `/Users` and each folder in it on macOS, `/home` and each folder in it
+  on Linux (by either name where `/home` links to `/var/home`, as on
+  Fedora's atomic editions), the profiles folder (usually `C:\Users`) and
+  each profile on Windows. What is inside one stays removable;
 - these are asked before a mark is made: the panel says why instead of
   offering **Mark for removal**, and Space marks nothing;
 - one removal may take only so much of a disk, 5% by default (see
