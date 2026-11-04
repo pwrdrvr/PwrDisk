@@ -1109,15 +1109,19 @@ fn scan_on_pool(
     }
 
     let context: &WalkContext = context;
-    let tree = Tree::try_build(|builder| {
-        let sink = Sink {
-            builder,
-            root: Mutex::new(None),
-        };
-        walk_tree(root, context, pool, &sink)?;
-        let node = lock(&sink.root).take();
-        node.ok_or_else(|| {
-            io::Error::other(format!("{} produced no tree", root.display()))
+    // Building ends with parallel relayout too. Keep it on the selected
+    // pool so fixed budgets and isolation from the UI cover that phase.
+    let tree = pool.install(|| {
+        Tree::try_build(|builder| {
+            let sink = Sink {
+                builder,
+                root: Mutex::new(None),
+            };
+            walk_tree(root, context, pool, &sink)?;
+            let node = lock(&sink.root).take();
+            node.ok_or_else(|| {
+                io::Error::other(format!("{} produced no tree", root.display()))
+            })
         })
     })?;
     context.progress.finalizing.store(true, Ordering::Relaxed);
@@ -1907,6 +1911,64 @@ mod tests {
             assert_eq!(tree.dirs, 193);
             assert_eq!(tree.bytes, (1..=96).sum::<u64>());
         }
+    }
+
+    /// An occupied global pool must not delay a scan with its own budget.
+    /// A child process isolates the blocked pool from other parallel tests.
+    #[test]
+    fn fixed_scan_finishes_while_the_global_pool_is_busy() {
+        const CHILD: &str = "DISKTREE_TEST_BUSY_GLOBAL_POOL";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("test executable"),
+            )
+            .args([
+                "--exact",
+                "scan::tests::fixed_scan_finishes_while_the_global_pool_is_busy",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("RAYON_NUM_THREADS", "1")
+            .output()
+            .expect("isolated test");
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let temp = TempDir::new().expect("tempdir");
+        // Above relayout's sequential cutoff, so it must schedule work.
+        let files = 16 * 1024;
+        for index in 0..files {
+            fs::File::create(temp.path().join(format!("f{index}")))
+                .expect("file");
+        }
+        let (ready, started) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        rayon::spawn(move || {
+            let _ = ready.send(());
+            let _ = blocked.recv();
+        });
+        started.recv().expect("global worker blocked");
+        let root = temp.path().to_path_buf();
+        let (finished, result) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut settings = options();
+            settings.threads.max_threads = 1;
+            let _ = finished.send(scan(&root, settings));
+        });
+        let scanned = result.recv_timeout(std::time::Duration::from_secs(10));
+        // Release before asserting, including the failing pre-fix case.
+        drop(release);
+        worker.join().expect("scan worker");
+        let tree = scanned
+            .expect("a fixed scan must not wait for the global pool")
+            .expect("scan");
+        assert_eq!(tree.root().files, files);
     }
 
     #[test]
