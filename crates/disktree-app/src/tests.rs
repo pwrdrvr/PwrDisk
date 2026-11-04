@@ -5489,6 +5489,57 @@ fn the_tooltip_follows_the_pointer_inside_a_client_side_frame(
     assert_eq!(tip.top(), at.y + px(gap));
 }
 
+/// Link `view` to an agent over a real socket or pipe named after `temp`,
+/// as `pwrdisk mcp` does.
+#[cfg(any(unix, windows))]
+fn link_agent(
+    view: &Entity<Disktree>,
+    temp: &Path,
+    cx: &mut Window,
+) -> disktree_link::Link {
+    #[cfg(not(windows))]
+    let socket = temp.join("link.sock");
+    #[cfg(windows)]
+    let socket = PathBuf::from(format!(
+        r"\\.\pipe\pwrdisk-test-{}",
+        temp.file_name().expect("temp name").to_string_lossy()
+    ));
+    let listener =
+        disktree_link::Listener::bind_at(&socket).expect("bind the link");
+    update(view, cx, |app, cx| app.attach_agent(listener, cx));
+    disktree_link::Link::connect_at(&socket).expect("connect")
+}
+
+/// Send `request` over `link` and pump the window until it answers. The
+/// client blocks on each answer, so it runs on its own thread while the
+/// test pumps the window's side, as the timer task would.
+#[cfg(any(unix, windows))]
+fn ask_over(
+    view: &Entity<Disktree>,
+    link: &mut Option<disktree_link::Link>,
+    cx: &mut Window,
+    request: disktree_link::Request,
+) -> disktree_link::Response {
+    let mut taken = link.take().expect("the link is at hand");
+    let worker = std::thread::spawn(move || {
+        let response = taken.call(&request).expect("an answer");
+        (taken, response)
+    });
+    for _ in 0..400 {
+        update(view, cx, |app, cx| {
+            app.poll_agent_once(cx);
+        });
+        if worker.is_finished() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let (returned, response) = worker.join().expect("client thread");
+    *link = Some(returned);
+    draw(cx);
+    response
+}
+
 /// Drive the window as `pwrdisk mcp` does, over the real socket: say
 /// hello, mark, show, open the review, unmark, hang up. The marks land in
 /// the window, the screen follows, and the header names the agent while it
@@ -5496,7 +5547,7 @@ fn the_tooltip_follows_the_pointer_inside_a_client_side_frame(
 #[cfg(any(unix, windows))]
 #[gpui_kit::test]
 fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
-    use disktree_link::{Link, MarkRequest, Request, Response};
+    use disktree_link::{MarkRequest, Request, Response};
 
     cx.update(init);
     let temp = fixture();
@@ -5504,42 +5555,9 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     let (view, cx) = view_over(temp.path(), cx);
     draw(cx);
 
-    #[cfg(not(windows))]
-    let socket = temp.path().join("link.sock");
-    #[cfg(windows)]
-    let socket = PathBuf::from(format!(
-        r"\\.\pipe\pwrdisk-test-{}",
-        temp.path()
-            .file_name()
-            .expect("temp name")
-            .to_string_lossy()
-    ));
-    let listener =
-        disktree_link::Listener::bind_at(&socket).expect("bind the link");
-    update(&view, cx, |app, cx| app.attach_agent(listener, cx));
-
-    // The client blocks on each answer, so it runs on its own thread while
-    // the test pumps the window's side, as the timer task would.
-    let mut link = Some(Link::connect_at(&socket).expect("connect"));
+    let mut link = Some(link_agent(&view, temp.path(), cx));
     let mut ask = |cx: &mut Window, request: Request| -> Response {
-        let mut taken = link.take().expect("the link is at hand");
-        let worker = std::thread::spawn(move || {
-            let response = taken.call(&request).expect("an answer");
-            (taken, response)
-        });
-        for _ in 0..400 {
-            update(&view, cx, |app, cx| {
-                app.poll_agent_once(cx);
-            });
-            if worker.is_finished() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let (returned, response) = worker.join().expect("client thread");
-        link = Some(returned);
-        draw(cx);
-        response
+        ask_over(&view, &mut link, cx, request)
     };
 
     let refused = ask(
@@ -10040,7 +10058,7 @@ fn an_agent_removal_stays_at_the_agent_limit_with_the_windows_off(
     cx: &mut TestAppContext,
 ) {
     use disktree_link::{
-        ConfirmedRemoval, Link, MarkRequest, RemovalChoice, Request, Response,
+        ConfirmedRemoval, MarkRequest, RemovalChoice, Request, Response,
     };
 
     cx.update(init);
@@ -10055,39 +10073,9 @@ fn an_agent_removal_stays_at_the_agent_limit_with_the_windows_off(
     });
     draw(cx);
 
-    #[cfg(not(windows))]
-    let socket = temp.path().join("link.sock");
-    #[cfg(windows)]
-    let socket = PathBuf::from(format!(
-        r"\\.\pipe\pwrdisk-test-{}",
-        temp.path()
-            .file_name()
-            .expect("temp name")
-            .to_string_lossy()
-    ));
-    let listener =
-        disktree_link::Listener::bind_at(&socket).expect("bind the link");
-    update(&view, cx, |app, cx| app.attach_agent(listener, cx));
-    let mut link = Some(Link::connect_at(&socket).expect("connect"));
+    let mut link = Some(link_agent(&view, temp.path(), cx));
     let mut ask = |cx: &mut Window, request: Request| -> Response {
-        let mut taken = link.take().expect("the link is at hand");
-        let worker = std::thread::spawn(move || {
-            let response = taken.call(&request).expect("an answer");
-            (taken, response)
-        });
-        for _ in 0..400 {
-            update(&view, cx, |app, cx| {
-                app.poll_agent_once(cx);
-            });
-            if worker.is_finished() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let (returned, response) = worker.join().expect("client thread");
-        link = Some(returned);
-        draw(cx);
-        response
+        ask_over(&view, &mut link, cx, request)
     };
     let hello = ask(
         cx,
