@@ -271,14 +271,21 @@ impl Entry {
         if self.kind != Kind::File {
             return None;
         }
-        let path = self.path(dir);
+        // The path is joined only for a read: most clones never need one.
         resolve(
             hints,
             self.inode,
             u64::from(self.links),
             self.allocated,
             cache,
-            || private_info(&path, hints.device, self.inode, hints.id),
+            || {
+                private_info(
+                    &self.path(dir),
+                    hints.device,
+                    self.inode,
+                    hints.id,
+                )
+            },
         )
     }
 
@@ -319,8 +326,8 @@ impl Entry {
 /// A regular file's clone facts from what its listing said, `read`
 /// being the file's own metadata read: its private size, reference count
 /// and, when the read found the file the listing did, its sharing flags.
-/// Apart from `read`, which the tests stand in for, this is all of
-/// [`Entry::clone_info`].
+/// [`Entry::clone_info`] calls it for regular files only, with the read
+/// by path; the tests stand in for the read.
 fn resolve(
     hints: Hints,
     inode: u64,
@@ -370,18 +377,21 @@ pub struct ReadDir {
     clones: Clones,
 }
 
-/// Listings made without sharing flags, so a test can tell that a scan
-/// made some.
+/// Directories listed without sharing flags, so a test can tell that its
+/// own scan listed some: tests scan side by side.
 #[cfg(test)]
-static WITHOUT_FLAGS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static WITHOUT_FLAGS: std::sync::Mutex<Vec<PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// List `dir`, with each entry's size, identity and age. A link at `dir`
 /// itself is followed, as `std::fs::read_dir` follows it.
 pub fn read_dir(dir: &Path, clones: Clones) -> io::Result<ReadDir> {
     #[cfg(test)]
     if clones == Clones::Ids {
-        WITHOUT_FLAGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        WITHOUT_FLAGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(dir.to_path_buf());
     }
     let fd = rustix::fs::open(
         dir,
@@ -1189,17 +1199,32 @@ mod clone_tests {
             every_figure(tree.root(), &mut figures);
             figures
         };
-        let before = WITHOUT_FLAGS.load(std::sync::atomic::Ordering::Relaxed);
         let chosen = scanned();
+        // The walk lists the root as it resolves: /var is /private/var.
+        let real = fs::canonicalize(root).expect("canonical root");
         assert!(
-            WITHOUT_FLAGS.load(std::sync::atomic::Ordering::Relaxed) > before,
-            "some listing left the flags out"
+            WITHOUT_FLAGS
+                .lock()
+                .expect("listings")
+                .iter()
+                .any(|dir| dir.starts_with(root) || dir.starts_with(&real)),
+            "some listing of this tree left the flags out"
         );
-        crate::scan::ALWAYS_FLAGS
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        let flagged = scanned();
-        crate::scan::ALWAYS_FLAGS
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let flagged = {
+            /// Clears the switch even if the scan panics, so no later test
+            /// in this process scans with it set.
+            struct Reset;
+            impl Drop for Reset {
+                fn drop(&mut self) {
+                    crate::scan::ALWAYS_FLAGS
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            crate::scan::ALWAYS_FLAGS
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let _reset = Reset;
+            scanned()
+        };
         assert_eq!(chosen, flagged);
         // The clones were seen as clones: the copies repeat bytes.
         let root = &chosen[0];

@@ -120,12 +120,15 @@ Each change also has a test against a reference:
   deeper than the parallel levels, with clones across directories,
   hardlinks and followed links. Every node's figures and every estimate
   of one or two nodes agree on 2, 4 and 8 workers with one worker, and
-  with every record kept whole (`sharing::tests::random_trees_*`).
+  with every record kept whole. Every directory also reads as one flat
+  directory of all its files would, an answer that never goes through
+  merging subdirectories (`sharing::tests::random_trees_*`).
 
 Each was checked by breaking what it guards: treating a sampled group
 as only maybe shared, re-reading a file already read, keying shared
-records without the reference count, and keeping a group's last size
-instead of its smallest each fail one.
+records without the reference count, keeping a group's last size
+instead of its smallest, losing a subdirectory's figures, and a scan
+whose listings all keep the flags each fail one.
 
 Two differences are possible, neither on an unchanging tree:
 
