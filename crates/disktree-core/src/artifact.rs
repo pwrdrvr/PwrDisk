@@ -4,8 +4,10 @@
 //! an assessment; a matching child never promotes its parent. VM ownership
 //! takes precedence over cache names, including inside VM bundles.
 
+use std::borrow::Cow;
 use std::path::Path;
 
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
@@ -326,16 +328,26 @@ fn developer(parts: &[&str]) -> Option<(usize, Artifact)> {
     Some(found)
 }
 
+/// Rule matching changes only ASCII case. Most scanned names are already
+/// lowercase, so borrowing avoids allocating for each ancestor of each node.
+fn lowered(name: &str) -> Cow<'_, str> {
+    if name.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        Cow::Owned(name.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(name)
+    }
+}
+
 fn excluded_tool_contents(parts: &[&str]) -> bool {
     parts.iter().enumerate().any(|(i, part)| {
         step();
         let Some(next) = parts.get(i + 1) else {
             return false;
         };
-        let next = next.to_ascii_lowercase();
+        let next = lowered(next);
         let after = parts.get(i + 2);
-        match part.to_ascii_lowercase().as_str() {
-            ".yarn" => match next.as_str() {
+        match lowered(part).as_ref() {
+            ".yarn" => match next.as_ref() {
                 "cache" | "unplugged" => false,
                 "berry" => {
                     after.is_some_and(|s| !s.eq_ignore_ascii_case("cache"))
@@ -355,9 +367,9 @@ fn excluded_tool_contents(parts: &[&str]) -> bool {
             }
             ".m2" => next != "repository",
             ".nuget" => next != "packages",
-            ".vercel" => !matches!(next.as_str(), "cache" | "output"),
+            ".vercel" => !matches!(next.as_ref(), "cache" | "output"),
             ".netlify" => next != "cache",
-            ".output" => !matches!(next.as_str(), "public" | "server"),
+            ".output" => !matches!(next.as_ref(), "public" | "server"),
             _ => false,
         }
     })
@@ -366,7 +378,7 @@ fn excluded_tool_contents(parts: &[&str]) -> bool {
 fn evidence(parts: &[&str]) -> Evidence {
     let last = parts.last().copied().unwrap_or_default();
     if matches!(
-        last.to_ascii_lowercase().as_str(),
+        lowered(last).as_ref(),
         "node_modules"
             | ".pnpm-store"
             | ".next"
@@ -391,7 +403,7 @@ fn evidence(parts: &[&str]) -> Evidence {
 }
 
 fn vm(parts: &[&str], is_dir: bool) -> Option<Detection> {
-    let name = parts.last()?.to_ascii_lowercase();
+    let name = lowered(parts.last()?);
     let extension = name.rsplit_once('.').map_or("", |(_, ext)| ext);
     let kind =
         match extension {
@@ -411,7 +423,7 @@ fn vm(parts: &[&str], is_dir: bool) -> Option<Detection> {
                 .get(i + offset)
                 .is_some_and(|s| s.eq_ignore_ascii_case(wanted))
         };
-        let part = part.to_ascii_lowercase();
+        let part = lowered(part);
         part.rsplit_once('.').is_some_and(|(_, extension)| {
             matches!(extension, "vmwarevm" | "pvm" | "utm" | "hdd")
         }) || (part == ".tart" && at(1, "vms") && i + 2 < parts.len())
@@ -423,7 +435,7 @@ fn vm(parts: &[&str], is_dir: bool) -> Option<Detection> {
                 && i + 3 < parts.len())
             || (!is_dir
                 && matches!(
-                    name.as_str(),
+                    name.as_ref(),
                     "diffdisk" | "basedisk" | "cidata.iso"
                 )
                 && ((part == ".lima"
@@ -538,12 +550,51 @@ impl Roots {
         let excluded = excluded_tool_contents(&parts);
         // The root was judged with its full path. A bounded lookback here
         // could lose its enclosing ownership and overwrite that assessment.
-        for child in tree.root().children() {
-            parts.push(child.name());
-            Self::visit(child, &mut parts, excluded, &mut roots);
-            parts.pop();
-        }
+        Self::children(tree.root(), &mut parts, excluded, &mut roots, 0);
         roots
+    }
+
+    fn children<'a>(
+        node: Node<'a>,
+        parts: &mut Vec<&'a str>,
+        excluded: bool,
+        roots: &mut Self,
+        depth: usize,
+    ) {
+        if depth < crate::tree::PARALLEL_LEVELS {
+            // Each subtree inherits the same path and exclusion state.
+            // Only the small override maps merge; node ids are disjoint.
+            let found = node
+                .children()
+                .par_iter()
+                .fold(
+                    || (parts.clone(), Self::default()),
+                    |(mut parts, mut roots), child| {
+                        parts.push(child.name());
+                        Self::visit(
+                            child,
+                            &mut parts,
+                            excluded,
+                            &mut roots,
+                            depth + 1,
+                        );
+                        parts.pop();
+                        (parts, roots)
+                    },
+                )
+                .map(|(_, roots)| roots)
+                .reduce(Self::default, |mut left, right| {
+                    left.0.extend(right.0);
+                    left
+                });
+            roots.0.extend(found.0);
+        } else {
+            for child in node.children() {
+                parts.push(child.name());
+                Self::visit(child, parts, excluded, roots, depth + 1);
+                parts.pop();
+            }
+        }
     }
 
     fn visit<'a>(
@@ -551,6 +602,7 @@ impl Roots {
         parts: &mut Vec<&'a str>,
         excluded: bool,
         roots: &mut Self,
+        depth: usize,
     ) {
         step();
         // VM ownership is propagated once; the rule window is bounded even
@@ -591,11 +643,7 @@ impl Roots {
         {
             return;
         }
-        for child in node.children() {
-            parts.push(child.name());
-            Self::visit(child, parts, excluded, roots);
-            parts.pop();
-        }
+        Self::children(node, parts, excluded, roots, depth);
     }
 
     pub fn get(&self, id: u32) -> Option<Detection> {
@@ -1059,7 +1107,74 @@ mod tests {
     }
 
     #[test]
+    fn parallel_roots_preserve_ancestor_ownership_and_exclusions() {
+        let tree = Tree::from(dir(
+            "projects",
+            (0..32)
+                .map(|i| {
+                    dir(
+                        &format!("p{i}"),
+                        vec![
+                            dir(
+                                ".yarn",
+                                vec![dir(
+                                    "plugins",
+                                    vec![dir(
+                                        "a",
+                                        vec![dir(
+                                            "target",
+                                            vec![dir("debug", vec![])],
+                                        )],
+                                    )],
+                                )],
+                            ),
+                            dir(
+                                ".worktrees",
+                                vec![dir(
+                                    "feature",
+                                    vec![dir("node_modules", vec![])],
+                                )],
+                            ),
+                            dir(
+                                "machine.utm",
+                                vec![dir("cache", vec![file("disk.qcow2")])],
+                            ),
+                            dir(".git", vec![dir("node_modules", vec![])]),
+                            file("disk.VMDK"),
+                        ],
+                    )
+                })
+                .collect(),
+        ));
+        let mut serial = Roots::default();
+        Roots::children(
+            tree.root(),
+            &mut vec!["projects"],
+            false,
+            &mut serial,
+            crate::tree::PARALLEL_LEVELS,
+        );
+        assert!(!serial.0.is_empty());
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let parallel = pool.install(|| {
+                Roots::find(&tree, Path::new("/projects"), PathStyle::Posix)
+            });
+            assert_eq!(parallel.0, serial.0);
+        }
+    }
+
+    #[test]
     fn finding_roots_has_bounded_work_per_node() {
+        // The work counter is thread-local: keep every task on the same
+        // worker so parallel discovery cannot hide work from this budget.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
         let run = |count| {
             let tree = Tree::from(dir(
                 "projects",
@@ -1078,14 +1193,20 @@ mod tests {
                     })
                     .collect(),
             ));
-            WORK.set(0);
-            let roots =
-                Roots::find(&tree, Path::new("/projects"), PathStyle::Posix);
-            assert_eq!(roots.0.len(), count);
-            WORK.get()
+            pool.install(|| {
+                WORK.set(0);
+                let roots = Roots::find(
+                    &tree,
+                    Path::new("/projects"),
+                    PathStyle::Posix,
+                );
+                assert_eq!(roots.0.len(), count);
+                WORK.get()
+            })
         };
         let small = run(100);
         let large = run(800);
+        assert!(small > 0);
         assert!(large <= small * 16, "{small} -> {large}");
         assert!(large <= 800 * 100, "{large}");
     }

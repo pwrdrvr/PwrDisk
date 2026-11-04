@@ -460,10 +460,18 @@ impl Store {
             };
         place(&self.nodes[self.root as usize], &mut target, &mut stack);
         while let Some((child, end)) = stack.pop() {
-            if child + 1 < end {
-                stack.push((child + 1, end));
+            // Leaves already have their destinations. Only directories
+            // need a stack frame, rather than one per file on the disk.
+            let block = &self.nodes[child as usize..end as usize];
+            if let Some((offset, slot)) =
+                block.iter().enumerate().find(|(_, slot)| slot.len > 0)
+            {
+                let after = child + Self::index(offset) + 1;
+                if after < end {
+                    stack.push((after, end));
+                }
+                place(slot, &mut target, &mut stack);
             }
-            place(&self.nodes[child as usize], &mut target, &mut stack);
         }
         let reached = next;
         // What nothing reaches goes past the end, to be cut off.
@@ -480,10 +488,22 @@ impl Store {
             }
         }
         for index in 0..len {
-            while target[index] as usize != index {
-                let to = target[index] as usize;
-                self.nodes.swap(index, to);
-                target.swap(index, to);
+            if target[index] as usize == index {
+                continue;
+            }
+            // Carry one record around the cycle: swaps write the starting
+            // slot on every step, doubling the traffic for 64-byte nodes.
+            let mut from = index;
+            let mut carried = self.nodes[from];
+            loop {
+                let to = std::mem::replace(&mut target[from], Self::index(from))
+                    as usize;
+                if to == index {
+                    self.nodes[to] = carried;
+                    break;
+                }
+                carried = std::mem::replace(&mut self.nodes[to], carried);
+                from = to;
             }
         }
         self.nodes.truncate(reached as usize);

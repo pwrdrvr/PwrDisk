@@ -1,6 +1,6 @@
 //! Structural rules ported from `DiskHound`. See licenses/bundled.txt.
 
-use super::Artifact;
+use super::{Artifact, lowered};
 
 pub(super) fn numeric_version(
     value: &str,
@@ -117,10 +117,7 @@ fn language_layout(
             .get(i + offset)
             .is_some_and(|s| s.eq_ignore_ascii_case(value))
     };
-    let next = parts
-        .get(i + 1)
-        .map(|s| s.to_ascii_lowercase())
-        .unwrap_or_default();
+    let next = parts.get(i + 1).map(|s| lowered(s)).unwrap_or_default();
     if lower == "library"
         && next == "developer"
         && at(2, "xcode")
@@ -129,7 +126,7 @@ fn language_layout(
         return Some((i + 4, Artifact::CompilerCache));
     }
     if matches!(
-        (lower, next.as_str()),
+        (lower, next.as_ref()),
         (".pub-cache", "hosted")
             | (".composer", "cache")
             | (".gem", "specs")
@@ -176,7 +173,7 @@ fn language_layout(
         return Some((ruby + 3, Artifact::PackageCache));
     }
     if matches!(
-        (lower, next.as_str()),
+        (lower, next.as_ref()),
         (".dart_tool", "flutter_build")
             | (".stack-work", "dist")
             | ("dist-newstyle", "build" | "cache")
@@ -184,7 +181,7 @@ fn language_layout(
         return Some((i + 2, Artifact::CompilerCache));
     }
     if lower == "_build"
-        && matches!(next.as_str(), "dev" | "test" | "prod" | "shared")
+        && matches!(next.as_ref(), "dev" | "test" | "prod" | "shared")
         && at(2, "lib")
         && at(4, "ebin")
         && parts.get(i + 3).is_some_and(|name| {
@@ -203,22 +200,17 @@ pub(super) fn classify_parts(
 ) -> Option<(usize, Artifact)> {
     for i in start..parts.len() {
         super::step();
-        let lower = parts[i].to_ascii_lowercase();
+        let lower = lowered(parts[i]);
         if let Some((end, kind)) = language_layout(parts, i, &lower) {
             return Some((end, kind));
         }
         if matches!(
-            lower.as_str(),
+            lower.as_ref(),
             ".cache" | "library" | ".local" | "appdata" | ".npm"
         ) {
-            let next = parts
-                .get(i + 1)
-                .map(|s| s.to_ascii_lowercase())
-                .unwrap_or_default();
-            let after = parts
-                .get(i + 2)
-                .map(|s| s.to_ascii_lowercase())
-                .unwrap_or_default();
+            let next = parts.get(i + 1).map(|s| lowered(s)).unwrap_or_default();
+            let after =
+                parts.get(i + 2).map(|s| lowered(s)).unwrap_or_default();
             let cache_tool = if lower == ".cache" {
                 Some(i + 1)
             } else if lower == "library" && next == "caches" {
@@ -227,9 +219,8 @@ pub(super) fn classify_parts(
                 None
             };
             if let Some(tool) = cache_tool
-                && let Some(kind) = parts
-                    .get(tool)
-                    .and_then(|s| cache_tool_kind(&s.to_ascii_lowercase()))
+                && let Some(kind) =
+                    parts.get(tool).and_then(|s| cache_tool_kind(&lowered(s)))
             {
                 return Some((tool + 1, kind));
             }
@@ -238,7 +229,7 @@ pub(super) fn classify_parts(
                 && after == "nuget"
                 && parts.get(i + 3).is_some_and(|s| {
                     matches!(
-                        s.to_ascii_lowercase().as_str(),
+                        lowered(s).as_ref(),
                         "http-cache" | "v3-cache" | "plugins-cache"
                     )
                 })
@@ -253,7 +244,7 @@ pub(super) fn classify_parts(
             }
         }
         if matches!(
-            lower.as_str(),
+            lower.as_ref(),
             ".yarn"
                 | ".bun"
                 | ".gradle"
@@ -267,21 +258,16 @@ pub(super) fn classify_parts(
                 | ".tox"
                 | "obj"
         ) {
-            let next = parts
-                .get(i + 1)
-                .map(|s| s.to_ascii_lowercase())
-                .unwrap_or_default();
-            let after = parts
-                .get(i + 2)
-                .map(|s| s.to_ascii_lowercase())
-                .unwrap_or_default();
+            let next = parts.get(i + 1).map(|s| lowered(s)).unwrap_or_default();
+            let after =
+                parts.get(i + 2).map(|s| lowered(s)).unwrap_or_default();
             // Only generated/cache children, not whole tool homes.
-            match lower.as_str() {
+            match lower.as_ref() {
                 ".yarn" => {
                     if next == "berry" && after == "cache" {
                         return Some((i + 3, Artifact::PackageCache));
                     }
-                    return matches!(next.as_str(), "cache" | "unplugged")
+                    return matches!(next.as_ref(), "cache" | "unplugged")
                         .then(|| (i + 2, Artifact::PackageCache));
                 }
                 ".bun" => {
@@ -304,12 +290,12 @@ pub(super) fn classify_parts(
                         .then(|| (i + 2, Artifact::Dotnet));
                 }
                 ".vercel" | ".netlify" | ".output" => {
-                    let output = match lower.as_str() {
+                    let output = match lower.as_ref() {
                         ".vercel" => {
-                            matches!(next.as_str(), "cache" | "output")
+                            matches!(next.as_ref(), "cache" | "output")
                         }
                         ".netlify" => next == "cache",
-                        _ => matches!(next.as_str(), "public" | "server"),
+                        _ => matches!(next.as_ref(), "public" | "server"),
                     };
                     return output.then(|| (i + 2, Artifact::JsBuild));
                 }
@@ -321,7 +307,7 @@ pub(super) fn classify_parts(
                     {
                         let version = parts
                             .get(lib + 1)
-                            .map(|s| s.to_ascii_lowercase())
+                            .map(|s| lowered(s))
                             .unwrap_or_default();
                         let packages = if version == "site-packages" {
                             Some(lib + 1)
@@ -348,7 +334,7 @@ pub(super) fn classify_parts(
                     }
                 }
                 "obj"
-                    if matches!(next.as_str(), "debug" | "release")
+                    if matches!(next.as_ref(), "debug" | "release")
                         && dotnet_framework(&after) =>
                 {
                     return Some((i + 3, Artifact::Dotnet));
@@ -357,7 +343,7 @@ pub(super) fn classify_parts(
             }
             continue;
         }
-        if matches!(lower.as_str(), "ccache" | "sccache" | "mozilla.sccache") {
+        if matches!(lower.as_ref(), "ccache" | "sccache" | "mozilla.sccache") {
             let parent = i.checked_sub(1).and_then(|j| parts.get(j));
             let grandparent = i.checked_sub(2).and_then(|j| parts.get(j));
             if parent.zip(grandparent).is_some_and(|(p, gp)| {
@@ -379,10 +365,7 @@ pub(super) fn classify_parts(
         if lower == "target" {
             // Match only tool-specific subtrees, never a whole ambiguous
             // target/profile tree or an ancestor's project language.
-            let next = parts
-                .get(i + 1)
-                .map(|s| s.to_ascii_lowercase())
-                .unwrap_or_default();
+            let next = parts.get(i + 1).map(|s| lowered(s)).unwrap_or_default();
             let scala = next.strip_prefix("scala-").is_some_and(|version| {
                 let mut components = version.split('.');
                 let major = components.next().unwrap_or_default();
@@ -393,7 +376,7 @@ pub(super) fn classify_parts(
                     })
             });
             if scala
-                || matches!(next.as_str(), "maven-status" | "maven-archiver")
+                || matches!(next.as_ref(), "maven-status" | "maven-archiver")
             {
                 return Some((i + 2, Artifact::Jvm));
             }
@@ -410,7 +393,7 @@ pub(super) fn classify_parts(
                         b.is_ascii_alphanumeric() || *b == b'_'
                     })
                 });
-            let profile = if matches!(next.as_str(), "debug" | "release") {
+            let profile = if matches!(next.as_ref(), "debug" | "release") {
                 i + 1
             } else if triple {
                 i + 2
@@ -422,7 +405,7 @@ pub(super) fn classify_parts(
                     || s.eq_ignore_ascii_case("release")
             }) && parts.get(profile + 1).is_some_and(|s| {
                 matches!(
-                    s.to_ascii_lowercase().as_str(),
+                    lowered(s).as_ref(),
                     "deps" | "incremental" | ".fingerprint"
                 )
             }) {
@@ -479,7 +462,7 @@ pub(super) fn classify_parts(
                     parts.iter().enumerate().take(i + 6).skip(i + 2)
                 {
                     super::step();
-                    if go_module_version(&part.to_ascii_lowercase()) {
+                    if go_module_version(&lowered(part)) {
                         return Some((end + 1, Artifact::GoModule));
                     }
                 }
@@ -496,8 +479,8 @@ pub(super) fn classify_parts(
             return Some((i + 2, Artifact::PackageCache));
         }
         if lower == ".cache" && i + 1 < parts.len() {
-            let next = parts[i + 1].to_ascii_lowercase();
-            if matches!(next.as_str(), "ccache" | "sccache" | "yarn" | "pnpm") {
+            let next = lowered(parts[i + 1]);
+            if matches!(next.as_ref(), "ccache" | "sccache" | "yarn" | "pnpm") {
                 let kind = if next == "yarn" || next == "pnpm" {
                     Artifact::PackageCache
                 } else {
@@ -510,8 +493,8 @@ pub(super) fn classify_parts(
         // from the lock file. The rest of .terraform records the selected
         // workspace and the last backend config, so it stays.
         if lower == ".terraform" && i + 1 < parts.len() {
-            let next = parts[i + 1].to_ascii_lowercase();
-            if matches!(next.as_str(), "providers" | "plugins") {
+            let next = lowered(parts[i + 1]);
+            if matches!(next.as_ref(), "providers" | "plugins") {
                 return Some((i + 2, Artifact::Terraform));
             }
         }
