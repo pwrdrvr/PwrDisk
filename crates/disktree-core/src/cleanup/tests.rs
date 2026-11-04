@@ -113,6 +113,7 @@ impl Probe for MockProbe {
 
 /// Why the only marked path has no owner command. Preparation is best
 /// effort, so a refusal is that proposal's status, never an error.
+#[cfg(unix)]
 fn owner_error(prepared: Result<Prepared, String>) -> String {
     owner_issue(prepared).detail
 }
@@ -125,6 +126,7 @@ fn owner_issue(prepared: Result<Prepared, String>) -> Issue {
 }
 
 /// The person chose the owner command for every marked path.
+#[cfg(unix)]
 fn owners(prepared: &Prepared) -> Approved {
     prepared
         .approve(
