@@ -128,14 +128,22 @@ impl LegendFilter {
     /// nothing set a click already means only. Suggested is a set of its
     /// own, where a click is the only there is.
     pub fn offers_only(&self, id: ChipId) -> bool {
-        let set = match id {
+        let (set, index): (&[Chip], usize) = match id {
             ChipId::Reclaimable => return false,
-            ChipId::Kind(_) => self.kinds_active(),
-            ChipId::Age(_) => self.ages_active(),
+            ChipId::Kind(index) => (&self.kinds, index),
+            ChipId::Age(index) => (&self.ages, index),
         };
-        let mut solo = self.clone();
-        solo.solo(id);
-        set && solo != *self
+        // Filtering, and not already this chip alone: what `solo` would
+        // leave is exactly that, so the pill would change nothing.
+        let already_solo = set.iter().enumerate().all(|(other, chip)| {
+            *chip
+                == if other == index {
+                    Chip::Only
+                } else {
+                    Chip::Shown
+                }
+        });
+        set.iter().any(|chip| *chip != Chip::Shown) && !already_solo
     }
 
     pub fn is_active(&self) -> bool {
@@ -309,6 +317,10 @@ impl Disktree {
     }
 
     fn legend_changed(&mut self, cx: &mut Context<'_, Self>) {
+        // A change can move chips between the row and "+N" without the
+        // pointer moving, so no hover event says which chip it is on now;
+        // the pill waits for the next one rather than land on another chip.
+        self.legend_hover = None;
         self.refresh_legend(cx);
         // A search keeps to what the legend keeps, so it runs again.
         if !self.find.trim().is_empty() {
@@ -411,6 +423,8 @@ impl Disktree {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -458,6 +472,92 @@ mod tests {
         assert_eq!(legend.get(ChipId::Age(1)), Chip::Only);
         assert_eq!(legend.reclaimable, Chip::Only);
         assert!(!legend.offers_only(ChipId::Reclaimable));
+    }
+
+    /// One step a person can take on the legend.
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        Click(ChipId),
+        Only(ChipId),
+    }
+
+    fn step() -> impl Strategy<Value = Step> {
+        let id = prop_oneof![
+            Just(ChipId::Reclaimable),
+            (0..Category::LEGEND.len()).prop_map(ChipId::Kind),
+            (0..AGE_BUCKETS.len()).prop_map(ChipId::Age),
+        ];
+        (any::<bool>(), id).prop_map(|(only, id)| {
+            if only {
+                Step::Only(id)
+            } else {
+                Step::Click(id)
+            }
+        })
+    }
+
+    /// The chips of `id`'s set, or Suggested alone.
+    fn set_of(legend: &LegendFilter, id: ChipId) -> Vec<Chip> {
+        match id {
+            ChipId::Reclaimable => vec![legend.reclaimable],
+            ChipId::Kind(_) => legend.kinds.to_vec(),
+            ChipId::Age(_) => legend.ages.to_vec(),
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        /// From any state reached by clicks and pills: the pill is offered
+        /// exactly when pressing it would change something in a set that
+        /// filters, and pressing it leaves its chip the set's only chip,
+        /// every other chip of the set shown, and the rest untouched.
+        #[test]
+        fn only_matches_its_model_from_any_state(
+            steps in prop::collection::vec(step(), 0..24),
+            probe in step(),
+        ) {
+            let mut legend = LegendFilter::default();
+            for step in steps {
+                match step {
+                    Step::Click(id) => legend.cycle(id),
+                    Step::Only(id) if legend.offers_only(id) => legend.solo(id),
+                    Step::Only(_) => {}
+                }
+            }
+            let (Step::Click(id) | Step::Only(id)) = probe;
+            let mut after = legend.clone();
+            after.solo(id);
+
+            let filters = set_of(&legend, id).iter().any(|c| *c != Chip::Shown);
+            let expected = id != ChipId::Reclaimable && filters && after != legend;
+            prop_assert_eq!(legend.offers_only(id), expected);
+
+            prop_assert_eq!(after.get(id), Chip::Only);
+            let only = set_of(&after, id)
+                .iter()
+                .filter(|chip| **chip != Chip::Shown)
+                .count();
+            prop_assert_eq!(only, 1, "{:?} alone in its set", id);
+            match id {
+                ChipId::Kind(_) => {
+                    prop_assert_eq!(&after.ages, &legend.ages);
+                    prop_assert_eq!(after.reclaimable, legend.reclaimable);
+                }
+                ChipId::Age(_) => {
+                    prop_assert_eq!(&after.kinds, &legend.kinds);
+                    prop_assert_eq!(after.reclaimable, legend.reclaimable);
+                }
+                ChipId::Reclaimable => {
+                    prop_assert_eq!(&after.kinds, &legend.kinds);
+                    prop_assert_eq!(&after.ages, &legend.ages);
+                }
+            }
+        }
     }
 
     #[test]

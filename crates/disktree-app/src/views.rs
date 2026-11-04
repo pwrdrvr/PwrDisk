@@ -2996,10 +2996,16 @@ fn legend_chip(
     };
     // The size is the whole scan's, wherever the view is, as the filter
     // is: said so, since the mosaic beside it may show a single folder.
-    let spoken = size.as_ref().map_or_else(
+    let mut spoken = size.as_ref().map_or_else(
         || id.label().to_owned(),
         |size| format!("{}, {size} in the scan", id.label()),
     );
+    // The pill is the pointer's; the keyboard's way to it is `o`, said here
+    // since the tooltip that names it is never read out.
+    if app.legend.offers_only(id) {
+        spoken.push_str(", O shows only ");
+        spoken.push_str(id.label());
+    }
     let hint = size.as_ref().map_or_else(
         || app.legend.hint(id),
         |size| {
@@ -3014,8 +3020,8 @@ fn legend_chip(
             .debug_selector(move || key)
             .role(gpui_kit::Role::Button)
             .aria_label(spoken)
-            .relative()
             .aria_value(state.spoken())
+            .relative()
             .focusable()
             .tab_stop(true)
             .flex()
@@ -3042,14 +3048,19 @@ fn legend_chip(
                 } else if this.legend_hover == Some(id) {
                     this.legend_hover = None;
                 }
-                cx.notify();
+                // Only a chip that can show the pill needs a new frame.
+                if this.legend.offers_only(id) {
+                    cx.notify();
+                }
             }))
             .on_key_down(cx.listener(
                 move |this, event: &KeyDownEvent, _, cx| {
+                    let plain = !event.keystroke.modifiers.modified();
                     match event.keystroke.key.as_str() {
                         "enter" | "space" => this.cycle_legend(id, cx),
-                        // The pill, for the keyboard.
-                        "o" if this.legend.offers_only(id) => {
+                        // The pill, for the keyboard. Plain `o` only:
+                        // Cmd-O and Ctrl-O belong to the app's bindings.
+                        "o" if plain && this.legend.offers_only(id) => {
                             this.solo_legend(id, cx);
                         }
                         _ => return,
@@ -3111,7 +3122,8 @@ fn legend_only_pill(
         .role(gpui_kit::Role::Button)
         .aria_label(format!("Show only {}", id.label()))
         .absolute()
-        .right(px(2.))
+        // The chip's own padding, so the pill ends where its size does.
+        .right(space::XS)
         .top_0()
         .bottom_0()
         .flex()

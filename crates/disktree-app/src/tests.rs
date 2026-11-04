@@ -11395,4 +11395,7 @@ fn the_only_pill_switches_kinds_and_the_tooltip_stays_clear(
     cx.run_until_parked();
     assert_eq!(read(&view, cx, |app| app.legend.get(cache)), Chip::Only);
     assert_eq!(read(&view, cx, |app| app.legend.get(code)), Chip::Shown);
+    // Code went back to "+N" and the row moved under a still pointer: no
+    // chip is taken to be under it until the pointer says so.
+    assert_eq!(read(&view, cx, |app| app.legend_hover), None);
 }
