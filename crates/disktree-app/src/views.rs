@@ -2877,9 +2877,17 @@ fn legend_chip(
     } else {
         id.key()
     };
+    // The size is the whole scan's, wherever the view is, as the filter
+    // is: said so, since the mosaic beside it may show a single folder.
     let spoken = size.as_ref().map_or_else(
         || id.label().to_owned(),
-        |size| format!("{}, {size}", id.label()),
+        |size| format!("{}, {size} in the scan", id.label()),
+    );
+    let hint = size.as_ref().map_or_else(
+        || app.legend.hint(id),
+        |size| {
+            format!("{} \u{00b7} {size} in the whole scan", app.legend.hint(id))
+        },
     );
     with_tooltip(
         div()
@@ -2946,7 +2954,7 @@ fn legend_chip(
                     .text_color(theme.secondary.opacity(0.75))
                     .child(size)
             })),
-        app.legend.hint(id),
+        hint,
     )
 }
 

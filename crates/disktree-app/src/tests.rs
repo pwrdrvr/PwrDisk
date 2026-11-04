@@ -9663,6 +9663,59 @@ fn every_legend_chip_is_on_the_row_or_in_its_menu(cx: &mut TestAppContext) {
     }
 }
 
+/// The legend belongs to the scan, not to the folder on screen: drilling
+/// into a folder with none of a kind keeps that kind's chip set, on the
+/// row and at its scan-wide size, and coming back up finds it unchanged.
+#[gpui_kit::test]
+fn a_set_chip_survives_drilling_into_a_folder_without_its_kind(
+    cx: &mut TestAppContext,
+) {
+    use crate::legend::{Chip, ChipId};
+    use disktree_core::classify::Category;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    draw(cx);
+    let cache = ChipId::Kind(
+        Category::LEGEND
+            .iter()
+            .position(|kind| *kind == Category::Cache)
+            .unwrap(),
+    );
+    let key = Box::leak(cache.key().into_boxed_str());
+    let shares = read(&view, cx, |app| app.legend_shares.clone());
+    for state in [Chip::Only, Chip::Hidden] {
+        update(&view, cx, |app, cx| {
+            app.clear_legend(None, cx);
+            while app.legend.get(cache) != state {
+                app.cycle_legend(cache, cx);
+            }
+        });
+        // `junk` holds no cache at all.
+        let junk = read(&view, cx, |app| {
+            app.crumbs_for_path(&temp.path().join("junk"))
+                .expect("junk")
+        });
+        update(&view, cx, |app, cx| app.go_to(junk, cx));
+        draw(cx);
+        draw(cx);
+        assert_eq!(read(&view, cx, |app| app.legend.get(cache)), state);
+        assert!(cx.debug_bounds(key).is_some(), "{state:?}: on the row");
+        assert_eq!(
+            read(&view, cx, |app| app.legend_shares.clone()),
+            shares,
+            "sizes are the scan's, not the folder's"
+        );
+        update(&view, cx, Disktree::ascend);
+        draw(cx);
+        assert_eq!(read(&view, cx, |app| app.legend.get(cache)), state);
+        assert!(cx.debug_bounds(key).is_some());
+    }
+}
+
 /// Each chip says how much of the scan it keeps. Empty and tiny kinds wait
 /// in "+N"; a chip set from there moves to the row, where its state shows.
 #[gpui_kit::test]
