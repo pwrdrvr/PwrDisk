@@ -11,6 +11,8 @@ use crate::tree::Node;
 pub struct Estimate {
     pub lower: u64,
     pub upper: u64,
+    /// Missing metadata, bounded accounting or inconsistent observations of
+    /// one file, including more names than its reported link count.
     pub partial: bool,
 }
 
@@ -257,6 +259,10 @@ impl Accumulator {
 
     fn join_links(&mut self, key: (u64, u64), links: Links) {
         if let Some(old) = self.links.remove(&key) {
+            // Disagreement is permanent evidence even if these names never
+            // become complete. Otherwise `bounds` would retain it only when
+            // an intermediate join happened to complete this file.
+            self.incomplete |= old.allocation != links.allocation;
             if old.complete() {
                 self.file(&old.allocation, false);
             }
@@ -271,6 +277,9 @@ impl Accumulator {
                 allocation,
                 names: old.names + links.names,
             };
+            // With matching facts, exceeding the link count cannot be
+            // undone; a later larger count is itself a disagreement.
+            self.incomplete |= joined.names > joined.allocation.links;
             if joined.complete() {
                 self.file(&joined.allocation, true);
             }
@@ -538,6 +547,35 @@ mod tests {
         assert_eq!(estimate(root.children()).lower, 4096);
         assert_eq!(root.sharing().reclaimable(root.bytes), 4096);
         assert_eq!(estimate(root.children()).upper, 4096);
+    }
+
+    #[test]
+    fn inconsistent_hardlinks_are_partial_without_completing_the_file() {
+        let mut smaller = file("smaller", 1, 3, None);
+        smaller.allocation.as_mut().expect("allocation").bytes = 2048;
+        for names in [
+            vec![file("a", 1, 2, None), file("b", 1, 3, None)],
+            vec![file("a", 1, 3, None), file("b", 1, 3, Some(clone_info()))],
+            vec![file("a", 1, 3, None), smaller],
+            vec![
+                file("a", 1, 2, None),
+                file("b", 1, 2, None),
+                file("c", 1, 2, None),
+            ],
+        ] {
+            let trees: Vec<_> = names.into_iter().map(Tree::from).collect();
+            let expected = Estimate {
+                partial: true,
+                ..Estimate::default()
+            };
+            assert_eq!(estimate(trees.iter().map(Tree::root)), expected);
+            assert_eq!(estimate(trees.iter().rev().map(Tree::root)), expected);
+        }
+        // Unselected names alone are not inconsistent evidence.
+        assert_eq!(
+            estimate([Tree::from(file("a", 1, 3, None)).root()]),
+            Estimate::default()
+        );
     }
 
     #[test]
