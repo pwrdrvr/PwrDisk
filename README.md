@@ -212,13 +212,13 @@ merged about 90 pull requests since. Compared with disktree 0.11.0 and its
 | **Size limit** | — | one removal may take 5% of a disk; past that, Mark anyway and a typed confirmation. Agents are always held to it |
 | **Removing** | finished items appear as bare names; Done drops the list | the whole list is on screen from the start and checks off item by item, with the space measured back as it goes; Done keeps it |
 | **APFS clones** | each clone counted at full size | shared and private bytes reported apart, so savings are never overstated |
-| **Quitting** | frees the whole tree on the main thread: about 0.6 s at 18M files, up to 15 s under memory pressure | instant |
-| **Memory for a scan** (18M files) | 2.58 GiB | 1.84 GiB, 29% less; 2.8–3.0 GiB with APFS clone accounting, the macOS default |
+| **Quitting** | frees the whole tree on the main thread: 1.1–1.2 s for a whole disk (40M files) when idle, up to 15 s under memory pressure | instant |
+| **Memory for a whole-disk scan** (40M files) | 5.84 GiB | 4.2–4.3 GiB, 28% less; 5.6 GiB with APFS clone accounting, the macOS default |
 | **Window** | system title bar | custom title strip, menus, Settings, Help, Changelog and Logs windows |
 | **Accessibility** | not audited | audited: keyboard focus, screen-reader labels, 200% text, reduced motion |
 
-Scan times are about the same with clone accounting off; with it on, a
-tree made mostly of clones takes longer. The measurements, the program
+Without clone accounting a scan takes 7–8% longer than disktree's; with
+it, the macOS default, 1.65–1.8× as long. The measurements, the program
 behind them and the caveats are in
 [docs/performance/vs-disktree](docs/performance/vs-disktree/README.md).
 

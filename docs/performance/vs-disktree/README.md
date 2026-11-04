@@ -11,8 +11,7 @@ One small program, compiled against each tree's `disktree-core`, scans a
 path with `ScanOptions::default()`, then times dropping the tree. It is the
 same source in both trees except for reading the root (`&tree` in disktree,
 `tree.root()` in PwrDisk). `/usr/bin/time -l` gives the process's peak
-memory footprint. Runs alternate between the two builds, each in a fresh
-process.
+memory footprint. Every run is a fresh process.
 
 ```rust
 use std::time::Instant;
@@ -33,53 +32,75 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
-The machine was busy throughout (load average 18 to 42, other scans
-running), so scan times are noisy. Peak memory and the free time hardly move
-with load. Both builds counted the same files, directories and bytes on
-every run.
+Each tree was scanned three times per build, the order of the builds
+rotated each round. Before a run the script waited for the machine to be
+at least 85% idle with no other scan running, then watched for compilers
+and other scans while it ran; a run that overlapped one was thrown away and
+repeated (9 were). One run, marked below, still overlapped a build after
+four tries. Both builds counted the same files, directories and bytes.
 
-## A large tree: 18.2 million files
+## The whole disk: 40.6 million files
 
-A directory of agent git worktrees: 18,161,059 files, 2,814,523
+`/`, as either app's "whole disk" scans it: 40,629,182 files, 7,239,967
+directories, 2.41 TiB.
+
+| build | scan | peak memory | free the tree |
+| --- | --- | --- | --- |
+| disktree | 134.4 / 132.2 / 132.0 s | 5.84 / 5.84 / 5.84 GiB | 1.209 / 1.141 / 1.112 s |
+| PwrDisk, clone accounting off | 144.2 / 144.1 / 143.1 s | **4.22 / 4.30 / 4.22 GiB** | **0.030 / 0.000 / 0.032 s** |
+| PwrDisk, default (clone accounting on) | 225.6 / 218.5 / 217.6 s | 5.60 / 5.62 / 5.58 GiB | **0.000 s** |
+
+## Agent worktrees: 18.2 million files
+
+A directory of agent git worktrees: 18,161,059 files, 2,814,467
 directories, 755 GiB. Most files are APFS clones.
 
 | build | scan | peak memory | free the tree |
 | --- | --- | --- | --- |
-| disktree | 60.4 / 64.1 / 56.2 s | 2.58 / 2.57 / 2.58 GiB | 0.569 / 0.597 / 0.580 s |
-| PwrDisk, clone accounting off | 63.4 / 62.4 / 89.2 s | **1.84 / 1.84 / 1.85 GiB** | **0.000 s** |
-| PwrDisk, default (clone accounting on) | 110.1 / 102.6 / 98.9 s | 2.82 / 2.91 / 3.01 GiB | **0.000 s** |
+| disktree | 56.0 / 55.4 / 56.0 s | 2.58 / 2.58 / 2.58 GiB | 0.514 / 0.538 / 0.529 s |
+| PwrDisk, clone accounting off | 59.9\* / 60.3 / 59.4 s | **1.84 / 1.84 / 1.85 GiB** | **0.000 s** |
+| PwrDisk, default (clone accounting on) | 99.0 / 100.4 / 98.6 s | 2.95 / 2.83 / 2.80 GiB | **0.000 s** |
 
-- **The tree itself costs 29% less.** PwrDisk holds a scan in a handful of
-  index-addressed buffers instead of one heap allocation per node
-  ([#68](https://github.com/pwrdrvr/PwrDisk/pull/68),
-  [#73](https://github.com/pwrdrvr/PwrDisk/pull/73)).
-- **APFS clone accounting costs extra on macOS.** PwrDisk reads which bytes
-  a clone shares and which are its own, so a marked clone is never credited
-  with space that removing it would not return. disktree does not read
-  clone sharing
-  ([tobi/disktree#117](https://github.com/tobi/disktree/pull/117) proposes
-  it), so it counts a clone's full size as reclaimable. On this tree, where most
-  files are clones, the accounting adds about 1 GiB and 40 seconds. It is
-  on by default on macOS; Linux and Windows do not have it.
-- **Freeing is instant.** Dropping 18 million nodes takes disktree about
-  0.6 s in an idle process, and disktree does it on the main thread when
-  the app quits; under memory pressure that has stretched to 15 s with
-  "Application Not Responding"
-  ([#57](https://github.com/pwrdrvr/PwrDisk/pull/57)). PwrDisk's tree is
-  eight buffers, freed in under a millisecond, and Quit leaves it to the
-  operating system.
+\* overlapped another thread's `cargo` build on its fourth try.
 
 ## A medium tree: 372 thousand files
 
-A folder of git checkouts: 371,891 files, 32,973 directories, 61 GiB.
+A folder of git checkouts: 371,941 files, 32,985 directories, 61 GiB.
 
 | build | scan | peak memory |
 | --- | --- | --- |
-| disktree | 1.9 / 0.8 / 0.9 s | 72 / 73 / 72 MiB |
-| PwrDisk, clone accounting off | 1.8 / 0.9 / 0.9 s | 91 / 91 / 89 MiB |
-| PwrDisk, default | 1.4 / 1.0 / 1.1 s | 116 / 116 / 116 MiB |
+| disktree | 1.7 / 0.7 / 1.8 s | 73 / 73 / 73 MiB |
+| PwrDisk, clone accounting off | 1.0 / 1.8 / 0.8 s | 92 / 88 / 88 MiB |
+| PwrDisk, default | 1.3 / 2.2 / 2.3 s | 120 / 114 / 114 MiB |
 
-At this size both scan in about a second and PwrDisk uses more memory, by
-about 20 MiB even without clone accounting. Where that fixed cost comes
-from has not been profiled; the savings show somewhere between this tree
-and the large one.
+Scans this short swing by a second either way; neither build is faster.
+
+## What it shows
+
+- **The tree itself costs 28–29% less.** With clone accounting off,
+  PwrDisk peaks at 4.2 GiB against disktree's 5.8 GiB for the whole disk,
+  and 1.84 against 2.58 GiB for the worktrees. PwrDisk holds a scan in a
+  handful of index-addressed buffers instead of one heap allocation per
+  node ([#68](https://github.com/pwrdrvr/PwrDisk/pull/68),
+  [#73](https://github.com/pwrdrvr/PwrDisk/pull/73)). On the medium tree
+  PwrDisk uses about 15 MiB more; the savings start somewhere between it
+  and the large trees.
+- **Freeing is instant.** disktree takes 1.1–1.2 s to free a whole-disk
+  scan in an idle process, and does it on the main thread when the app
+  quits. In the app, where a long-open scan has been compressed or paged
+  out, that has stretched to 15 s with "Application Not Responding"
+  ([#57](https://github.com/pwrdrvr/PwrDisk/pull/57)). PwrDisk's tree is
+  eight buffers, freed in a few milliseconds at most, and Quit leaves it
+  to the operating system.
+- **APFS clone accounting costs time on macOS.** PwrDisk reads which bytes
+  a clone shares and which are its own, so a marked clone is never
+  credited with space that removing it would not return. disktree does not
+  read clone sharing
+  ([tobi/disktree#117](https://github.com/tobi/disktree/pull/117) proposes
+  it), so it counts a clone's full size as reclaimable. That work makes a
+  scan 1.65–1.8× as long as disktree's and gives back most of the memory
+  saving: the whole disk still peaks 4% under disktree, the clone-heavy
+  worktrees 9–14% over. It is on by default on macOS; Linux and Windows do
+  not have it.
+- **Without it, scans take about as long.** 8% longer on the whole disk,
+  7% on the worktrees.
