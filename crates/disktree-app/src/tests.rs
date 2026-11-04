@@ -378,11 +378,16 @@ fn private_service_stores_draw_unavailable_and_partial_figures(
         cx.notify();
     });
     draw(cx);
+    // The guards refuse a service store, so it is never offered: the
+    // inspector says why, and Space marks nothing and says so.
+    assert!(cx.debug_bounds("mark-guard").is_some());
     press(cx, "space");
-    assert!(read(&view, cx, |app| app.plan().targets.is_empty()));
-    assert!(read(&view, cx, |app| !app.plan().blocked.is_empty()));
-    press(cx, "c");
-    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    assert!(read(&view, cx, |app| app.marks.is_empty()));
+    assert!(read(&view, cx, |app| {
+        app.notice
+            .as_ref()
+            .is_some_and(|(notice, _)| notice.contains("macOS manages"))
+    }));
 }
 
 #[cfg(target_os = "macos")]
@@ -2036,7 +2041,10 @@ fn settings_safety_reads_the_limit_once_and_shows_a_saved_pick(
     });
     let shown = |cx: &mut Window| {
         view.read_with(cx, |view, _| {
-            view.safety.as_ref().map(|limit| limit.percent()).ok()
+            view.safety
+                .as_ref()
+                .ok()
+                .and_then(|policy| policy.limit.map(Limit::percent))
         })
     };
     draw(cx);
@@ -8066,6 +8074,405 @@ fn a_toast_never_covers_the_review_footer(cx: &mut TestAppContext) {
     }
 }
 
+/// A toast drawn over the treemap takes the pointer: the tile under it
+/// shows no tooltip while the pointer is on the card, and a click or a
+/// scroll on the card never reaches the mosaic.
+#[gpui_kit::test]
+fn a_toast_hides_the_treemap_under_it(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    use gpui_kit::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    ask_for_updates(&view, cx);
+    let failed = update_state(1, Outcome::Failed("timed out".into()), None);
+    update(&view, cx, |app, cx| {
+        app.follow_updates(failed, "0.14.0", Slot::default(), cx);
+    });
+    draw(cx);
+    let stack = cx.debug_bounds("toast-stack").expect("the answer");
+    let treemap = cx.debug_bounds("treemap").expect("the mosaic");
+    // On the card's padding, clear of its buttons, and over the mosaic.
+    let on_card = stack.origin + Point::new(px(6.), px(6.));
+    assert!(treemap.contains(&on_card), "{stack:?} over {treemap:?}");
+
+    // Into the mosaic first, so there is a tooltip for the card to end.
+    let beside = Point::new(stack.right() + px(20.), on_card.y);
+    assert!(treemap.contains(&beside), "{beside:?} in {treemap:?}");
+    cx.simulate_mouse_move(beside, None, Modifiers::none());
+    draw(cx);
+    assert!(cx.debug_bounds("cursor-tooltip").is_some(), "a tile's card");
+
+    cx.simulate_mouse_move(on_card, None, Modifiers::none());
+    draw(cx);
+    assert!(
+        cx.debug_bounds("cursor-tooltip").is_none(),
+        "the pointer is on the toast, not the tile under it"
+    );
+    assert!(
+        read(&view, cx, |app| app.hovered.is_none()),
+        "nothing hovered"
+    );
+    assert!(
+        read(&view, cx, |app| app.toasts.is_hovered()),
+        "the stack is"
+    );
+
+    let (selected, zoom) =
+        read(&view, cx, |app| (app.selected.clone(), app.view));
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position: on_card,
+        modifiers: Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position: on_card,
+        modifiers: Modifiers::none(),
+        click_count: 1,
+    });
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: on_card,
+        delta: gpui_kit::ScrollDelta::Lines(Point::new(0., 3.)),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    draw(cx);
+    assert_eq!(
+        read(&view, cx, |app| (app.selected.clone(), app.view)),
+        (selected, zoom),
+        "a click or a scroll on the card leaves the mosaic alone"
+    );
+}
+
+/// Review's export menu opens over the marked list and takes the pointer:
+/// resting on it never raises the path tooltip of the row underneath, and
+/// a press on its padding reaches no row.
+#[gpui_kit::test]
+fn the_export_menu_hides_the_list_under_it(cx: &mut TestAppContext) {
+    use gpui_kit::Modifiers;
+    const TIP: &str = "omarchy-tooltip-surface";
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _tree) = review_with_tree(temp.path(), cx);
+    // Short enough that the menu, which opens upward from the footer,
+    // reaches the first row.
+    cx.simulate_resize(gpui_kit::size(px(900.), px(300.)));
+    draw(cx);
+    let row = cx.debug_bounds("review-row-0").expect("the marked row");
+
+    // The row's own tooltip, so its absence below means something.
+    rest_at(cx, row.center());
+    assert!(cx.debug_bounds(TIP).is_some(), "the row names its path");
+    let back = cx.debug_bounds("back").expect("Back");
+    rest_at(cx, back.center());
+
+    click_on(cx, "export");
+    let menu = cx.debug_bounds("export-menu").expect("the menu");
+    // In the menu's top padding, above its first item, and over the row.
+    let on_menu = menu.origin + Point::new(px(24.), px(2.));
+    assert!(row.contains(&on_menu), "{menu:?} over {row:?}");
+
+    rest_at(cx, on_menu);
+    assert!(
+        cx.debug_bounds(TIP).is_none(),
+        "the pointer is on the menu, not the row under it"
+    );
+
+    let marks = read(&view, cx, |app| app.marks.len());
+    cx.simulate_click(on_menu, Modifiers::none());
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.marks.len()), marks, "no row hit");
+    assert!(
+        cx.debug_bounds("export-menu").is_some(),
+        "a press inside the menu leaves it open"
+    );
+}
+
+/// Rest the pointer at `at` past a tooltip's delay, and draw what shows.
+fn rest_at(cx: &mut Window, at: Point<Pixels>) {
+    cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::none());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(600));
+    cx.run_until_parked();
+    draw(cx);
+}
+
+/// The first log line drawn, by its number: it moves when the list scrolls.
+fn first_log_row(cx: &mut Window) -> Option<usize> {
+    (1..=400).find(|number| {
+        cx.debug_bounds(Box::leak(format!("log-row-{number}").into_boxed_str()))
+            .is_some()
+    })
+}
+
+fn scroll_at(cx: &mut Window, at: Point<Pixels>, dy: f32) {
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: at,
+        delta: gpui_kit::ScrollDelta::Pixels(Point::new(px(0.), px(dy))),
+        ..Default::default()
+    });
+    draw(cx);
+}
+
+/// Logs' context menu drops over the lines and takes the pointer: a scroll
+/// on it moves nothing. The selection bar floats over the lines too: a
+/// press on it never picks the line number beneath, though a scroll there
+/// still moves the lines, as it does over the new-lines pill.
+#[gpui_kit::test]
+fn logs_overlays_hide_the_lines_under_them(cx: &mut TestAppContext) {
+    use crate::logs_window::{CONTEXT_ID, LIVE_ID, PILL_ID};
+    use gpui_kit::Modifiers;
+    let line = |number: usize| {
+        format!("2026-10-31T12:00:00.000-04:00 INFO  pwrdisk: line {number}\n")
+    };
+    let text: String = (1..=200).map(line).collect();
+    let (_dir, path, view, cx) = logs_over(cx, &text);
+    let viewport = cx.debug_bounds("logs-viewport").expect("the lines");
+
+    // The context menu: a search in Filter mode offers it.
+    let search = cx.update(|_, cx| view.read(cx).search_state());
+    cx.update(|window, cx| {
+        search.update(cx, |search, cx| search.focus(window, cx));
+    });
+    cx.simulate_input("line");
+    draw(cx);
+    click_on(cx, CONTEXT_ID);
+    let menu = cx.debug_bounds("logs-context-menu").expect("the menu");
+    let on_menu = Point::new(menu.left() + px(24.), menu.bottom() - px(2.));
+    assert!(viewport.contains(&on_menu), "{menu:?} over {viewport:?}");
+    let first = first_log_row(cx);
+    scroll_at(cx, on_menu, -400.);
+    assert_eq!(first_log_row(cx), first, "the lines stay put");
+    assert!(cx.debug_bounds("logs-context-menu").is_some(), "still open");
+    cx.update(|window, cx| {
+        search.update(cx, |search, cx| search.focus(window, cx));
+    });
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+
+    // The selection bar, at double text size in a narrow window, where it
+    // reaches the line numbers; tall enough that lines show beneath it.
+    cx.update(|window, _| window.set_rem_size(px(32.)));
+    cx.simulate_resize(gpui_kit::size(px(640.), px(1000.)));
+    draw(cx);
+    let first = first_log_row(cx).expect("a line");
+    let picked: &'static str =
+        Box::leak(format!("log-number-{first}").into_boxed_str());
+    click_on(cx, picked);
+    let selection = cx.update(|_, cx| view.read(cx).selection);
+    assert!(selection.is_some(), "a line is picked");
+    let bar = cx.debug_bounds("logs-selection-bar").expect("the bar");
+    // The line number that lies most under the bar, within the lines'
+    // visible frame: a row's part outside it is clipped and takes no press.
+    let lines = cx.debug_bounds("logs-viewport").expect("the lines");
+    let clear = bar.intersect(&lines);
+    let under = (first..first + 60)
+        .filter_map(|number| {
+            cx.debug_bounds(Box::leak(
+                format!("log-number-{number}").into_boxed_str(),
+            ))
+        })
+        .max_by(|a, b| {
+            let tall = |g: &Bounds<Pixels>| g.intersect(&clear).size.height;
+            tall(a).as_f32().total_cmp(&tall(b).as_f32())
+        })
+        .filter(|gutter| gutter.intersect(&clear).size.height > px(8.))
+        .unwrap_or_else(|| panic!("a line number under {bar:?}"));
+    // In the middle of where the two overlap: the bar's label there is
+    // only text, so the press is the bar's.
+    let on_bar = under.intersect(&clear).center();
+    assert!(bar.contains(&on_bar), "{bar:?} at {on_bar:?}");
+    assert!(under.contains(&on_bar), "{bar:?} over {under:?}");
+    cx.simulate_click(on_bar, Modifiers::none());
+    draw(cx);
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).selection),
+        selection,
+        "a press on the bar picks no line"
+    );
+    let top = first_log_row(cx);
+    scroll_at(cx, on_bar, -400.);
+    assert_ne!(first_log_row(cx), top, "a scroll there moves the lines");
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+
+    // The pill: paused, new lines count on it, and a scroll over it still
+    // reaches the lines.
+    cx.update(|window, _| window.set_rem_size(px(16.)));
+    cx.simulate_resize(gpui_kit::size(px(1120.), px(720.)));
+    draw(cx);
+    if cx.update(|_, cx| view.read(cx).live) {
+        click_on(cx, LIVE_ID);
+    }
+    append_log(&path, &line(201));
+    poll_logs(cx);
+    let pill = cx.debug_bounds(PILL_ID).expect("the pill");
+    let top = first_log_row(cx);
+    scroll_at(cx, pill.center(), 400.);
+    assert_ne!(first_log_row(cx), top, "a scroll over the pill moves them");
+}
+
+/// The note that nothing passes the legend's filter sits over the mosaic:
+/// the pointer on it raises no tile's card and a press selects no tile.
+#[gpui_kit::test]
+fn the_empty_filter_note_hides_the_treemap_under_it(cx: &mut TestAppContext) {
+    use crate::legend::ChipId;
+    use gpui_kit::Modifiers;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    update(&view, cx, |app, cx| {
+        app.cycle_legend(ChipId::Reclaimable, cx);
+        app.cycle_legend(ChipId::Kind(2), cx);
+    });
+    cx.run_until_parked();
+    draw(cx);
+    let note = cx.debug_bounds("legend-empty").expect("the note");
+    let on_note = note.origin + Point::new(px(4.), px(4.));
+    cx.simulate_mouse_move(on_note, None, Modifiers::none());
+    draw(cx);
+    assert!(
+        cx.debug_bounds("cursor-tooltip").is_none(),
+        "the pointer is on the note"
+    );
+    let selected = read(&view, cx, |app| app.selected.clone());
+    cx.simulate_click(on_note, Modifiers::none());
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), selected);
+}
+
+/// Removing's Follow pill floats over the list: resting on it raises no
+/// row's path, though a scroll over it still scrolls the list.
+#[gpui_kit::test]
+fn the_follow_pill_hides_the_row_under_it(cx: &mut TestAppContext) {
+    use crate::run_list::{Item, RunList, Status};
+    const TIP: &str = "omarchy-tooltip-surface";
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let path = |index: usize| temp.path().join(format!("dir-{index:03}"));
+    update(&view, cx, |app, cx| {
+        app.run_list = RunList::new(
+            (0..80)
+                .map(|index| Item {
+                    target: disktree_core::removal::Target {
+                        path: path(index),
+                        bytes: 1_000,
+                        is_dir: true,
+                        hidden: false,
+                    },
+                    category: disktree_core::classify::Category::Other,
+                    reclaim: None,
+                    private: None,
+                    status: Status::Waiting,
+                })
+                .collect(),
+        );
+        app.screen = Screen::Running;
+        cx.notify();
+    });
+    draw(cx);
+    let settle = |cx: &mut Window, view: &Entity<Disktree>, upto| {
+        update(view, cx, |app, cx| {
+            app.update_follow();
+            for index in 0..upto {
+                if app.run_list.settle(&path(index), &Ok(())).is_some() {
+                    app.scroll_to_focus();
+                }
+            }
+            cx.notify();
+        });
+        draw(cx);
+        draw(cx);
+    };
+    settle(cx, &view, 60);
+    let list = cx.debug_bounds("run-list").expect("the list");
+    scroll_at(cx, list.center(), 100_000.);
+    settle(cx, &view, 65);
+    let pill = cx.debug_bounds("follow-removal").expect("the pill");
+
+    // A row's own tooltip, so its absence below means something.
+    rest_at(cx, Point::new(list.left() + px(40.), pill.center().y));
+    assert!(cx.debug_bounds(TIP).is_some(), "the row names its path");
+    rest_at(cx, list.origin - Point::new(px(4.), px(4.)));
+    rest_at(cx, pill.origin + Point::new(px(4.), px(4.)));
+    assert!(
+        cx.debug_bounds(TIP).is_none(),
+        "the pointer is on the pill, not the row under it"
+    );
+
+    update(&view, cx, |app, _| app.run_list.scrolled_by_hand = false);
+    scroll_at(cx, pill.center(), -200.);
+    assert!(
+        read(&view, cx, |app| app.run_list.scrolled_by_hand),
+        "a scroll over the pill still scrolls the list"
+    );
+}
+
+/// The strip's menu drops over the treemap and takes the pointer: a press
+/// on its padding selects no tile, and a scroll there zooms nothing.
+#[gpui_kit::test]
+fn the_app_menu_hides_the_treemap_under_it(cx: &mut TestAppContext) {
+    use gpui_kit::Modifiers;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, Disktree::toggle_app_menu);
+    draw(cx);
+    let menu = cx.debug_bounds("app-menu").expect("the menu");
+    let treemap = cx.debug_bounds("treemap").expect("the mosaic");
+    // On a group's heading, which is only text: just above the group's
+    // first row, in the first group drawn over the mosaic.
+    let on_menu = (1..8)
+        .filter_map(|group| {
+            let first = (0..8).find_map(|index| {
+                cx.debug_bounds(Box::leak(
+                    format!("app-menu-{group}-{index}").into_boxed_str(),
+                ))
+            })?;
+            Some(Point::new(menu.origin.x + px(24.), first.top() - px(4.)))
+        })
+        .find(|at| treemap.contains(at))
+        .unwrap_or_else(|| panic!("a heading over {treemap:?} in {menu:?}"));
+
+    let (selected, zoom) =
+        read(&view, cx, |app| (app.selected.clone(), app.view));
+    cx.simulate_click(on_menu, Modifiers::none());
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: on_menu,
+        delta: gpui_kit::ScrollDelta::Lines(Point::new(0., 3.)),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    draw(cx);
+    assert_eq!(
+        read(&view, cx, |app| (app.selected.clone(), app.view)),
+        (selected, zoom),
+        "a press or a scroll on the menu leaves the mosaic alone"
+    );
+    assert!(read(&view, cx, |app| app.app_menu_open), "still open");
+
+    // The menu is taller than its cap, and still scrolls itself.
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: on_menu,
+        delta: gpui_kit::ScrollDelta::Lines(Point::new(0., -3.)),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    draw(cx);
+    assert!(
+        read(&view, cx, |app| app.menu_scroll.offset().y) < px(0.),
+        "the list scrolled"
+    );
+    assert_eq!(read(&view, cx, |app| app.view), zoom, "the mosaic did not");
+}
+
 /// The ready card gives way while a removal runs (Restart would wait for
 /// it anyway); the strip's chip still offers the release. The pointer that
 /// rested on the card is forgotten with it, so the next answer still runs
@@ -8405,6 +8812,14 @@ fn marking_a_worktree_trio_one_by_one_frees_one_copy_at_the_end(
     let (view, cx) = cx.add_window_view(move |_, cx| {
         // Allocated sizes: the helper's apparent sizes project nothing.
         Disktree::with_tree(path.clone(), root, ScanOptions::default(), 3, cx)
+    });
+    // 30 GiB of synthetic worktrees on whatever disk runs the tests: past
+    // 5% of a small CI disk, which is not what this test is about.
+    update(&view, cx, |app, _| {
+        app.safety_policy.replace(Some(crate::safety::Policy {
+            limit: None,
+            ..crate::safety::Policy::default()
+        }));
     });
     draw(cx);
     let mut seen = Vec::new();
@@ -9344,4 +9759,197 @@ fn the_marked_total_is_pinned_above_the_disk_with_the_review(
     );
     click_on(cx, "review");
     assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+}
+
+/// The fixture on a pretend 1 MB disk, with `junk` (300 kB, 30% of it)
+/// selected: past the default 5% limit.
+fn over_limit_view<'a>(
+    temp: &Path,
+    cx: &'a mut TestAppContext,
+) -> (Entity<Disktree>, &'a mut Window, Vec<usize>) {
+    let (view, cx) = view_over(temp, cx);
+    let junk = update(&view, cx, |app, cx| {
+        app.space = Some(SpaceInfo {
+            total: 1_000_000,
+            free: 100_000,
+            available: 100_000,
+        });
+        let junk = app
+            .tree()
+            .and_then(|tree| tree.find("junk").map(|(crumbs, _)| crumbs))
+            .expect("the junk directory");
+        app.select(Some(junk.clone()), cx);
+        junk
+    });
+    draw(cx);
+    (view, cx, junk)
+}
+
+/// Past the limit, Space marks nothing; only the chevron's Mark anyway
+/// does, and Review then wants the phrase before anything is removed.
+#[gpui_kit::test]
+fn past_the_limit_marking_needs_mark_anyway_and_review_the_phrase(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = over_limit_view(temp.path(), cx);
+    assert!(cx.debug_bounds("mark-guard").is_some());
+    assert!(cx.debug_bounds("inspector-mark-more").is_some());
+
+    press(cx, "space");
+    read(&view, cx, |app| {
+        assert!(app.marks.is_empty());
+        assert!(app.notice.as_ref().is_some_and(|(notice, _)| {
+            notice.contains("30%") && notice.contains("5% limit")
+        }));
+    });
+
+    click_on(cx, "inspector-mark-more");
+    assert!(cx.debug_bounds("mark-menu").is_some());
+    click_on(cx, "mark-anyway");
+    read(&view, cx, |app| {
+        assert_eq!(app.marks.len(), 1);
+        assert_eq!(app.mark_menu, None);
+    });
+
+    update(&view, cx, |app, _| {
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    press(cx, "c");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    assert!(cx.debug_bounds("over-limit-gate").is_some());
+    assert!(cx.debug_bounds("over-limit-matched").is_none());
+
+    // Enter commits nothing until the phrase is typed.
+    press(cx, "enter");
+    read(&view, cx, |app| {
+        assert!(!app.confirm_open);
+        assert!(app.run.is_none());
+        assert!(app.notice.as_ref().is_some_and(|(notice, _)| {
+            notice.contains("delete 30% of my disk")
+        }));
+    });
+
+    // Close is not enough, and neither is the other mode's verb.
+    click_on(cx, "over-limit-phrase");
+    cx.simulate_input("trash 30% of my disk");
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-matched").is_none());
+    let typed = "trash 30% of my disk".chars().count();
+    cx.simulate_keystrokes(&vec!["backspace"; typed].join(" "));
+    cx.simulate_input("Delete 30%  of my disk");
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-matched").is_some());
+    // What the worker is held to is what was typed, not the 5% setting:
+    // a share that grew past 30% since is refused there.
+    update(&view, cx, |app, cx| {
+        let plan = app.plan();
+        assert_eq!(
+            app.removal_limit(&plan, cx)
+                .map(disktree_core::removal_limit::Limit::percent),
+            Ok(30)
+        );
+    });
+
+    // Enter in the field commits, and the permanent dialog still asks.
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert!(read(&view, cx, |app| app.confirm_open));
+    assert!(
+        temp.path().join("junk").exists(),
+        "nothing has happened yet"
+    );
+    press(cx, "enter");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Running);
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut finished = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        finished = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if finished {
+            break;
+        }
+    }
+    assert!(finished, "the removal finished");
+    assert!(!temp.path().join("junk").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+    // The phrase confirmed that removal only: the next one asks again.
+    read(&view, cx, |app| {
+        assert!(app.over_phrase.is_none());
+        assert_eq!(app.over_ticked, None);
+    });
+}
+
+/// Settings › Safety relaxes the window, never an agent: Off gives the
+/// plain Mark back, Tick a box asks for a tick, and an agent is still held
+/// to 5%.
+#[gpui_kit::test]
+fn safety_settings_relax_the_window_but_never_an_agent(
+    cx: &mut TestAppContext,
+) {
+    use crate::safety::{Confirm, save_confirm, save_limit};
+
+    cx.update(init);
+    let temp = fixture();
+    let settings = tempfile::TempDir::new().expect("settings");
+    save_confirm(Some(settings.path()), Confirm::Tick).expect("tick");
+    let (view, cx, junk) = over_limit_view(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.removal_settings_dir = Some(settings.path().to_path_buf());
+        app.safety_policy.replace(None);
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("inspector-mark-more").is_some());
+
+    // Ticked for 30% to the trash, then the mode changes: the tick was
+    // for the other one.
+    update(&view, cx, |app, cx| {
+        app.mark_anyway(&junk, cx);
+        app.removal_mode = RemovalMode::Trash;
+        app.open_review(cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-phrase").is_none());
+    click_on(cx, "over-limit-tick");
+    let met = |view: &Entity<Disktree>, cx: &mut Window| {
+        update(view, cx, |app, cx| {
+            let plan = app.plan();
+            let share = app.removal_gate(&plan).expect("past the limit");
+            app.gate_met(&share, cx)
+        })
+    };
+    assert!(met(&view, cx));
+    update(&view, cx, |app, _| {
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    assert!(!met(&view, cx), "a tick is for one mode");
+
+    // Off: no gate in Review, the plain Mark in the inspector, and an
+    // agent still held to 5%.
+    save_limit(Some(settings.path()), None).expect("off");
+    update(&view, cx, |app, cx| {
+        app.safety_policy.replace(None);
+        let plan = app.plan();
+        assert_eq!(app.removal_gate(&plan), None);
+        app.clear_marks(cx);
+        app.screen = Screen::Explore;
+        app.select(Some(junk.clone()), cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("inspector-mark-more").is_none());
+    assert!(cx.debug_bounds("mark-guard").is_none());
+    update(&view, cx, |app, _| {
+        let target = app.target_at(&junk).expect("junk");
+        assert!(
+            app.agent_mark_refusal(&target)
+                .is_some_and(|reason| reason.contains("5% limit"))
+        );
+    });
+    press(cx, "space");
+    assert_eq!(read(&view, cx, |app| app.marks.len()), 1);
 }
