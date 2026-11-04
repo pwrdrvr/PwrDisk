@@ -1525,24 +1525,20 @@ impl Approved {
                 {
                     let _ = writeln!(
                         text,
-                        "{} ({} bytes)",
+                        "{} ({})",
                         disclosure.description(*action),
-                        proposal.bytes
+                        crate::size::human_bytes(proposal.bytes)
                     );
                 }
             }
             text.push('\n');
         }
         if !self.skipped.is_empty() {
-            let _ = write!(
-                text,
-                "Nothing happens to ({}): {:?}",
-                self.skipped.len(),
-                self.skipped
-                    .iter()
-                    .map(|report| &report.path)
-                    .collect::<Vec<_>>()
-            );
+            let _ =
+                writeln!(text, "Nothing happens to ({}):", self.skipped.len());
+            for report in &self.skipped {
+                let _ = writeln!(text, "{:?}", report.path);
+            }
         }
         text.trim_end().to_owned()
     }

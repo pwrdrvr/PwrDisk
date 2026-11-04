@@ -165,10 +165,12 @@ pub fn proposal(
     }
 
     let run = match proposal.operations.as_slice() {
-        [] => proposal
-            .owner
-            .map_or("Run owner command", |owner| owner.command_label())
-            .to_string(),
+        [] => format!(
+            "Run {}",
+            proposal
+                .owner
+                .map_or("owner command", |owner| owner.command_label())
+        ),
         [only] => {
             format!("Run {}", prepared.operations[*only].owner.command_label())
         }
