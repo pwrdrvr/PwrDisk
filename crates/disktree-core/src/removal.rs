@@ -1248,12 +1248,13 @@ impl RemovalHandle {
     }
 }
 
-/// App removals use the same limit for UI and MCP. Preflight completes
-/// before the worker removes any target, so a rejected batch does no work.
+/// App removals use the same limit for UI and MCP, each volume against its
+/// own ceiling. Preflight completes before the worker removes any target,
+/// so a rejected batch does no work.
 pub fn spawn_limited(
     plan: Plan,
     mode: RemovalMode,
-    limit: crate::removal_limit::Limit,
+    limit: crate::removal_limit::Ceilings,
 ) -> RemovalHandle {
     spawn_checked(plan, mode, Some(limit))
 }
@@ -1266,7 +1267,7 @@ pub fn spawn(plan: Plan, mode: RemovalMode) -> RemovalHandle {
 fn spawn_checked(
     plan: Plan,
     mode: RemovalMode,
-    limit: Option<crate::removal_limit::Limit>,
+    limit: Option<crate::removal_limit::Ceilings>,
 ) -> RemovalHandle {
     start(plan, mode, limit, None, |work| {
         thread::Builder::new()
@@ -1279,7 +1280,7 @@ fn spawn_checked(
 /// The confirmed owner preview travels intact to the existing removal worker.
 pub fn spawn_cleanup(
     prepared: crate::cleanup::Prepared,
-    limit: crate::removal_limit::Limit,
+    limit: crate::removal_limit::Ceilings,
 ) -> RemovalHandle {
     start(
         prepared.plan.clone(),
@@ -1304,7 +1305,7 @@ type Work = Box<dyn FnOnce() + Send + 'static>;
 fn start(
     plan: Plan,
     mode: RemovalMode,
-    limit: Option<crate::removal_limit::Limit>,
+    limit: Option<crate::removal_limit::Ceilings>,
     cleanup: Option<crate::cleanup::Prepared>,
     spawn: impl FnOnce(Work) -> io::Result<()>,
 ) -> RemovalHandle {
@@ -1332,7 +1333,8 @@ fn start(
                             .to_string()
                     })
                     .and_then(|prepared| {
-                        prepared.preflight(limit.unwrap_or_default())
+                        let default = crate::removal_limit::Ceilings::default();
+                        prepared.preflight(limit.as_ref().unwrap_or(&default))
                     })
             } else {
                 crate::cleanup::check_raw(&plan.targets)
@@ -3499,7 +3501,7 @@ mod tests {
         let handle = spawn_limited(
             planned,
             RemovalMode::Permanent,
-            crate::removal_limit::Limit::default(),
+            crate::removal_limit::Limit::default().into(),
         );
         let mut done = None;
         for _ in 0..2000 {

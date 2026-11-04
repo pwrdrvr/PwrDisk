@@ -112,6 +112,15 @@ pub const UNDO_KEYS: &str = if cfg!(target_os = "macos") {
     "Ctrl+Z"
 };
 
+/// Who started a removal, which decides the limit its worker is held to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Remover {
+    /// The window's limit, raised only by Review's confirmation.
+    Person,
+    /// The agent limit, which nothing in the window raises.
+    Agent,
+}
+
 /// Which screen the app is showing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -616,9 +625,16 @@ pub struct Disktree {
     pub mark_menu: Option<PathBuf>,
     /// Review's field for the over-limit phrase, made when first shown.
     pub over_phrase: Option<Entity<InputState>>,
-    /// The share and mode the over-limit box was ticked for: a tick says
-    /// "20%, to the trash", and means nothing once either changes.
-    pub over_ticked: Option<(u8, RemovalMode)>,
+    /// The shares and mode the over-limit box was ticked for: a tick says
+    /// "20% of this disk, to the trash", and means nothing once any of it
+    /// changes.
+    pub over_ticked: Option<crate::mark_guard::Ticked>,
+    /// How Review finds the disk a marked path is on. A field so a test
+    /// can stand in two disks where its fixture has one.
+    pub disk_probe: crate::mark_guard::DiskProbe,
+    /// The probe's answers for Review's frames; see
+    /// [`Self::removal_gate`].
+    pub disk_cache: RefCell<crate::mark_guard::DiskCache>,
     roots_job: Option<disktree_core::remote::RemoteRoots>,
     volume_epoch: u64,
     pub volumes: Vec<disktree_core::space::Volume>,
@@ -830,6 +846,8 @@ impl Disktree {
             mark_menu: None,
             over_phrase: None,
             over_ticked: None,
+            disk_probe: crate::mark_guard::disk_of,
+            disk_cache: RefCell::default(),
             roots_job: None,
             volume_epoch: 0,
             volumes: Vec::new(),
@@ -1614,6 +1632,7 @@ impl Disktree {
                 cx,
             );
         } else {
+            self.reread_disks();
             self.screen = Screen::Review;
             if self.remote.is_none()
                 && self.marks.items().iter().any(|target| {
@@ -3590,7 +3609,19 @@ impl Disktree {
         }
     }
 
+    /// Start the person's removal of what is marked, held to the window's
+    /// limit or to the shares Review confirmed past it.
     pub fn begin_removal(&mut self, cx: &mut Context<'_, Self>) {
+        self.start_removal(Remover::Person, cx);
+    }
+
+    /// Start an agent's confirmed removal, held to the agent limit
+    /// whatever the window's limit and Review's confirmation say.
+    pub(crate) fn begin_agent_removal(&mut self, cx: &mut Context<'_, Self>) {
+        self.start_removal(Remover::Agent, cx);
+    }
+
+    fn start_removal(&mut self, by: Remover, cx: &mut Context<'_, Self>) {
         if self.remote.is_some() {
             return;
         }
@@ -3618,7 +3649,11 @@ impl Disktree {
             cx.notify();
             return;
         }
-        let limit = match self.removal_limit(&plan, cx) {
+        let limit = match by {
+            Remover::Person => self.removal_limit(&plan, cx),
+            Remover::Agent => self.agent_removal_limit(&plan),
+        };
+        let limit = match limit {
             Ok(limit) => limit,
             Err(reason) => {
                 self.say_until_closed(reason, Status::Warning, cx);

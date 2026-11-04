@@ -5516,6 +5516,57 @@ fn await_removal_preview(
     panic!("preview worker did not finish");
 }
 
+/// Link `view` to an agent over a real socket or pipe named after `temp`,
+/// as `pwrdisk mcp` does.
+#[cfg(any(unix, windows))]
+fn link_agent(
+    view: &Entity<Disktree>,
+    temp: &Path,
+    cx: &mut Window,
+) -> disktree_link::Link {
+    #[cfg(not(windows))]
+    let socket = temp.join("link.sock");
+    #[cfg(windows)]
+    let socket = PathBuf::from(format!(
+        r"\\.\pipe\pwrdisk-test-{}",
+        temp.file_name().expect("temp name").to_string_lossy()
+    ));
+    let listener =
+        disktree_link::Listener::bind_at(&socket).expect("bind the link");
+    update(view, cx, |app, cx| app.attach_agent(listener, cx));
+    disktree_link::Link::connect_at(&socket).expect("connect")
+}
+
+/// Send `request` over `link` and pump the window until it answers. The
+/// client blocks on each answer, so it runs on its own thread while the
+/// test pumps the window's side, as the timer task would.
+#[cfg(any(unix, windows))]
+fn ask_over(
+    view: &Entity<Disktree>,
+    link: &mut Option<disktree_link::Link>,
+    cx: &mut Window,
+    request: disktree_link::Request,
+) -> disktree_link::Response {
+    let mut taken = link.take().expect("the link is at hand");
+    let worker = std::thread::spawn(move || {
+        let response = taken.call(&request).expect("an answer");
+        (taken, response)
+    });
+    for _ in 0..400 {
+        update(view, cx, |app, cx| {
+            app.poll_agent_once(cx);
+        });
+        if worker.is_finished() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let (returned, response) = worker.join().expect("client thread");
+    *link = Some(returned);
+    draw(cx);
+    response
+}
+
 /// Drive the window as `pwrdisk mcp` does, over the real socket: say
 /// hello, mark, show, open the review, unmark, hang up. The marks land in
 /// the window, the screen follows, and the header names the agent while it
@@ -5523,7 +5574,7 @@ fn await_removal_preview(
 #[cfg(any(unix, windows))]
 #[gpui_kit::test]
 fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
-    use disktree_link::{Link, MarkRequest, Request, Response};
+    use disktree_link::{MarkRequest, Request, Response};
 
     cx.update(init);
     let temp = fixture();
@@ -5536,42 +5587,9 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     let (view, cx) = view_over(temp.path(), cx);
     draw(cx);
 
-    #[cfg(not(windows))]
-    let socket = temp.path().join("link.sock");
-    #[cfg(windows)]
-    let socket = PathBuf::from(format!(
-        r"\\.\pipe\pwrdisk-test-{}",
-        temp.path()
-            .file_name()
-            .expect("temp name")
-            .to_string_lossy()
-    ));
-    let listener =
-        disktree_link::Listener::bind_at(&socket).expect("bind the link");
-    update(&view, cx, |app, cx| app.attach_agent(listener, cx));
-
-    // The client blocks on each answer, so it runs on its own thread while
-    // the test pumps the window's side, as the timer task would.
-    let mut link = Some(Link::connect_at(&socket).expect("connect"));
+    let mut link = Some(link_agent(&view, temp.path(), cx));
     let mut ask = |cx: &mut Window, request: Request| -> Response {
-        let mut taken = link.take().expect("the link is at hand");
-        let worker = std::thread::spawn(move || {
-            let response = taken.call(&request).expect("an answer");
-            (taken, response)
-        });
-        for _ in 0..400 {
-            update(&view, cx, |app, cx| {
-                app.poll_agent_once(cx);
-            });
-            if worker.is_finished() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let (returned, response) = worker.join().expect("client thread");
-        link = Some(returned);
-        draw(cx);
-        response
+        ask_over(&view, &mut link, cx, request)
     };
 
     let refused = ask(
@@ -9996,6 +10014,24 @@ fn unmark_all_offers_undo_on_its_toast(cx: &mut TestAppContext) {
     assert_eq!(read(&view, cx, |app| app.marks.len()), 1);
 }
 
+/// `junk` on a pretend 1 MB USB disk mounted inside the scan, the rest on
+/// a boot disk of `boot` bytes, as Review's probe finds them.
+fn two_disks(path: &Path, boot: u64) -> crate::mark_guard::Disk {
+    if path.components().any(|part| part.as_os_str() == "junk") {
+        crate::mark_guard::Disk {
+            key: "usb".into(),
+            capacity: 1_000_000,
+            name: "/Volumes/USB".into(),
+        }
+    } else {
+        crate::mark_guard::Disk {
+            key: "boot".into(),
+            capacity: boot,
+            name: "/".into(),
+        }
+    }
+}
+
 /// The fixture on a pretend 1 MB disk, with `junk` (300 kB, 30% of it)
 /// selected: past the default 5% limit.
 fn over_limit_view<'a>(
@@ -10004,6 +10040,14 @@ fn over_limit_view<'a>(
 ) -> (Entity<Disktree>, &'a mut Window, Vec<usize>) {
     let (view, cx) = view_over(temp, cx);
     let junk = update(&view, cx, |app, cx| {
+        // Every path on one pretend 1 MB disk.
+        app.disk_probe = |_| {
+            Ok(crate::mark_guard::Disk {
+                key: "disk".into(),
+                capacity: 1_000_000,
+                name: "/".into(),
+            })
+        };
         app.space = Some(SpaceInfo {
             total: 1_000_000,
             free: 100_000,
@@ -10080,11 +10124,8 @@ fn past_the_limit_marking_needs_mark_anyway_and_review_the_phrase(
     // a share that grew past 30% since is refused there.
     update(&view, cx, |app, cx| {
         let plan = app.plan();
-        assert_eq!(
-            app.removal_limit(&plan, cx)
-                .map(disktree_core::removal_limit::Limit::percent),
-            Ok(30)
-        );
+        let ceilings = app.removal_limit(&plan, cx).expect("confirmed");
+        assert_eq!(ceilings.of("disk").percent(), 30);
     });
 
     // Enter in the field commits, and the permanent dialog still asks.
@@ -10117,6 +10158,191 @@ fn past_the_limit_marking_needs_mark_anyway_and_review_the_phrase(
         assert!(app.over_phrase.is_none());
         assert_eq!(app.over_ticked, None);
     });
+}
+
+/// A mark on a disk mounted inside the scan counts against that disk, not
+/// the scanned one. Review names each disk past the limit, and the worker
+/// holds each to the share confirmed for it and every other to the limit:
+/// 30% confirmed for one disk lets nothing past 5% on another.
+#[gpui_kit::test]
+fn past_the_limit_review_names_each_disk_and_holds_each_to_its_own_share(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, junk) = over_limit_view(temp.path(), cx);
+    let keep = update(&view, cx, |app, cx| {
+        // A boot disk large enough that nothing here nears its limit.
+        app.disk_probe = |path| Ok(two_disks(path, 1_000_000_000));
+        app.removal_mode = RemovalMode::Permanent;
+        app.mark_anyway(&junk, cx);
+        app.open_review(cx);
+        app.tree()
+            .and_then(|tree| tree.find("keep").map(|(crumbs, _)| crumbs))
+            .expect("the keep directory")
+    });
+    draw(cx);
+
+    // Only the USB disk is past the limit, and the gate says which.
+    assert!(cx.debug_bounds("over-limit-disk-0").is_some());
+    assert!(cx.debug_bounds("over-limit-disk-1").is_none());
+    update(&view, cx, |app, _| {
+        let gate = app.removal_gate(&app.plan()).expect("past the limit");
+        assert_eq!(gate.summary(), "30% of /Volumes/USB");
+        assert_eq!(app.gate_phrase(&gate), "delete 30% of my disk");
+    });
+    click_on(cx, "over-limit-phrase");
+    cx.simulate_input("delete 30% of my disk");
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-matched").is_some());
+    update(&view, cx, |app, cx| {
+        let plan = app.plan();
+        let ceilings = app.removal_limit(&plan, cx).expect("confirmed");
+        assert_eq!(ceilings.of("usb").percent(), 30);
+        assert_eq!(ceilings.of("boot").percent(), 5, "not confirmed");
+    });
+
+    // `keep` takes a small boot disk past the limit too: the gate lists
+    // both, the phrase names both shares, and the one typed is no longer
+    // enough.
+    update(&view, cx, |app, cx| {
+        // A 10 kB boot disk, which `keep` (1 kB) takes past the limit.
+        app.disk_probe = |path| Ok(two_disks(path, 10_000));
+        app.screen = Screen::Explore;
+        app.mark_anyway(&keep, cx);
+        app.open_review(cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-disk-0").is_some());
+    assert!(cx.debug_bounds("over-limit-disk-1").is_some());
+    assert!(cx.debug_bounds("over-limit-matched").is_none());
+    update(&view, cx, |app, cx| {
+        let plan = app.plan();
+        let gate = app.removal_gate(&plan).expect("past the limit");
+        assert_eq!(gate.summary(), "30% of /Volumes/USB and 10% of /");
+        assert_eq!(app.gate_phrase(&gate), "delete 30% and 10% of my disks");
+        let refused = app.removal_limit(&plan, cx).expect_err("unconfirmed");
+        assert!(
+            refused.contains("delete 30% and 10% of my disks"),
+            "{refused}"
+        );
+    });
+    // A click lands the caret where it falls in the text; clear from the
+    // end so every character typed before goes.
+    click_on(cx, "over-limit-phrase");
+    cx.simulate_keystrokes("end");
+    let typed = "delete 30% of my disk".chars().count();
+    cx.simulate_keystrokes(&vec!["backspace"; typed].join(" "));
+    cx.simulate_input("delete 30% and 10% of my disks");
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-matched").is_some());
+    update(&view, cx, |app, cx| {
+        let plan = app.plan();
+        let ceilings = app.removal_limit(&plan, cx).expect("confirmed");
+        assert_eq!(ceilings.of("usb").percent(), 30);
+        assert_eq!(ceilings.of("boot").percent(), 10);
+        assert_eq!(ceilings.of("elsewhere").percent(), 5);
+    });
+}
+
+/// An agent's confirmed removal is held to the agent limit on the worker,
+/// as its preview was. With the window's limit Off, the person's removal
+/// would be held only to 100%; an agent's that grew past 5% since its
+/// preview must still be refused, and nothing removed.
+#[cfg(any(unix, windows))]
+#[gpui_kit::test]
+fn an_agent_removal_stays_at_the_agent_limit_with_the_windows_off(
+    cx: &mut TestAppContext,
+) {
+    use disktree_link::{
+        ConfirmedRemoval, MarkRequest, RemovalChoice, Request, Response,
+    };
+
+    cx.update(init);
+    let temp = fixture();
+    let root = temp.path().to_path_buf();
+    let settings = tempfile::TempDir::new().expect("settings");
+    crate::safety::save_limit(Some(settings.path()), None).expect("off");
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, _| {
+        app.removal_settings_dir = Some(settings.path().to_path_buf());
+        app.safety_policy.replace(None);
+    });
+    draw(cx);
+
+    let mut link = Some(link_agent(&view, temp.path(), cx));
+    let mut ask = |cx: &mut Window, request: Request| -> Response {
+        ask_over(&view, &mut link, cx, request)
+    };
+    let hello = ask(
+        cx,
+        Request::Hello {
+            client: "Claude Code".into(),
+            version: disktree_link::VERSION,
+        },
+    );
+    assert!(matches!(hello, Response::State(_)), "{hello:?}");
+    ask(
+        cx,
+        Request::Mark {
+            root: root.clone(),
+            targets: vec![MarkRequest {
+                path: root.join("junk"),
+                bytes: 0,
+                is_dir: true,
+            }],
+        },
+    );
+
+    // The preview is checked at the agent limit, Off or not.
+    let preview = await_removal_preview(
+        &mut ask,
+        cx,
+        &Request::PrepareRemoval {
+            mode: RemovalChoice::Permanent,
+        },
+    );
+    assert_eq!(preview.limit_percent, 5);
+
+    // Since the preview, `junk` has become 30% of its disk: a pretend
+    // 1 MB disk stands in for growth the fixture cannot make on a real
+    // one. The person's removal would be allowed, the agent's is not.
+    update(&view, cx, |app, cx| {
+        app.disk_probe = |_| {
+            Ok(crate::mark_guard::Disk {
+                key: "disk".into(),
+                capacity: 1_000_000,
+                name: "/".into(),
+            })
+        };
+        let plan = app.plan();
+        let person = app.removal_limit(&plan, cx).expect("Off allows it");
+        assert_eq!(person.of("disk").percent(), 100);
+        let refused = app.agent_removal_limit(&plan).expect_err("held to 5%");
+        assert!(refused.contains("5% per-operation"), "{refused}");
+    });
+    let removed = ask(
+        cx,
+        Request::Remove(ConfirmedRemoval {
+            rescan: false,
+            preview_id: preview.preview_id.clone(),
+            mode: preview.mode,
+            paths: preview.paths.clone(),
+            confirmation: preview.mode.confirmation().into(),
+        }),
+    );
+    assert!(
+        matches!(
+            removed,
+            Response::Error { ref message } if message.contains("did not start")
+        ),
+        "{removed:?}"
+    );
+    read(&view, cx, |app| {
+        assert_ne!(app.screen, Screen::Running);
+        assert!(app.run.is_none());
+    });
+    assert!(root.join("junk/blob.bin").exists(), "nothing removed");
 }
 
 /// Settings › Safety relaxes the window, never an agent: Off gives the

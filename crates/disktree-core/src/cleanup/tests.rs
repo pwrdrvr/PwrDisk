@@ -507,7 +507,7 @@ fn owner_failure_reports_error_without_deletion_and_success_does_not_mean_root_r
         );
         let events = collect(&crate::removal::spawn_cleanup(
             prepared,
-            crate::removal_limit::Limit::default(),
+            crate::removal_limit::Limit::default().into(),
         ));
         let outcome = events
             .iter()
@@ -544,6 +544,53 @@ fn owner_failure_reports_error_without_deletion_and_success_does_not_mean_root_r
 
 #[cfg(unix)]
 #[test]
+fn owner_worker_applies_confirmed_ceilings_only_to_the_named_volume() {
+    use crate::removal::{RemovalEvent, spawn_cleanup};
+    use crate::removal_limit::{Ceilings, Limit, volume_of};
+
+    let _execution = EXECUTION.lock().expect("fixture serialization");
+    let fixture = executable_fixture();
+    let cache = fixture.env.home.join(".cache/uv");
+    let mut prepared = prepare_with(
+        &[target(&cache)],
+        &fixture.root,
+        fixture.env.clone(),
+        &mut process::SystemProbe,
+    )
+    .expect("fixture preview");
+    let (volume, capacity) = volume_of(&cache).expect("fixture volume");
+    // Charge a share just past 5% without allocating gigabytes of data.
+    // Worker measurement must preserve this conservative preview charge.
+    prepared.plan.targets[0].bytes = capacity / 20 + 1;
+    let other = Ceilings::from(Limit::default()).raise(
+        format!("{volume}-other-fixture"),
+        Limit::new(100).expect("100%"),
+    );
+    let refused = collect(&spawn_cleanup(prepared.clone(), other));
+    assert!(refused.iter().any(|event| matches!(event,
+        RemovalEvent::Item { outcome: Err(reason), .. }
+            if reason.contains("5% per-operation"))));
+    assert!(!fixture.env.home.join("invocation").exists());
+
+    let approved = Ceilings::from(Limit::default())
+        .raise(volume, Limit::new(10).expect("10%"));
+    let completed = collect(&spawn_cleanup(prepared, approved));
+    assert!(completed.iter().any(|event| matches!(
+        event,
+        RemovalEvent::Item {
+            outcome: Ok(()),
+            ..
+        }
+    )));
+    assert!(fixture.env.home.join("invocation").exists());
+    assert!(
+        cache.join("payload").exists(),
+        "mock never deletes the cache"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn cancellation_stops_the_owner_process_group_without_raw_deletion() {
     let _execution = EXECUTION.lock().expect("fixture serialization");
     let mut fixture = executable_fixture();
@@ -561,7 +608,7 @@ fn cancellation_stops_the_owner_process_group_without_raw_deletion() {
     .expect("preview");
     let handle = crate::removal::spawn_cleanup(
         prepared,
-        crate::removal_limit::Limit::default(),
+        crate::removal_limit::Limit::default().into(),
     );
     let start = Instant::now();
     while !fixture.env.home.join("invocation").exists() {
@@ -594,7 +641,7 @@ fn changed_executable_and_active_owner_revoke_execution() {
         .expect("fixture active owner");
     std::thread::sleep(Duration::from_millis(100));
     let active_check =
-        prepared.preflight(crate::removal_limit::Limit::default());
+        prepared.preflight(&crate::removal_limit::Limit::default().into());
     active.kill().expect("stop fixture");
     active.wait().expect("wait fixture");
     assert!(active_check.expect_err("active owner").contains("active"));
@@ -602,7 +649,7 @@ fn changed_executable_and_active_owner_revoke_execution() {
         .expect("replace executable");
     assert!(
         prepared
-            .preflight(crate::removal_limit::Limit::default())
+            .preflight(&crate::removal_limit::Limit::default().into())
             .expect_err("changed executable")
             .contains("changed")
     );
@@ -657,7 +704,7 @@ fn changed_configuration_and_capacity_failure_do_not_invoke_cleanup() {
     prepared.plan.targets[0].bytes = u64::MAX;
     assert!(
         prepared
-            .preflight(crate::removal_limit::Limit::default())
+            .preflight(&crate::removal_limit::Limit::default().into())
             .is_err(),
         "the capacity limit covers the entire actual scope"
     );
@@ -670,7 +717,7 @@ fn changed_configuration_and_capacity_failure_do_not_invoke_cleanup() {
     .expect("changed config");
     assert!(
         prepared
-            .preflight(crate::removal_limit::Limit::default())
+            .preflight(&crate::removal_limit::Limit::default().into())
             .expect_err("changed root")
             .contains("changed")
     );

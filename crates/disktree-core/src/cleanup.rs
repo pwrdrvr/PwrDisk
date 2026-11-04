@@ -627,10 +627,10 @@ fn supported_version(owner: Owner, output: &str) -> Result<(), String> {
 
 impl Prepared {
     /// Re-probe against the captured environment before any write, then
-    /// recheck the complete actual scopes and configured capacity limit.
+    /// recheck the complete actual scopes and confirmed per-volume ceilings.
     pub(crate) fn preflight(
         &self,
-        limit: crate::removal_limit::Limit,
+        limit: &crate::removal_limit::Ceilings,
     ) -> Result<(), String> {
         for (operation, identity) in
             self.operations.iter().zip(&self.identities)
