@@ -164,7 +164,8 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
    root, the home directory, any directory holding it, and symlink targets are
    refused. So are the profiles folder and every directory directly in it:
    on Windows the one Windows reports (`FOLDERID_UserProfiles`, usually
-   `C:\Users`), on macOS `/Users`. What is inside a profile stays
+   `C:\Users`), on macOS `/Users`, on Linux `/home` (and its real path
+   when it is a link). What is inside a profile stays
    removable. The window asks the guards before a mark is made
    (`removal::refusal`), so a refused path is never offered for marking.
 5. **Marks are keyed by absolute path**, not tree position, so they survive a
@@ -281,13 +282,14 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
 | which display a new window opens on | `crates/disktree-app/src/placement.rs` |
 | the menu bar, its shortcuts, the strip's menu off macOS | `crates/disktree-app/src/app_menu.rs`, the dropdown in `views.rs` |
 | Help's rows, Copy Diagnostics Info | `crates/disktree-app/src/help.rs`, the report in `diagnostics.rs` |
-| Settings (Updates, Diagnostics, About) | `crates/disktree-app/src/settings.rs` |
+| Settings (Updates, Safety, Agents (MCP), Diagnostics, About) | `crates/disktree-app/src/settings.rs` |
 | Changelog, License, Third-Party Notices, Logs windows | `doc_window.rs`, `logs_window.rs`, framed by `aux_window.rs` |
 | what goes in `main.log`, and where it lives | `crates/disktree-app/src/diag_log.rs` — never a scanned path |
 | `THIRD_PARTY_LICENSES` | `cargo xtask licenses` (cargo-about), then commit it; non-crate parts in `licenses/bundled.txt` |
 | the macOS icon, in any of its looks | `packaging/macos/` — the SVGs and `AppIcon.icon`, then `make dock-icons` |
 | checking, downloading and applying updates | `crates/disktree-app/src/updater.rs` |
-| what the window says about updates: the toasts, the strip's ready chip | `crates/disktree-app/src/toasts.rs`, the chip in `views.rs` |
+| what the window says about updates, and its notices: the toasts, the strip's ready chip | `crates/disktree-app/src/toasts.rs`, the chip in `views.rs` |
+| the MCP connect commands and the connected agent's status line | `crates/disktree-app/src/agent.rs` |
 | which release a release channel picks | `crates/disktree-app/src/update_channel.rs` |
 | release packaging, the DMG, `vpk` | `scripts/release/`, `xtask/src/bundle.rs`, `.github/workflows/release.yml` |
 | what an agent can ask of the window, and the answer | `crates/disktree-link/src/lib.rs` (messages), `crates/disktree-app/src/agent.rs` (handling) |
