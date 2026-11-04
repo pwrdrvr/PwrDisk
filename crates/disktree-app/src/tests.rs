@@ -9776,7 +9776,7 @@ fn raw_inspection_prepares_off_thread_and_execution_rechecks(
 fn cache_exports_keep_marks_and_refuse_raw_scripts(cx: &mut TestAppContext) {
     cx.update(init);
     let temp = fixture();
-    let selected = temp.path().join(".cache/blob.bin");
+    let selected = temp.path().join(".cache").join("blob.bin");
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
         let cache = child_crumbs(app, &[], ".cache");
