@@ -528,6 +528,20 @@ fn possible_vm_file(name: &str) -> bool {
 #[derive(Debug, Default)]
 pub(crate) struct Roots(FxHashMap<u32, Detection>);
 
+/// Enough files to amortize another parallel fold below the fixed levels.
+const PARALLEL_FILES: u64 = 32 * 1024;
+
+fn has_parallel_work(node: Node<'_>) -> bool {
+    if node.files < PARALLEL_FILES {
+        return false;
+    }
+    let largest = node.children().iter().map(|child| child.files).max();
+    // A whole-disk root can be many ancestors above its largest subtree.
+    // Keep splitting there, but leave deep chains on the same stack until
+    // a batch of work beside the largest child can use another worker.
+    node.files.saturating_sub(largest.unwrap_or(0)) >= PARALLEL_FILES
+}
+
 impl Roots {
     pub fn find(tree: &Tree, path: &Path, style: PathStyle) -> Self {
         let names = style.names(path);
@@ -561,7 +575,7 @@ impl Roots {
         roots: &mut Self,
         depth: usize,
     ) {
-        if depth < crate::tree::PARALLEL_LEVELS {
+        if depth < crate::tree::PARALLEL_LEVELS || has_parallel_work(node) {
             // Each subtree inherits the same path and exclusion state.
             // Only the small override maps merge; node ids are disjoint.
             let found = node
@@ -1104,6 +1118,30 @@ mod tests {
         assert_eq!(detection.kind, Artifact::RustTarget);
         assert_eq!(detection.disposition, Disposition::Suggested);
         assert_eq!(root.child_named(".worktrees").unwrap().reclaim, None);
+    }
+
+    #[test]
+    fn large_deep_trees_split_only_when_there_is_work_beside_the_chain() {
+        // Even after the largest leaf, a full batch remains to split.
+        let files = usize::try_from(PARALLEL_FILES).unwrap() + 1;
+        let branch = dir(
+            "branch",
+            ["left", "right"]
+                .into_iter()
+                .map(|name| {
+                    dir(
+                        name,
+                        (0..files).map(|i| file(&format!("f{i}"))).collect(),
+                    )
+                })
+                .collect(),
+        );
+        let mut tree = Tree::from(dir("chain", vec![branch]));
+        crate::tree::aggregate(&mut tree, crate::tree::Metric::Bytes);
+        assert!(!has_parallel_work(tree.root()));
+        let branch = tree.root().child_named("branch").unwrap();
+        assert!(has_parallel_work(branch));
+        assert!(has_parallel_work(branch.child_named("left").unwrap()));
     }
 
     #[test]
