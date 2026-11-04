@@ -307,7 +307,7 @@ pub fn root(
         root = root.child(volumes_dialog(app, window, cx));
     }
     if app.confirm_open {
-        root = root.child(delete_dialog(app, cx));
+        root = root.child(delete_dialog(app, window, cx));
     }
     root
 }
@@ -838,22 +838,74 @@ fn overlay_footer(
 /// The one question disktree asks: a permanent deletion cannot be undone, so
 /// it is an alert dialog that names what goes and what comes back. The trash is
 /// reversible and needs no dialog.
+/// Names both intents and their counts, so the button says what it does.
+/// Review's subtitle once every marked path has a decision.
+fn cleanup_header(
+    app: &Disktree,
+    approved: &disktree_core::cleanup::Approved,
+    plan: &Plan,
+) -> String {
+    let commands = match approved.owner_steps() {
+        1 => "1 command".to_string(),
+        count => format!("{count} commands"),
+    };
+    format!(
+        "{} marked \u{b7} {commands} \u{b7} {} to delete \u{b7} {} skipped \u{b7} {} scope allocation; savings unmeasured",
+        app.marks.len(),
+        approved.file_steps(),
+        approved.skipped.len(),
+        human_bytes(plan.bytes())
+    )
+}
+
+fn cleanup_commit_label(commands: usize, files: usize) -> String {
+    let plural = |count: usize, one: &str, many: &str| {
+        format!("{count} {}", if count == 1 { one } else { many })
+    };
+    match (commands, files) {
+        (0, files) => format!("Delete {}", plural(files, "path", "paths")),
+        (commands, 0) => {
+            format!("Run {}", plural(commands, "command", "commands"))
+        }
+        (commands, files) => format!(
+            "Run {} \u{b7} delete {files}",
+            plural(commands, "command", "commands")
+        ),
+    }
+}
+
 fn delete_dialog(
     app: &Disktree,
+    window: &Window,
     cx: &mut Context<'_, Disktree>,
 ) -> impl IntoElement {
     let plan = app.plan();
-    let title = match plan.targets.as_slice() {
-        [only] => format!(
-            "Delete \u{201c}{}\u{201d} permanently?",
-            short_name(&only.path, app.path_style())
-        ),
-        targets => format!("Delete {} items permanently?", targets.len()),
+    let approved = (app.removal_mode == RemovalMode::OwnerCleanup)
+        .then(|| app.cleanup_approved().ok())
+        .flatten();
+    let title = if let Some(approved) = &approved {
+        format!("Clean up {} items?", approved.steps.len())
+    } else if app.removal_mode == RemovalMode::OwnerCleanup {
+        "Check owners and choose actions first".to_string()
+    } else {
+        match plan.targets.as_slice() {
+            [only] => format!(
+                "Delete \u{201c}{}\u{201d} permanently?",
+                short_name(&only.path, app.path_style())
+            ),
+            targets => format!("Delete {} items permanently?", targets.len()),
+        }
     };
-    let body = format!(
-        "Estimated to free ≈ {}. Shared blocks and snapshots may retain space. Deleted files can\u{2019}t be recovered; move them to the trash if you might need them again.",
-        savings(plan.reclaimable_bytes(), plan.possible_bytes())
-    );
+    let body = if let Some(approved) = &approved {
+        approved.description()
+    } else if app.removal_mode == RemovalMode::OwnerCleanup {
+        app.cleanup_description()
+    } else {
+        format!(
+            "Estimated to free ≈ {}. Shared blocks and snapshots may retain space. Deleted files can\u{2019}t be recovered; move them to the trash if you might need them again.",
+            savings(plan.reclaimable_bytes(), plan.possible_bytes())
+        )
+    };
     let body = if app.rescan_after_removal {
         format!("{body} PwrDisk rescans afterwards.")
     } else {
@@ -874,10 +926,17 @@ fn delete_dialog(
                     cx,
                 )
             });
-    let delete_label = if app.rescan_after_removal {
-        "Delete & rescan"
+    // Deleting files directly is its own consent: its tick is required
+    // even when the owner commands alone would be confirmable.
+    let files =
+        approved.map_or(0, disktree_core::cleanup::Approved::file_steps);
+    let ticked = app.cleanup_files_ticked();
+    let delete_label = if let Some(approved) = &approved {
+        cleanup_commit_label(approved.owner_steps(), files)
+    } else if app.rescan_after_removal {
+        "Delete & rescan".to_string()
     } else {
-        "Delete"
+        "Delete".to_string()
     };
     let delete_button = dialog_button(
         "delete-confirm",
@@ -886,6 +945,10 @@ fn delete_dialog(
         cx,
     )
     .debug_selector(|| "delete-confirm".into())
+    .semantic_disabled(
+        app.removal_mode == RemovalMode::OwnerCleanup
+            && (approved.is_none() || (files > 0 && !ticked)),
+    )
     .map(|button| {
         modal_action(
             button,
@@ -896,9 +959,39 @@ fn delete_dialog(
             cx,
         )
     });
+    let owner_cleanup = app.removal_mode == RemovalMode::OwnerCleanup;
+    let description = div()
+        .id("cleanup-confirmation-scroll")
+        .min_w_0()
+        .max_h(Rems(
+            window.viewport_size().height.as_f32() / app.rem
+                * size::CLEANUP_PREVIEW_HEIGHT_FRACTION,
+        ))
+        .overflow_scroll()
+        .child(dialog_description(body.clone(), cx));
+    let tick = (files > 0).then(|| {
+        let entity = cx.entity().downgrade();
+        checkbox(
+            "cleanup-files-tick",
+            "Delete these files myself, without their owner\u{2019}s command",
+            if ticked {
+                CheckboxState::Checked
+            } else {
+                CheckboxState::Unchecked
+            },
+            cx,
+        )
+        .debug_selector(|| "cleanup-files-tick".into())
+        .tab_stop(true)
+        .on_change(move |_, _, _, cx| {
+            let _ = entity.update(cx, Disktree::tick_cleanup_files);
+        })
+    });
     let popup = dialog_popup(cx)
+        .when(owner_cleanup, |popup| popup.w(size::CLEANUP_PREVIEW_WIDTH))
         .child(dialog_title(title.clone(), cx))
-        .child(dialog_description(body.clone(), cx))
+        .child(description)
+        .children(tick)
         .child(dialog_footer(
             [],
             Some(cancel_button.into_any_element()),
@@ -4659,7 +4752,11 @@ fn disk_section(
     };
     // The meter measures this volume, so it projects only the marks whose
     // bytes come back to it; the rest is said, never added.
-    let reclaiming = plan.reclaim();
+    let reclaiming = if app.removal_mode == RemovalMode::OwnerCleanup {
+        0
+    } else {
+        plan.reclaim()
+    };
     let after = space_info.after_removing(reclaiming);
     let highlight = palette::highlight(theme);
     let (number, unit) =
@@ -5540,6 +5637,9 @@ fn review(
             &theme,
             cx,
         ));
+        list = list.children(crate::cleanup_view::proposal(
+            app, index, &item.path, &theme, window, cx,
+        ));
     }
     if items.len() > LIST_LIMIT {
         list = list.child(
@@ -5593,17 +5693,21 @@ fn review(
         .min_h_0()
         .child(screen_header(
             "Review",
-            &format!(
-                "{} marked \u{00b7} ≈ {} to free",
-                app.marks.len(),
+            &if app.removal_mode == RemovalMode::OwnerCleanup {
+                match app.cleanup_approved() {
+                    Ok(approved) => cleanup_header(app, approved, &plan),
+                    Err(_) => format!("{} marked \u{00b7} cache cleanup: check owners, then choose for each path", app.marks.len()),
+                }
+            } else { format!(
+                "{} marked \u{00b7} ≈ {} to free", app.marks.len(),
                 savings(plan.reclaimable_bytes(), plan.possible_bytes())
-            ),
+            ) },
             &theme,
             cx,
         ))
         .child(crate::semantics::text("review-readable-summary", format!("Review: {} marked paths; {} included; {} blocked; {} covered by another mark. Mode: {}. Estimated reclaimable: {}. Marking does not authorize removal.",
                 items.len(), plan.targets.len(), plan.blocked.len(), plan.covered.len(),
-                if app.removal_mode == RemovalMode::Trash { "Move to trash; recoverable until emptied" } else { "Permanent deletion; not recoverable" },
+                match app.removal_mode { RemovalMode::Trash => "Move to trash; recoverable until emptied", RemovalMode::Permanent => "Permanent deletion; not recoverable", RemovalMode::OwnerCleanup => "Cache cleanup, decided per path: skip, owner command or delete files; scope allocation is an upper bound, savings are unmeasured" },
                 savings(plan.reclaimable_bytes(), plan.possible_bytes()))))
         .child(
             // The toasts sit over the list's lower left, outside the
@@ -5807,7 +5911,11 @@ fn review_summary(
 ) -> Stateful<Div> {
     // What comes back to the volume on screen, which is all its meter can
     // project; the totals below say what the removal does in full.
-    let reclaiming = plan.reclaim();
+    let reclaiming = if app.removal_mode == RemovalMode::OwnerCleanup {
+        0
+    } else {
+        plan.reclaim()
+    };
     // The part of the saving that lands elsewhere, said rather than added to
     // this volume's projection, so the two numbers cannot be confused.
     let left_out = not_counted(plan)
@@ -5819,17 +5927,23 @@ fn review_summary(
     let mode = button_group(
         "removal-mode",
         vec![
-            ChoiceItem::new("trash", "Move to trash").disabled(!trash),
-            ChoiceItem::new("permanent", "Delete permanently"),
+            ChoiceItem::new("trash", "Trash").disabled(!trash),
+            ChoiceItem::new("permanent", "Permanent"),
+            ChoiceItem::new("owner", "Cache cleanup"),
         ],
-        Some(usize::from(app.removal_mode == RemovalMode::Permanent)),
+        Some(match app.removal_mode {
+            RemovalMode::Trash => 0,
+            RemovalMode::Permanent => 1,
+            RemovalMode::OwnerCleanup => 2,
+        }),
         move |index, _, cx| {
             let _ = entity.update(cx, |this, cx| {
-                this.removal_mode = if index == 0 {
-                    RemovalMode::Trash
-                } else {
-                    RemovalMode::Permanent
+                this.removal_mode = match index {
+                    0 => RemovalMode::Trash,
+                    1 => RemovalMode::Permanent,
+                    _ => RemovalMode::OwnerCleanup,
                 };
+                this.confirm_open = false;
                 cx.notify();
             });
         },
@@ -5850,6 +5964,9 @@ fn review_summary(
             RemovalMode::Permanent => {
                 "Deleted at once, like rm -rf. Nothing is recoverable."
                     .to_string()
+            }
+            RemovalMode::OwnerCleanup => {
+                crate::cleanup_view::EXPLANATION.into()
             }
         }
     };
@@ -5921,7 +6038,9 @@ fn review_summary(
                     cx,
                 ))
                 .child(widgets::row(
-                    if app.removal_mode == RemovalMode::Trash {
+                    if app.removal_mode == RemovalMode::OwnerCleanup {
+                        "Scope allocation (upper bound)"
+                    } else if app.removal_mode == RemovalMode::Trash {
                         "After emptying trash (est.)"
                     } else {
                         "Estimated space freed"
@@ -5932,6 +6051,23 @@ fn review_summary(
                 .children(left_out),
         );
 
+    if app.remote.is_none() {
+        let hint = app.marks.items().iter().find_map(|target| {
+            disktree_core::cleanup::inspection_reason(&target.path)
+        });
+        if let Some(hint) = hint {
+            panel = panel.child(
+                div()
+                    .text_size(text::CAPTION)
+                    .text_color(theme.warning)
+                    .child(hint),
+            );
+        }
+    }
+    if app.removal_mode == RemovalMode::OwnerCleanup && app.remote.is_none() {
+        panel =
+            panel.child(crate::cleanup_view::summary(app, theme, window, cx));
+    }
     if cfg!(target_os = "macos") && app.remote.is_none() {
         panel = panel.child(div().text_size(text::CAPTION)
             .text_color(theme.secondary)
@@ -6122,6 +6258,7 @@ fn over_limit_gate(
             let verb = match app.removal_mode {
                 RemovalMode::Trash => "Move",
                 RemovalMode::Permanent => "Delete",
+                RemovalMode::OwnerCleanup => "Clean",
             };
             let shares = crate::safety::series(
                 gate.percents().iter().map(|percent| format!("{percent}%")),
@@ -6349,6 +6486,24 @@ fn review_actions(
                 format!("Delete {count} {noun}\u{2026}"),
                 ButtonVariant::Danger,
             ),
+            RemovalMode::OwnerCleanup => (
+                match app.cleanup_approved() {
+                    Ok(approved) => format!(
+                        "Clean up {} {}\u{2026}",
+                        approved.steps.len(),
+                        if approved.steps.len() == 1 {
+                            "item"
+                        } else {
+                            "items"
+                        }
+                    ),
+                    Err(_) if app.cleanup_ready().is_ok() => {
+                        "Choose actions first".into()
+                    }
+                    Err(_) => "Check owners".into(),
+                },
+                ButtonVariant::Danger,
+            ),
         };
         button("commit", label, variant, cx)
             .debug_selector(|| "commit".into())
@@ -6362,20 +6517,23 @@ fn review_actions(
     // The same removal, then a full rescan, for exact figures afterwards.
     // Secondary: a rescan of a whole disk takes minutes, and the tree is
     // already right without one.
-    let rescan = app.remote.is_none().then(|| {
-        let label = match app.removal_mode {
-            RemovalMode::Trash => "Move & rescan",
-            RemovalMode::Permanent => "Delete & rescan\u{2026}",
-        };
-        button("commit-rescan", label, ButtonVariant::Outline, cx)
-            .debug_selector(|| "commit-rescan".into())
-            .semantic_disabled(unavailable)
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.commit(true, cx);
-                this.apply_focus(window, cx);
-            }))
-            .into_any_element()
-    });
+    let rescan = (app.remote.is_none()
+        && app.removal_mode != RemovalMode::OwnerCleanup)
+        .then(|| {
+            let label = match app.removal_mode {
+                RemovalMode::Trash => "Move & rescan",
+                RemovalMode::Permanent => "Delete & rescan\u{2026}",
+                RemovalMode::OwnerCleanup => "Clean & rescan\u{2026}",
+            };
+            button("commit-rescan", label, ButtonVariant::Outline, cx)
+                .debug_selector(|| "commit-rescan".into())
+                .semantic_disabled(unavailable)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.commit(true, cx);
+                    this.apply_focus(window, cx);
+                }))
+                .into_any_element()
+        });
     let trailing = div()
         .flex()
         .flex_row()
@@ -6400,6 +6558,7 @@ fn review_hints(app: &Disktree, theme: &Theme, cx: &App) -> Div {
     let commit = match app.removal_mode {
         RemovalMode::Trash => "move to trash",
         RemovalMode::Permanent => "delete\u{2026}",
+        RemovalMode::OwnerCleanup => "cache cleanup\u{2026}",
     };
     let local = app.remote.is_none();
     div()
@@ -6530,6 +6689,7 @@ pub fn ledger_table(
         let mode = match cohort.mode {
             RemovalMode::Trash => "trash",
             RemovalMode::Permanent => "permanent",
+            RemovalMode::OwnerCleanup => "cache cleanup",
         };
         let latest = index + 1 == cohorts.len();
         table = table.child(row(

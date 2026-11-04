@@ -18,6 +18,8 @@ mod appearance;
 mod aux_window;
 mod build_info;
 mod chrome;
+mod cleanup;
+mod cleanup_view;
 mod diag_log;
 mod diagnostics;
 mod doc_window;

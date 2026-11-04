@@ -49,6 +49,8 @@ pub enum RemovalMode {
     Permanent,
     /// Move to the desktop trash so the removal can be undone.
     Trash,
+    /// Execute an allowlisted owner command for its explicitly previewed scope.
+    OwnerCleanup,
 }
 
 impl RemovalMode {
@@ -56,6 +58,7 @@ impl RemovalMode {
         match self {
             Self::Permanent => "Delete permanently",
             Self::Trash => "Move to trash",
+            Self::OwnerCleanup => "Owner cleanup",
         }
     }
 
@@ -63,6 +66,7 @@ impl RemovalMode {
         match self {
             Self::Permanent => "rm -rf: unrecoverable",
             Self::Trash => "recoverable until the trash is emptied",
+            Self::OwnerCleanup => "owner-managed; no Trash recovery",
         }
     }
 }
@@ -1207,6 +1211,7 @@ fn home_trash_dir() -> Option<PathBuf> {
 /// What a running removal reports.
 #[derive(Clone, Debug)]
 pub enum RemovalEvent {
+    Cleanup(crate::cleanup::Report),
     Start {
         total: usize,
     },
@@ -1264,12 +1269,56 @@ fn spawn_checked(
     mode: RemovalMode,
     limit: Option<crate::removal_limit::Ceilings>,
 ) -> RemovalHandle {
-    start(plan, mode, limit, |work| {
+    start(plan, mode, limit, None, |work| {
         thread::Builder::new()
             .name("disktree-remove".into())
             .spawn(work)
             .map(drop)
     })
+}
+
+/// The confirmed cleanup decisions travel intact to the removal worker,
+/// which runs each step on its own and reports each one.
+pub fn spawn_cleanup(
+    approved: crate::cleanup::Approved,
+    limit: crate::removal_limit::Ceilings,
+) -> RemovalHandle {
+    start(
+        approved.plan.clone(),
+        RemovalMode::OwnerCleanup,
+        Some(limit),
+        Some(approved),
+        |work| {
+            thread::Builder::new()
+                .name("disktree-cleanup".into())
+                .spawn(work)
+                .map(drop)
+        },
+    )
+}
+
+/// Trash is looked for only when something will go there: a Trash run, or
+/// a cache cleanup where the person chose to delete files by Trash.
+pub(crate) fn backend_for(
+    mode: RemovalMode,
+    cleanup: Option<&crate::cleanup::Approved>,
+) -> TrashBackend {
+    let trash_steps = cleanup.is_some_and(|approved| {
+        approved.steps.iter().any(|step| {
+            matches!(
+                step,
+                crate::cleanup::Step::Files {
+                    action: crate::cleanup::Action::Trash,
+                    ..
+                }
+            )
+        })
+    });
+    if mode == RemovalMode::Trash || trash_steps {
+        detect_trash_backend()
+    } else {
+        TrashBackend::Unavailable
+    }
 }
 
 /// The work a removal thread runs, boxed so a test can hand it to a
@@ -1282,16 +1331,13 @@ fn start(
     plan: Plan,
     mode: RemovalMode,
     limit: Option<crate::removal_limit::Ceilings>,
+    cleanup: Option<crate::cleanup::Approved>,
     spawn: impl FnOnce(Work) -> io::Result<()>,
 ) -> RemovalHandle {
     let (sender, events) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
-    let backend = if mode == RemovalMode::Trash {
-        detect_trash_backend()
-    } else {
-        TrashBackend::Unavailable
-    };
+    let backend = backend_for(mode, cleanup.as_ref());
     // Shared, not moved: a spawn that fails drops the work unrun, and the
     // targets are still needed to report that each one failed.
     let plan = Arc::new(plan);
@@ -1300,7 +1346,48 @@ fn start(
         let plan = Arc::clone(&plan);
         let sender = sender.clone();
         move || {
-            if let Some(limit) = limit {
+            // Every path has a result, the skipped ones included.
+            if let Some(approved) = &cleanup {
+                for report in &approved.skipped {
+                    let _ = sender.send(RemovalEvent::Cleanup(report.clone()));
+                }
+            }
+            // A cleanup admits each step on its own measurement; only the
+            // capacity ceiling refuses the whole run.
+            let checked = if mode == RemovalMode::OwnerCleanup {
+                cleanup
+                    .as_ref()
+                    .ok_or_else(|| {
+                        "Cache cleanup requires approved decisions".to_string()
+                    })
+                    .and_then(|approved| {
+                        let default = crate::removal_limit::Ceilings::default();
+                        approved.admit(limit.as_ref().unwrap_or(&default))
+                    })
+            } else {
+                crate::cleanup::check_raw(&plan.targets).map(|()| vec![])
+            };
+            let refusals = match checked {
+                Ok(refusals) => refusals,
+                Err(reason) => {
+                    if let Some(approved) = &cleanup {
+                        let issue = crate::cleanup::Issue::new(
+                            crate::cleanup::Problem::OverLimit,
+                            reason.clone(),
+                        );
+                        for index in 0..plan.targets.len() {
+                            let _ = sender.send(RemovalEvent::Cleanup(
+                                approved.report(index, None, None, Err(&issue)),
+                            ));
+                        }
+                    }
+                    fail_all(&plan.targets, &reason, &sender);
+                    return;
+                }
+            };
+            if let Some(limit) =
+                limit.filter(|_| mode != RemovalMode::OwnerCleanup)
+            {
                 let fresh = self::plan(&plan.targets, &plan.root);
                 let checked = if fresh.blocked.is_empty() {
                     crate::removal_limit::measured(&plan.targets)
@@ -1313,7 +1400,16 @@ fn start(
                     return;
                 }
             }
-            run(&plan, mode, backend, &worker_cancel, &sender);
+            run(
+                &plan,
+                mode,
+                backend,
+                cleanup
+                    .as_ref()
+                    .map(|approved| (approved, refusals.as_slice())),
+                &worker_cancel,
+                &sender,
+            );
         }
     }));
     // Without `Done` the app would wait on the Removing screen for good:
@@ -1357,9 +1453,14 @@ fn run(
     plan: &Plan,
     mode: RemovalMode,
     backend: TrashBackend,
+    cleanup: Option<(
+        &crate::cleanup::Approved,
+        &[Option<crate::cleanup::Issue>],
+    )>,
     cancel: &AtomicBool,
     sender: &mpsc::Sender<RemovalEvent>,
 ) {
+    use crate::cleanup::{Action, Issue, Problem};
     let _ = sender.send(RemovalEvent::Start {
         total: plan.targets.len(),
     });
@@ -1376,8 +1477,16 @@ fn run(
     let home = std::env::home_dir().map(|home| Home::of(&home));
     let real_root = fs::canonicalize(&plan.root).ok();
 
-    for target in &plan.targets {
+    for (index, target) in plan.targets.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
+            // Stopped: what was not started says so, step by step.
+            if let Some((approved, _)) = cleanup {
+                for rest in index..plan.targets.len() {
+                    let _ = sender.send(RemovalEvent::Cleanup(
+                        approved.not_reached(rest),
+                    ));
+                }
+            }
             break;
         }
         // The /run/media exception must still hold when removal starts;
@@ -1404,6 +1513,16 @@ fn run(
                     home.as_ref(),
                 )
             });
+        // Sample the scope's own volume, including when it differs from
+        // the scan's meter. Its parent remains after a cache root is cleared.
+        let sample = || {
+            target
+                .path
+                .parent()
+                .and_then(|path| crate::space::space_info(path).ok())
+                .map(|space| space.available)
+        };
+        let before = (mode == RemovalMode::OwnerCleanup).then(sample).flatten();
         let outcome = if let Some(reason) = reason {
             Err(io::Error::other(reason))
         } else {
@@ -1412,7 +1531,52 @@ fn run(
                     remove_permanently(&target.path, &plan.root)
                 }
                 RemovalMode::Trash => move_to_trash(&target.path, backend),
+                RemovalMode::OwnerCleanup => Ok(()),
             }
+        };
+        // A cleanup step: its own refusal, checks and action, with a typed
+        // reason. One step's failure never stops or changes the next.
+        let outcome = if let Some((approved, refusals)) = cleanup {
+            let step = outcome
+                .map_err(|error| {
+                    Issue::new(Problem::Refused, error.to_string())
+                })
+                .and_then(|()| {
+                    refusals.get(index).cloned().flatten().map_or(Ok(()), Err)
+                })
+                .and_then(|()| approved.preflight(index))
+                .and_then(|()| match approved.steps.get(index) {
+                    Some(crate::cleanup::Step::Owner(operation)) => {
+                        approved.prepared.execute(*operation, cancel)
+                    }
+                    Some(crate::cleanup::Step::Files { action, .. }) => {
+                        match action {
+                            Action::Trash => {
+                                move_to_trash(&target.path, backend)
+                            }
+                            _ => remove_permanently(&target.path, &plan.root),
+                        }
+                        .map_err(|error| {
+                            Issue::new(
+                                Problem::RemovalFailed,
+                                error.to_string(),
+                            )
+                        })
+                    }
+                    None => Err(Issue::new(
+                        Problem::Changed,
+                        "Missing cleanup step",
+                    )),
+                });
+            let _ = sender.send(RemovalEvent::Cleanup(approved.report(
+                index,
+                before,
+                sample(),
+                step.as_ref().copied(),
+            )));
+            step.map_err(|issue| io::Error::other(issue.description()))
+        } else {
+            outcome
         };
         if outcome.is_ok() {
             removed += 1;
@@ -2915,7 +3079,7 @@ mod tests {
 
         // The spawner refuses the work as a process out of threads would,
         // so every event below was sent before `start` returned.
-        let handle = start(plan, RemovalMode::Permanent, None, |_work| {
+        let handle = start(plan, RemovalMode::Permanent, None, None, |_work| {
             Err(io::Error::other("out of threads"))
         });
         let events: Vec<_> = std::iter::from_fn(|| handle.poll()).collect();

@@ -5679,6 +5679,33 @@ fn the_tooltip_follows_the_pointer_inside_a_client_side_frame(
     assert_eq!(tip.top(), at.y + px(gap));
 }
 
+/// Only a read-only preview may be retried while its worker is preparing.
+fn await_removal_preview(
+    ask: &mut impl FnMut(
+        &mut Window,
+        disktree_link::Request,
+    ) -> disktree_link::Response,
+    cx: &mut Window,
+    request: &disktree_link::Request,
+) -> disktree_link::RemovalPreview {
+    assert!(matches!(
+        request,
+        disktree_link::Request::PrepareRemoval { .. }
+    ));
+    for _ in 0..400 {
+        cx.run_until_parked();
+        match ask(cx, request.clone()) {
+            disktree_link::Response::RemovalPreview(preview) => return preview,
+            disktree_link::Response::Error { message }
+                if message.contains("preparing") => {}
+            response => panic!("preview refused: {response:?}"),
+        }
+        draw(cx);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("preview worker did not finish");
+}
+
 /// Link `view` to an agent over a real socket or pipe named after `temp`,
 /// as `pwrdisk mcp` does.
 #[cfg(any(unix, windows))]
@@ -5742,6 +5769,11 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     cx.update(init);
     let temp = fixture();
     let root = temp.path().to_path_buf();
+    // Native approval needs ordinary output too: cache fixtures are
+    // inspection-only and cannot exercise successful raw removal.
+    std::fs::create_dir(root.join("native-output")).expect("native output");
+    std::fs::write(root.join("native-output/artifact"), b"fixture")
+        .expect("native payload");
     let (view, cx) = view_over(temp.path(), cx);
     draw(cx);
 
@@ -5965,11 +5997,15 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     );
     let preview_request = Request::PrepareRemoval {
         mode: disktree_link::RemovalChoice::Permanent,
+        decisions: None,
+        files: None,
     };
-    let Response::RemovalPreview(preview) = ask(cx, preview_request.clone())
-    else {
-        panic!("preview");
-    };
+    assert!(matches!(
+        ask(cx, preview_request.clone()),
+        Response::Error { message } if message.contains("preparing")
+    ));
+    assert!(matches!(ask(cx, Request::State), Response::State(_)));
+    let preview = await_removal_preview(&mut ask, cx, &preview_request);
     assert_eq!(preview.estimate.paths, preview.paths);
     assert_eq!(preview.estimate.lower, 0, "apparent fixture sizes");
     assert_eq!(preview.estimate.upper, None);
@@ -6017,10 +6053,7 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         ask(cx, Request::Remove(confirmed(&preview))),
         Response::Error { .. }
     ));
-    let Response::RemovalPreview(changed) = ask(cx, preview_request.clone())
-    else {
-        panic!("preview");
-    };
+    let changed = await_removal_preview(&mut ask, cx, &preview_request);
     ask(
         cx,
         Request::Unmark {
@@ -6047,10 +6080,7 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     update(&view, cx, |app, _| {
         app.removal_settings_dir = Some(settings.clone());
     });
-    let Response::RemovalPreview(old_policy) = ask(cx, preview_request.clone())
-    else {
-        panic!("preview");
-    };
+    let old_policy = await_removal_preview(&mut ask, cx, &preview_request);
     crate::safety::save(
         Some(&settings),
         disktree_core::removal_limit::Limit::new(10).expect("10%"),
@@ -6066,9 +6096,7 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         disktree_core::removal_limit::Limit::default(),
     )
     .expect("restore fixture policy");
-    let Response::RemovalPreview(preview) = ask(cx, preview_request) else {
-        panic!("preview");
-    };
+    let preview = await_removal_preview(&mut ask, cx, &preview_request);
     assert_eq!(preview.paths, [root.join("junk")]);
     assert_eq!(preview.limit_percent, 5);
     let started = ask(cx, Request::Remove(confirmed(&preview)));
@@ -6108,20 +6136,21 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         Request::Mark {
             root: root.clone(),
             targets: vec![MarkRequest {
-                path: root.join(".cache"),
+                path: root.join("native-output"),
                 bytes: 0,
                 is_dir: true,
             }],
         },
     );
-    let Response::RemovalPreview(native) = ask(
+    let native = await_removal_preview(
+        &mut ask,
         cx,
-        Request::PrepareRemoval {
+        &Request::PrepareRemoval {
             mode: disktree_link::RemovalChoice::Permanent,
+            decisions: None,
+            files: None,
         },
-    ) else {
-        panic!("native preview");
-    };
+    );
     update(&view, cx, |app, cx| {
         app.removal_mode = RemovalMode::Permanent;
         app.begin_removal(cx);
@@ -6141,7 +6170,8 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
             break;
         }
     }
-    assert!(!root.join(".cache").exists());
+    assert!(!root.join("native-output").exists());
+    assert!(root.join(".cache/blob.bin").exists());
     let Response::State(completed) =
         ask(cx, Request::Remove(confirmed(&native)))
     else {
@@ -6739,9 +6769,16 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
     use crate::run_list::Status;
     cx.update(init);
     let temp = fixture();
+    // This test exercises ordinary raw removal. Cache removal is covered
+    // separately and must go through an owner preview.
+    let build_output = temp.path().join("target/debug/deps");
+    std::fs::create_dir_all(build_output.parent().expect("build profile"))
+        .expect("build output parent");
+    std::fs::rename(temp.path().join(".cache"), &build_output)
+        .expect("ordinary removal fixture");
     let (view, cx) = view_over(temp.path(), cx);
     let epoch = update(&view, cx, |app, cx| {
-        for name in [".cache", "junk/deeper"] {
+        for name in ["target/debug/deps", "junk/deeper"] {
             let crumbs = app
                 .crumbs_for_path(&app.root_path.join(name))
                 .expect("in the tree");
@@ -6764,12 +6801,12 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
         assert_eq!(items.len(), 2);
         assert!(items.iter().all(|item| item.status == Status::Waiting));
         assert_eq!(app.run_list.current(), Some(0));
-        let cache = items
+        let output = items
             .iter()
-            .find(|item| item.target.path.ends_with(".cache"))
-            .expect("the cache is listed");
-        assert_eq!(cache.kind(), Some("regenerable"), "and says why");
-        assert_eq!(cache.target.bytes, 300_000);
+            .find(|item| item.target.path == build_output)
+            .expect("the build output is listed");
+        assert_eq!(output.kind(), Some("build output"), "and says why");
+        assert_eq!(output.target.bytes, 300_000);
     });
 
     let mut finished = false;
@@ -6802,7 +6839,8 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
         assert_eq!((totals.removed, totals.failed), (2, 0));
         assert_eq!(totals.reported_done, 400_000);
     });
-    assert!(!temp.path().join(".cache").exists());
+    assert!(!build_output.exists());
+    assert!(temp.path().join("target/debug").exists());
     assert!(temp.path().join("keep/notes.txt").exists());
 }
 
@@ -10009,6 +10047,174 @@ fn the_marked_total_is_pinned_above_the_disk_with_the_review(
     assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
 }
 
+/// Preparation yields to the window; confirmation leaves fresh recursive
+/// inspection to the removal worker, which must still refuse new caches.
+#[gpui_kit::test]
+fn raw_inspection_prepares_off_thread_and_execution_rechecks(
+    cx: &mut TestAppContext,
+) {
+    use disktree_link::{ConfirmedRemoval, RemovalChoice, Request, Response};
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    #[cfg(not(windows))]
+    let socket = temp.path().join("inspection.sock");
+    #[cfg(windows)]
+    let socket = PathBuf::from(format!(
+        r"\\.\pipe\pwrdisk-inspection-{}",
+        temp.path()
+            .file_name()
+            .expect("temp name")
+            .to_string_lossy()
+    ));
+    let listener = disktree_link::Listener::bind_at(&socket).expect("link");
+    update(&view, cx, |app, cx| {
+        app.attach_agent(listener, cx);
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+    });
+    let mut ask = |cx: &mut Window, request: Request| {
+        update(&view, cx, |app, cx| app.answer_agent(&request, cx))
+    };
+    let request = Request::PrepareRemoval {
+        mode: RemovalChoice::Permanent,
+        decisions: None,
+        files: None,
+    };
+    assert!(
+        matches!(ask(cx, request.clone()), Response::Error { message }
+        if message.contains("preparing"))
+    );
+    // Another request and a frame can proceed while inspection is pending.
+    assert!(matches!(ask(cx, Request::State), Response::State(_)));
+    draw(cx);
+    let preview = await_removal_preview(&mut ask, cx, &request);
+    assert_eq!(preview.paths, [temp.path().join("junk")]);
+
+    // This appears after the preview. Confirmation must not walk it on the
+    // UI thread, but the fresh worker check must protect it before writes.
+    let tag = temp.path().join("junk/deeper/CACHEDIR.TAG");
+    std::fs::write(&tag, "cache").expect("fixture cache appeared");
+    let response = ask(
+        cx,
+        Request::Remove(ConfirmedRemoval {
+            preview_id: preview.preview_id,
+            mode: preview.mode,
+            paths: preview.paths,
+            confirmation: preview.mode.confirmation().into(),
+            rescan: false,
+        }),
+    );
+    assert!(matches!(response, Response::State(state)
+        if state.screen == "running"));
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done);
+    read(&view, cx, |app| assert_eq!(app.run_list.totals().failed, 1));
+    assert!(tag.exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// Exporting a cache selection cannot substitute raw deletion for its owner.
+#[gpui_kit::test]
+fn cache_exports_keep_marks_and_refuse_raw_scripts(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let selected = temp.path().join(".cache").join("blob.bin");
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let cache = child_crumbs(app, &[], ".cache");
+        let file = child_crumbs(app, &cache, "blob.bin");
+        app.toggle_mark(&file, cx);
+        app.open_review(cx);
+        let (list, count) = app.export_text(false).expect("marked list");
+        assert_eq!(count, 1);
+        assert_eq!(list, format!("{}\n", selected.display()));
+        for mode in [
+            RemovalMode::OwnerCleanup,
+            RemovalMode::Permanent,
+            RemovalMode::Trash,
+        ] {
+            app.removal_mode = mode;
+            assert!(
+                app.export_text(true)
+                    .expect_err("no raw script")
+                    .contains("owner cleanup")
+            );
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                "keep".into(),
+            ));
+            app.copy_delete_script(cx);
+            app.save_delete_script(cx);
+            assert!(
+                app.notice()
+                    .as_ref()
+                    .expect("refusal")
+                    .0
+                    .contains("owner cleanup")
+            );
+        }
+    });
+    assert_eq!(clipboard(cx), "keep", "refusal leaves clipboard alone");
+    assert!(selected.exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// Cache classification steers review, but grants no generic deletion.
+#[gpui_kit::test]
+fn cache_review_requires_owner_preview_and_never_falls_back_to_raw_removal(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let cache = child_crumbs(app, &[], ".cache");
+        app.toggle_mark(&cache, cx);
+        app.open_review(cx);
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+        // Confirm cannot execute a missing owner preview, even if reached
+        // directly rather than through the disabled/preview UI.
+        app.confirm_delete(cx);
+        assert!(app.run.is_none());
+        assert_eq!(app.screen, Screen::Review);
+        assert!(app.cleanup_description().contains("Check owners"));
+        // Neither explicit raw mode can silently replace owner cleanup.
+        for mode in [RemovalMode::Permanent, RemovalMode::Trash] {
+            app.removal_mode = mode;
+            app.begin_removal(cx);
+            assert!(app.run.is_none());
+            assert!(
+                app.notice()
+                    .as_ref()
+                    .expect("refusal")
+                    .0
+                    .contains("Cache cleanup")
+            );
+        }
+        app.removal_mode = RemovalMode::OwnerCleanup;
+        app.confirm_open = true;
+        app.cancel_delete(cx);
+        assert!(!app.confirm_open);
+        assert!(app.run.is_none());
+    });
+    draw(cx);
+    assert!(temp.path().join(".cache/blob.bin").exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
 /// An empty Marked or Worth a look is its header alone, at any height: the
 /// hint and the "none" sit where a full section shows its count or total.
 #[gpui_kit::test]
@@ -10547,14 +10753,15 @@ fn an_agent_removal_stays_at_the_agent_limit_with_the_windows_off(
     );
 
     // The preview is checked at the agent limit, Off or not.
-    let Response::RemovalPreview(preview) = ask(
+    let preview = await_removal_preview(
+        &mut ask,
         cx,
-        Request::PrepareRemoval {
+        &Request::PrepareRemoval {
             mode: RemovalChoice::Permanent,
+            decisions: None,
+            files: None,
         },
-    ) else {
-        panic!("preview");
-    };
+    );
     assert_eq!(preview.limit_percent, 5);
 
     // Since the preview, `junk` has become 30% of its disk: a pretend
@@ -10643,6 +10850,13 @@ fn safety_settings_relax_the_window_but_never_an_agent(
     });
     assert!(!met(&view, cx), "a tick is for one mode");
 
+    update(&view, cx, |app, _| {
+        app.removal_mode = RemovalMode::OwnerCleanup;
+    });
+    assert!(!met(&view, cx), "trash approval cannot authorize cleanup");
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-tick").is_some());
+
     // Off: no gate in Review, the plain Mark in the inspector, and an
     // agent still held to 5%.
     save_limit(Some(settings.path()), None).expect("off");
@@ -10666,4 +10880,487 @@ fn safety_settings_relax_the_window_but_never_an_agent(
     });
     press(cx, "space");
     assert_eq!(read(&view, cx, |app| app.marks.len()), 1);
+}
+
+/// A fixture `uv` that answers the version and cache-root probes and
+/// records a cleanup instead of doing one. It lives outside the scan, and
+/// tests point `cleanup_path` at it so no real tool on this machine is
+/// ever probed or run.
+#[cfg(unix)]
+fn mock_uv(cache: &std::path::Path) -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let bin = tempfile::TempDir::new().expect("fixture bin");
+    let uv = bin.path().join("uv");
+    std::fs::write(
+        &uv,
+        "#!/bin/sh\nhere=${0%/*}\ncase \"$1 $2\" in\n  '--version ') printf '%s\\n' 'uv 0.11.0';;\n  'cache dir') /bin/cat \"$here/cache-root\";;\n  'cache clean') printf '%s\\n' \"$@\" > \"$here/invocation\";;\n  *) exit 97;;\nesac\n",
+    )
+    .expect("mock uv");
+    std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755))
+        .expect("executable");
+    std::fs::write(
+        bin.path().join("cache-root"),
+        format!("{}\n", cache.display()),
+    )
+    .expect("cache root");
+    bin
+}
+
+/// Cleanup's in-use check sees any running `uv`, the other test's mock
+/// included, so the tests that run one take turns.
+#[cfg(unix)]
+static MOCK_OWNER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Mark three paths and open Review over them, cache cleanup chosen.
+#[cfg(unix)]
+fn cache_cleanup_view<'a>(
+    temp: &tempfile::TempDir,
+    cx: &'a mut TestAppContext,
+) -> (
+    Entity<Disktree>,
+    &'a mut Window,
+    [PathBuf; 3],
+    tempfile::TempDir,
+) {
+    for name in [".cache/uvdata/payload", ".cache/stale/payload"] {
+        let file = temp.path().join(name);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        std::fs::write(file, vec![b'x'; 50_000]).expect("payload");
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    let root = read(&view, cx, |app| app.root_path.clone());
+    let paths = [
+        root.join(".cache/uvdata"),
+        root.join(".cache/stale"),
+        root.join("junk"),
+    ];
+    let bin = mock_uv(&paths[0]);
+    update(&view, cx, |app, cx| {
+        app.cleanup_path = Some(bin.path().display().to_string());
+        let cache = child_crumbs(app, &[], ".cache");
+        for name in ["uvdata", "stale"] {
+            let crumbs = child_crumbs(app, &cache, name);
+            app.toggle_mark(&crumbs, cx);
+        }
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+        app.open_review(cx);
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+    });
+    (view, cx, paths, bin)
+}
+
+#[cfg(unix)]
+fn await_owners(view: &Entity<Disktree>, cx: &Window) {
+    for _ in 0..400 {
+        cx.run_until_parked();
+        if read(view, cx, |app| app.cleanup_ready().is_ok()) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("owners were not checked");
+}
+
+#[cfg(unix)]
+fn await_done(view: &Entity<Disktree>, cx: &mut Window) {
+    let epoch = read(view, cx, |app| app.run_epoch);
+    for _ in 0..800 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let done = update(view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            return;
+        }
+    }
+    panic!("cleanup did not finish");
+}
+
+/// Each marked path is decided on its own; nothing is chosen for the
+/// person; deleting files needs its own tick; and every path gets a result.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn cache_cleanup_decides_each_path_and_deleting_files_needs_its_own_tick(
+    cx: &mut TestAppContext,
+) {
+    use disktree_core::cleanup::{Action, Decision, Outcome, Problem};
+    let _turn = MOCK_OWNER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, [uvdata, stale, junk], bin) = cache_cleanup_view(&temp, cx);
+    draw(cx);
+    assert!(cx.debug_bounds("check-owners").is_some());
+    // Commit first checks owners; it never runs anything.
+    update(&view, cx, |app, cx| app.commit(false, cx));
+    await_owners(&view, cx);
+    draw(cx);
+    let index = |path: &PathBuf| {
+        read(&view, cx, |app| {
+            app.marks
+                .items()
+                .iter()
+                .position(|item| item.path == *path)
+                .expect("marked")
+        })
+    };
+    let (owner, files, skip) = (index(&uvdata), index(&stale), index(&junk));
+    for proposal in [owner, files, skip] {
+        assert!(
+            cx.debug_bounds(Box::leak(
+                format!("cleanup-proposal-{proposal}").into_boxed_str()
+            ))
+            .is_some()
+        );
+    }
+    read(&view, cx, |app| {
+        let prepared = app.cleanup_ready().expect("checked");
+        let ready = &prepared.proposals[owner];
+        assert_eq!(ready.operations.len(), 1);
+        let operation = &prepared.operations[ready.operations[0]];
+        assert_eq!(operation.scope, uvdata);
+        assert_eq!(operation.version, "uv 0.11.0");
+        assert!(
+            operation
+                .command
+                .executable
+                .starts_with(std::fs::canonicalize(bin.path()).expect("bin"))
+        );
+        assert_eq!(
+            prepared.proposals[files].issue.as_ref().map(|i| i.problem),
+            Some(Problem::UnknownOwner)
+        );
+        for index in 0..3 {
+            assert_eq!(app.cleanup_decision(index), Decision::Skip);
+        }
+    });
+
+    update(&view, cx, |app, cx| {
+        // Nothing chosen: nothing to confirm.
+        app.commit(false, cx);
+        assert!(!app.confirm_open);
+        assert!(app.notice().expect("why").0.contains("Nothing chosen"));
+        // An owner command is never offered for an unknown cache.
+        app.decide_cleanup(files, Decision::Owner, cx);
+        assert_eq!(app.cleanup_decision(files), Decision::Skip);
+        app.decide_cleanup(owner, Decision::Owner, cx);
+        app.decide_cleanup(files, Decision::DeleteFiles, cx);
+        app.set_cleanup_files(Action::Permanent, cx);
+        app.commit(false, cx);
+        assert!(app.confirm_open, "both intents to confirm");
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("cleanup-files-tick").is_some());
+    assert!(
+        cx.debug_bounds(Box::leak(
+            format!("cleanup-delete-{files}").into_boxed_str()
+        ))
+        .is_some()
+    );
+    update(&view, cx, |app, cx| {
+        // Confirming the commands is not consent to delete files.
+        app.confirm_delete(cx);
+        assert!(app.run.is_none());
+        assert!(app.notice().expect("why").0.contains("Tick"));
+        app.commit(false, cx);
+        app.tick_cleanup_files(cx);
+        app.confirm_delete(cx);
+        assert_eq!(app.screen, Screen::Running);
+    });
+    await_done(&view, cx);
+    read(&view, cx, |app| {
+        let results: Vec<_> = app
+            .cleanup_results
+            .iter()
+            .map(|report| (report.path.clone(), report.action, report.outcome))
+            .collect();
+        assert!(results.contains(&(
+            junk.clone(),
+            Action::Skip,
+            Outcome::Skipped
+        )));
+        assert!(results.contains(&(
+            uvdata.clone(),
+            Action::Owner,
+            Outcome::Succeeded
+        )));
+        assert!(results.contains(&(
+            stale.clone(),
+            Action::Permanent,
+            Outcome::Succeeded
+        )));
+        assert!(app.cleanup_review.is_none(), "decisions are consumed");
+    });
+    assert!(bin.path().join("invocation").exists(), "the owner ran");
+    assert!(
+        uvdata.join("payload").exists(),
+        "the mock owner deletes nothing"
+    );
+    assert!(!stale.exists(), "deleted as chosen");
+    assert!(junk.join("blob.bin").exists(), "skipped means untouched");
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// Review's cache decisions against a model of them. After any command a
+/// person can give (an action for one path, Trash or permanent, the
+/// consent tick) the window shows the model's decisions, its kept
+/// approval equals a fresh one, a change to what is deleted clears the
+/// tick, and the export still lists exactly the marked paths.
+///
+/// Cases come from a seed, named when one breaks the rule; set
+/// `PWRDISK_SEED` to replay it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn cache_cleanup_decisions_follow_a_model_of_them(cx: &mut TestAppContext) {
+    use disktree_core::cleanup::{Action, Decision};
+
+    /// `SplitMix64`, as disktree-core's tests use, picking commands.
+    fn next(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    let _turn = MOCK_OWNER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _, _bin) = cache_cleanup_view(&temp, cx);
+    update(&view, cx, |app, cx| app.commit(false, cx));
+    await_owners(&view, cx);
+    let (marked, exported, trash) = read(&view, cx, |app| {
+        (
+            app.marks.len(),
+            app.export_text(false).expect("marked list").0,
+            app.trash_backend.is_available(),
+        )
+    });
+    assert_eq!(exported.lines().count(), marked);
+    let initial = read(&view, cx, Disktree::cleanup_files);
+    let first = std::env::var("PWRDISK_SEED")
+        .ok()
+        .and_then(|seed| seed.parse().ok())
+        .unwrap_or_else(|| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            now.as_secs().wrapping_mul(1_000_003)
+                ^ u64::from(now.subsec_nanos())
+        });
+    for seed in (0..8).map(|run| first.wrapping_add(run)) {
+        // Each seed starts from the same state, so it replays alone.
+        update(&view, cx, |app, cx| {
+            for index in 0..marked {
+                app.decide_cleanup(index, Decision::Skip, cx);
+            }
+            app.set_cleanup_files(initial, cx);
+        });
+        let mut decisions = vec![Decision::Skip; marked];
+        let mut files = initial;
+        let mut ticked = false;
+        let mut state = seed;
+        let mut history = vec![];
+        for _ in 0..30 {
+            let command = next(&mut state) % 3;
+            let index = usize::try_from(next(&mut state) % marked as u64)
+                .expect("index");
+            let decision =
+                [Decision::Skip, Decision::Owner, Decision::DeleteFiles]
+                    [usize::try_from(next(&mut state) % 3).expect("index")];
+            let action = if next(&mut state).is_multiple_of(2) {
+                Action::Trash
+            } else {
+                Action::Permanent
+            };
+            update(&view, cx, |app, cx| match command {
+                0 => {
+                    history.push(format!("decide {index} {decision:?}"));
+                    let offered =
+                        app.cleanup_ready().expect("checked").proposals[index]
+                            .allows(decision);
+                    if offered {
+                        decisions[index] = decision;
+                        ticked = false;
+                    }
+                    app.decide_cleanup(index, decision, cx);
+                }
+                1 => {
+                    history.push(format!("files {action:?}"));
+                    if action != Action::Trash || trash {
+                        files = action;
+                        ticked = false;
+                    }
+                    app.set_cleanup_files(action, cx);
+                }
+                _ => {
+                    history.push("tick".into());
+                    ticked = !ticked;
+                    app.tick_cleanup_files(cx);
+                }
+            });
+            let case = format!("seed {seed}: after {history:?}");
+            read(&view, cx, |app| {
+                let shown: Vec<_> = (0..marked)
+                    .map(|index| app.cleanup_decision(index))
+                    .collect();
+                assert_eq!(shown, decisions, "{case}");
+                assert_eq!(app.cleanup_files(), files, "{case}");
+                assert_eq!(app.cleanup_files_ticked(), ticked, "{case}");
+                let fresh = app
+                    .cleanup_ready()
+                    .expect("checked")
+                    .approve(&decisions, files);
+                match (app.cleanup_approved(), fresh) {
+                    (Ok(kept), Ok(fresh)) => {
+                        assert_eq!(kept.steps, fresh.steps, "{case}");
+                        assert_eq!(kept.decisions, fresh.decisions, "{case}");
+                        assert_eq!(kept.files, fresh.files, "{case}");
+                        assert_eq!(
+                            kept.confirmation(),
+                            fresh.confirmation(),
+                            "{case}"
+                        );
+                    }
+                    (Err(kept), Err(fresh)) => {
+                        assert_eq!(kept, fresh, "{case}");
+                    }
+                    (kept, fresh) => panic!(
+                        "{case}: kept {:?}, fresh {:?}",
+                        kept.map(|approved| &approved.steps),
+                        fresh.map(|approved| approved.steps)
+                    ),
+                }
+                assert_eq!(
+                    app.export_text(false).expect("marked list").0,
+                    exported,
+                    "{case}: decisions changed the export"
+                );
+            });
+        }
+    }
+}
+
+/// An agent relays the same proposals and the person's choices. Without
+/// decisions nothing can be confirmed; deleting files is named in the
+/// confirmation; and the window's own choices are never used for it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_agent_confirms_cache_decisions_by_path_with_both_intents_named(
+    cx: &mut TestAppContext,
+) {
+    use disktree_core::cleanup::{Decision, RUN_AND_DELETE};
+    use disktree_link::{
+        ConfirmedRemoval, PathDecision, RemovalChoice, Request, Response,
+    };
+    let _turn = MOCK_OWNER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, [uvdata, stale, junk], bin) = cache_cleanup_view(&temp, cx);
+    let socket = temp.path().join("cleanup.sock");
+    let listener = disktree_link::Listener::bind_at(&socket).expect("link");
+    update(&view, cx, |app, cx| app.attach_agent(listener, cx));
+    let mut ask = |cx: &mut Window, request: Request| {
+        update(&view, cx, |app, cx| app.answer_agent(&request, cx))
+    };
+    let proposals = Request::PrepareRemoval {
+        mode: RemovalChoice::OwnerCleanup,
+        decisions: None,
+        files: None,
+    };
+    let listed = await_removal_preview(&mut ask, cx, &proposals);
+    assert_eq!(listed.proposals.len(), 3);
+    assert!(listed.confirmation.is_empty(), "nothing to confirm yet");
+    assert!(listed.paths.is_empty());
+    assert!(listed.consent.contains("Owner command (choose owner)"));
+    assert!(matches!(
+        ask(
+            cx,
+            Request::Remove(ConfirmedRemoval {
+                preview_id: listed.preview_id,
+                mode: RemovalChoice::OwnerCleanup,
+                paths: vec![],
+                confirmation: "RUN OWNER CLEANUP".into(),
+                rescan: false,
+            })
+        ),
+        Response::Error { .. }
+    ));
+
+    let decide = |files: Option<RemovalChoice>| Request::PrepareRemoval {
+        mode: RemovalChoice::OwnerCleanup,
+        decisions: Some(vec![
+            PathDecision {
+                path: uvdata.clone(),
+                action: Decision::Owner,
+            },
+            PathDecision {
+                path: stale.clone(),
+                action: Decision::DeleteFiles,
+            },
+            PathDecision {
+                path: junk.clone(),
+                action: Decision::Skip,
+            },
+        ]),
+        files,
+    };
+    assert!(matches!(
+        ask(cx, decide(None)),
+        Response::Error { message } if message.contains("Trash or permanent")
+    ));
+    let Response::RemovalPreview(preview) =
+        ask(cx, decide(Some(RemovalChoice::Permanent)))
+    else {
+        panic!("decided preview");
+    };
+    assert_eq!(preview.confirmation, RUN_AND_DELETE);
+    assert_eq!(preview.paths.len(), 2);
+    assert!(!preview.paths.contains(&junk), "skip is not executed");
+    assert!(preview.consent.contains("Delete files directly"));
+    let confirmed = |preview: &disktree_link::RemovalPreview, text: &str| {
+        Request::Remove(ConfirmedRemoval {
+            preview_id: preview.preview_id.clone(),
+            mode: RemovalChoice::OwnerCleanup,
+            paths: preview.paths.clone(),
+            confirmation: text.into(),
+            rescan: false,
+        })
+    };
+    // Owner approval alone is not approval to delete files.
+    assert!(matches!(
+        ask(cx, confirmed(&preview, "RUN OWNER CLEANUP")),
+        Response::Error { .. }
+    ));
+    assert!(stale.exists());
+    let Response::RemovalPreview(preview) =
+        ask(cx, decide(Some(RemovalChoice::Permanent)))
+    else {
+        panic!("new preview after a refused confirmation");
+    };
+    read(&view, cx, |app| {
+        for index in 0..3 {
+            assert_eq!(app.cleanup_decision(index), Decision::Skip);
+        }
+    });
+    let started = ask(cx, confirmed(&preview, RUN_AND_DELETE));
+    assert!(
+        matches!(&started, Response::State(state) if state.screen == "running"),
+        "{started:?}"
+    );
+    await_done(&view, cx);
+    let results = read(&view, cx, |app| app.cleanup_results.clone());
+    assert!(bin.path().join("invocation").exists(), "{results:#?}");
+    assert!(uvdata.join("payload").exists());
+    assert!(!stale.exists());
+    assert!(junk.join("blob.bin").exists());
 }

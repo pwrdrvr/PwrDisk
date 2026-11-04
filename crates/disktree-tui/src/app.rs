@@ -378,6 +378,9 @@ impl App {
             while let Some(event) = run.poll() {
                 changed = true;
                 match event {
+                    // This interface only starts raw removals; owner cleanup
+                    // requires the desktop or MCP's per-path decisions.
+                    RemovalEvent::Cleanup(_) => {}
                     RemovalEvent::Start { total } => {
                         self.run_summary.total = total;
                     }

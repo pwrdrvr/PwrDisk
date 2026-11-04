@@ -65,7 +65,7 @@ would read it.
 
 | what | where | prefer |
 | --- | --- | --- |
-| user caches | `~/.cache/<app>` | close the app; they regrow |
+| user caches | `~/.cache/<app>` | close the app; use its supported cleanup; unknown owners need inspection |
 | pacman packages | `/var/cache/pacman/pkg` | `paccache -dk1`, then `paccache -rk1` (root) |
 | apt and dnf packages | `/var/cache/apt`, `/var/cache/dnf` | `apt clean`, `dnf clean all` (root) |
 | unused Flatpak runtimes | `/var/lib/flatpak`, `~/.local/share/flatpak` | `flatpak uninstall --unused` |
@@ -109,6 +109,49 @@ destination.
 marks are not the linked desktop's state. MCP does not attach to that TUI.
 SSH terminal sessions permit inspection and export, never removal; local
 terminal removal enforces the same configured capacity limit and guards.
+
+## Owner-managed caches
+
+A cache name or regenerable classification is an inspection lead, never
+permission to delete it. Cache cleanup is decided path by path. Call
+`pwrdisk_removal_preview` with `owner_cleanup` and no decisions: it returns
+one proposal per marked path with its status and problem, resolved owner,
+version, executable, arguments, environment overrides, configured root, full
+actual scope (including unselected siblings), effects, limitations,
+recoverability, and whether Delete files is offered. Show every proposal and
+let the user choose for each path `skip`, `owner` (only where offered) or
+`delete_files`. Never choose for them and never suggest `delete_files`
+yourself; inspect unknown runtime/install caches first, since nothing says
+they are disposable. Then preview again with `decisions` naming every marked
+path once, and `delete_files_mode` (`trash` or `permanent`, as the user
+chose) when any path uses `delete_files`. Confirmation needs that preview's
+exact paths and its own text: `RUN OWNER CLEANUP`, `DELETE CACHE FILES`,
+`TRASH CACHE FILES`, or both intents joined with `AND`. Owner approval never
+approves deleting files. Unavailable commands do not establish absent
+software. An unsupported version, failed probe, or failed or cancelled owner
+command never falls back to deleting files, and never to a shell command;
+deleting them instead is a new preview the user decides.
+
+Cache tags and owner layouts on ancestors protect contained files and
+subtrees too. All removal modes may return a preparing response while
+inspection runs on a worker; retry only the read-only preview. Exported
+lists keep marked paths, and raw script exports cannot replace owner cleanup.
+
+On macOS and Linux the initial adapters cover npm packages (9–11), npm's
+separate npx cache (11.2–11.x), uv (0.11.x), pip (23–26) and Cypress (13–15),
+only when their installed CLI resolves the selected cache. pnpm, Homebrew,
+Playwright and Puppeteer remain explicit inspection-only owners because their
+full command/configuration scopes are not supported. Windows command
+launchers have no execution adapter yet. Neither containers nor volumes are
+cleanup scopes.
+
+Each path gets its own result: succeeded, failed with a reason, cancelled
+(possibly part done), skipped, or not reached after Stop. A command's
+success reports the owner's exit result, not guaranteed savings.
+Report allocation separately from observed volume availability before/after;
+other activity, hardlinks, open files, APFS clones and snapshots can retain
+blocks. PwrDisk always rescans after owner cleanup, even partial failure.
+Never alter snapshots to force the reported allocation to become free space.
 
 ## Developer artifacts and virtual machines
 

@@ -222,6 +222,19 @@ your own Mac build, and how to work on the code.
 MIT. See [LICENSE](LICENSE) and
 [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
 
+### Cache cleanup
+
+Marked caches go to **Cache cleanup** in Review, or MCP's
+`pwrdisk_removal_preview` with `mode: "owner_cleanup"`. Check owners shows,
+for each marked path, the installed owner's exact command, version and
+whole-cache scope, or why there is none. You then choose per path: skip it,
+run that command, or deliberately delete the files, which has its own
+disclosure and its own confirmation. Missing, unsupported, failed or
+cancelled owner commands never fall back to deleting files, and unknown
+runtime caches are never called disposable. Each path gets its own result;
+listed allocation is separate from measured free-space change. See
+[supported owners, versions and scope limitations](docs/owner-cleanup.md).
+
 ## In the terminal
 
 The standalone terminal executable uses the shared scanning core without

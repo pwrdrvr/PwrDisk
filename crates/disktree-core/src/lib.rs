@@ -8,6 +8,7 @@
 pub mod access;
 pub mod artifact;
 pub mod classify;
+pub mod cleanup;
 #[cfg(any(target_os = "macos", test))]
 mod clone_cache;
 pub mod deployment;
@@ -37,6 +38,8 @@ pub mod scan_threads;
 pub mod sharing;
 pub mod size;
 pub mod space;
+#[cfg(test)]
+mod test_rng;
 pub mod tree;
 pub mod treemap;
 #[cfg(windows)]
