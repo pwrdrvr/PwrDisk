@@ -853,6 +853,11 @@ fn active_owner_detection_recognizes_node_launchers_and_pip3() {
     operation.owner = Owner::Pip;
     assert!(process::owner_argument(&operation, "/fixture/bin/pip3"));
     assert!(process::owner_argument(&operation, "pip"));
+    // Found by a_running_owner_is_recognized_in_every_launcher_form.
+    assert!(process::owner_argument(&operation, "/opt/bin/pip3.12"));
+    assert!(!process::owner_argument(&operation, "/opt/bin/pip3.x"));
+    operation.owner = Owner::Uv;
+    assert!(process::owner_argument(&operation, "/opt/bin/uvx"));
 }
 
 #[cfg(unix)]
