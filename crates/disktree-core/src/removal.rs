@@ -220,10 +220,7 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
     for target in targets {
         let path = normalize(&target.path);
         let reason =
-            refuse(&path, &root, home.as_ref(), &mounts.points, &mounts.media)
-                .or_else(|| {
-                    linked(&path, &root, real_root.as_deref(), home.as_ref())
-                });
+            judge(&path, &root, real_root.as_deref(), home.as_ref(), mounts);
         if let Some(reason) = reason {
             plan.blocked.push(Blocked {
                 path: target.path.clone(),
@@ -288,6 +285,36 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
         }
     }
     plan
+}
+
+/// Why the guards would keep `path` back from a removal under `root`.
+///
+/// `None` when they would let it through. The same judgement [`plan`]
+/// makes for each target, for one path, so the window can refuse a mark
+/// up front instead of offering one that Review would only keep back.
+pub fn refusal(path: &Path, root: &Path) -> Option<String> {
+    let root = normalize(root);
+    let home = std::env::home_dir().map(|home| Home::of(&home));
+    let real_root = fs::canonicalize(&root).ok();
+    judge(
+        &normalize(path),
+        &root,
+        real_root.as_deref(),
+        home.as_ref(),
+        &mount_points(),
+    )
+}
+
+/// One target against every guard: by spelling, then by where links lead.
+fn judge(
+    path: &Path,
+    root: &Path,
+    real_root: Option<&Path>,
+    home: Option<&Home>,
+    mounts: &MountTable,
+) -> Option<String> {
+    refuse(path, root, home, &mounts.points, &mounts.media)
+        .or_else(|| linked(path, root, real_root, home))
 }
 
 /// Trees the operating system owns. A whole-disk scan shows them, because
@@ -581,14 +608,26 @@ fn refuse(
     if home_key.is_some_and(|home| home.starts_with(&key)) {
         return Some("it contains the home directory".into());
     }
+    // macOS keeps every account's home in /Users, on the same volume as
+    // the system, and nothing marks another account's home as special: a
+    // whole-disk scan shows /Users/guest or /Users/Shared as just a folder.
+    // So /Users and each folder in it are refused there, as on Windows.
+    //
     // Elevated through another account's credentials, home is that admin's,
     // and the user's own profile is just another folder; elevation opens
     // every other profile too. So on Windows each directory in the profiles
     // folder (`C:\Users\tobi`, `Public`, `Default`) is refused, taken from
     // Windows and not from home, whose parent could be anything. What is
     // inside a profile stays removable, as under one's own home.
-    if profiles_key().is_some_and(|profiles| is_profile(path, &key, profiles)) {
-        return Some("a user profile cannot be removed".into());
+    if let Some(profiles) = profiles_key() {
+        // The folder itself holds every account's home, the operator's
+        // included, wherever this process's own home happens to be.
+        if key == profiles {
+            return Some(format!("it holds every {PROFILE}"));
+        }
+        if is_profile(path, &key, profiles) {
+            return Some(format!("a {PROFILE} cannot be removed"));
+        }
     }
     // By spelling too: the Data volume's root keeps its name as a key, while
     // everything under it is keyed as under `/`.
@@ -901,10 +940,36 @@ fn profiles_key() -> Option<&'static Path> {
     PROFILES.as_deref()
 }
 
-#[cfg(not(windows))]
+/// `/Users`, by key. Fixed on macOS: the system and its installer put
+/// every account's home there, and a different home location is still a
+/// home only for its own account.
+#[cfg(target_os = "macos")]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the same signature as Windows', where Windows may not answer"
+)]
+fn profiles_key() -> Option<&'static Path> {
+    static PROFILES: std::sync::LazyLock<PathBuf> =
+        std::sync::LazyLock::new(|| guard_key(Path::new(MACOS_PROFILES)));
+    Some(PROFILES.as_path())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 const fn profiles_key() -> Option<&'static Path> {
     None
 }
+
+#[cfg(target_os = "macos")]
+const MACOS_PROFILES: &str = "/Users";
+
+/// What one folder in the profiles folder is called where it is refused.
+#[cfg(windows)]
+const PROFILE: &str = "user profile";
+#[cfg(target_os = "macos")]
+const PROFILE: &str = "user's home folder";
+/// Nowhere else has a profiles folder; never shown.
+#[cfg(not(any(windows, target_os = "macos")))]
+const PROFILE: &str = "";
 
 /// Whether `path`, keyed `key`, is a profile: a directory directly in
 /// `profiles`. A file or a link there is no profile and stays removable.
@@ -1158,6 +1223,26 @@ fn spawn_checked(
     mode: RemovalMode,
     limit: Option<crate::removal_limit::Limit>,
 ) -> RemovalHandle {
+    start(plan, mode, limit, |work| {
+        thread::Builder::new()
+            .name("disktree-remove".into())
+            .spawn(work)
+            .map(drop)
+    })
+}
+
+/// The work a removal thread runs, boxed so a test can hand it to a
+/// spawner that refuses it.
+type Work = Box<dyn FnOnce() + Send + 'static>;
+
+/// [`spawn_checked`] with the thread's start passed in, so a test can make
+/// it fail as a process out of threads would.
+fn start(
+    plan: Plan,
+    mode: RemovalMode,
+    limit: Option<crate::removal_limit::Limit>,
+    spawn: impl FnOnce(Work) -> io::Result<()>,
+) -> RemovalHandle {
     let (sender, events) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
@@ -1166,53 +1251,65 @@ fn spawn_checked(
     } else {
         TrashBackend::Unavailable
     };
+    // Shared, not moved: a spawn that fails drops the work unrun, and the
+    // targets are still needed to report that each one failed.
+    let plan = Arc::new(plan);
 
-    let worker = thread::Builder::new()
-        .name("disktree-remove".into())
-        .spawn({
-            let sender = sender.clone();
-            move || {
-                if let Some(limit) = limit {
-                    let fresh = self::plan(&plan.targets, &plan.root);
-                    let checked = if fresh.blocked.is_empty() {
-                        crate::removal_limit::measured(&plan.targets)
-                            .and_then(|targets| limit.check(&targets))
-                    } else {
-                        Err("Removal guards changed before preflight; nothing was removed".into())
-                    };
-                    if let Err(reason) = checked {
-                        let _ = sender.send(RemovalEvent::Start {
-                            total: plan.targets.len(),
-                        });
-                        for target in &plan.targets {
-                            let _ = sender.send(RemovalEvent::Item {
-                                path: target.path.clone(),
-                                bytes: 0,
-                                outcome: Err(reason.clone()),
-                            });
-                        }
-                        let _ = sender.send(RemovalEvent::Done {
-                            removed: 0,
-                            bytes: 0,
-                            failed: plan.targets.len(),
-                        });
-                        return;
-                    }
+    let worker = spawn(Box::new({
+        let plan = Arc::clone(&plan);
+        let sender = sender.clone();
+        move || {
+            if let Some(limit) = limit {
+                let fresh = self::plan(&plan.targets, &plan.root);
+                let checked = if fresh.blocked.is_empty() {
+                    crate::removal_limit::measured(&plan.targets)
+                        .and_then(|targets| limit.check(&targets))
+                } else {
+                    Err("Removal guards changed before preflight; nothing was removed".into())
+                };
+                if let Err(reason) = checked {
+                    fail_all(&plan.targets, &reason, &sender);
+                    return;
                 }
-                run(&plan, mode, backend, &worker_cancel, &sender);
             }
-        });
+            run(&plan, mode, backend, &worker_cancel, &sender);
+        }
+    }));
+    // Without `Done` the app would wait on the Removing screen for good:
+    // the dropped sender reads the same as a worker with nothing new.
     if let Err(error) = worker {
-        let _ = sender.send(RemovalEvent::Item {
-            path: PathBuf::new(),
-            bytes: 0,
-            outcome: Err(format!(
-                "could not start the removal worker: {error}"
-            )),
-        });
+        fail_all(
+            &plan.targets,
+            &format!("could not start the removal worker: {error}"),
+            &sender,
+        );
     }
 
     RemovalHandle { events, cancel }
+}
+
+/// A whole run that removed nothing: every target failed for `reason`,
+/// then the end, so the run finishes and reads as failed, item by item.
+fn fail_all(
+    targets: &[Target],
+    reason: &str,
+    sender: &mpsc::Sender<RemovalEvent>,
+) {
+    let _ = sender.send(RemovalEvent::Start {
+        total: targets.len(),
+    });
+    for target in targets {
+        let _ = sender.send(RemovalEvent::Item {
+            path: target.path.clone(),
+            bytes: 0,
+            outcome: Err(reason.to_owned()),
+        });
+    }
+    let _ = sender.send(RemovalEvent::Done {
+        removed: 0,
+        bytes: 0,
+        failed: targets.len(),
+    });
 }
 
 fn run(
@@ -2757,6 +2854,60 @@ mod tests {
         assert!(root.join("a/one.bin").exists());
     }
 
+    #[test]
+    fn a_worker_that_cannot_start_ends_the_run_as_failed() {
+        let temp = tree();
+        let root = temp.path();
+        let plan = plan(
+            &[
+                target(&root.join("a/b"), 0),
+                target(&root.join("a/c.bin"), 20),
+            ],
+            root,
+        );
+        let paths: Vec<PathBuf> = plan
+            .targets
+            .iter()
+            .map(|target| target.path.clone())
+            .collect();
+        assert_eq!(paths.len(), 2);
+
+        // The spawner refuses the work as a process out of threads would,
+        // so every event below was sent before `start` returned.
+        let handle = start(plan, RemovalMode::Permanent, None, |_work| {
+            Err(io::Error::other("out of threads"))
+        });
+        let events: Vec<_> = std::iter::from_fn(|| handle.poll()).collect();
+
+        // Start, one failure per listed target, then the end: without
+        // `Done` the window would wait on the Removing screen for good.
+        assert_eq!(events.len(), paths.len() + 2, "{events:?}");
+        assert!(matches!(events[0], RemovalEvent::Start { total: 2 }));
+        for (event, expected) in events[1..=paths.len()].iter().zip(&paths) {
+            match event {
+                RemovalEvent::Item {
+                    path,
+                    bytes: 0,
+                    outcome: Err(reason),
+                } => {
+                    assert_eq!(path, expected);
+                    assert!(reason.contains("out of threads"), "{reason}");
+                }
+                other => panic!("expected a failed item, got {other:?}"),
+            }
+        }
+        assert!(matches!(
+            events.last(),
+            Some(RemovalEvent::Done {
+                removed: 0,
+                bytes: 0,
+                failed: 2,
+            })
+        ));
+        assert!(root.join("a/b").exists());
+        assert!(root.join("a/c.bin").exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_trash_tool_is_called_with_the_path_after_a_separator() {
@@ -2858,6 +3009,69 @@ mod tests {
                 .to_lowercase()
                 .contains(&windows.to_lowercase())),
             "refused as part of {windows}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_home_folders_are_refused() {
+        let root = Path::new("/");
+        let refused = |path: &str, root: &Path| {
+            refuse(Path::new(path), root, None, &[], &[])
+        };
+        // Whatever this process's home is, /Users holds every account's.
+        assert!(
+            refused("/Users", root)
+                .is_some_and(|reason| reason.contains("every user"))
+        );
+        // Shared ships with macOS, so it is there to be judged as a folder.
+        for spelling in ["/Users/Shared", "/users/shared"] {
+            assert!(
+                refused(spelling, root)
+                    .is_some_and(|reason| reason.contains("home folder")),
+                "{spelling} is an account's folder"
+            );
+        }
+        // The Data volume's spelling is judged as the same place.
+        let data = Path::new(crate::space::MACOS_DATA_VOLUME);
+        assert!(
+            refused("/System/Volumes/Data/Users/Shared", data)
+                .is_some_and(|reason| reason.contains("home folder"))
+        );
+        // Inside a home folder stays removable, as under one's own home.
+        assert_eq!(refused("/Users/Shared/old-installer.pkg", root), None);
+        assert_eq!(refused("/Users/nobody-is-here", root), None);
+    }
+
+    #[test]
+    fn a_single_path_is_judged_as_a_plan_would() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let inside = root.join("cache");
+        fs::create_dir(&inside).expect("mkdir");
+        assert_eq!(refusal(&inside, root), None);
+        assert!(
+            refusal(root, root)
+                .is_some_and(|reason| reason.contains("scanned root"))
+        );
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        assert!(
+            refusal(elsewhere.path(), root)
+                .is_some_and(|reason| reason.contains("outside"))
+        );
+        let planned = plan(
+            &[Target {
+                path: root.to_path_buf(),
+                bytes: 0,
+                is_dir: true,
+                hidden: false,
+            }],
+            root,
+        );
+        assert_eq!(
+            Some(planned.blocked[0].reason.clone()),
+            refusal(root, root),
+            "one judgement, two callers"
         );
     }
 
