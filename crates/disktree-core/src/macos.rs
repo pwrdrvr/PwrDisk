@@ -868,7 +868,39 @@ fn private_info(
     inode: u64,
     id: u64,
 ) -> (CloneInfo, Option<u64>) {
-    let mut info = CloneInfo {
+    // A different data-stream ID predicts a full clone in APFS listings,
+    // but is never evidence of sharing by itself:
+    // confirm the flags and reference count in one metadata read. Asking
+    // for private size too makes APFS walk the stream's extents even when
+    // it has just established that every block is shared.
+    if id != inode {
+        let sampled = clone_metadata(path, device, inode, id, false);
+        if sampled.0.private_bytes.is_some() {
+            return sampled;
+        }
+    }
+    clone_metadata(path, device, inode, id, true)
+}
+
+#[cfg(test)]
+thread_local! {
+    static PRIVATE_READS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
+fn clone_metadata(
+    path: &Path,
+    device: u64,
+    inode: u64,
+    id: u64,
+    private: bool,
+) -> (CloneInfo, Option<u64>) {
+    #[cfg(test)]
+    if private {
+        PRIVATE_READS.with(|reads| reads.set(reads.get() + 1));
+    }
+    let info = CloneInfo {
         device,
         id,
         ..CloneInfo::default()
@@ -881,7 +913,13 @@ fn private_info(
     let mut request = clone_attrs(
         libc::ATTR_CMN_FILEID,
         libc::ATTR_FILE_DATAALLOCSIZE,
-        libc::ATTR_CMNEXT_PRIVATESIZE | HINTS | REFCNT,
+        HINTS
+            | REFCNT
+            | if private {
+                libc::ATTR_CMNEXT_PRIVATESIZE
+            } else {
+                0
+            },
     );
     let mut buffer = [0_u8; 96];
     loop {
@@ -907,7 +945,22 @@ fn private_info(
         }
         return (info, None);
     }
-    let Some(length) = clone_read_u32(&buffer, 0) else {
+    decode_clone_metadata(&buffer, device, inode, id, private)
+}
+
+fn decode_clone_metadata(
+    buffer: &[u8],
+    device: u64,
+    inode: u64,
+    id: u64,
+    private: bool,
+) -> (CloneInfo, Option<u64>) {
+    let mut info = CloneInfo {
+        device,
+        id,
+        ..CloneInfo::default()
+    };
+    let Some(length) = clone_read_u32(buffer, 0) else {
         return (info, None);
     };
     let Some(buffer) = buffer.get(..length as usize) else {
@@ -924,8 +977,9 @@ fn private_info(
     // Packed order includes realdevid before cloneid, even when unavailable.
     // PACK_INVAL_ATTRS reserves its slot; ordinary st_dev can alias APFS
     // System and Data volumes and must never substitute for this identity.
+    let after_private = if private { 48 } else { 40 };
     let real_device = if extended & REAL_DEVICE != 0 {
-        u64::from(clone_read_u32(buffer, 48).unwrap_or(0))
+        u64::from(clone_read_u32(buffer, after_private).unwrap_or(0))
     } else {
         0
     };
@@ -934,7 +988,7 @@ fn private_info(
     }
     info.device = real_device;
     if extended & libc::ATTR_CMNEXT_CLONEID == 0
-        || clone_read_u64(buffer, 52) != Some(id)
+        || clone_read_u64(buffer, after_private + 4) != Some(id)
     {
         return (info, None);
     }
@@ -945,13 +999,25 @@ fn private_info(
         info.data_bytes = clone_read_u64(buffer, 32).unwrap_or(0);
     }
     if extended & REFCNT != 0 {
-        info.references = clone_read_u32(buffer, 68).unwrap_or(0);
+        info.references =
+            clone_read_u32(buffer, after_private + 20).unwrap_or(0);
     }
     let flags = if extended & libc::ATTR_CMNEXT_EXT_FLAGS == 0 {
         None
     } else {
-        clone_read_u64(buffer, 60)
+        clone_read_u64(buffer, after_private + 12)
     };
+    // EF_SHARES_ALL_BLOCKS promises that another file shares every data
+    // block. None can be private, irrespective of snapshots. Require the
+    // reference count and data allocation as well; older kernels and
+    // incomplete replies fall back to the original private-size query.
+    if !private
+        && flags.is_some_and(|flags| flags & FULL_SHARE != 0)
+        && info.references >= 2
+        && files & libc::ATTR_FILE_DATAALLOCSIZE != 0
+    {
+        info.private_bytes = Some(0);
+    }
     (info, flags)
 }
 
@@ -998,6 +1064,7 @@ pub fn clone_info(path: &Path, meta: &Metadata) -> Option<CloneInfo> {
 mod clone_tests {
     use super::*;
     use crate::scan::{ScanOptions, scan};
+    use proptest::prelude::*;
     use std::fs;
     use std::io::{Seek, SeekFrom, Write};
     use std::process::Command;
@@ -1016,6 +1083,131 @@ mod clone_tests {
                 .success()
         );
         temp
+    }
+
+    #[test]
+    fn a_confirmed_full_clone_needs_no_private_extent_walk() {
+        let temp = fixture();
+        let entry = read_dir(temp.path(), Clones::Flags)
+            .expect("listing")
+            .map(Result::unwrap)
+            .find(|entry| entry.name() == "clone")
+            .expect("clone");
+        let hints = entry.hints.expect("clone hints");
+        assert_ne!(entry.inode, hints.id);
+        let path = entry.path(temp.path());
+        let expected =
+            clone_metadata(&path, hints.device, entry.inode, hints.id, true);
+        assert_eq!(expected.0.private_bytes, Some(0));
+        assert!(expected.0.references >= 2);
+        assert_ne!(expected.1.expect("flags") & FULL_SHARE, 0);
+        PRIVATE_READS.with(|reads| reads.set(0));
+        let actual = private_info(&path, hints.device, entry.inode, hints.id);
+        assert_eq!(actual, expected);
+        assert_eq!(PRIVATE_READS.with(std::cell::Cell::get), 0);
+    }
+
+    #[test]
+    fn a_shortcut_requires_returned_facts_and_matching_identity() {
+        let mut record = [0_u8; 64];
+        record[..4].copy_from_slice(&64_u32.to_ne_bytes());
+        record[4..8].copy_from_slice(&libc::ATTR_CMN_FILEID.to_ne_bytes());
+        record[16..20]
+            .copy_from_slice(&libc::ATTR_FILE_DATAALLOCSIZE.to_ne_bytes());
+        let extended = HINTS | REFCNT;
+        record[20..24].copy_from_slice(&extended.to_ne_bytes());
+        record[24..32].copy_from_slice(&11_u64.to_ne_bytes());
+        record[32..40].copy_from_slice(&4096_u64.to_ne_bytes());
+        record[40..44].copy_from_slice(&7_u32.to_ne_bytes());
+        record[44..52].copy_from_slice(&10_u64.to_ne_bytes());
+        record[52..60].copy_from_slice(&FULL_SHARE.to_ne_bytes());
+        record[60..64].copy_from_slice(&2_u32.to_ne_bytes());
+        let decode =
+            |record: &[u8]| decode_clone_metadata(record, 7, 11, 10, false);
+        assert_eq!(decode(&record).0.private_bytes, Some(0));
+        // PACK_INVAL_ATTRS retains a slot even when its bit is absent.
+        // Stale bytes in that slot cannot establish sharing.
+        for (at, mask) in [
+            (4, libc::ATTR_CMN_FILEID),
+            (16, libc::ATTR_FILE_DATAALLOCSIZE),
+            (20, REAL_DEVICE),
+            (20, libc::ATTR_CMNEXT_CLONEID),
+            (20, libc::ATTR_CMNEXT_EXT_FLAGS),
+            (20, REFCNT),
+        ] {
+            let mut missing = record;
+            let bits = clone_read_u32(&missing, at).expect("bitmap") & !mask;
+            missing[at..at + 4].copy_from_slice(&bits.to_ne_bytes());
+            assert_eq!(decode(&missing).0.private_bytes, None);
+        }
+        for at in [24, 40, 44, 52, 60] {
+            let mut changed = record;
+            changed[at..at + 4].copy_from_slice(&0_u32.to_ne_bytes());
+            assert_eq!(decode(&changed).0.private_bytes, None);
+        }
+        for length in 0..record.len() {
+            assert_eq!(decode(&record[..length]).0.private_bytes, None);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 16,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        /// The old, unconditional private-size query is the oracle. Full
+        /// clones, changed streams, holes, hardlinks and resource forks
+        /// must retain every field, including unknown values.
+        #[test]
+        fn staged_clone_metadata_matches_the_private_size_oracle(
+            blocks in 0_usize..65,
+            offset in 0_u64..65,
+            fork_blocks in 0_usize..5,
+        ) {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let root = temp.path();
+            let source = root.join("source");
+            fs::write(&source, vec![0x5a; blocks * 4096]).expect("source");
+            for name in ["clone", "changed", "fork"] {
+                assert!(Command::new("cp")
+                    .arg("-c")
+                    .arg(&source)
+                    .arg(root.join(name))
+                    .status()
+                    .expect("cp -c")
+                    .success());
+            }
+            let mut changed = fs::OpenOptions::new()
+                .write(true)
+                .open(root.join("changed"))
+                .expect("open");
+            changed.seek(SeekFrom::Start(offset * 4096)).expect("seek");
+            changed.write_all(&[1; 4096]).expect("change clone");
+            changed.sync_all().expect("sync");
+            fs::hard_link(root.join("clone"), root.join("linked"))
+                .expect("hardlink");
+            fs::write(
+                root.join("fork/..namedfork/rsrc"),
+                vec![9; fork_blocks * 4096],
+            ).expect("resource fork");
+            let sparse = fs::File::create(root.join("sparse"))
+                .expect("sparse file");
+            sparse.set_len(offset * 4096).expect("hole");
+            for entry in read_dir(root, Clones::Flags).expect("listing") {
+                let entry = entry.expect("entry");
+                let hints = entry.hints.expect("hints");
+                let path = entry.path(root);
+                let expected = clone_metadata(
+                    &path, hints.device, entry.inode, hints.id, true,
+                );
+                let actual = private_info(
+                    &path, hints.device, entry.inode, hints.id,
+                );
+                prop_assert_eq!(actual, expected, "{:?}", entry.name());
+            }
+        }
     }
 
     #[test]
