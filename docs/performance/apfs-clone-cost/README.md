@@ -34,10 +34,21 @@ which listing with fewer threads does not avoid.
 
 ## Why the flags can be read once a group
 
-Every file of a clone group (`REALDEVID`, `CLONEID`) shares one data
-stream, and APFS keeps the reference count with the stream. A standalone
-probe listed every file with the group, the flags and the reference
-count:
+Apple documents the grouping. getattrlist(2) says `ATTR_CMNEXT_CLONEID`
+"uniquely identifies the data stream associated with the file system
+object. Useful for finding which files are pure clones of each other (as
+they will have the same clone-id)", and `EF_SHARES_ALL_BLOCKS` means the
+file "is a full clone". The Apple File System Reference (2020-06-22)
+gives the stream's side: an inode's `private_id` is "the unique
+identifier used by this file's data stream", extents belong to that
+identifier, and the reference count lives in the stream's own record
+(`j_dstream_id_val_t.refcnt`). "May share" is per inode
+(`INODE_WAS_CLONED`, `INODE_WAS_EVER_CLONED`), but a file whose stream
+another file uses was either cloned or made by cloning.
+
+No document says the flags agree across a group in so many words, so a
+standalone probe checked it. It listed every file with the group, the
+flags and the reference count:
 
 | tree | files | groups | groups whose files disagree |
 | --- | ---: | ---: | ---: |

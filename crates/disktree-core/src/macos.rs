@@ -253,12 +253,15 @@ impl Entry {
     /// and identity remain the values returned by the bulk listing.
     ///
     /// A listing without sharing flags takes them from the file's clone
-    /// group. Every file of a group shares one data stream, and APFS keeps
-    /// the sharing state and the reference count with that stream, not with
-    /// each file: across 2.9 million groups on three trees (worktrees, a
-    /// home Library and a folder of checkouts) no two files of a group
-    /// disagreed. A group the scan has not met yet is read from the file
-    /// itself, in the read that measures its private size.
+    /// group. A clone ID names a data stream, and files with the same one
+    /// are pure clones of each other (getattrlist(2)); APFS keeps the
+    /// stream's reference count with the stream, not with each file (the
+    /// Apple File System Reference, `j_dstream_id_val_t`). So a file whose
+    /// group shares all its blocks does too: across 2.9 million groups on
+    /// three trees (worktrees, a home Library and a folder of checkouts)
+    /// no two files of a group disagreed. A group the scan has not met yet
+    /// is read from the file itself, in the read that measures its private
+    /// size.
     pub fn clone_info(
         &self,
         dir: &Path,
