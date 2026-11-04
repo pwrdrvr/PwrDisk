@@ -137,6 +137,10 @@ pub(super) fn inspection_with(
     }).or_else(|| {
         // An opaque cache tag is a refusal hint for relocated caches too;
         // it is never enough evidence to build an owner cleanup command.
-        (path.join("CACHEDIR.TAG").is_file() || shape_owner(path).is_some()).then(|| "Opaque cache/store layout requires inspection and owner cleanup; no raw deletion fallback".into())
+        path.ancestors().find_map(|ancestor| {
+            (ancestor.join("CACHEDIR.TAG").is_file()
+                || shape_owner(ancestor).is_some())
+                .then(|| "Opaque cache/store layout requires inspection and owner cleanup; no raw deletion fallback".into())
+        })
     })
 }

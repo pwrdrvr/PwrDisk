@@ -2921,6 +2921,17 @@ impl Disktree {
 
     /// The plan the review screen shows and the removal runs.
     pub fn plan(&self) -> Plan {
+        if self.remote.is_none()
+            && self.removal_mode == RemovalMode::OwnerCleanup
+            && let Ok(prepared) = self.cleanup_ready()
+        {
+            return prepared.plan.clone();
+        }
+        self.selection_plan()
+    }
+
+    /// Only marked paths: owner execution scopes must never widen exports.
+    pub(crate) fn selection_plan(&self) -> Plan {
         #[cfg(test)]
         crate::marks::work::PLANS.set(crate::marks::work::PLANS.get() + 1);
         if self.remote.is_some() {
@@ -2940,11 +2951,6 @@ impl Disktree {
             // Remote volume attribution is unknown; never infer it from
             // this computer's mounts or project an unmeasured saving.
             return selection;
-        }
-        if self.removal_mode == RemovalMode::OwnerCleanup
-            && let Ok(prepared) = self.cleanup_ready()
-        {
-            return prepared.plan.clone();
         }
         let mut plan = plan(self.marks.items(), &self.root_path);
         if let Some(tree) = &self.tree {
@@ -4182,8 +4188,7 @@ impl Disktree {
         .detach();
     }
 
-    /// Save what the plan would act on as a list of paths, one per line,
-    /// wherever the user chooses: for a script, or for later.
+    /// Save marked paths, one per line, without widening to owner scopes.
     pub fn save_delete_list(&mut self, cx: &mut Context<'_, Self>) {
         self.save_export(false, cx);
     }
@@ -4193,18 +4198,14 @@ impl Disktree {
     }
 
     fn save_export(&mut self, script: bool, cx: &mut Context<'_, Self>) {
-        let plan = self.plan();
-        if plan.is_empty() {
-            self.notice = Some(("nothing to save".into(), Status::Warning));
-            cx.notify();
-            return;
-        }
-        let list = if script {
-            self.delete_script(&plan.targets)
-        } else {
-            disktree_core::export::delete_list(&plan.targets)
+        let (list, count) = match self.export_text(script) {
+            Ok(export) => export,
+            Err(reason) => {
+                self.notice = Some((reason, Status::Warning));
+                cx.notify();
+                return;
+            }
         };
-        let count = plan.targets.len();
         let directory =
             std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let filename = if script {
@@ -4239,39 +4240,65 @@ impl Disktree {
         .detach();
     }
 
-    fn delete_script(&self, targets: &[Target]) -> String {
+    /// Both save and copy use this boundary before opening a prompt or
+    /// changing the clipboard. A raw script cannot stand in for an owner.
+    pub(crate) fn export_text(
+        &self,
+        script: bool,
+    ) -> Result<(String, usize), String> {
+        let plan = self.selection_plan();
+        if plan.is_empty() {
+            return Err("nothing selected for export".into());
+        }
+        if !script {
+            return Ok((
+                disktree_core::export::delete_list(&plan.targets),
+                plan.targets.len(),
+            ));
+        }
+        if self.removal_mode == RemovalMode::OwnerCleanup
+            || (self.remote.is_none()
+                && plan.targets.iter().any(|target| {
+                    disktree_core::cleanup::inspection_reason(&target.path)
+                        .is_some()
+                }))
+        {
+            return Err("Cache selections require owner cleanup or inspection; a raw deletion script cannot replace owner cleanup".into());
+        }
         let identity = if self.remote.is_some() {
             self.remote_identity.clone()
         } else {
             disktree_core::identity::HostIdentity::current()
         };
-        disktree_core::export::delete_script_for(
-            targets,
+        let text = disktree_core::export::delete_script_for(
+            &plan.targets,
             &self.root_path,
             self.remote.as_deref(),
             identity.as_ref(),
-        )
+        );
+        Ok((text, plan.targets.len()))
     }
 
     pub fn copy_delete_script(&mut self, cx: &mut Context<'_, Self>) {
-        let plan = self.plan();
-        if plan.is_empty() {
-            self.notice = Some(("nothing to copy".into(), Status::Warning));
-        } else {
-            let script = self.delete_script(&plan.targets);
-            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(script));
-            self.notice = Some((
-                "copied delete script; previews by default, checks host before deletion".into(),
-                Status::Success,
-            ));
+        match self.export_text(true) {
+            Ok((script, _)) => {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                    script,
+                ));
+                self.notice = Some((
+                    "copied delete script; previews by default, checks host before deletion".into(),
+                    Status::Success,
+                ));
+            }
+            Err(reason) => self.notice = Some((reason, Status::Warning)),
         }
         cx.notify();
     }
 
     /// Copy instructions for a coding agent to free the space by removing
-    /// what the plan would act on, after checking each path.
+    /// the marked paths, after checking each path.
     pub fn copy_agent_prompt(&mut self, cx: &mut Context<'_, Self>) {
-        let plan = self.plan();
+        let plan = self.selection_plan();
         if plan.is_empty() {
             self.notice = Some(("nothing to copy".into(), Status::Warning));
             cx.notify();

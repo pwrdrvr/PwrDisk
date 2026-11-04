@@ -190,6 +190,11 @@ Unavailable commands do not establish absent software. Unsupported versions,
 unknown runtime/install caches and failed owner commands require inspection;
 never substitute raw deletion or a shell command.
 
+Cache tags and owner layouts on ancestors protect contained files and
+subtrees too. All removal modes may return a preparing response while
+inspection runs on a worker; retry only the read-only preview. Exported
+lists keep marked paths, and raw script exports cannot replace owner cleanup.
+
 On macOS and Linux the initial adapters cover npm packages (9–11), npm's
 separate npx cache (11.2–11.x), uv (0.11.x), pip (23–26) and Cypress (13–15),
 only when their installed CLI resolves the selected cache. pnpm, Homebrew,

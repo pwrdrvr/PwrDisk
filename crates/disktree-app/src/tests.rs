@@ -5486,6 +5486,33 @@ fn the_tooltip_follows_the_pointer_inside_a_client_side_frame(
     assert_eq!(tip.top(), at.y + px(gap));
 }
 
+/// Only a read-only preview may be retried while its worker is preparing.
+fn await_removal_preview(
+    ask: &mut impl FnMut(
+        &mut Window,
+        disktree_link::Request,
+    ) -> disktree_link::Response,
+    cx: &mut Window,
+    request: &disktree_link::Request,
+) -> disktree_link::RemovalPreview {
+    assert!(matches!(
+        request,
+        disktree_link::Request::PrepareRemoval { .. }
+    ));
+    for _ in 0..400 {
+        cx.run_until_parked();
+        match ask(cx, request.clone()) {
+            disktree_link::Response::RemovalPreview(preview) => return preview,
+            disktree_link::Response::Error { message }
+                if message.contains("preparing") => {}
+            response => panic!("preview refused: {response:?}"),
+        }
+        draw(cx);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("preview worker did not finish");
+}
+
 /// Drive the window as `pwrdisk mcp` does, over the real socket: say
 /// hello, mark, show, open the review, unmark, hang up. The marks land in
 /// the window, the screen follows, and the header names the agent while it
@@ -5755,10 +5782,12 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     let preview_request = Request::PrepareRemoval {
         mode: disktree_link::RemovalChoice::Permanent,
     };
-    let Response::RemovalPreview(preview) = ask(cx, preview_request.clone())
-    else {
-        panic!("preview");
-    };
+    assert!(matches!(
+        ask(cx, preview_request.clone()),
+        Response::Error { message } if message.contains("preparing")
+    ));
+    assert!(matches!(ask(cx, Request::State), Response::State(_)));
+    let preview = await_removal_preview(&mut ask, cx, &preview_request);
     assert_eq!(preview.estimate.paths, preview.paths);
     assert_eq!(preview.estimate.lower, 0, "apparent fixture sizes");
     assert_eq!(preview.estimate.upper, None);
@@ -5806,10 +5835,7 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         ask(cx, Request::Remove(confirmed(&preview))),
         Response::Error { .. }
     ));
-    let Response::RemovalPreview(changed) = ask(cx, preview_request.clone())
-    else {
-        panic!("preview");
-    };
+    let changed = await_removal_preview(&mut ask, cx, &preview_request);
     ask(
         cx,
         Request::Unmark {
@@ -5836,10 +5862,7 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     update(&view, cx, |app, _| {
         app.removal_settings_dir = Some(settings.clone());
     });
-    let Response::RemovalPreview(old_policy) = ask(cx, preview_request.clone())
-    else {
-        panic!("preview");
-    };
+    let old_policy = await_removal_preview(&mut ask, cx, &preview_request);
     crate::safety::save(
         Some(&settings),
         disktree_core::removal_limit::Limit::new(10).expect("10%"),
@@ -5855,9 +5878,7 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         disktree_core::removal_limit::Limit::default(),
     )
     .expect("restore fixture policy");
-    let Response::RemovalPreview(preview) = ask(cx, preview_request) else {
-        panic!("preview");
-    };
+    let preview = await_removal_preview(&mut ask, cx, &preview_request);
     assert_eq!(preview.paths, [root.join("junk")]);
     assert_eq!(preview.limit_percent, 5);
     let started = ask(cx, Request::Remove(confirmed(&preview)));
@@ -9609,6 +9630,129 @@ fn the_marked_total_is_pinned_above_the_disk_with_the_review(
     );
     click_on(cx, "review");
     assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+}
+
+/// Preparation yields to the window; confirmation leaves fresh recursive
+/// inspection to the removal worker, which must still refuse new caches.
+#[gpui_kit::test]
+fn raw_inspection_prepares_off_thread_and_execution_rechecks(
+    cx: &mut TestAppContext,
+) {
+    use disktree_link::{ConfirmedRemoval, RemovalChoice, Request, Response};
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    #[cfg(not(windows))]
+    let socket = temp.path().join("inspection.sock");
+    #[cfg(windows)]
+    let socket = PathBuf::from(format!(
+        r"\\.\pipe\pwrdisk-inspection-{}",
+        temp.path()
+            .file_name()
+            .expect("temp name")
+            .to_string_lossy()
+    ));
+    let listener = disktree_link::Listener::bind_at(&socket).expect("link");
+    update(&view, cx, |app, cx| {
+        app.attach_agent(listener, cx);
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+    });
+    let mut ask = |cx: &mut Window, request: Request| {
+        update(&view, cx, |app, cx| app.answer_agent(&request, cx))
+    };
+    let request = Request::PrepareRemoval {
+        mode: RemovalChoice::Permanent,
+    };
+    assert!(
+        matches!(ask(cx, request.clone()), Response::Error { message }
+        if message.contains("preparing"))
+    );
+    // Another request and a frame can proceed while inspection is pending.
+    assert!(matches!(ask(cx, Request::State), Response::State(_)));
+    draw(cx);
+    let preview = await_removal_preview(&mut ask, cx, &request);
+    assert_eq!(preview.paths, [temp.path().join("junk")]);
+
+    // This appears after the preview. Confirmation must not walk it on the
+    // UI thread, but the fresh worker check must protect it before writes.
+    let tag = temp.path().join("junk/deeper/CACHEDIR.TAG");
+    std::fs::write(&tag, "cache").expect("fixture cache appeared");
+    let response = ask(
+        cx,
+        Request::Remove(ConfirmedRemoval {
+            preview_id: preview.preview_id,
+            mode: preview.mode,
+            paths: preview.paths,
+            confirmation: preview.mode.confirmation().into(),
+            rescan: false,
+        }),
+    );
+    assert!(matches!(response, Response::State(state)
+        if state.screen == "running"));
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done);
+    read(&view, cx, |app| assert_eq!(app.run_list.totals().failed, 1));
+    assert!(tag.exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// Exporting a cache selection cannot substitute raw deletion for its owner.
+#[gpui_kit::test]
+fn cache_exports_keep_marks_and_refuse_raw_scripts(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let selected = temp.path().join(".cache/blob.bin");
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let cache = child_crumbs(app, &[], ".cache");
+        let file = child_crumbs(app, &cache, "blob.bin");
+        app.toggle_mark(&file, cx);
+        app.open_review(cx);
+        let (list, count) = app.export_text(false).expect("marked list");
+        assert_eq!(count, 1);
+        assert_eq!(list, format!("{}\n", selected.display()));
+        for mode in [
+            RemovalMode::OwnerCleanup,
+            RemovalMode::Permanent,
+            RemovalMode::Trash,
+        ] {
+            app.removal_mode = mode;
+            assert!(
+                app.export_text(true)
+                    .expect_err("no raw script")
+                    .contains("owner cleanup")
+            );
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                "keep".into(),
+            ));
+            app.copy_delete_script(cx);
+            app.save_delete_script(cx);
+            assert!(
+                app.notice
+                    .as_ref()
+                    .expect("refusal")
+                    .0
+                    .contains("owner cleanup")
+            );
+        }
+    });
+    assert_eq!(clipboard(cx), "keep", "refusal leaves clipboard alone");
+    assert!(selected.exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
 }
 
 /// Cache classification steers review, but grants no generic deletion.

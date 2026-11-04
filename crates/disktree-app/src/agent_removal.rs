@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use disktree_core::removal::{Target, detect_trash_backend};
+use disktree_core::removal::{Plan, Target, detect_trash_backend};
 use disktree_core::tree::Tree;
 use disktree_link::{
     ConfirmedRemoval, RemovalChoice, RemovalPreview, Response,
@@ -15,6 +15,30 @@ use crate::state::{Disktree, Screen};
 
 const LIFETIME: Duration = Duration::from_mins(5);
 static NEXT_PREVIEW: AtomicU64 = AtomicU64::new(0);
+
+/// A bounded recursive inspection can outlast a link request. Its result
+/// belongs to this exact scan/selection, never to a later set of marks.
+#[derive(Debug)]
+pub struct RawInspection {
+    root: std::path::PathBuf,
+    marks: Vec<Target>,
+    targets: Vec<Target>,
+    tree: Weak<Tree>,
+    created: Instant,
+    result: Option<Result<(), String>>,
+}
+
+impl RawInspection {
+    fn matches(&self, app: &Disktree, plan: &Plan) -> bool {
+        self.root == app.root_path
+            && self.marks == app.marks.items()
+            && self.targets == plan.targets
+            && self.created.elapsed() < LIFETIME
+            && app.tree.as_ref().is_some_and(|tree| {
+                Weak::ptr_eq(&self.tree, &Arc::downgrade(tree))
+            })
+    }
+}
 
 #[derive(Debug)]
 pub struct PreparedRemoval {
@@ -51,6 +75,9 @@ impl Disktree {
             self.prepare_cleanup(cx);
             return Response::error(reason);
         }
+        if mode != RemovalChoice::OwnerCleanup {
+            self.prepare_raw_inspection(cx);
+        }
         match self.prepare_removal_intent(mode) {
             Ok(prepared) => {
                 let preview = prepared.preview.clone();
@@ -62,6 +89,77 @@ impl Disktree {
             }
             Err(reason) => Response::error(reason),
         }
+    }
+
+    fn prepare_raw_inspection(&mut self, cx: &Context<'_, Self>) {
+        if self.remote.is_some()
+            || self.scan.is_some()
+            || self.screen == Screen::Running
+            || self.restarting
+            || self.marks.is_empty()
+        {
+            return;
+        }
+        let Some(tree) = &self.tree else {
+            return;
+        };
+        let plan =
+            disktree_core::removal::plan(self.marks.items(), &self.root_path);
+        if !plan.blocked.is_empty() || plan.is_empty() {
+            return;
+        }
+        if self
+            .agent
+            .as_ref()
+            .and_then(|agent| agent.raw_inspection.as_ref())
+            .is_some_and(|inspection| inspection.matches(self, &plan))
+        {
+            return;
+        }
+        let Some(agent) = &mut self.agent else {
+            return;
+        };
+        let created = Instant::now();
+        agent.raw_inspection = Some(RawInspection {
+            root: self.root_path.clone(),
+            marks: self.marks.items().to_vec(),
+            targets: plan.targets.clone(),
+            tree: Arc::downgrade(tree),
+            created,
+            result: None,
+        });
+        let task = cx.background_executor().spawn(async move {
+            disktree_core::cleanup::check_raw(&plan.targets)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(inspection) = this
+                    .agent
+                    .as_mut()
+                    .and_then(|agent| agent.raw_inspection.as_mut())
+                    && inspection.created == created
+                {
+                    inspection.result = Some(result);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn raw_inspection_ready(&self, plan: &Plan) -> Result<(), String> {
+        let inspection = self
+            .agent
+            .as_ref()
+            .and_then(|agent| agent.raw_inspection.as_ref())
+            .filter(|inspection| inspection.matches(self, plan))
+            .ok_or(
+                "Prepare a new raw-removal preview for this scan and selection",
+            )?;
+        inspection.result.as_ref()
+            .ok_or("Raw removal inspection is preparing; retry only the read-only preview shortly")?
+            .clone()
     }
 
     fn prepare_removal_intent(
@@ -88,9 +186,6 @@ impl Disktree {
             // of an MCP raw-removal request.
             disktree_core::removal::plan(self.marks.items(), &self.root_path)
         };
-        if mode != RemovalChoice::OwnerCleanup {
-            disktree_core::cleanup::check_raw(&plan.targets)?;
-        }
         if !plan.blocked.is_empty() {
             return Err(format!(
                 "Removal guards refuse: {}",
@@ -107,6 +202,9 @@ impl Disktree {
         }
         if plan.is_empty() {
             return Err("Nothing is marked".into());
+        }
+        if mode != RemovalChoice::OwnerCleanup {
+            self.raw_inspection_ready(&plan)?;
         }
         let limit = crate::safety::load(self.removal_settings_dir.as_deref())?;
         let volumes = limit.check(&plan.targets)?;
@@ -184,6 +282,12 @@ impl Disktree {
             Ok(fresh) => fresh,
             Err(reason) => return Response::error(reason),
         };
+        // Confirmation uses the prepared read-only result. The removal
+        // worker independently inspects again before any filesystem write.
+        // No later preview may reuse this operation's inspection.
+        if let Some(agent) = &mut self.agent {
+            agent.raw_inspection = None;
+        }
         if fresh.preview.limit_percent != preview.limit_percent
             || fresh.preview.volumes != preview.volumes
             || fresh.preview.cleanup != preview.cleanup

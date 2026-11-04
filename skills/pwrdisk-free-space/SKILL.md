@@ -197,7 +197,11 @@ Looking is free; acting is the user's call.
    `trash` or `permanent` for ordinary paths). Show every owner, version,
    executable, argument list, environment override, selected path, actual
    whole-cache scope, effects and limitations, including unselected siblings.
-   A preparing response permits retrying only the read-only preview. Unknown,
+   Every mode may return preparing while inspection runs on a worker;
+   retry only the read-only preview. Exports contain marked paths, never
+   expanded owner scopes; a refused raw script is not a deletion fallback.
+   Cache tags/layouts on ancestors protect contained files and subtrees too.
+   Unknown,
    unsupported, unavailable or failed owners never fall back to raw deletion.
    Show every returned actual-scope path and
    the consequences, and wait for explicit user confirmation. Only then call

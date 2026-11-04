@@ -377,6 +377,33 @@ fn raw_removal_refuses_cache_wrappers_and_descendants_but_accepts_build_output()
     assert!(cache.join("payload").exists());
 }
 
+#[test]
+fn relocated_cache_ancestors_protect_subtrees_and_files() {
+    let fixture = Fixture::new();
+    let tagged = fixture.dir("uv-data/archive-v0/one/two");
+    std::fs::write(
+        fixture.env.home.join("uv-data/CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55",
+    )
+    .expect("cache tag");
+    let pip = fixture.dir("pip-data/wheels/deep/entries");
+    fixture.dir("pip-data/http-v2");
+    let pnpm = fixture.dir("pnpm-data/v10/files/deep/entries");
+    let cypress = fixture.dir("browser-data/15.0.0/Cypress.app/deep/entries");
+    for path in [tagged, pip, pnpm, cypress] {
+        for selected in [path.clone(), path.join("payload")] {
+            assert!(
+                recognize::inspection_with(&selected, &fixture.env).is_some(),
+                "relocated ancestor must protect {selected:?}"
+            );
+            assert!(check_raw(&[target(&selected)]).is_err());
+            assert!(selected.exists(), "inspection cannot delete");
+        }
+    }
+    let ordinary = fixture.dir("ordinary/project/target");
+    check_raw(&[target(&ordinary)]).expect("unrelated build output");
+}
+
 #[cfg(unix)]
 #[test]
 fn external_cache_links_are_refused_while_internal_layout_links_are_allowed() {

@@ -54,6 +54,7 @@ pub struct AgentLink {
     /// The last removal, for an agent that asks what was freed.
     pub last_removal: Option<Removal>,
     pub(crate) removal_preview: Option<crate::agent_removal::PreparedRemoval>,
+    pub(crate) raw_inspection: Option<crate::agent_removal::RawInspection>,
 }
 
 impl AgentLink {
@@ -64,6 +65,7 @@ impl AgentLink {
             pending_show: None,
             last_removal: None,
             removal_preview: None,
+            raw_inspection: None,
         }
     }
 }
@@ -204,6 +206,7 @@ impl Disktree {
                 }
                 if let Some(agent) = &mut self.agent {
                     agent.removal_preview = None;
+                    agent.raw_inspection = None;
                 }
                 self.note_agent(Some(client), "connected".to_string());
                 Response::State(self.agent_state())

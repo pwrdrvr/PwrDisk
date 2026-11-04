@@ -61,13 +61,23 @@ overrides, working directory, selected paths, actual whole-cache scopes,
 effects and limitations. Wider scope includes unselected siblings and needs
 approval as such. Cache cleanup has no Trash recovery.
 
-MCP uses `pwrdisk_removal_preview` with `mode: "owner_cleanup"`. The first
-request can return a preparing message; retry that read-only preview. Show
+MCP uses `pwrdisk_removal_preview` with `mode: "owner_cleanup"`. All removal
+modes prepare recursive cache inspection on a worker. The first request can
+return a preparing message; retry only that read-only preview. Confirmation
+uses the scan/mark-bound result and execution independently inspects again
+on its worker before writes. Show
 all operations to the user. `pwrdisk_remove` requires the exact ordered
 **actual-scope paths**, preview ID, same mode and `RUN OWNER CLEANUP`, plus
 the existing interactive client confirmation. Computer use cannot approve.
 The preview is single-use, bound to the scan and marks, and expires within
 five minutes. Changed/expired previews require new approval.
+
+Exports remain limited to the marked paths, even when an owner preview has
+expanded its execution scope. Lists and agent prompts never inherit that
+wider scope. Save/copy raw deletion scripts refuse Owner cleanup mode and
+recognized cache selections; exporting cannot substitute `rm -rf` for an
+owner command. Tags and owner layouts on ancestors protect contained
+subdirectories and files, including caches relocated through CLI settings.
 
 The usual root/home/system/mount/symlink protections apply to the full
 actual scopes. Scopes outside the scan, or equal to its root, are refused;
