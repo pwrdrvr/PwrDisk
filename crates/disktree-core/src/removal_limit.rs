@@ -111,19 +111,42 @@ impl Ceilings {
         targets: &[Target],
         volume: impl FnMut(&Path) -> Result<(String, u64), String>,
     ) -> Result<Vec<Budget>, String> {
-        usage(targets, volume)?.into_iter().map(|Usage { volume, bytes, capacity }| {
-            let percent = self.of(&volume).0;
-            // u128 keeps the inclusive boundary exact even on a huge volume.
-            let limit = u64::try_from(u128::from(capacity) * u128::from(percent) / 100)
-                .map_err(|_| "Removal capacity overflow")?;
-            if bytes > limit {
-                return Err(format!(
-                    "Removal blocked: {} on {volume} exceeds the {percent}% per-operation limit ({} of {} capacity). Reduce the selection or change the limit in Settings > Safety; do not split an unapproved removal into batches.",
-                    human_bytes(bytes), human_bytes(limit), human_bytes(capacity),
-                ));
-            }
-            Ok(Budget { volume, bytes, capacity, limit })
-        }).collect()
+        usage(targets, volume)?
+            .into_iter()
+            .map(
+                |Usage {
+                     volume,
+                     bytes,
+                     capacity,
+                 }| {
+                    let percent = self.of(&volume).0;
+                    // u128 keeps the inclusive boundary exact even on a huge
+                    // volume.
+                    let limit = u64::try_from(
+                        u128::from(capacity) * u128::from(percent) / 100,
+                    )
+                    .map_err(|_| "Removal capacity overflow")?;
+                    if bytes > limit {
+                        return Err(format!(
+                            "Removal blocked: {} on {volume} exceeds the \
+                         {percent}% per-operation limit ({} of {} capacity). \
+                         Reduce the selection or change the limit in \
+                         Settings > Safety; do not split an unapproved \
+                         removal into batches.",
+                            human_bytes(bytes),
+                            human_bytes(limit),
+                            human_bytes(capacity),
+                        ));
+                    }
+                    Ok(Budget {
+                        volume,
+                        bytes,
+                        capacity,
+                        limit,
+                    })
+                },
+            )
+            .collect()
     }
 }
 
@@ -169,22 +192,30 @@ pub fn usage(
 
 /// The volume removing `path` gives space back on: its key and capacity.
 pub fn volume_of(path: &Path) -> Result<(String, u64), String> {
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|error| format!("Cannot inspect removal target: {error}"))?;
-    // Removal unlinks the entry itself, even when its destination is
-    // missing or lies on another volume. Windows also requires a directory
-    // for GetDiskFreeSpaceExW, including regular files.
-    let path = if meta.is_symlink() || (cfg!(windows) && meta.is_file()) {
-        path.parent()
-            .ok_or("A removal entry must have a parent directory")?
-    } else {
-        path
-    };
+    let path = volume_entry(path)?;
     let volume = crate::space::device_for(path)
         .ok_or("Cannot identify the removal target's volume")?;
     let space = crate::space::space_info(path)
         .map_err(|error| format!("Cannot read volume capacity: {error}"))?;
     Ok((volume, space.total))
+}
+
+/// The path whose volume removing `path` frees.
+///
+/// That is `path` itself, or its directory for a link: removal unlinks the
+/// entry itself, even when its destination is missing or lies on another
+/// volume. Windows also requires a directory for `GetDiskFreeSpaceExW`,
+/// including regular files.
+pub fn volume_entry(path: &Path) -> Result<&Path, String> {
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("Cannot inspect removal target: {error}"))?;
+    if meta.is_symlink() || (cfg!(windows) && meta.is_file()) {
+        path.parent().ok_or_else(|| {
+            "A removal entry must have a parent directory".into()
+        })
+    } else {
+        Ok(path)
+    }
 }
 
 /// Re-measure on the worker before any target is touched. A scan may have

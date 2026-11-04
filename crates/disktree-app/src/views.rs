@@ -4424,6 +4424,7 @@ fn review_button(
         .hover(move |style| style.bg(highlight.opacity(0.18)))
         .active(move |style| style.bg(highlight.opacity(0.26)))
         .on_click(cx.listener(|this, _, window, cx| {
+            this.reread_disks();
             this.screen = Screen::Review;
             cx.notify();
             window.focus(&this.focus, cx);

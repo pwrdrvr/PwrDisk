@@ -88,10 +88,12 @@ pub type DiskProbe = fn(&Path) -> Result<Disk, String>;
 pub type DiskCache = HashMap<PathBuf, Result<Disk, String>>;
 
 /// The disk `path` is on, as the worker's check counts it, named by
-/// where it is mounted.
+/// where it is mounted. Both come from the path the check reads, so a
+/// marked link is named by the disk it sits on, not the one it points to.
 pub fn disk_of(path: &Path) -> Result<Disk, String> {
-    let (key, capacity) = disktree_core::removal_limit::volume_of(path)?;
-    let name = disktree_core::space::volume_root_for(path)
+    let entry = disktree_core::removal_limit::volume_entry(path)?;
+    let (key, capacity) = disktree_core::removal_limit::volume_of(entry)?;
+    let name = disktree_core::space::volume_root_for(entry)
         .map_or_else(|| key.clone(), |root| root.display().to_string());
     Ok(Disk {
         key,
@@ -249,8 +251,11 @@ impl Disktree {
     }
 
     /// Whether marking `target` passes `limit` on the scanned volume.
-    /// Every mark counts against it, wherever it lives: the worker checks
-    /// each volume again, and over-counting only asks sooner.
+    /// Every mark counts against it, wherever it lives, so a mark on
+    /// another disk can be over- or under-counted here: a small disk
+    /// mounted inside the scan passes its own limit long before the scanned
+    /// one does. Review and the worker count each disk on its own, and
+    /// those are what hold a removal to the limit.
     fn over_limit(&self, target: &Target, limit: Limit) -> Option<Share> {
         Share::over(self.marked_with(target), self.capacity()?, limit)
     }
@@ -351,6 +356,13 @@ impl Disktree {
                 Ok((disk.key, disk.capacity))
             })?;
         Ok((usage, names))
+    }
+
+    /// Forget which disk each mark is on, so Review reads them again. Every
+    /// way into Review does this: a disk mounted or unmounted since the
+    /// last visit is then seen.
+    pub fn reread_disks(&self) {
+        self.disk_cache.borrow_mut().clear();
     }
 
     /// Every disk the plan takes past the window's limit, for Review's

@@ -1619,9 +1619,7 @@ impl Disktree {
                 cx,
             );
         } else {
-            // Which disk each mark is on is read once a visit: a disk
-            // mounted or unmounted since is seen the next time.
-            self.disk_cache.borrow_mut().clear();
+            self.reread_disks();
             self.screen = Screen::Review;
             self.focus_request = Some(FocusTarget::Root);
         }
