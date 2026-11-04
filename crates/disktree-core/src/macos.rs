@@ -375,6 +375,7 @@ pub struct ReadDir {
     offset: usize,
     done: bool,
     clones: Clones,
+    listed_dirs: bool,
 }
 
 /// Directories listed without sharing flags, so a test can tell that its
@@ -408,6 +409,7 @@ pub fn read_dir(dir: &Path, clones: Clones) -> io::Result<ReadDir> {
         offset: 0,
         done: false,
         clones,
+        listed_dirs: false,
     })
 }
 
@@ -458,6 +460,12 @@ impl Iterator for ReadDir {
 }
 
 impl ReadDir {
+    /// A caller that checks mounts by path can trust directory flags from
+    /// the listing. Otherwise a covered mount point needs a fresh stat.
+    pub(crate) const fn use_listed_directories(&mut self) {
+        self.listed_dirs = true;
+    }
+
     /// Ask the kernel for the next buffer of records; how many it wrote.
     fn fill(&mut self) -> io::Result<u32> {
         let buffer = self.buffer.as_mut().expect("held until drop");
@@ -553,7 +561,7 @@ impl ReadDir {
             return Ok((Err(error), length));
         }
         let entry = if common & MEASURED == MEASURED {
-            cursor.entry(file, extended, self.clones, name)?
+            cursor.entry(file, extended, self.clones, name, self.listed_dirs)?
         } else {
             None
         };
@@ -638,6 +646,7 @@ impl<'a> Cursor<'a> {
         extended: u32,
         clones: Clones,
         name: &[u8],
+        listed_dirs: bool,
     ) -> io::Result<Option<Entry>> {
         let device = self.u32()?.cast_signed();
         let kind = match self.u32()? {
@@ -650,6 +659,24 @@ impl<'a> Cursor<'a> {
         self.at += 8;
         let flags = self.u32()?;
         let inode = self.u64()?;
+        if kind == Kind::Directory && listed_dirs {
+            let (name, exact) = Entry::named(name);
+            // Directory sizes and dates are derived from descendants.
+            // Only identity and the dataless flag are read by the walk.
+            return Ok(Some(Entry {
+                name,
+                exact,
+                kind,
+                apparent: 0,
+                allocated: 0,
+                modified,
+                device: i64::from(device).cast_unsigned(),
+                inode,
+                links: 0,
+                flags,
+                hints: None,
+            }));
+        }
         // A directory is stated the ordinary way. A mount point is listed
         // with the attributes of the directory it covers, so its DEVID is
         // the parent volume's, and the walk would cross into every disk,
@@ -747,6 +774,33 @@ mod tests {
             entry.shared(),
             entry.evicted(),
         )
+    }
+
+    #[test]
+    fn listed_directory_identity_and_eviction_match_stat() {
+        let mut rng = crate::test_rng::Rng::new(0);
+        for _ in 0..32 {
+            let temp = TempDir::new().expect("tempdir");
+            for index in 0..=rng.below(24) {
+                let name =
+                    format!("{index}-é\n{}", "🦀".repeat(1 + index as usize));
+                fs::create_dir(temp.path().join(name)).expect("mkdir");
+            }
+            let expected = listed(temp.path());
+            let mut entries = read_dir(temp.path(), Clones::Off).expect("list");
+            entries.use_listed_directories();
+            let mut entries =
+                entries.collect::<io::Result<Vec<_>>>().expect("entries");
+            entries.sort_by(|left, right| left.name.cmp(&right.name));
+            assert_eq!(entries.len(), expected.len());
+            for (entry, expected) in entries.iter().zip(&expected) {
+                assert_eq!(entry.name(), expected.name());
+                assert_eq!(entry.kind(), Kind::Directory);
+                assert_eq!(entry.device(), expected.device());
+                assert_eq!(entry.identity(), expected.identity());
+                assert_eq!(entry.evicted(), expected.evicted());
+            }
+        }
     }
 
     #[test]

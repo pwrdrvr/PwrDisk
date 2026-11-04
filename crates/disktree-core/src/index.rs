@@ -19,14 +19,16 @@
 //! blocks land in whatever order workers finish. [`Tree::build`] then
 //! reorders the nodes once so that every subtree is one contiguous run,
 //! and from then on a pass can hand separate subtrees to separate workers
-//! by splitting the vector, as [`Tree::par_bottom_up`] does. On a tree of
-//! 19.9 million nodes that took 2.6 to 3.9 s, and it is what keeps the
-//! totals pass at 0.1 to 0.2 s instead of 1.2 to 1.8 s in build order.
+//! by splitting the vector, as [`Tree::par_bottom_up`] does. The in-place
+//! permutation uses four-byte destinations rather than another node
+//! buffer, preserving the memory savings while keeping later passes
+//! parallel.
 //!
 //! Reading goes through [`Node`], a cursor that pairs a stored record with
 //! the tree it indexes into; writing goes through [`NodeMut`], or a pass
 //! over the whole tree.
 
+use std::cell::RefCell;
 use std::fmt;
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
@@ -182,6 +184,24 @@ struct Store {
     /// A node with both, which only a followed directory link has.
     both: Vec<(Allocation, Sharing)>,
     root: u32,
+}
+
+thread_local! {
+    /// A bounded packing buffer avoids allocating strings and record tables
+    /// for every directory. Large listings release their buffers normally.
+    static SPARE_BATCH: RefCell<Option<Store>> = const { RefCell::new(None) };
+}
+
+/// Sixty-four KiB per worker covers ordinary listings without retaining a
+/// large directory's allocation for the remainder of the scan.
+const BATCH_BYTES: usize = 64 * 1024;
+
+fn recycle_batch(mut batch: Store) {
+    batch.names.clear();
+    batch.allocations.clear();
+    if batch.bytes().reserved + batch.allocations.reuse_room() <= BATCH_BYTES {
+        SPARE_BATCH.with_borrow_mut(|spare| *spare = Some(batch));
+    }
 }
 
 /// A copy made on every worker: copying a large tree is gigabytes of
@@ -488,22 +508,11 @@ impl Store {
             }
         }
         for index in 0..len {
-            if target[index] as usize == index {
-                continue;
-            }
-            // Carry one record around the cycle: swaps write the starting
-            // slot on every step, doubling the traffic for 64-byte nodes.
-            let mut from = index;
-            let mut carried = self.nodes[from];
-            loop {
-                let to = std::mem::replace(&mut target[from], Self::index(from))
-                    as usize;
-                if to == index {
-                    self.nodes[to] = carried;
-                    break;
-                }
-                carried = std::mem::replace(&mut self.nodes[to], carried);
-                from = to;
+            // Swapping through a fixed starting slot reuses its cache line.
+            while target[index] as usize != index {
+                let to = target[index] as usize;
+                self.nodes.swap(index, to);
+                target.swap(index, to);
             }
         }
         self.nodes.truncate(reached as usize);
@@ -1120,24 +1129,62 @@ impl Builder {
         Self::built(slot)
     }
 
-    /// Several leaves under one lock: how a listing adds its files.
+    /// Several leaves, packing names and records before taking the lock.
     pub fn leaves<'h, 'a>(
         &'h self,
         leaves: impl IntoIterator<Item = (&'a str, Facts, Option<Allocation>)>,
     ) -> Vec<Built<'h>> {
+        let mut built = Vec::new();
+        self.extend_leaves(leaves, &mut built);
+        built
+    }
+
+    /// Append directly to the pending directory's reserved block, avoiding
+    /// an intermediate vector and copy of every file's record.
+    pub fn extend_leaves<'h, 'a>(
+        &'h self,
+        leaves: impl IntoIterator<Item = (&'a str, Facts, Option<Allocation>)>,
+        built: &mut Vec<Built<'h>>,
+    ) {
+        let leaves = leaves.into_iter();
+        if leaves.size_hint().1 == Some(0) {
+            return;
+        }
+        // Encoding each name and choosing each allocation's representation
+        // must not serialize directory workers. Only the packed buffers and
+        // their offsets need the shared store.
+        let mut batch = SPARE_BATCH
+            .with_borrow_mut(Option::take)
+            .unwrap_or_default();
+        let first = built.len();
+        built.extend(leaves.map(|(name, facts, allocation)| {
+            Self::built(batch.place(
+                name,
+                facts,
+                allocation,
+                None,
+                std::iter::empty(),
+            ))
+        }));
         let mut store = self.lock();
-        leaves
-            .into_iter()
-            .map(|(name, facts, allocation)| {
-                Self::built(store.place(
-                    name,
-                    facts,
-                    allocation,
-                    None,
-                    std::iter::empty(),
-                ))
-            })
-            .collect()
+        let names = u32::try_from(store.names.len())
+            .expect("a tree's names fit in four gigabytes");
+        store.names.push_str(&batch.names);
+        u32::try_from(store.names.len())
+            .expect("a tree's names fit in four gigabytes");
+        let allocations = store.allocations.append_batch(&batch.allocations);
+        for leaf in &mut built[first..] {
+            leaf.slot.name += names;
+            let extra = leaf.slot.extra;
+            if records::holds(extra.tag()) {
+                leaf.slot.extra = Extra::new(
+                    extra.tag(),
+                    allocations.moved(extra.tag(), extra.index()),
+                );
+            }
+        }
+        drop(store);
+        recycle_batch(batch);
     }
 
     /// A directory holding `children`, which become one block of the tree
@@ -1149,13 +1196,17 @@ impl Builder {
         allocation: Option<Allocation>,
         children: Vec<Built<'h>>,
     ) -> Built<'h> {
-        let slot = self.lock().place(
+        let mut store = self.lock();
+        let slot = store.place(
             name,
             facts,
             allocation,
             None,
-            children.into_iter().map(|child| child.slot),
+            children.iter().map(|child| child.slot),
         );
+        // The children vector is freed after releasing the shared lock.
+        drop(store);
+        drop(children);
         Self::built(slot)
     }
 
@@ -1658,6 +1709,95 @@ mod tests {
         // And a copy of the whole store, as the size/files toggle makes.
         assert_same(tree.clone().root(), tree.root());
         assert_eq!(tree.side_records().0, 8);
+    }
+
+    #[test]
+    fn leaf_batches_rebase_names_and_every_allocation_table() {
+        let source = Tree::build(|builder| {
+            let files = every_record(builder, 7);
+            builder.directory("source", Facts::directory(), None, files)
+        });
+        let tree = Tree::build(|builder| {
+            let mut children = Vec::new();
+            for _ in 0..3 {
+                let mut files = builder.leaves(
+                    source.root().children().iter().take(2).map(|node| {
+                        (node.name(), *node.facts(), node.allocation())
+                    }),
+                );
+                builder.extend_leaves(
+                    source.root().children().iter().skip(2).map(|node| {
+                        (node.name(), *node.facts(), node.allocation())
+                    }),
+                    &mut files,
+                );
+                children.push(builder.directory(
+                    "batch",
+                    Facts::directory(),
+                    None,
+                    files,
+                ));
+            }
+            builder.directory("root", Facts::directory(), None, children)
+        });
+        // The fully shared clone has one record across all three batches.
+        assert_eq!(tree.side_records().0, 10);
+        for batch in tree.root().children() {
+            assert_same(batch, source.root());
+        }
+    }
+
+    /// Packing and reusing buffers must read as individually placed files
+    /// do, regardless of batch boundaries or which earlier build used the
+    /// worker's spare. Shared records must stay shared across batches too.
+    #[test]
+    fn random_batches_read_as_individually_placed_files() {
+        use crate::test_rng::Rng;
+
+        for seed in 0..200 {
+            let mut rng = Rng::new(seed);
+            let source = Tree::build(|builder| {
+                let mut files = Vec::new();
+                for _ in 0..=rng.below(16) {
+                    files.extend(every_record(builder, rng.below(5) + 1));
+                    // Include UTF-8 names and listings above the spare's
+                    // budget, so retaining and releasing both get tried.
+                    let name =
+                        "é🦀".repeat(if seed % 5 == 0 { 512 } else { 3 });
+                    files.push(builder.leaf(
+                        &name,
+                        file(rng.below(100_000)),
+                        None,
+                    ));
+                }
+                builder.directory("root", Facts::directory(), None, files)
+            });
+            let tree = Tree::build(|builder| {
+                let mut files = Vec::new();
+                let mut remaining = source.root().children().iter();
+                while remaining.len() > 0 {
+                    let count = usize::try_from(rng.below(8)).expect("small");
+                    builder.extend_leaves(
+                        remaining.by_ref().take(count).map(|node| {
+                            (node.name(), *node.facts(), node.allocation())
+                        }),
+                        &mut files,
+                    );
+                }
+                builder.directory("root", Facts::directory(), None, files)
+            });
+            assert_same(tree.root(), source.root());
+            assert_eq!(tree.side_records(), source.side_records(), "{seed}");
+            for (actual, expected) in
+                tree.root().children().iter().zip(source.root().children())
+            {
+                assert_eq!(
+                    format!("{:?}", actual.facts()),
+                    format!("{:?}", expected.facts()),
+                    "seed {seed}"
+                );
+            }
+        }
     }
 
     /// A clone that reads its size from its node, given an inode after it

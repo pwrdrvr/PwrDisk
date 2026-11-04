@@ -456,8 +456,7 @@ impl WalkContext {
             }
         }
         // Read at most once per directory: macOS needs it for the dataless
-        // flag, and the device check below wherever the mount table cannot
-        // be read, which on macOS is everywhere.
+        // flag, and the device check below when the mount table is unavailable.
         let directory_cell = std::cell::OnceCell::new();
         let directory = || directory_cell.get_or_init(|| entry.directory());
         if EVICTED_IS_KNOWN
@@ -853,6 +852,7 @@ fn list(
     _volume: Option<u64>,
     _clones: bool,
     _clone_flags: bool,
+    _listed_dirs: bool,
 ) -> io::Result<impl Iterator<Item = io::Result<Named>>> {
     let entries = fs::read_dir(path)?;
     Ok(entries.map(|entry| {
@@ -872,16 +872,21 @@ fn list(
     _volume: Option<u64>,
     clones: bool,
     clone_flags: bool,
+    listed_dirs: bool,
 ) -> io::Result<crate::macos::ReadDir> {
     use crate::macos::Clones;
-    crate::macos::read_dir(
+    let mut entries = crate::macos::read_dir(
         path,
         match (clones, clone_flags) {
             (false, _) => Clones::Off,
             (true, false) => Clones::Ids,
             (true, true) => Clones::Flags,
         },
-    )
+    )?;
+    if listed_dirs {
+        entries.use_listed_directories();
+    }
+    Ok(entries)
 }
 
 #[cfg(windows)]
@@ -890,6 +895,7 @@ fn list(
     volume: Option<u64>,
     _clones: bool,
     _clone_flags: bool,
+    _listed_dirs: bool,
 ) -> io::Result<crate::windows::ReadDir> {
     crate::windows::read_dir(path, volume)
 }
@@ -1306,6 +1312,11 @@ fn walk<'h>(
         context.volume.get().copied(),
         clones,
         dir.clone_flags,
+        // The bulk listing describes the covered directory at a mount.
+        // With boundaries checked by path, no mounted root reaches the
+        // directory metadata checks and ordinary entries need no stat.
+        context.options.one_filesystem
+            && context.foreign_mounts.get().is_some(),
     ) {
         Ok(entries) => {
             for entry in entries {
@@ -1377,14 +1388,6 @@ fn walk<'h>(
     let clone_flags = !clones
         || always_flags()
         || subdirectory_flags(dir.clone_flags, &found);
-    leaves.extend(
-        sink.builder.leaves(
-            found
-                .iter()
-                .map(|leaf| (&*leaf.name, leaf.facts, leaf.allocation)),
-        ),
-    );
-    drop(found);
 
     // A depth-limited scan still measures what is directly in the directory,
     // it just does not descend further.
@@ -1392,19 +1395,24 @@ fn walk<'h>(
         .options
         .max_depth
         .is_none_or(|max_depth| dir.depth < max_depth);
-    // Sized once for the leaves and every subdirectory to come, before any
-    // subdirectory task can push its node, so no push grows the list
-    // again. The leaves are copied, not moved: the list they grew in
-    // carries up to twice their size in slack, which a pending directory
-    // would hold until its last subdirectory is done. Moving it in whole
-    // made a home directory walk a second slower (measured before the
-    // tree held its own buffers, 5 interleaved pairs).
+    // Allocate exactly once before publishing any child tasks. Files are
+    // packed straight into this block, avoiding an intermediate vector
+    // while retaining only the space the pending directory actually needs.
     let spawned = if descend { subdirs.len() } else { 0 };
     {
         let mut partial = lock(&dir.partial);
-        partial.children.reserve_exact(leaves.len() + spawned);
+        partial
+            .children
+            .reserve_exact(leaves.len() + found.len() + spawned);
         partial.children.extend(leaves);
+        sink.builder.extend_leaves(
+            found
+                .iter()
+                .map(|leaf| (&*leaf.name, leaf.facts, leaf.allocation)),
+            &mut partial.children,
+        );
     }
+    drop(found);
     let mut children = Vec::new();
     if descend {
         for mut subdir in subdirs {
