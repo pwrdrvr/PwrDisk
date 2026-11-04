@@ -4347,7 +4347,10 @@ impl Disktree {
         }
 
         // The legend's "+N" menu closes before Escape clears the legend.
-        if self.legend_menu_open && key == "escape" {
+        if self.legend_menu_open
+            && key == "escape"
+            && self.screen == Screen::Explore
+        {
             self.legend_menu_open = false;
             cx.notify();
             return;

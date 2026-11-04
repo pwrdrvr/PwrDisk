@@ -1009,6 +1009,16 @@ fn explore(
         }
         - px(space::LG.0 * 2. * app.rem);
     let legend_fit = legend_fit(app, legend_room, window, &theme);
+    let legend_drawn =
+        !app.file_list || !crate::file_list::compact(window, app.rem);
+    // A menu with nothing to hang from is closed, not kept for later: it
+    // would swallow the next Escape and reopen by itself when the row
+    // overflows again. Its button's hover goes with it, since the button
+    // may have left from under a resting pointer.
+    if !legend_drawn || legend_fit.more.is_empty() {
+        app.legend_menu_open = false;
+        app.legend_more_hover = false;
+    }
     if panel && let Some(path) = panel_checkout(app) {
         app.want_git(&path, window.is_window_active(), cx);
     }
@@ -1084,7 +1094,7 @@ fn explore(
                         .flex_1()
                         .min_w_0()
                         .min_h_0()
-                        .when(!app.file_list || !crate::file_list::compact(window, app.rem), |view| view.child(trail_and_legend(app, &legend_fit, &theme, cx)))
+                        .when(legend_drawn, |view| view.child(trail_and_legend(app, &legend_fit, &theme, cx)))
                         .child(
                             div()
                                 .id("file-navigation")
@@ -2520,13 +2530,22 @@ fn legend_fit(
     let rems = |value: f32| px(value * rem);
     // The chip's own box: padding, border, swatch and the gaps between its
     // swatch, name and size (see `legend_chip`).
+    // Shaped once per chip, not once per pass of the loop below.
+    let widths: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            let size = chip_size(app, *id)
+                .map_or(px(0.), |size| measure(size) + rems(space::XS.0));
+            rems(space::XS.0.mul_add(3., size::SWATCH.0))
+                + px(2.)
+                + measure(id.label().to_owned())
+                + size
+        })
+        .collect();
     let chip = |id: ChipId| {
-        let size = chip_size(app, id)
-            .map_or(px(0.), |size| measure(size) + rems(space::XS.0));
-        rems(space::XS.0.mul_add(3., size::SWATCH.0))
-            + px(2.)
-            + measure(id.label().to_owned())
-            + size
+        ids.iter()
+            .position(|other| *other == id)
+            .map_or(px(0.), |index| widths[index])
     };
     let gap = rems(space::XS.0);
     let button =
@@ -2622,6 +2641,9 @@ fn legend(
         .debug_selector(|| "legend".into())
         .flex()
         .flex_row()
+        // Only set chips are kept on the row whatever its width, so enough
+        // of them on a narrow window still wrap rather than clip.
+        .flex_wrap()
         .items_center()
         .gap(space::XS)
         .min_w_0()
@@ -3720,6 +3742,15 @@ fn selection_summary(
         .role(gpui_kit::Role::Button)
         .aria_label(format!("Details: {line}"))
         .aria_expanded(open)
+        .focusable()
+        .tab_stop(true)
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                this.selection_details = !this.selection_details;
+                cx.notify();
+                cx.stop_propagation();
+            }
+        }))
         .flex()
         .flex_row()
         .items_center()
