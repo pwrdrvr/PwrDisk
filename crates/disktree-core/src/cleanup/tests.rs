@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use super::*;
 use Decision::{DeleteFiles, Owner as Run, Skip};
 
+mod properties;
+
 // These tests deliberately create live processes named uv. Serialize them
 // so one fixture cannot trip another fixture's active-owner guard.
 #[cfg(unix)]
