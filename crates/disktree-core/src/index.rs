@@ -236,6 +236,51 @@ fn copied<T: Copy + Send + Sync>(source: &[T]) -> Vec<T> {
     copy
 }
 
+/// Move nodes to their destinations without another node buffer. First
+/// partition into destination ranges; each range can then move independently.
+/// This trades extra sequential traffic for parallel, cache-local swaps:
+/// chasing whole-tree cycles stalls one worker on random memory accesses.
+fn permute(nodes: &mut [Slot], target: &mut [u32], base: u32) {
+    // One MiB of nodes keeps the remaining cycles in a worker's cache and
+    // amortizes each parallel split. The mapping adds only 64 KiB.
+    if nodes.len() <= 16 * 1024 {
+        for index in 0..nodes.len() {
+            while target[index] as usize != base as usize + index {
+                let to = (target[index] - base) as usize;
+                nodes.swap(index, to);
+                target.swap(index, to);
+            }
+        }
+        return;
+    }
+    let mid = nodes.len() / 2;
+    let boundary = base + Store::index(mid);
+    let mut left = 0;
+    let mut right = nodes.len();
+    loop {
+        while left < mid && target[left] < boundary {
+            left += 1;
+        }
+        while right > mid && target[right - 1] >= boundary {
+            right -= 1;
+        }
+        if left == mid {
+            break;
+        }
+        debug_assert!(right > mid);
+        right -= 1;
+        nodes.swap(left, right);
+        target.swap(left, right);
+        left += 1;
+    }
+    let (left_nodes, right_nodes) = nodes.split_at_mut(mid);
+    let (left_targets, right_targets) = target.split_at_mut(mid);
+    rayon::join(
+        || permute(left_nodes, left_targets, base),
+        || permute(right_nodes, right_targets, boundary),
+    );
+}
+
 fn name_at(names: &str, at: u32) -> &str {
     let rest = &names[at as usize..];
     let mut chars = rest.chars();
@@ -507,14 +552,7 @@ impl Store {
                 slot.first = target[slot.first as usize];
             }
         }
-        for index in 0..len {
-            // Swapping through a fixed starting slot reuses its cache line.
-            while target[index] as usize != index {
-                let to = target[index] as usize;
-                self.nodes.swap(index, to);
-                target.swap(index, to);
-            }
-        }
+        permute(&mut self.nodes, &mut target, 0);
         self.nodes.truncate(reached as usize);
         self.root = 0;
     }
@@ -1458,6 +1496,54 @@ mod tests {
         // one side-table index.
         assert_eq!(size_of::<Facts>(), 48);
         assert_eq!(size_of::<Slot>(), 64);
+    }
+
+    /// The destination map is the oracle: every original record must end
+    /// up exactly where it requested, including across parallel ranges.
+    #[test]
+    fn permutations_keep_every_record_at_its_requested_destination() {
+        use crate::test_rng::Rng;
+
+        for seed in 0..256 {
+            let mut rng = Rng::new(seed);
+            let len = match seed {
+                0 => 0,
+                1 => 1,
+                2 => 16 * 1024 - 1,
+                3 => 16 * 1024,
+                4 => 16 * 1024 + 1,
+                _ => usize::try_from(rng.below(100_000)).expect("small"),
+            };
+            let base = u32::try_from(rng.below(100)).expect("small");
+            let mut nodes: Vec<_> = (0..len)
+                .map(|index| Slot {
+                    facts: file(index as u64),
+                    name: Store::index(index),
+                    first: Store::index(index),
+                    len: 0,
+                    extra: Extra::NONE,
+                })
+                .collect();
+            let mut target: Vec<_> = (base..base + Store::index(len)).collect();
+            match seed % 4 {
+                0 => {}
+                1 => target.reverse(),
+                2 if len > 0 => target.rotate_left(1),
+                _ => rng.shuffle(&mut target),
+            }
+            let mut expected = vec![0; len];
+            for (index, &destination) in target.iter().enumerate() {
+                expected[(destination - base) as usize] = index;
+            }
+            permute(&mut nodes, &mut target, base);
+            for (index, node) in nodes.iter().enumerate() {
+                let source = expected[index];
+                assert_eq!(node.facts.bytes, source as u64, "{seed}");
+                assert_eq!(node.name, Store::index(source), "{seed}");
+                assert_eq!(node.first, Store::index(source), "{seed}");
+                assert_eq!(target[index], base + Store::index(index), "{seed}");
+            }
+        }
     }
 
     #[test]
