@@ -1374,7 +1374,9 @@ fn walk<'h>(
         }
     }
     tally.flush(&context.progress, &dir.path);
-    let clone_flags = !clones || subdirectory_flags(dir.clone_flags, &found);
+    let clone_flags = !clones
+        || always_flags()
+        || subdirectory_flags(dir.clone_flags, &found);
     leaves.extend(
         sink.builder.leaves(
             found
@@ -1417,6 +1419,22 @@ fn walk<'h>(
 
     signal_done(dir, sink);
     children
+}
+
+/// Every listing asks for sharing flags while this is set, as before
+/// listings could leave them out: what tests compare the listing policy
+/// against. Only the cost differs, so other tests may run beside it.
+#[cfg(test)]
+pub(crate) static ALWAYS_FLAGS: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+fn always_flags() -> bool {
+    ALWAYS_FLAGS.load(Ordering::Relaxed)
+}
+
+#[cfg(not(test))]
+const fn always_flags() -> bool {
+    false
 }
 
 /// Whether the subdirectories of a directory whose files are `found`

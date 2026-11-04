@@ -105,6 +105,28 @@ files never cloned) it gives the same digest before and after, with
 hardlink de-duplication on and off. The real trees change while they
 are scanned, so they are not compared this way.
 
+Each change also has a test against a reference:
+
+* **Listing without flags, against listing with them** (a model): 2,000
+  random sets of clone groups, each file resolved both ways with one
+  cache. Every file reads the same, and files that may share are read no
+  more often (`macos::resolve_tests`).
+* **The same, on real APFS** (a scenario): worktrees cloned with `cp -c`,
+  with a modified clone, a file of a worktree's own, a hardlink and a
+  resource fork, scanned as listings choose and with flags in every
+  listing. Every node's figures agree, and some listing left the flags
+  out (`worktrees_scan_the_same_with_flags_in_every_listing`).
+* **The sharing pass and shared records** (oracles): 300 random trees
+  deeper than the parallel levels, with clones across directories,
+  hardlinks and followed links. Every node's figures and every estimate
+  of one or two nodes agree on 2, 4 and 8 workers with one worker, and
+  with every record kept whole (`sharing::tests::random_trees_*`).
+
+Each was checked by breaking what it guards: treating a sampled group
+as only maybe shared, re-reading a file already read, keying shared
+records without the reference count, and keeping a group's last size
+instead of its smallest each fail one.
+
 Two differences are possible, neither on an unchanging tree:
 
 * A file that cannot be read again by path (removed since it was listed)

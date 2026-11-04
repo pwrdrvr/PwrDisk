@@ -805,4 +805,145 @@ mod tests {
         assert_eq!(root.sharing().duplicate_bytes, 0);
         assert_eq!(root.sharing().files, 1);
     }
+
+    /// A random tree deeper than the parallel levels: plain files, clones
+    /// of a few groups spread across directories (wholly shared, modified,
+    /// unknown, on another volume or none known, with a resource fork),
+    /// hardlinks across directories and followed links.
+    fn random_tree(rng: &mut crate::test_rng::Rng) -> Draft {
+        fn file(rng: &mut crate::test_rng::Rng, name: String) -> Draft {
+            let bytes = 80 * (rng.below(3) + 1);
+            let mut node = Draft::entry(name, NodeKind::File, bytes);
+            let kind = rng.below(10);
+            if kind < 3 {
+                return node;
+            }
+            let device = [1, 1, 1, 2, 0][rng.below(5) as usize];
+            let info = CloneInfo {
+                device,
+                id: rng.below(5) + 1,
+                references: u32::try_from(rng.below(4) + 1).expect("small"),
+                private_bytes: [Some(0), Some(0), Some(40), None]
+                    [rng.below(4) as usize],
+                // A resource fork the group does not share, now and then.
+                data_bytes: if rng.percent(15) { bytes - 40 } else { bytes },
+            };
+            let mut allocation = Allocation {
+                bytes,
+                identity: None,
+                links: 1,
+                followed: false,
+                clone: Some(info),
+            };
+            if kind == 8 {
+                let inode = rng.below(4) + 1;
+                node.inode =
+                    Some((1, std::num::NonZeroU64::new(inode).expect("ino")));
+                allocation.identity = Some((1, inode));
+                allocation.links = rng.below(2) + 2;
+                if rng.percent(50) {
+                    allocation.clone = None;
+                }
+            } else if kind == 9 {
+                allocation.followed = true;
+            }
+            node.allocation = Some(Box::new(allocation));
+            node
+        }
+        fn directory(
+            rng: &mut crate::test_rng::Rng,
+            name: String,
+            depth: usize,
+        ) -> Draft {
+            let mut dir = Draft::directory(name);
+            for index in 0..rng.below(4) {
+                dir.children.push(file(rng, format!("f{index}")));
+            }
+            if depth < 6 {
+                for index in 0..rng.below(if depth < 2 { 4 } else { 3 }) {
+                    dir.children.push(directory(
+                        rng,
+                        format!("d{index}"),
+                        depth + 1,
+                    ));
+                }
+            }
+            // Files and directories in any order, as a listing gives them.
+            rng.shuffle(&mut dir.children);
+            dir
+        }
+        directory(rng, "root".into(), 0)
+    }
+
+    /// Every node's figures after a pass on `threads` workers, ranked by
+    /// size and then by files.
+    fn on_workers(
+        draft: &Draft,
+        threads: usize,
+        whole: bool,
+    ) -> Vec<Vec<(Sharing, Estimate)>> {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("a pool");
+        pool.install(|| {
+            let build = || Tree::from(draft);
+            let mut tree = if whole {
+                crate::index::kept_whole(build)
+            } else {
+                build()
+            };
+            let mut measured = |metric| {
+                if whole {
+                    crate::index::kept_whole(|| aggregate(&mut tree, metric));
+                } else {
+                    aggregate(&mut tree, metric);
+                }
+                figures(&tree)
+            };
+            vec![measured(Metric::Bytes), measured(Metric::Files)]
+        })
+    }
+
+    /// Merging a subdirectory into its parent as it finishes leaves every
+    /// figure as merging in child order on one worker does.
+    #[test]
+    fn random_trees_read_the_same_on_one_worker_and_on_many() {
+        for seed in 0..300 {
+            let draft = random_tree(&mut crate::test_rng::Rng::new(seed));
+            let expected = on_workers(&draft, 1, false);
+            for threads in [2, 4, 8] {
+                assert_eq!(
+                    on_workers(&draft, threads, false),
+                    expected,
+                    "seed {seed} on {threads} workers"
+                );
+            }
+        }
+    }
+
+    /// Files of a group sharing a record read as each keeping its own.
+    #[test]
+    fn random_trees_read_the_same_however_their_allocations_are_kept() {
+        let mut reused = 0;
+        for seed in 0..300 {
+            let draft = random_tree(&mut crate::test_rng::Rng::new(seed));
+            assert_eq!(
+                on_workers(&draft, 4, false),
+                on_workers(&draft, 4, true),
+                "seed {seed}"
+            );
+            let tree = Tree::from(&draft);
+            let (records, _, _) = tree.side_records();
+            let kept = allocations(tree.root());
+            reused += kept - records;
+        }
+        // Or this compares whole records with themselves.
+        assert!(reused > 100, "{reused}");
+    }
+
+    fn allocations(node: Node<'_>) -> usize {
+        usize::from(node.allocation().is_some())
+            + node.children().iter().map(allocations).sum::<usize>()
+    }
 }

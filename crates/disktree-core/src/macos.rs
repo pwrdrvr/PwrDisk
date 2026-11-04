@@ -267,45 +267,19 @@ impl Entry {
         dir: &Path,
         cache: &crate::clone_cache::Cache,
     ) -> Option<CloneInfo> {
-        let Hints { device, id, flags } = self.hints?;
+        let hints = self.hints?;
         if self.kind != Kind::File {
             return None;
         }
-        let mut measured = None;
-        let flags = match flags {
-            Some(flags) => flags,
-            None if cache.shares_all(device, id) => MAY_SHARE | FULL_SHARE,
-            None => {
-                let (info, flags) =
-                    private_info(&self.path(dir), device, self.inode, id);
-                measured = Some(info);
-                // A file that could not be read again may be a clone: its
-                // private size stays unknown, the side that never
-                // overstates a saving.
-                flags.unwrap_or(MAY_SHARE)
-            }
-        };
-        if flags & MAY_SHARE == 0 {
-            return None;
-        }
-        let measure = || {
-            measured.unwrap_or_else(|| {
-                private_info(&self.path(dir), device, self.inode, id).0
-            })
-        };
-        if flags & FULL_SHARE == 0 {
-            return Some(measure());
-        }
-        // A resource fork can differ even when the data fork is cloned.
-        // Reuse only when the listing agrees with the cached data allocation.
-        Some(cache.get(
-            device,
-            id,
+        let path = self.path(dir);
+        resolve(
+            hints,
             self.inode,
             u64::from(self.links),
             self.allocated,
-            measure,
-        ))
+            cache,
+            || private_info(&path, hints.device, self.inode, hints.id),
+        )
     }
 
     fn named(name: &[u8]) -> (Box<str>, Option<Box<OsStr>>) {
@@ -342,6 +316,45 @@ impl Entry {
     }
 }
 
+/// A regular file's clone facts from what its listing said, `read`
+/// being the file's own metadata read: its private size, reference count
+/// and, when the read found the file the listing did, its sharing flags.
+/// Apart from `read`, which the tests stand in for, this is all of
+/// [`Entry::clone_info`].
+fn resolve(
+    hints: Hints,
+    inode: u64,
+    links: u64,
+    allocated: u64,
+    cache: &crate::clone_cache::Cache,
+    read: impl Fn() -> (CloneInfo, Option<u64>),
+) -> Option<CloneInfo> {
+    let Hints { device, id, flags } = hints;
+    let mut measured = None;
+    let flags = match flags {
+        Some(flags) => flags,
+        None if cache.shares_all(device, id) => MAY_SHARE | FULL_SHARE,
+        None => {
+            let (info, flags) = read();
+            measured = Some(info);
+            // A file that could not be read again may be a clone: its
+            // private size stays unknown, the side that never overstates
+            // a saving.
+            flags.unwrap_or(MAY_SHARE)
+        }
+    };
+    if flags & MAY_SHARE == 0 {
+        return None;
+    }
+    let measure = || measured.unwrap_or_else(|| read().0);
+    if flags & FULL_SHARE == 0 {
+        return Some(measure());
+    }
+    // A resource fork can differ even when the data fork is cloned. Reuse
+    // only when the listing agrees with the cached data allocation.
+    Some(cache.get(device, id, inode, links, allocated, measure))
+}
+
 /// A directory being listed; like `std::fs::ReadDir`, it leaves out `.`
 /// and `..`.
 #[derive(Debug)]
@@ -357,9 +370,19 @@ pub struct ReadDir {
     clones: Clones,
 }
 
+/// Listings made without sharing flags, so a test can tell that a scan
+/// made some.
+#[cfg(test)]
+static WITHOUT_FLAGS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// List `dir`, with each entry's size, identity and age. A link at `dir`
 /// itself is followed, as `std::fs::read_dir` follows it.
 pub fn read_dir(dir: &Path, clones: Clones) -> io::Result<ReadDir> {
+    #[cfg(test)]
+    if clones == Clones::Ids {
+        WITHOUT_FLAGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     let fd = rustix::fs::open(
         dir,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -1076,6 +1099,113 @@ mod clone_tests {
         assert_eq!(infos(Clones::Ids), flagged);
     }
 
+    /// Every node's name, size, allocation and sharing figures, children
+    /// by name: two scans of one tree read the same only if all agree.
+    fn every_figure(node: crate::tree::Node<'_>, into: &mut Vec<String>) {
+        into.push(format!(
+            "{} {} {} {:?} {:?}",
+            node.name(),
+            node.bytes,
+            node.files,
+            node.allocation(),
+            node.sharing()
+        ));
+        let mut children: Vec<_> = node.children().iter().collect();
+        children.sort_by(|left, right| left.name().cmp(right.name()));
+        for child in children {
+            every_figure(child, into);
+        }
+    }
+
+    /// Worktrees cloned from a source tree, as an agent makes them: some
+    /// with a modified clone, a file of their own, a hardlink, a resource
+    /// fork, and clones at the top that put their siblings' listings
+    /// without flags. Scanned as listings choose and with flags in every
+    /// listing, every figure agrees.
+    #[test]
+    fn worktrees_scan_the_same_with_flags_in_every_listing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let source = root.join("source");
+        fs::create_dir_all(source.join("nested/deeper")).expect("source");
+        for (name, size) in [
+            ("a", 64 * 1024),
+            ("b", 8 * 1024),
+            ("nested/c", 16 * 1024),
+            ("nested/deeper/d", 4096),
+            ("nested/deeper/e", 12 * 1024),
+        ] {
+            fs::write(source.join(name), vec![name.len() as u8; size])
+                .expect("source file");
+        }
+        let clone = |from: &Path, to: &Path| {
+            assert!(
+                Command::new("cp")
+                    .arg("-c")
+                    .arg("-R")
+                    .arg(from)
+                    .arg(to)
+                    .status()
+                    .expect("cp -c")
+                    .success()
+            );
+        };
+        for index in 0..6 {
+            clone(&source, &root.join(format!("worktree-{index}")));
+        }
+        for name in ["top-a", "top-b"] {
+            clone(&source.join("a"), &root.join(name));
+        }
+        let mut modified = fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("worktree-1/nested/c"))
+            .expect("open");
+        modified.write_all(&[9; 4096]).expect("write");
+        modified.sync_all().expect("sync");
+        fs::write(root.join("worktree-2/nested/own"), vec![3; 20 * 1024])
+            .expect("own file");
+        fs::hard_link(
+            root.join("worktree-3/b"),
+            root.join("worktree-3/nested/linked"),
+        )
+        .expect("hardlink");
+        fs::write(
+            root.join("worktree-4/nested/deeper/d/..namedfork/rsrc"),
+            [1; 4096],
+        )
+        .expect("resource fork");
+        let scanned = || {
+            let tree = scan(
+                root,
+                ScanOptions {
+                    // Which name of a hardlink is charged depends on the
+                    // order workers meet them.
+                    dedup_hardlinks: false,
+                    ..ScanOptions::default()
+                },
+            )
+            .expect("scan");
+            let mut figures = Vec::new();
+            every_figure(tree.root(), &mut figures);
+            figures
+        };
+        let before = WITHOUT_FLAGS.load(std::sync::atomic::Ordering::Relaxed);
+        let chosen = scanned();
+        assert!(
+            WITHOUT_FLAGS.load(std::sync::atomic::Ordering::Relaxed) > before,
+            "some listing left the flags out"
+        );
+        crate::scan::ALWAYS_FLAGS
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let flagged = scanned();
+        crate::scan::ALWAYS_FLAGS
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(chosen, flagged);
+        // The clones were seen as clones: the copies repeat bytes.
+        let root = &chosen[0];
+        assert!(!root.contains("duplicate_bytes: 0,"), "{root}");
+    }
+
     #[test]
     fn real_clones_keep_listed_bytes_and_report_sharing() {
         let temp = fixture();
@@ -1266,5 +1396,155 @@ mod clone_tests {
             .name()
             .is_err()
         );
+    }
+}
+
+/// A model of APFS clones checked against [`resolve`]: listing without
+/// sharing flags must find what listing with them finds.
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+    use crate::clone_cache::Cache;
+    use crate::test_rng::Rng;
+    use std::cell::Cell;
+
+    /// One file as the volume knows it.
+    #[derive(Clone, Copy, Debug)]
+    struct File {
+        device: u64,
+        id: u64,
+        inode: u64,
+        links: u64,
+        /// Every fork's allocation, as the listing reports it.
+        allocated: u64,
+        flags: u64,
+        /// What the file's own metadata read finds; `None` flags for a
+        /// file gone since it was listed.
+        read: (CloneInfo, Option<u64>),
+    }
+
+    /// Clone groups as APFS keeps them: files of a group share one data
+    /// stream, so its reference count and whether it is shared are the
+    /// group's; whether a file may share is its own, and set on every
+    /// file whose stream is shared. Some files are hardlinked, some have
+    /// a resource fork the group does not share, some are gone by the
+    /// time they are read, and some groups are on a volume of no known
+    /// identity.
+    fn world(rng: &mut Rng) -> Vec<File> {
+        let mut files = Vec::new();
+        let mut inode = 100;
+        for id in 1..=rng.below(12) + 1 {
+            let device = u64::from(!rng.percent(10));
+            let data = 4096 * (rng.below(4) + 1);
+            let kind = rng.below(3);
+            let (references, flags, private, members) = match kind {
+                // A stream shared by files in the scan and maybe outside.
+                0 => {
+                    let members = rng.below(5) + 1;
+                    let outside = rng.below(3);
+                    let references =
+                        u32::try_from(members + outside).expect("small");
+                    (references.max(2), MAY_SHARE | FULL_SHARE, 0, members)
+                }
+                // Cloned once, now alone: a modified clone or an original
+                // whose clones are gone.
+                1 => (1, 0x1, rng.below(2) * 4096, 1),
+                // Never cloned.
+                _ => (1, 0, data, 1),
+            };
+            for _ in 0..members {
+                inode += 1;
+                let fork = if rng.percent(10) { 4096 } else { 0 };
+                let links = if rng.percent(15) { 2 } else { 1 };
+                let gone = rng.percent(5);
+                let info = CloneInfo {
+                    device,
+                    id,
+                    references,
+                    private_bytes: (!gone).then_some(private),
+                    data_bytes: data,
+                };
+                let file = File {
+                    device,
+                    id,
+                    inode,
+                    links,
+                    allocated: data + fork,
+                    flags,
+                    read: (info, (!gone).then_some(flags)),
+                };
+                for _ in 0..links {
+                    files.push(file);
+                }
+            }
+        }
+        rng.shuffle(&mut files);
+        files
+    }
+
+    /// Each file resolved in order with one cache, as a scan's listings
+    /// are: with the listing's flags or without; and the reads made, for
+    /// files that may share and files that never could.
+    fn run(files: &[File], flags: bool) -> (Vec<Option<CloneInfo>>, u64, u64) {
+        let cache = Cache::default();
+        let (mut sharing, mut plain) = (0, 0);
+        let found = files
+            .iter()
+            .map(|file| {
+                let reads = Cell::new(0);
+                let hints = Hints {
+                    device: file.device,
+                    id: file.id,
+                    flags: flags.then_some(file.flags),
+                };
+                let found = resolve(
+                    hints,
+                    file.inode,
+                    file.links,
+                    file.allocated,
+                    &cache,
+                    || {
+                        reads.set(reads.get() + 1);
+                        file.read
+                    },
+                );
+                if file.flags & MAY_SHARE == 0 {
+                    plain += reads.get();
+                } else {
+                    sharing += reads.get();
+                }
+                found
+            })
+            .collect();
+        (found, sharing, plain)
+    }
+
+    #[test]
+    fn a_listing_without_flags_resolves_every_file_as_one_with_them() {
+        for seed in 0..2000 {
+            let files = world(&mut Rng::new(seed));
+            let (listed, listed_reads, never) = run(&files, true);
+            let (grouped, grouped_reads, plain_reads) = run(&files, false);
+            assert_eq!(never, 0, "seed {seed}");
+            for ((file, listed), grouped) in
+                files.iter().zip(&listed).zip(&grouped)
+            {
+                if file.flags & MAY_SHARE == 0 && file.read.1.is_none() {
+                    // Gone before it was read, and never a clone: without
+                    // the listing's word for it, it counts as a clone of
+                    // unknown size, which overstates no saving.
+                    assert_eq!(*listed, None, "seed {seed}");
+                    let grouped = grouped.expect("counted as a clone");
+                    assert_eq!(grouped.private_bytes, None, "seed {seed}");
+                } else {
+                    assert_eq!(grouped, listed, "seed {seed}: {file:?}");
+                }
+            }
+            // Files that may share are read no more often; a file never
+            // cloned is read once a name, which the listing policy weighs.
+            assert_eq!(grouped_reads, listed_reads, "seed {seed}");
+            let plain = files.iter().filter(|f| f.flags & MAY_SHARE == 0);
+            assert_eq!(plain_reads, plain.count() as u64, "seed {seed}");
+        }
     }
 }
