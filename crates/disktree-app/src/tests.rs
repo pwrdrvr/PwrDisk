@@ -95,6 +95,155 @@ fn fixture() -> tempfile::TempDir {
     temp
 }
 
+#[gpui_kit::test]
+fn artifact_assessments_render_and_vm_data_stays_out_of_cleanup_filters(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    for path in [
+        "target/debug/deps/libapp.rlib",
+        "guest.utm/cache/state",
+        "guest.vmss",
+    ] {
+        let path = temp.path().join(path);
+        std::fs::create_dir_all(path.parent().expect("parent")).unwrap();
+        std::fs::write(path, vec![b'x'; 200_000]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    for (path, shown, absent) in [
+        (
+            "target/debug/deps",
+            "artifact-suggested",
+            "artifact-detected",
+        ),
+        ("guest.utm", "artifact-detected", "artifact-suggested"),
+        ("guest.vmss", "artifact-detected", "artifact-suggested"),
+    ] {
+        update(&view, cx, |app, cx| {
+            let (crumbs, _) =
+                app.tree().unwrap().descend(Path::new(path)).unwrap();
+            app.selected = Some(crumbs);
+            app.hovered = None;
+            app.pointer_active = false;
+            app.show_selection = true;
+            cx.notify();
+        });
+        draw(cx);
+        assert!(cx.debug_bounds(shown).is_some(), "{path}");
+        assert!(cx.debug_bounds(absent).is_none(), "{path}");
+        // The status is a chip of its own, not a run of caption text.
+        let status: &'static str =
+            Box::leak(format!("{shown}-status").into_boxed_str());
+        assert!(cx.debug_bounds(status).is_some(), "{path}");
+    }
+    click_on(cx, "legend-reclaimable");
+    cx.run_until_parked();
+    let drawn = laid_out(&view, cx);
+    assert!(drawn.iter().any(|name| name == "deps"), "{drawn:?}");
+    assert!(
+        !drawn.iter().any(|name| name.starts_with("guest")),
+        "{drawn:?}"
+    );
+    assert!(read(&view, cx, |app| app.marks.is_empty()));
+}
+
+/// Review repeats the VM caution where removal is approved, and only on
+/// VM data: a suggested build cache carries its kind alone.
+#[gpui_kit::test]
+fn review_cautions_on_marked_vm_data_only(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    for path in ["target/debug/deps/libapp.rlib", "guest.vmss"] {
+        let path = temp.path().join(path);
+        std::fs::create_dir_all(path.parent().expect("parent")).unwrap();
+        std::fs::write(path, vec![b'x'; 200_000]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    let vm = temp.path().join("guest.vmss");
+    mark_paths(
+        &view,
+        cx,
+        &[temp.path().join("target/debug/deps"), vm.clone()],
+    );
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+    let at = read(&view, cx, |app| {
+        app.marks.items().iter().position(|item| item.path == vm)
+    })
+    .expect("the VM file is marked");
+    let caution = |index: usize| -> &'static str {
+        Box::leak(format!("review-caution-{index}").into_boxed_str())
+    };
+    assert!(cx.debug_bounds(caution(at)).is_some(), "VM row cautions");
+    assert!(cx.debug_bounds(caution(1 - at)).is_none(), "cache row");
+    // A reminder, not a gate: both stay in the plan.
+    assert_eq!(read(&view, cx, |app| app.plan().targets.len()), 2);
+}
+
+#[gpui_kit::test]
+fn artifact_guidance_scrolls_above_the_pinned_free_space_meter(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let output = temp.path().join("target/debug/deps");
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::write(output.join("libapp.rlib"), vec![b'x'; 200_000]).unwrap();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let (crumbs, _) = app
+            .tree()
+            .unwrap()
+            .descend(Path::new("target/debug/deps"))
+            .unwrap();
+        app.selected = Some(crumbs);
+        app.hovered = None;
+        app.pointer_active = false;
+        app.show_selection = true;
+        app.space = Some(SpaceInfo {
+            total: 1000,
+            free: 350,
+            available: 350,
+        });
+        cx.notify();
+    });
+    for (width, height, rem) in
+        [(1200., 600., 16.), (1400., 600., 24.), (1440., 900., 16.)]
+    {
+        cx.simulate_resize(gpui_kit::size(px(width), px(height)));
+        cx.update(|window, _| window.set_rem_size(px(rem)));
+        draw(cx);
+        draw(cx);
+        let disk = cx.debug_bounds("disk-section").unwrap();
+        assert!(disk.bottom() <= px(height), "{disk:?}");
+        assert!(disk.size.height >= px(rem * 4.0), "{disk:?}");
+        let scroll = cx.debug_bounds("side-panel-scroll").unwrap();
+        assert!(scroll.size.height > px(0.), "{scroll:?}");
+        assert!(scroll.bottom() <= disk.origin.y, "{scroll:?}, {disk:?}");
+        let guidance = cx.debug_bounds("artifact-suggested").unwrap();
+        // Scroll just far enough to read the final guidance line without
+        // moving the meter, even when the selection exceeds the viewport.
+        let distance = (guidance.bottom() - scroll.bottom()).max(px(0.));
+        cx.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: scroll.center(),
+            delta: gpui_kit::ScrollDelta::Pixels(Point::new(px(0.), -distance)),
+            modifiers: gpui_kit::Modifiers::none(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        draw(cx);
+        let scrolled = cx.debug_bounds("artifact-suggested").unwrap();
+        assert!(scrolled.bottom() <= scroll.bottom(), "{scrolled:?}");
+        assert!(scrolled.bottom() > scroll.origin.y, "{scrolled:?}");
+        assert_eq!(disk, cx.debug_bounds("disk-section").unwrap());
+    }
+}
+
 /// Apparent sizes, so the assertions are about the tree and not about how the
 /// filesystem rounds a small file up to a block.
 fn options() -> ScanOptions {
@@ -6577,12 +6726,14 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
     let temp = fixture();
     // This test exercises ordinary raw removal. Cache removal is covered
     // separately and must go through an owner preview.
-    std::fs::rename(temp.path().join(".cache"), temp.path().join("target"))
+    let build_output = temp.path().join("target/debug/deps");
+    std::fs::create_dir_all(build_output.parent().expect("build profile"))
+        .expect("build output parent");
+    std::fs::rename(temp.path().join(".cache"), &build_output)
         .expect("ordinary removal fixture");
-    std::fs::write(temp.path().join("Cargo.toml"), "").expect("build manifest");
     let (view, cx) = view_over(temp.path(), cx);
     let epoch = update(&view, cx, |app, cx| {
-        for name in ["target", "junk/deeper"] {
+        for name in ["target/debug/deps", "junk/deeper"] {
             let crumbs = app
                 .crumbs_for_path(&app.root_path.join(name))
                 .expect("in the tree");
@@ -6605,12 +6756,12 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
         assert_eq!(items.len(), 2);
         assert!(items.iter().all(|item| item.status == Status::Waiting));
         assert_eq!(app.run_list.current(), Some(0));
-        let cache = items
+        let output = items
             .iter()
-            .find(|item| item.target.path.ends_with("target"))
+            .find(|item| item.target.path == build_output)
             .expect("the build output is listed");
-        assert_eq!(cache.kind(), Some("build output"), "and says why");
-        assert_eq!(cache.target.bytes, 300_000);
+        assert_eq!(output.kind(), Some("build output"), "and says why");
+        assert_eq!(output.target.bytes, 300_000);
     });
 
     let mut finished = false;
@@ -6643,7 +6794,8 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
         assert_eq!((totals.removed, totals.failed), (2, 0));
         assert_eq!(totals.reported_done, 400_000);
     });
-    assert!(!temp.path().join("target").exists());
+    assert!(!build_output.exists());
+    assert!(temp.path().join("target/debug").exists());
     assert!(temp.path().join("keep/notes.txt").exists());
 }
 
@@ -7290,7 +7442,13 @@ fn tab_reaches_file_navigation_without_changing_selection(
     let navigation = read(&view, cx, |app| app.file_focus.clone());
     let selected = read(&view, cx, |app| app.selected.clone());
     let mut reached = false;
-    for _ in 0..20 {
+    // Each legend chip adds a tab stop alongside the platform's chrome
+    // and navigation controls. Growing the inventory must not make this
+    // reachability check depend on a fixed number of categories.
+    let tab_budget = 16
+        + disktree_core::classify::Category::LEGEND.len()
+        + crate::palette::AGE_BUCKETS.len();
+    for _ in 0..tab_budget {
         press(cx, "tab");
         if cx.update(|window, _| navigation.is_focused(window)) {
             reached = true;
@@ -9472,10 +9630,11 @@ fn marking_a_partly_shown_folder_says_it_takes_all_of_it(
     assert!(cx.debug_bounds("selection-partly-shown").is_none());
 }
 
-/// Every chip is a filter, so none may be clipped away: the legend wraps
-/// instead, at any width and text size, in both colour modes.
+/// Every chip is a filter, so none may be clipped away or pushed onto a
+/// second row: the legend is one row, at any width and text size, in both
+/// colour modes, and what it has no room for is in its "+N" menu.
 #[gpui_kit::test]
-fn every_legend_chip_stays_inside_the_window(cx: &mut TestAppContext) {
+fn every_legend_chip_is_on_the_row_or_in_its_menu(cx: &mut TestAppContext) {
     use crate::legend::ChipId;
     use disktree_core::classify::Category;
 
@@ -9503,28 +9662,160 @@ fn every_legend_chip_stays_inside_the_window(cx: &mut TestAppContext) {
                 cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
                 cx.update(|window, _| window.set_rem_size(px(rem)));
                 draw(cx);
+                draw(cx);
                 let legend = cx.debug_bounds("legend").expect("legend");
+                let mut missing = Vec::new();
                 for id in chips.iter().copied().chain([ChipId::Reclaimable]) {
                     let at = format!("{id:?} at {width} rem {rem}");
                     let key = Box::leak(id.key().into_boxed_str());
-                    let chip = cx.debug_bounds(key).expect(&at);
-                    assert!(
-                        chip.right() <= px(width) + px(0.5)
-                            && chip.left() >= px(0.)
-                            && chip.size.width > px(0.),
-                        "{at}: {chip:?}"
-                    );
-                    // Clipped chips used to run on past the legend's edge,
-                    // under the side panel, while still inside the window.
+                    let Some(chip) = cx.debug_bounds(key) else {
+                        missing.push(id);
+                        continue;
+                    };
                     assert!(
                         chip.right() <= legend.right() + px(0.5)
-                            && chip.bottom() <= legend.bottom() + px(0.5),
+                            && chip.left() >= px(0.)
+                            && chip.size.width > px(0.),
                         "{at}: {chip:?} inside the legend {legend:?}"
                     );
+                    // One row: no chip starts below the first line.
+                    assert!(
+                        chip.top() - legend.top() < chip.size.height,
+                        "{at}: {chip:?} on the legend's one row {legend:?}"
+                    );
                 }
+                if missing.is_empty() {
+                    assert!(cx.debug_bounds("legend-more").is_none());
+                    continue;
+                }
+                let more = cx.debug_bounds("legend-more").expect("+N");
+                assert!(more.right() <= legend.right() + px(0.5), "{more:?}");
+                click_on(cx, "legend-more");
+                draw(cx);
+                for id in missing {
+                    let key = format!(
+                        "legend-menu-{}",
+                        id.key().trim_start_matches("legend-")
+                    );
+                    let at = format!("{key} at {width} rem {rem}");
+                    let row = cx
+                        .debug_bounds(Box::leak(key.into_boxed_str()))
+                        .expect(&at);
+                    assert!(
+                        row.right() <= px(width) + px(0.5)
+                            && row.left() >= px(0.),
+                        "{at}: {row:?}"
+                    );
+                }
+                click_on(cx, "legend-more");
+                draw(cx);
+                assert!(cx.debug_bounds("legend-menu").is_none());
             }
         }
     }
+}
+
+/// The legend belongs to the scan, not to the folder on screen: drilling
+/// into a folder with none of a kind keeps that kind's chip set, on the
+/// row and at its scan-wide size, and coming back up finds it unchanged.
+#[gpui_kit::test]
+fn a_set_chip_survives_drilling_into_a_folder_without_its_kind(
+    cx: &mut TestAppContext,
+) {
+    use crate::legend::{Chip, ChipId};
+    use disktree_core::classify::Category;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    draw(cx);
+    let cache = ChipId::Kind(
+        Category::LEGEND
+            .iter()
+            .position(|kind| *kind == Category::Cache)
+            .unwrap(),
+    );
+    let key = Box::leak(cache.key().into_boxed_str());
+    let shares = read(&view, cx, |app| app.legend_shares.clone());
+    for state in [Chip::Only, Chip::Hidden] {
+        update(&view, cx, |app, cx| {
+            app.clear_legend(None, cx);
+            while app.legend.get(cache) != state {
+                app.cycle_legend(cache, cx);
+            }
+        });
+        // `junk` holds no cache at all.
+        let junk = read(&view, cx, |app| {
+            app.crumbs_for_path(&temp.path().join("junk"))
+                .expect("junk")
+        });
+        update(&view, cx, |app, cx| app.go_to(junk, cx));
+        draw(cx);
+        draw(cx);
+        assert_eq!(read(&view, cx, |app| app.legend.get(cache)), state);
+        assert!(cx.debug_bounds(key).is_some(), "{state:?}: on the row");
+        assert_eq!(
+            read(&view, cx, |app| app.legend_shares.clone()),
+            shares,
+            "sizes are the scan's, not the folder's"
+        );
+        update(&view, cx, Disktree::ascend);
+        draw(cx);
+        assert_eq!(read(&view, cx, |app| app.legend.get(cache)), state);
+        assert!(cx.debug_bounds(key).is_some());
+    }
+}
+
+/// Each chip says how much of the scan it keeps. Empty and tiny kinds wait
+/// in "+N"; a chip set from there moves to the row, where its state shows.
+#[gpui_kit::test]
+fn legend_chips_carry_sizes_and_empty_kinds_wait_in_the_menu(
+    cx: &mut TestAppContext,
+) {
+    use crate::legend::{Chip, ChipId};
+    use disktree_core::classify::Category;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    draw(cx);
+    let shares = read(&view, cx, |app| app.legend_shares.clone())
+        .expect("shares worked out");
+    let cache = Category::LEGEND
+        .iter()
+        .position(|kind| *kind == Category::Cache)
+        .unwrap();
+    // `.cache/blob.bin` holds 300,000 bytes of the fixture's ~601,000.
+    assert_eq!(shares.kind(Category::Cache), 300_000);
+    let key = Box::leak(ChipId::Kind(cache).key().into_boxed_str());
+    assert!(cx.debug_bounds(key).is_some(), "Cache has data: on the row");
+    // The fixture holds no code: Code waits in the menu.
+    let code = Category::LEGEND
+        .iter()
+        .position(|kind| *kind == Category::Code)
+        .unwrap();
+    assert_eq!(shares.kind(Category::Code), 0);
+    let code_key = Box::leak(ChipId::Kind(code).key().into_boxed_str());
+    assert!(cx.debug_bounds(code_key).is_none(), "empty: not on the row");
+    assert!(cx.debug_bounds("legend-more").is_some());
+
+    click_on(cx, "legend-more");
+    draw(cx);
+    let menu_key =
+        Box::leak(format!("legend-menu-kind-{code}").into_boxed_str());
+    assert!(cx.debug_bounds(menu_key).is_some(), "Code is in the menu");
+    click_on(cx, menu_key);
+    draw(cx);
+    assert_eq!(
+        read(&view, cx, |app| app.legend.get(ChipId::Kind(code))),
+        Chip::Only
+    );
+    assert!(!read(&view, cx, |app| app.legend_menu_open), "menu closed");
+    assert!(cx.debug_bounds(code_key).is_some(), "set: on the row");
 }
 
 /// A filter that keeps nothing in the folder on screen says so, says
@@ -9563,7 +9854,7 @@ fn a_legend_filter_that_keeps_nothing_says_so(cx: &mut TestAppContext) {
     );
     // Compact List view draws no legend, so its header says what filters.
     let note = read(&view, cx, Disktree::list_filter_note);
-    assert!(note.contains("reclaimable Toolchains"), "{note}");
+    assert!(note.contains("suggested Toolchains"), "{note}");
     click_on(cx, "legend-empty-clear");
     cx.run_until_parked();
     draw(cx);
@@ -9877,6 +10168,98 @@ fn cache_review_requires_owner_preview_and_never_falls_back_to_raw_removal(
     assert!(temp.path().join("junk/blob.bin").exists());
 }
 
+/// An empty Marked or Worth a look is its header alone, at any height: the
+/// hint and the "none" sit where a full section shows its count or total.
+#[gpui_kit::test]
+fn empty_panel_lists_are_one_line(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    draw(cx);
+    // The header, and the gap before the section's hidden status line.
+    let head =
+        px((crate::ui::size::SECTION_HEAD.0 + crate::ui::space::XS.0) * 16.)
+            + px(0.5);
+    let marked = cx.debug_bounds("marked-section").expect("marked");
+    let worth = cx.debug_bounds("worth-section").expect("worth a look");
+    assert!(marked.size.height <= head, "{marked:?}");
+    assert!(worth.size.height <= head, "{worth:?}");
+
+    let crumbs = read(&view, cx, |app| {
+        app.crumbs_for_path(&temp.path().join("junk"))
+            .expect("present")
+    });
+    update(&view, cx, |app, cx| app.toggle_mark(&crumbs, cx));
+    draw(cx);
+    let marked = cx.debug_bounds("marked-section").expect("marked");
+    assert!(marked.size.height > head, "a row: {marked:?}");
+    assert!(cx.debug_bounds("marked-row-0").is_some());
+}
+
+/// Under 48 rem tall the selection's four figures are one line that opens
+/// the grid, and an idle agent line gives way, so with an assessment
+/// selected at 1200×600 Marked still starts in sight; suggestions may
+/// scroll, the cart may not. The assessment itself never folds. A tall
+/// window draws the grid as before.
+#[gpui_kit::test]
+fn a_short_panel_folds_the_selection_figures(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let output = temp.path().join("target/debug/deps");
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::write(output.join("libapp.rlib"), vec![b'x'; 200_000]).unwrap();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let (crumbs, _) = app
+            .tree()
+            .unwrap()
+            .descend(Path::new("target/debug/deps"))
+            .unwrap();
+        app.selected = Some(crumbs);
+        app.hovered = None;
+        app.pointer_active = false;
+        cx.notify();
+    });
+    cx.simulate_resize(gpui_kit::size(px(1200.), px(600.)));
+    draw(cx);
+    draw(cx);
+    assert!(cx.debug_bounds("selection-summary").is_some(), "one line");
+    assert!(
+        cx.debug_bounds("selection-figures").is_none(),
+        "grid folded"
+    );
+    assert!(
+        cx.debug_bounds("artifact-suggested").is_some(),
+        "never folds"
+    );
+    assert!(cx.debug_bounds("agent-line").is_none(), "idle line gone");
+    let scroll = cx.debug_bounds("side-panel-scroll").unwrap();
+    let marked = cx.debug_bounds("marked-section").unwrap();
+    assert!(
+        marked.bottom() <= scroll.bottom(),
+        "Marked in sight: {marked:?} {scroll:?}"
+    );
+
+    // The chevron opens the grid, and it stays open for the session.
+    click_on(cx, "selection-summary");
+    draw(cx);
+    assert!(read(&view, cx, |app| app.selection_details));
+    assert!(cx.debug_bounds("selection-figures").is_some(), "opened");
+    assert!(cx.debug_bounds("selection-summary").is_some(), "to close");
+    click_on(cx, "selection-summary");
+    draw(cx);
+    assert!(cx.debug_bounds("selection-figures").is_none(), "closed");
+
+    // Tall: the grid, no summary, and the invitation to connect an agent.
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    assert!(cx.debug_bounds("selection-summary").is_none());
+    assert!(cx.debug_bounds("selection-figures").is_some());
+    assert!(cx.debug_bounds("agent-line").is_some());
+}
+
 /// A side panel list's header stays at the top of the list while its rows
 /// scroll under it, and the next section pushes it up rather than covering
 /// it, as PwrGit's and PwrAgnt's sidebars do.
@@ -9886,9 +10269,30 @@ fn panel_headers_stay_in_sight_while_their_list_scrolls(
 ) {
     cx.update(init);
     let temp = fixture();
+    // Suggestions to scroll under the headers: the selection leads the
+    // lists, so the fixture's own are too few to reach the top.
+    for name in ["a", "b", "c", "d", "e", "f"] {
+        let file = temp.path().join(name).join(".cache/blob.bin");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        // Sparse: the scan measures apparent size, and a suggestion has to
+        // pass `insights::MIN_BYTES`.
+        std::fs::File::create(file)
+            .unwrap()
+            .set_len(65 << 20)
+            .unwrap();
+    }
     let (view, cx) = view_over(temp.path(), cx);
+    // Rows for Marked's header to stay above: empty, the section is only
+    // its header.
+    for name in ["junk", ".cache"] {
+        let crumbs = read(&view, cx, |app| {
+            app.crumbs_for_path(&temp.path().join(name))
+                .expect("present")
+        });
+        update(&view, cx, |app, cx| app.toggle_mark(&crumbs, cx));
+    }
     // Short enough that the lists scroll.
-    cx.simulate_resize(gpui_kit::size(px(1100.), px(640.)));
+    cx.simulate_resize(gpui_kit::size(px(1100.), px(520.)));
     draw(cx);
     draw(cx);
     let scroll_to = |cx: &mut Window, y: f32| {
@@ -9899,14 +10303,21 @@ fn panel_headers_stay_in_sight_while_their_list_scrolls(
         draw(cx);
     };
     let list = cx.debug_bounds("side-panel-scroll").expect("the lists");
+    // The selection leads the lists without a header of its own, so the
+    // offsets below count from where Marked starts.
+    let marked = cx.debug_bounds("marked-section").expect("marked");
+    let start = f32::from(marked.top() - list.top());
+    // Marked's last line just in sight: its header is pushed up by the
+    // section's end, with Worth a look coming up below.
+    let push = f32::from(marked.bottom() - list.top()) - 2.;
     assert!(
-        read(&view, cx, |app| app.panel_scroll.max_offset().y) > px(40.),
+        read(&view, cx, |app| app.panel_scroll.max_offset().y) > px(push),
         "the lists must scroll for this test"
     );
     assert!(cx.debug_bounds("pinned-head").is_none(), "nothing at rest");
 
     // Marked's header leaves the top: its copy pins there.
-    scroll_to(cx, 10.);
+    scroll_to(cx, start + 10.);
     let pinned = cx.debug_bounds("pinned-head").expect("pinned");
     assert_eq!(pinned.top(), list.top(), "{pinned:?} {list:?}");
 
@@ -9918,12 +10329,12 @@ fn panel_headers_stay_in_sight_while_their_list_scrolls(
     });
     draw(cx);
     assert!(
-        read(&view, cx, |app| app.panel_scroll.offset().y) < px(-10.),
+        read(&view, cx, |app| app.panel_scroll.offset().y) < px(-(start + 10.)),
         "the wheel reached the list"
     );
 
     // Worth a look comes up under it and pushes it off, never under it.
-    scroll_to(cx, 40.);
+    scroll_to(cx, push);
     let pinned = cx.debug_bounds("pinned-head").expect("still pinned");
     let worth = cx.debug_bounds("worth-section").expect("worth a look");
     assert!(pinned.top() < list.top(), "pushed up: {pinned:?}");

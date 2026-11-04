@@ -2,15 +2,15 @@
 //! moves it to the next: nothing set shows everything, a chip set to only
 //! shows just that, and a hidden chip takes its bytes out.
 //!
-//! Kinds combine with OR and Reclaimable with AND: "Code" and "Cache" show
-//! both, and Reclaimable narrows that to their reclaimable part. The age
+//! Kinds combine with OR and Suggested with AND: "Code" and "Cache" show
+//! both, and Suggested narrows that to their cleanup suggestions. The age
 //! chips filter the same way, and both sets apply in every mode, so "old
 //! code" is one click in each.
 
 use std::sync::Arc;
 
 use disktree_core::classify::Category;
-use disktree_core::filter::{Keep, Rule, filter_with};
+use disktree_core::filter::{Keep, Rule, filter_with, shares};
 use gpui_kit::Context;
 
 use crate::palette::AGE_BUCKETS;
@@ -58,7 +58,9 @@ pub enum ChipId {
 impl ChipId {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Reclaimable => "Reclaimable",
+            // Suggested, not reclaimable: a hatch is a heuristic for review,
+            // never a promise that the space can be had back.
+            Self::Reclaimable => "Suggested",
             Self::Kind(index) => Category::LEGEND[index].label(),
             Self::Age(index) => AGE_BUCKETS[index].1,
         }
@@ -196,19 +198,19 @@ impl LegendFilter {
         summary(&labels(Chip::Only), &labels(Chip::Hidden))
     }
 
-    /// Everything the legend keeps, for the totals line: "reclaimable
+    /// Everything the legend keeps, for the totals line: "suggested
     /// Code, Cache · Older".
     pub fn summary(&self) -> String {
         let kinds = self.kinds_summary();
         let mut parts = Vec::new();
         match (self.reclaimable, kinds) {
             (Chip::Only, Some(kinds)) => {
-                parts.push(format!("reclaimable {kinds}"));
+                parts.push(format!("suggested {kinds}"));
             }
-            (Chip::Only, None) => parts.push("reclaimable".to_owned()),
+            (Chip::Only, None) => parts.push("suggested".to_owned()),
             (Chip::Hidden, kinds) => {
                 parts.extend(kinds);
-                parts.push("reclaimable hidden".to_owned());
+                parts.push("suggested hidden".to_owned());
             }
             (Chip::Shown, kinds) => parts.extend(kinds),
         }
@@ -301,6 +303,34 @@ impl Disktree {
             .then(|| self.legend.rule(self.scanned_at))
     }
 
+    /// Work out what each chip would keep of the whole scan, off the UI
+    /// thread, for the sizes beside the chips. Once per tree: ages are
+    /// measured from the scan, as the age colours are.
+    pub fn refresh_shares(&mut self, cx: &Context<'_, Self>) {
+        self.shares_epoch += 1;
+        let epoch = self.shares_epoch;
+        let Some(tree) = self.tree.clone() else {
+            self.legend_shares = None;
+            return;
+        };
+        let now = self.scanned_at;
+        let task = cx.background_executor().spawn(async move {
+            let limits: Vec<i64> =
+                AGE_BUCKETS.iter().map(|(limit, _)| *limit).collect();
+            shares(tree.root(), now, &limits)
+        });
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if epoch == this.shares_epoch {
+                    this.legend_shares = Some(Arc::new(found));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Work out what the legend keeps, from the scanned root down, off the
     /// UI thread. Once, not per directory: moving around a filtered view
     /// then needs no search, and every directory's share is already known.
@@ -368,7 +398,7 @@ mod tests {
 
         legend.cycle(ChipId::Reclaimable);
         assert_eq!(legend.rule(0).reclaimable, Some(true));
-        assert_eq!(legend.summary(), "reclaimable Code, Cache");
+        assert_eq!(legend.summary(), "suggested Code, Cache");
 
         let mut legend = LegendFilter::default();
         legend.cycle(ChipId::Kind(5));

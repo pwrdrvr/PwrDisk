@@ -6,6 +6,7 @@
 //! be built and tested without GPUI, a display, or a GPU.
 
 pub mod access;
+pub mod artifact;
 pub mod classify;
 pub mod cleanup;
 #[cfg(any(target_os = "macos", test))]

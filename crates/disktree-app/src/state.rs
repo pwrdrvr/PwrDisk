@@ -545,6 +545,17 @@ pub struct Disktree {
     pub legend_epoch: u64,
     /// The legend's filter is being worked out off the UI thread.
     pub legend_pending: bool,
+    /// What each legend chip would keep of the whole scan, for the sizes
+    /// beside the chips and which of them fit on the row. Worked out off
+    /// the UI thread once per tree, not per filter.
+    pub legend_shares: Option<Arc<disktree_core::filter::Shares>>,
+    /// Bumped per tree; only the newest shares are kept.
+    pub(crate) shares_epoch: u64,
+    /// The legend's "+N" menu: the chips the row has no room for.
+    pub legend_menu_open: bool,
+    /// The pointer is over the "+N" button, whose own press toggles the
+    /// menu; a press anywhere else closes it.
+    pub legend_more_hover: bool,
     /// Bumped per keystroke; only the newest search's result is kept.
     find_epoch: u64,
     /// A search is running off the UI thread.
@@ -556,6 +567,10 @@ pub struct Disktree {
     /// dropdown (`app_menu::menus`), since there is no global menu bar.
     pub app_menu_open: bool,
     pub show_selection: bool,
+    /// A short panel folds the selection's figures into one summary line;
+    /// this is whether the person has opened it. It stays open for the
+    /// session, whatever is selected, so it is not undone by every arrow.
+    pub selection_details: bool,
     pub focus: FocusHandle,
     /// The app is quitting: what this window holds is left to the system,
     /// which takes a process's memory back whole when it exits.
@@ -811,12 +826,17 @@ impl Disktree {
             legend_matches: None,
             legend_epoch: 0,
             legend_pending: false,
+            legend_shares: None,
+            shares_epoch: 0,
+            legend_menu_open: false,
+            legend_more_hover: false,
             find_epoch: 0,
             finding: false,
             apply_pending: false,
             show_help: false,
             app_menu_open: false,
             show_selection: true,
+            selection_details: false,
             focus: cx.focus_handle(),
             crumb_menu: None,
             color_mode: ColorMode::Kind,
@@ -921,6 +941,7 @@ impl Disktree {
         app.tree = Some(Arc::new(tree));
         app.cache = None;
         app.refresh_insights();
+        app.refresh_shares(cx);
         app.refresh_legend(cx);
         app.select_largest(cx);
         app
@@ -1895,6 +1916,7 @@ impl Disktree {
                     self.scans_done += 1;
                     self.removed.clear();
                     self.refresh_insights();
+                    self.refresh_shares(cx);
                     self.refresh_legend(cx);
                     self.select_largest(cx);
                     self.scan_elapsed = self.scan_started.map(|t| t.elapsed());
@@ -1953,6 +1975,7 @@ impl Disktree {
                 self.removed.clear();
                 self.cache = None;
                 self.refresh_insights();
+                self.refresh_shares(cx);
                 self.refresh_legend(cx);
                 self.scan_elapsed =
                     self.scan_started.map(|started| started.elapsed());
@@ -3462,6 +3485,7 @@ impl Disktree {
         self.crumb_menu = None;
         self.transition = None;
         self.refresh_insights();
+        self.refresh_shares(cx);
         // Every crumb moved, so the legend's result points at other
         // children now; drop it rather than lay it out until the new one
         // comes back.
@@ -4468,6 +4492,15 @@ impl Disktree {
             return;
         }
 
+        // The legend's "+N" menu closes before Escape clears the legend.
+        if self.legend_menu_open
+            && key == "escape"
+            && self.screen == Screen::Explore
+        {
+            self.legend_menu_open = false;
+            cx.notify();
+            return;
+        }
         if self.crumb_menu.is_some() && self.on_menu_key(key, cx) {
             return;
         }
