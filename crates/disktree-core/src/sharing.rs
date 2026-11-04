@@ -373,32 +373,44 @@ fn collect_at(
     }
     if depth < crate::tree::PARALLEL_LEVELS {
         // Subdirectories near the top are independent work, as in the
-        // totals pass. Each worker folds a run of children into one set of
-        // maps and runs are merged as they finish, in child order, so only
-        // a few sets are held at once and a truncated group set keeps the
-        // groups the one-thread pass kept.
-        let children = node
-            .children()
+        // totals pass. Each is merged into this directory's maps as soon
+        // as it is done, so the maps held at once are these and those of
+        // the subdirectories in progress. Folding runs of children into a
+        // set of maps per worker held a set per worker of nearly every
+        // group in the tree when the same clones fill every subdirectory:
+        // 18 sets of 129 thousand groups, 0.4 GiB at the end of a scan of
+        // 8.9 million files of agent worktrees. Merging is commutative,
+        // so the figures do not depend on which finishes first, short of
+        // the group limit, where which groups are kept already depended
+        // on how the work was split.
+        for child in node.children() {
+            if !child.is_dir() {
+                fold_leaf(child, limit, &mut part, updates);
+            }
+        }
+        let merged = Mutex::new(part);
+        node.children()
             .par_iter()
-            .fold(
-                || (Part::new(limit), Vec::new()),
-                |(mut part, mut updates), child| {
-                    part.add(child, limit, depth, &mut updates, sink);
-                    (part, updates)
-                },
-            )
-            .map(|(part, updates)| {
-                crate::scan::lock(sink).push(updates);
-                part
-            })
-            .reduce(
-                || Part::new(limit),
-                |mut left, right| {
-                    left.merge(right, limit);
-                    left
-                },
-            );
-        part.merge(children, limit);
+            .filter(|child| child.is_dir())
+            .for_each(|dir| {
+                let mut updates = Vec::new();
+                let (groups, allocation, summary) =
+                    collect_at(dir, limit, depth + 1, &mut updates, sink);
+                if !updates.is_empty() {
+                    crate::scan::lock(sink).push(updates);
+                }
+                crate::scan::lock(&merged).merge(
+                    Part {
+                        groups,
+                        allocation,
+                        summary,
+                    },
+                    limit,
+                );
+            });
+        part = merged
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
     } else {
         for child in node.children() {
             part.add(child, limit, depth, updates, sink);

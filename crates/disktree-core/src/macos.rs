@@ -35,8 +35,16 @@ const MAY_SHARE: u64 = 0x1 | FULL_SHARE;
 const EXTENDED: u32 = libc::FSOPT_ATTR_CMN_EXTENDED;
 const RETURNED: u32 = libc::ATTR_CMN_RETURNED_ATTRS;
 const REAL_DEVICE: u32 = 0x40;
-const HINTS: u32 =
-    REAL_DEVICE | libc::ATTR_CMNEXT_CLONEID | libc::ATTR_CMNEXT_EXT_FLAGS;
+/// A file's clone group: cheap to list, since APFS keeps it in the inode.
+const IDS: u32 = REAL_DEVICE | libc::ATTR_CMNEXT_CLONEID;
+/// The group and whether it shares blocks. The flags are dear to list:
+/// for every file that was ever cloned APFS looks up how many files share
+/// its data, and listing threads queue for that lookup in the kernel. On
+/// 8.9 million files of agent worktrees, 7.8 million of them clones, the
+/// flags made an 18-thread walk 16 s slower (27 s without them, 43 s with;
+/// the group alone cost about 1 s), and the more threads, the more each
+/// lookup cost: 3 us of system time a clone on 4 threads, 20 us on 16.
+const HINTS: u32 = IDS | libc::ATTR_CMNEXT_EXT_FLAGS;
 
 // From <sys/attr.h> and <sys/vnode.h>, which the libc crate does not cover.
 const ATTR_BIT_MAP_COUNT: u16 = 5;
@@ -130,7 +138,39 @@ pub struct Entry {
     inode: u64,
     links: u32,
     flags: u32,
-    hints: Option<(u64, u64, u64)>,
+    hints: Option<Hints>,
+}
+
+/// What a listing says about an entry's clone group.
+#[derive(Clone, Copy, Debug)]
+struct Hints {
+    /// `ATTR_CMNEXT_REALDEVID`: zero when the file system did not say.
+    device: u64,
+    id: u64,
+    /// `ATTR_CMNEXT_EXT_FLAGS`, when the listing asked for them.
+    flags: Option<u64>,
+}
+
+/// What a listing asks about clones; see [`IDS`] and [`HINTS`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Clones {
+    Off,
+    /// Clone groups only. A file's sharing flags then come from another
+    /// member of its group met earlier in the scan, or from the file's own
+    /// metadata read, which most clones pay for anyway.
+    Ids,
+    /// Clone groups and every file's sharing flags.
+    Flags,
+}
+
+impl Clones {
+    const fn attributes(self) -> u32 {
+        match self {
+            Self::Off => 0,
+            Self::Ids => IDS,
+            Self::Flags => HINTS,
+        }
+    }
 }
 
 impl Entry {
@@ -179,8 +219,12 @@ impl Entry {
     /// `(st_dev, st_ino)`: the same for two names of one file.
     pub fn identity(&self) -> (u64, u64) {
         (
-            self.hints.map_or(self.device, |(device, _, _)| {
-                if device == 0 { self.device } else { device }
+            self.hints.map_or(self.device, |hints| {
+                if hints.device == 0 {
+                    self.device
+                } else {
+                    hints.device
+                }
             }),
             self.inode,
         )
@@ -207,16 +251,45 @@ impl Entry {
 
     /// Only clone candidates pay for private-size reads; ordinary metadata
     /// and identity remain the values returned by the bulk listing.
+    ///
+    /// A listing without sharing flags takes them from the file's clone
+    /// group. Every file of a group shares one data stream, and APFS keeps
+    /// the sharing state and the reference count with that stream, not with
+    /// each file: across 2.9 million groups on three trees (worktrees, a
+    /// home Library and a folder of checkouts) no two files of a group
+    /// disagreed. A group the scan has not met yet is read from the file
+    /// itself, in the read that measures its private size.
     pub fn clone_info(
         &self,
         dir: &Path,
         cache: &crate::clone_cache::Cache,
     ) -> Option<CloneInfo> {
-        let (device, id, flags) = self.hints?;
-        if self.kind != Kind::File || flags & MAY_SHARE == 0 {
+        let Hints { device, id, flags } = self.hints?;
+        if self.kind != Kind::File {
             return None;
         }
-        let measure = || private_info(&self.path(dir), device, self.inode, id);
+        let mut measured = None;
+        let flags = match flags {
+            Some(flags) => flags,
+            None if cache.shares_all(device, id) => MAY_SHARE | FULL_SHARE,
+            None => {
+                let (info, flags) =
+                    private_info(&self.path(dir), device, self.inode, id);
+                measured = Some(info);
+                // A file that could not be read again may be a clone: its
+                // private size stays unknown, the side that never
+                // overstates a saving.
+                flags.unwrap_or(MAY_SHARE)
+            }
+        };
+        if flags & MAY_SHARE == 0 {
+            return None;
+        }
+        let measure = || {
+            measured.unwrap_or_else(|| {
+                private_info(&self.path(dir), device, self.inode, id).0
+            })
+        };
         if flags & FULL_SHARE == 0 {
             return Some(measure());
         }
@@ -278,12 +351,12 @@ pub struct ReadDir {
     /// Where the next of them starts.
     offset: usize,
     done: bool,
-    clones: bool,
+    clones: Clones,
 }
 
 /// List `dir`, with each entry's size, identity and age. A link at `dir`
 /// itself is followed, as `std::fs::read_dir` follows it.
-pub fn read_dir(dir: &Path, clones: bool) -> io::Result<ReadDir> {
+pub fn read_dir(dir: &Path, clones: Clones) -> io::Result<ReadDir> {
     let fd = rustix::fs::open(
         dir,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -359,7 +432,7 @@ impl ReadDir {
             volattr: 0,
             dirattr: 0,
             fileattr: FILE_ATTRIBUTES,
-            forkattr: if self.clones { HINTS } else { 0 },
+            forkattr: self.clones.attributes(),
         };
         loop {
             // SAFETY: the descriptor is an open directory owned by `self`;
@@ -372,7 +445,11 @@ impl ReadDir {
                     &raw mut request,
                     buffer.as_mut_ptr().cast(),
                     BUFFER_BYTES,
-                    if self.clones { u64::from(EXTENDED) } else { 0 },
+                    if self.clones == Clones::Off {
+                        0
+                    } else {
+                        u64::from(EXTENDED)
+                    },
                 )
             };
             if let Ok(count) = u32::try_from(count) {
@@ -381,13 +458,13 @@ impl ReadDir {
             let error = io::Error::last_os_error();
             // Optional clone hints must not disable ordinary enumeration on
             // volumes or kernels that reject extended attributes.
-            if self.clones
+            if self.clones != Clones::Off
                 && matches!(
                     error.raw_os_error(),
                     Some(libc::EINVAL | libc::ENOTSUP)
                 )
             {
-                self.clones = false;
+                self.clones = Clones::Off;
                 request.forkattr = 0;
                 continue;
             }
@@ -440,7 +517,7 @@ impl ReadDir {
             return Ok((Err(error), length));
         }
         let entry = if common & MEASURED == MEASURED {
-            cursor.entry(file, extended, name)?
+            cursor.entry(file, extended, self.clones, name)?
         } else {
             None
         };
@@ -523,6 +600,7 @@ impl<'a> Cursor<'a> {
         &mut self,
         file: u32,
         extended: u32,
+        clones: Clones,
         name: &[u8],
     ) -> io::Result<Option<Entry>> {
         let device = self.u32()?.cast_signed();
@@ -563,9 +641,15 @@ impl<'a> Cursor<'a> {
         } else {
             None
         };
+        // Flags that were asked for and not given mean no clone facts, as
+        // they always have; flags not asked for come from the group.
         let hints = clone_id
-            .zip(clone_flags)
-            .map(|(id, flags)| (real_device, id, flags));
+            .filter(|_| clones == Clones::Ids || clone_flags.is_some())
+            .map(|id| Hints {
+                device: real_device,
+                id,
+                flags: clone_flags,
+            });
         let (name, exact) = Entry::named(name);
         Ok(Some(Entry {
             name,
@@ -591,7 +675,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn listed(dir: &Path) -> Vec<Entry> {
-        let mut entries: Vec<Entry> = read_dir(dir, false)
+        let mut entries: Vec<Entry> = read_dir(dir, Clones::Off)
             .expect("list")
             .collect::<io::Result<_>>()
             .expect("entries");
@@ -675,7 +759,7 @@ mod tests {
         assert_eq!(listed, stated);
         // Adding clone hints must preserve ordinary metadata, including
         // resource forks and hardlink identity in the same bulk record.
-        let mut clone_entries: Vec<Entry> = read_dir(root, true)
+        let mut clone_entries: Vec<Entry> = read_dir(root, Clones::Flags)
             .expect("list with clone hints")
             .collect::<io::Result<_>>()
             .expect("entries");
@@ -722,8 +806,8 @@ mod tests {
     #[test]
     fn a_missing_directory_is_an_error() {
         let temp = TempDir::new().expect("tempdir");
-        let error =
-            read_dir(&temp.path().join("gone"), false).expect_err("missing");
+        let error = read_dir(&temp.path().join("gone"), Clones::Off)
+            .expect_err("missing");
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 }
@@ -740,14 +824,21 @@ const fn clone_attrs(common: u32, file: u32, extended: u32) -> libc::attrlist {
     }
 }
 
-fn private_info(path: &Path, device: u64, inode: u64, id: u64) -> CloneInfo {
+/// A clone's private size and reference count, read again by path, and
+/// its sharing flags when the read found the file the listing did.
+fn private_info(
+    path: &Path,
+    device: u64,
+    inode: u64,
+    id: u64,
+) -> (CloneInfo, Option<u64>) {
     let mut info = CloneInfo {
         device,
         id,
         ..CloneInfo::default()
     };
     let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
-        return info;
+        return (info, None);
     };
     // Re-read identity alongside private size: a replacement between the
     // listing/stat and this call must not receive the old file's estimate.
@@ -778,13 +869,13 @@ fn private_info(path: &Path, device: u64, inode: u64, id: u64) -> CloneInfo {
             request.forkattr &= !REFCNT;
             continue;
         }
-        return info;
+        return (info, None);
     }
     let Some(length) = clone_read_u32(&buffer, 0) else {
-        return info;
+        return (info, None);
     };
     let Some(buffer) = buffer.get(..length as usize) else {
-        return info;
+        return (info, None);
     };
     let common = clone_read_u32(buffer, 4).unwrap_or(0);
     let files = clone_read_u32(buffer, 16).unwrap_or(0);
@@ -792,7 +883,7 @@ fn private_info(path: &Path, device: u64, inode: u64, id: u64) -> CloneInfo {
     if common & libc::ATTR_CMN_FILEID == 0
         || clone_read_u64(buffer, 24) != Some(inode)
     {
-        return info;
+        return (info, None);
     }
     // Packed order includes realdevid before cloneid, even when unavailable.
     // PACK_INVAL_ATTRS reserves its slot; ordinary st_dev can alias APFS
@@ -803,13 +894,13 @@ fn private_info(path: &Path, device: u64, inode: u64, id: u64) -> CloneInfo {
         0
     };
     if device != 0 && device != real_device {
-        return info;
+        return (info, None);
     }
     info.device = real_device;
     if extended & libc::ATTR_CMNEXT_CLONEID == 0
         || clone_read_u64(buffer, 52) != Some(id)
     {
-        return info;
+        return (info, None);
     }
     if extended & libc::ATTR_CMNEXT_PRIVATESIZE != 0 {
         info.private_bytes = clone_read_u64(buffer, 40);
@@ -820,7 +911,12 @@ fn private_info(path: &Path, device: u64, inode: u64, id: u64) -> CloneInfo {
     if extended & REFCNT != 0 {
         info.references = clone_read_u32(buffer, 68).unwrap_or(0);
     }
-    info
+    let flags = if extended & libc::ATTR_CMNEXT_EXT_FLAGS == 0 {
+        None
+    } else {
+        clone_read_u64(buffer, 60)
+    };
+    (info, flags)
 }
 
 fn clone_read_u32(bytes: &[u8], at: usize) -> Option<u32> {
@@ -851,12 +947,15 @@ pub fn clone_info(path: &Path, meta: &Metadata) -> Option<CloneInfo> {
     {
         return None;
     }
-    Some(private_info(
-        path,
-        u64::from(clone_read_u32(&buffer, 24)?),
-        meta.ino(),
-        clone_read_u64(&buffer, 28)?,
-    ))
+    Some(
+        private_info(
+            path,
+            u64::from(clone_read_u32(&buffer, 24)?),
+            meta.ino(),
+            clone_read_u64(&buffer, 28)?,
+        )
+        .0,
+    )
 }
 
 #[cfg(test)]
@@ -917,6 +1016,61 @@ mod clone_tests {
         assert_eq!(estimate.lower, 10 * 64 * 1024);
         assert_eq!(estimate.upper, estimate.lower);
         assert!(!estimate.partial);
+    }
+
+    #[test]
+    fn a_listing_without_flags_finds_what_one_with_them_finds() {
+        let temp = fixture();
+        let dir = temp.path();
+        for name in ["second", "modified"] {
+            assert!(
+                Command::new("cp")
+                    .arg("-c")
+                    .arg(dir.join("original"))
+                    .arg(dir.join(name))
+                    .status()
+                    .expect("cp -c")
+                    .success()
+            );
+        }
+        let mut modified = fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("modified"))
+            .expect("open");
+        modified.write_all(&[1; 4096]).expect("write");
+        modified.sync_all().expect("sync");
+        fs::write(dir.join("plain"), vec![7; 64 * 1024]).expect("plain");
+        fs::hard_link(dir.join("second"), dir.join("linked")).expect("link");
+        let infos = |clones| {
+            let cache = crate::clone_cache::Cache::default();
+            let mut entries: Vec<Entry> = read_dir(dir, clones)
+                .expect("list")
+                .collect::<io::Result<_>>()
+                .expect("entries");
+            entries.sort_by(|left, right| left.name.cmp(&right.name));
+            if clones == Clones::Ids {
+                assert!(entries.iter().all(|entry| {
+                    entry.hints.is_some_and(|hints| hints.flags.is_none())
+                }));
+            }
+            entries
+                .iter()
+                .map(|entry| {
+                    (entry.name.clone(), entry.clone_info(dir, &cache))
+                })
+                .collect::<Vec<_>>()
+        };
+        let flagged = infos(Clones::Flags);
+        let shared: Vec<&str> = flagged
+            .iter()
+            .filter(|(_, info)| info.is_some())
+            .map(|(name, _)| &**name)
+            .collect();
+        assert_eq!(
+            shared,
+            ["clone", "linked", "modified", "original", "second"]
+        );
+        assert_eq!(infos(Clones::Ids), flagged);
     }
 
     #[test]
@@ -1055,12 +1209,13 @@ mod clone_tests {
         let temp = fixture();
         let source = temp.path().join("original");
         let meta = fs::metadata(&source).expect("metadata");
-        let info = private_info(
+        let (info, flags) = private_info(
             &temp.path().join("missing"),
             meta.dev(),
             meta.ino(),
             42,
         );
+        assert_eq!(flags, None);
         assert_eq!(info.private_bytes, None);
         assert_eq!(info.references, 0);
     }
