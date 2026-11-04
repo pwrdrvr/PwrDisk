@@ -839,6 +839,25 @@ fn overlay_footer(
 /// it is an alert dialog that names what goes and what comes back. The trash is
 /// reversible and needs no dialog.
 /// Names both intents and their counts, so the button says what it does.
+/// Review's subtitle once every marked path has a decision.
+fn cleanup_header(
+    app: &Disktree,
+    approved: &disktree_core::cleanup::Approved,
+    plan: &Plan,
+) -> String {
+    let commands = match approved.owner_steps() {
+        1 => "1 command".to_string(),
+        count => format!("{count} commands"),
+    };
+    format!(
+        "{} marked \u{b7} {commands} \u{b7} {} to delete \u{b7} {} skipped \u{b7} {} scope allocation; savings unmeasured",
+        app.marks.len(),
+        approved.file_steps(),
+        approved.skipped.len(),
+        human_bytes(plan.bytes())
+    )
+}
+
 fn cleanup_commit_label(commands: usize, files: usize) -> String {
     let plural = |count: usize, one: &str, many: &str| {
         format!("{count} {}", if count == 1 { one } else { many })
@@ -909,9 +928,8 @@ fn delete_dialog(
             });
     // Deleting files directly is its own consent: its tick is required
     // even when the owner commands alone would be confirmable.
-    let files = approved
-        .as_ref()
-        .map_or(0, disktree_core::cleanup::Approved::file_steps);
+    let files =
+        approved.map_or(0, disktree_core::cleanup::Approved::file_steps);
     let ticked = app.cleanup_files_ticked();
     let delete_label = if let Some(approved) = &approved {
         cleanup_commit_label(approved.owner_steps(), files)
@@ -5677,12 +5695,7 @@ fn review(
             "Review",
             &if app.removal_mode == RemovalMode::OwnerCleanup {
                 match app.cleanup_approved() {
-                    Ok(approved) => format!(
-                        "{} marked \u{00b7} {} \u{00b7} {} to delete \u{00b7} {} skipped \u{00b7} {} scope allocation; savings unmeasured",
-                        app.marks.len(),
-                        if approved.owner_steps() == 1 { "1 command".to_string() } else { format!("{} commands", approved.owner_steps()) },
-                        approved.file_steps(), approved.skipped.len(), human_bytes(plan.bytes())
-                    ),
+                    Ok(approved) => cleanup_header(app, approved, &plan),
                     Err(_) => format!("{} marked \u{00b7} cache cleanup: check owners, then choose for each path", app.marks.len()),
                 }
             } else { format!(

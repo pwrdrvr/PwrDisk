@@ -137,8 +137,10 @@ separate npx cache (11.2–11.x), uv (0.11.x), pip (23–26) and Cypress (13–1
 only when their installed CLI resolves the selected cache. pnpm, Homebrew,
 Playwright and Puppeteer remain explicit inspection-only owners because their
 full command/configuration scopes are not supported. Windows command
-launchers have no execution adapter yet. Neither containers nor volumes are
-cleanup scopes.
+launchers have no execution adapter yet, and on Windows Delete files is not
+offered either: it needs PwrDisk's check for programs using the path, which
+runs only on macOS and Linux. A Windows cache cleanup can therefore only be
+inspected and skipped. Neither containers nor volumes are cleanup scopes.
 
 Each path gets its own result: succeeded, failed with a reason, cancelled
 (possibly part done), skipped, or not reached after Stop. A command's

@@ -55,7 +55,10 @@ such as Corepack are unsupported.
 Relative PATH entries are removed from the captured execution environment;
 non-UTF-8 environments fail closed instead of silently losing configuration.
 Only macOS and Linux have execution adapters; Windows cache recognition
-remains available, but shell-based Windows launchers are unsupported.
+remains available, but shell-based Windows launchers are unsupported. Delete
+files is not offered on Windows either: it is checked for programs using the
+path right before it runs, and that check exists only on macOS and Linux, so
+it would always be refused.
 
 Queries run from the user's home with the app's environment, so user config
 and environment overrides apply. Project-only configuration must be made

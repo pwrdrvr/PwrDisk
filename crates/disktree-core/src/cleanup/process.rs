@@ -390,6 +390,10 @@ pub(super) fn check_tree(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether [`check_in_use`] can look at running processes here.
+pub(super) const ACTIVE_USE_CHECKED: bool =
+    cfg!(any(target_os = "macos", target_os = "linux"));
+
 pub(super) fn check_active(operation: &Operation) -> Result<(), String> {
     check_in_use(
         &operation.scope,

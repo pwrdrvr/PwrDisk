@@ -2998,7 +2998,7 @@ impl Disktree {
             && self.removal_mode == RemovalMode::OwnerCleanup
             && let Ok(approved) = self.cleanup_approved()
         {
-            return approved.plan;
+            return approved.plan.clone();
         }
         self.selection_plan()
     }
@@ -3677,7 +3677,7 @@ impl Disktree {
         }
         let cleanup = if self.removal_mode == RemovalMode::OwnerCleanup {
             let approved = match by {
-                Remover::Person => self.cleanup_approved(),
+                Remover::Person => self.cleanup_approved().cloned(),
                 Remover::Agent => agent_cleanup.ok_or_else(|| {
                     "Cache cleanup needs confirmed decisions".to_string()
                 }),

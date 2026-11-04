@@ -591,6 +591,7 @@ pub(crate) trait Probe {
 pub fn prepare(targets: &[Target], root: &Path) -> Result<Prepared, String> {
     let environment = Environment::current()?;
     prepare_with(targets, root, environment, &mut process::SystemProbe)
+        .map(where_checkable)
 }
 
 /// [`prepare`] with `path` as the only place owners are looked for, for
@@ -604,6 +605,25 @@ pub fn prepare_on_path(
     let mut environment = Environment::current()?;
     environment.variables.insert("PATH".into(), path.into());
     prepare_with(targets, root, environment, &mut process::SystemProbe)
+        .map(where_checkable)
+}
+
+/// Delete files is checked for programs using the path right before it
+/// runs. Where that check is unavailable the step would always be refused,
+/// so it is not offered at all rather than offered and then failed.
+fn where_checkable(mut prepared: Prepared) -> Prepared {
+    if !process::ACTIVE_USE_CHECKED {
+        for proposal in &mut prepared.proposals {
+            if proposal.delete.take().is_some() {
+                proposal.delete_issue = Some(Issue::new(
+                    Problem::Refused,
+                    "Delete files needs PwrDisk's check for programs using \
+                     the path, which runs only on macOS and Linux",
+                ));
+            }
+        }
+    }
+    prepared
 }
 
 fn prepare_with(
@@ -1039,11 +1059,19 @@ fn resolve_owner(
         _ => "",
     };
     Ok(Some(Operation {
-        owner, version, selected: vec![selected.to_owned()], cache_root, scope, command,
+        owner,
+        version,
+        selected: vec![selected.to_owned()],
+        cache_root,
+        scope,
+        command,
         effects: effects.into(),
-        limitations: "The command acts on the WHOLE scope, including unselected siblings. Listed allocation is an upper bound, not promised savings. Other activity, open files, hardlinks, APFS clones and snapshots can retain blocks. Active-use detection is best effort; stop the owning tools first. PwrDisk rescans afterwards. If it fails, nothing else is deleted.".into(),
+        limitations: OWNER_LIMITATIONS.into(),
     }))
 }
+
+/// What every owner command shares, whatever its owner.
+const OWNER_LIMITATIONS: &str = "The command acts on the WHOLE scope, including unselected siblings. Listed allocation is an upper bound, not promised savings. Other activity, open files, hardlinks, APFS clones and snapshots can retain blocks. Active-use detection is best effort; stop the owning tools first. PwrDisk rescans afterwards. If it fails, nothing else is deleted.";
 
 fn strings(items: &[&str]) -> Vec<String> {
     items.iter().map(|item| (*item).to_owned()).collect()

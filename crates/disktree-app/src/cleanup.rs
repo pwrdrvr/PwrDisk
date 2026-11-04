@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use disktree_core::cleanup::{Action, Approved, Decision, Prepared};
 use disktree_core::removal::Target;
@@ -23,18 +23,35 @@ pub struct Review {
     created: Instant,
     result: Option<Result<Prepared, String>>,
     /// One per proposal, in its order. Skip until the person chooses.
-    pub decisions: Vec<Decision>,
+    decisions: Vec<Decision>,
     /// How Delete files removes: Trash or Permanent.
-    pub files: Action,
+    files: Action,
     /// The confirmation's separate consent to deleting files directly.
-    pub files_ticked: bool,
+    files_ticked: bool,
+    /// The decisions turned into steps, kept until they change: Review
+    /// reads it several times a frame, and building it plans the steps
+    /// against the mount table each time.
+    approved: Option<Result<Approved, String>>,
 }
 
 impl Review {
+    fn approve(&mut self) {
+        self.approved = match &self.result {
+            Some(Ok(prepared)) => {
+                Some(prepared.approve(&self.decisions, self.files))
+            }
+            _ => None,
+        };
+    }
+
+    /// No age limit: a person may take their time deciding, and an
+    /// agent's preview carries its own lifetime. What could go stale is
+    /// checked again on the worker right before each step: the owner's
+    /// executable, version, configured root and scope, the guards, the
+    /// capacity limit and whether the path is in use.
     fn matches(&self, app: &Disktree) -> bool {
         self.root == app.root_path
             && self.marks == app.marks.items()
-            && self.created.elapsed() < Duration::from_mins(5)
             && app.remote.is_none()
             && app.scan.is_none()
             && app.tree.as_ref().is_some_and(|tree| {
@@ -80,10 +97,14 @@ impl Disktree {
     }
 
     /// The person's decisions in the window, as steps to run.
-    pub(crate) fn cleanup_approved(&self) -> Result<Approved, String> {
-        let review = self.cleanup_review()?;
-        self.cleanup_ready()?
-            .approve(&review.decisions, review.files)
+    pub(crate) fn cleanup_approved(&self) -> Result<&Approved, String> {
+        self.cleanup_ready()?;
+        self.cleanup_review()?
+            .approved
+            .as_ref()
+            .ok_or("Choose an action for every marked path")?
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     pub(crate) fn cleanup_decision(&self, index: usize) -> Decision {
@@ -133,6 +154,7 @@ impl Disktree {
             *slot = decision;
             // A change to what is deleted asks for the tick again.
             review.files_ticked = false;
+            review.approve();
         }
         self.confirm_open = false;
         cx.notify();
@@ -149,6 +171,7 @@ impl Disktree {
         if let Some(review) = &mut self.cleanup_review {
             review.files = files;
             review.files_ticked = false;
+            review.approve();
         }
         self.confirm_open = false;
         cx.notify();
@@ -203,6 +226,7 @@ impl Disktree {
             decisions: vec![Decision::Skip; marks.len()],
             files: self.default_files(),
             files_ticked: false,
+            approved: None,
         });
         self.confirm_open = false;
         let path = self.cleanup_path.clone();
@@ -225,6 +249,7 @@ impl Disktree {
                             vec![Decision::Skip; prepared.proposals.len()];
                     }
                     review.result = Some(result);
+                    review.approve();
                 }
                 cx.notify();
             });
