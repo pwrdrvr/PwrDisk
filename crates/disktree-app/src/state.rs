@@ -403,6 +403,11 @@ pub struct Disktree {
     pub review_scroll: gpui_kit::ScrollHandle,
     /// The side panel's lists, measured to pin their headers.
     pub panel_scroll: gpui_kit::ScrollHandle,
+    /// Their sections' bounds as last laid out: a change asks for one more
+    /// frame, so the pinned header follows the new layout.
+    pub panel_layout: std::rc::Rc<
+        std::cell::RefCell<Vec<gpui_kit::Bounds<gpui_kit::Pixels>>>,
+    >,
     pub hovered: Option<Vec<usize>>,
     pub history: History,
     /// The history button under the pointer, `true` for `<`: its card is
@@ -710,6 +715,7 @@ impl Disktree {
             review_page: 0,
             review_scroll: gpui_kit::ScrollHandle::new(),
             panel_scroll: gpui_kit::ScrollHandle::new(),
+            panel_layout: std::rc::Rc::default(),
             layout_options: LayoutOptions {
                 max_depth: depth.clamp(1, 6),
                 ..LayoutOptions::default()
@@ -1560,7 +1566,12 @@ impl Disktree {
                 Status::Warning,
             ),
         };
-        self.say(message, status, cx);
+        // A preference that was not saved is a failure to read later.
+        if status == Status::Success {
+            self.say(message, status, cx);
+        } else {
+            self.say_until_closed(message, status, cx);
+        }
     }
 
     /// The review screen, once something is marked; until then the notice
@@ -1773,7 +1784,7 @@ impl Disktree {
         }
         if self.remote_identity != identity && !self.marks.is_empty() {
             self.marks.clear();
-            self.say(
+            self.say_until_closed(
                 "Remote identity changed; previous marks were cleared.",
                 Status::Warning,
                 cx,
@@ -3494,7 +3505,7 @@ impl Disktree {
             {
                 Ok(limit) => limit,
                 Err(reason) => {
-                    self.say(reason, Status::Warning, cx);
+                    self.say_until_closed(reason, Status::Warning, cx);
                     cx.notify();
                     return;
                 }
@@ -4855,7 +4866,7 @@ impl Disktree {
                 Ok(()) => cx.quit(),
                 Err(error) => {
                     this.restarting = false;
-                    this.say(
+                    this.say_until_closed(
                         format!("still not an administrator: {error}"),
                         Status::Warning,
                         cx,

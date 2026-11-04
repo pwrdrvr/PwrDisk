@@ -11,7 +11,9 @@
 //!   the disk until something else replaced them, which could be hours.
 //!   Now they share one slot, [`NOTICE`]: a newer one takes the older's
 //!   place with a fresh countdown of [`ANSWER`]. An error stays until it
-//!   is closed, as PwrAgnt's do, since it may need reading twice. A copy
+//!   is closed, as PwrAgnt's do, since it may need reading twice, and so
+//!   does a warning that something failed or was undone on the person's
+//!   behalf ([`Disktree::say_until_closed`]). A copy
 //!   button answers on itself ("Copied"), never here; only a copy with no
 //!   button in sight, such as Help › Copy Diagnostics Info, says so here.
 //! - **The answer to Help › Check for Updates….** Only that menu item
@@ -587,6 +589,14 @@ pub fn notice(message: impl Into<String>, status: Status) -> Toast {
     }
 }
 
+/// A notice that stays until it is closed, whatever its status.
+pub fn lasting_notice(message: impl Into<String>, status: Status) -> Toast {
+    Toast {
+        timeout: None,
+        ..notice(message, status)
+    }
+}
+
 // ── the main window's side ──────────────────────────────────────────────
 
 /// Follows the updater (`updater::install`): the main window on every
@@ -665,7 +675,11 @@ impl Disktree {
         // A failed restart also says so as a notice, for a release whose
         // card was put away: the chip said nothing.
         if let Some(why) = failed_now.filter(|_| failed_before.is_none()) {
-            self.say(format!("Cannot update: {why}"), Status::Warning, cx);
+            self.say_until_closed(
+                format!("Cannot update: {why}"),
+                Status::Warning,
+                cx,
+            );
         }
         cx.notify();
     }
@@ -678,6 +692,17 @@ impl Disktree {
         cx: &mut Context<'_, Self>,
     ) {
         self.show_toast(notice(message, status), cx);
+    }
+
+    /// Says something that went wrong, or was undone on the person's
+    /// behalf, where it stays until closed: it may be read after the fact.
+    pub fn say_until_closed(
+        &mut self,
+        message: impl Into<String>,
+        status: Status,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.show_toast(lasting_notice(message, status), cx);
     }
 
     /// Takes the notice down: what it said no longer holds.

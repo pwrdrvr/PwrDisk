@@ -212,6 +212,9 @@ pub struct SettingsWindow {
     /// Puts "Copied" back to "Copy"; a newer copy replaces it, so an older
     /// click cannot cut the newer one's short.
     copied_reset: Option<gpui_kit::Task<()>>,
+    /// Agents (MCP)'s commands: the executable does not move while it
+    /// runs, so they are built once rather than on every redraw.
+    connect: Vec<crate::agent::Connect>,
     /// Why the last pick could not be saved.
     pub note: Option<String>,
     /// The saved removal limit, as Safety shows it: read when the window
@@ -241,6 +244,10 @@ impl SettingsWindow {
             diagnostics: diagnostics::collect(cx),
             copied: None,
             copied_reset: None,
+            connect: crate::agent::connect_commands(
+                &std::env::current_exe()
+                    .unwrap_or_else(|_| PathBuf::from("pwrdisk")),
+            ),
             note: None,
             focus: cx.focus_handle(),
             pane_scroll: gpui_kit::ScrollHandle::new(),
@@ -669,17 +676,16 @@ impl SettingsWindow {
     /// agent may do. The main window's link answers the agent; this pane
     /// only reads who it is.
     fn agents_pane(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
-        let status = cx
+        let (connected, status) = cx
             .windows()
             .into_iter()
             .filter_map(|window| window.downcast::<Disktree>())
             .find_map(|main| main.read(cx).ok().map(Disktree::agent_status))
-            .unwrap_or_else(|| "No PwrDisk window is open.".to_owned());
-        let connected = status.contains(" is connected");
-        let exe = std::env::current_exe()
-            .unwrap_or_else(|_| PathBuf::from("pwrdisk"));
+            .unwrap_or_else(|| {
+                (false, "No PwrDisk window is open.".to_owned())
+            });
         let mut connect = card("Connect", None, theme);
-        for way in crate::agent::connect_commands(&exe) {
+        for way in &self.connect {
             connect = connect.child(field(
                 way.label,
                 None,

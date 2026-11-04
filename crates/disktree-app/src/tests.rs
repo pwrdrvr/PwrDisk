@@ -9621,6 +9621,18 @@ fn panel_headers_stay_in_sight_while_their_list_scrolls(
     let pinned = cx.debug_bounds("pinned-head").expect("pinned");
     assert_eq!(pinned.top(), list.top(), "{pinned:?} {list:?}");
 
+    // A wheel over the pinned header still scrolls the list it heads.
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: pinned.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-10.))),
+        ..Default::default()
+    });
+    draw(cx);
+    assert!(
+        read(&view, cx, |app| app.panel_scroll.offset().y) < px(-10.),
+        "the wheel reached the list"
+    );
+
     // Worth a look comes up under it and pushes it off, never under it.
     scroll_to(cx, 40.);
     let pinned = cx.debug_bounds("pinned-head").expect("still pinned");
@@ -9681,6 +9693,18 @@ fn notices_are_toasts_that_run_out(cx: &mut TestAppContext) {
     click_on(cx, "toast-close-notice");
     draw(cx);
     assert_eq!(read(&view, cx, Disktree::notice), None);
+
+    // So does a warning that something failed on the person's behalf.
+    update(&view, cx, |app, cx| {
+        app.say_until_closed(
+            "Remote identity changed; previous marks were cleared.",
+            Status::Warning,
+            cx,
+        );
+    });
+    cx.executor().advance_clock(crate::toasts::ANSWER * 4);
+    cx.run_until_parked();
+    assert!(read(&view, cx, Disktree::notice).is_some(), "it stays");
 }
 
 /// Unmark all's notice carries Undo, which puts the marks back.

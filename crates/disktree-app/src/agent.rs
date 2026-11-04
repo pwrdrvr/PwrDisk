@@ -170,11 +170,13 @@ impl Disktree {
         let Some(agent) = &self.agent else {
             return false;
         };
-        let before = presence_line(agent.presence.as_ref());
+        // Every noted action stamps the presence, so its time says whether
+        // what Settings shows can have changed, without formatting it.
+        let before = agent.presence.as_ref().map(|presence| presence.at);
         let incoming = agent.listener.drain();
         if incoming.is_empty() {
             self.forget_departed_agent(cx);
-            self.tell_settings(&before, cx);
+            self.tell_settings(before, cx);
             return true;
         }
         for item in incoming {
@@ -187,27 +189,42 @@ impl Disktree {
             }
         }
         self.forget_departed_agent(cx);
-        self.tell_settings(&before, cx);
+        self.tell_settings(before, cx);
         cx.notify();
         true
     }
 
     /// Settings › Agents (MCP) shows who is connected: redraw it when that
     /// line changes, and only then, since this runs every [`POLL`].
-    fn tell_settings(&self, before: &str, cx: &mut Context<'_, Self>) {
-        let now = self.agent_status();
+    fn tell_settings(
+        &self,
+        before: Option<Instant>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let now = self
+            .agent
+            .as_ref()
+            .and_then(|agent| agent.presence.as_ref())
+            .map(|presence| presence.at);
         if now != before {
             cx.defer(crate::settings::agents_changed);
         }
     }
 
-    /// Who is connected and what they last did, as Settings says it.
-    pub fn agent_status(&self) -> String {
+    /// Whether an agent is connected, and who it is and what it last did,
+    /// as Settings says it.
+    pub fn agent_status(&self) -> (bool, String) {
         match &self.agent {
-            Some(agent) => presence_line(agent.presence.as_ref()),
-            None => "This window cannot be driven here; an agent still \
-                     scans and marks on its own."
-                .to_owned(),
+            Some(agent) => (
+                agent.presence.is_some(),
+                presence_line(agent.presence.as_ref()),
+            ),
+            None => (
+                false,
+                "This window cannot be driven here; an agent still scans \
+                 and marks on its own."
+                    .to_owned(),
+            ),
         }
     }
 

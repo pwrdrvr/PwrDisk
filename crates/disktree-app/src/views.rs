@@ -2814,7 +2814,22 @@ fn panel_lists(
         lists.iter().map(|(_, head)| head.is_some()),
         px(size::SECTION_HEAD.0 * app.rem),
     );
+    // `pinned_head` measures the last layout. When the lists change without
+    // a scroll (a mark, the insights, the end of indexing) that layout is
+    // a frame old, so draw again once it settles; an unchanged layout asks
+    // for nothing, so this never loops.
+    let scroll_handle = app.panel_scroll.clone();
+    let seen = app.panel_layout.clone();
     let mut scroll = div()
+        .on_children_prepainted(move |_, window, _| {
+            let now: Vec<_> = (0..)
+                .map_while(|index| scroll_handle.bounds_for_item(index))
+                .collect();
+            if *seen.borrow() != now {
+                *seen.borrow_mut() = now;
+                window.refresh();
+            }
+        })
         .id("panel-lists")
         .debug_selector(|| "side-panel-scroll".into())
         .track_scroll(&app.panel_scroll)
@@ -2848,12 +2863,13 @@ fn panel_lists(
                     .top(top)
                     // Opaque, with a hairline and never a shadow, as
                     // PwrGit's and PwrAgnt's pinned headers are; the rows
-                    // slide under it, and the pointer must not reach them
-                    // through it.
+                    // slide under it, and a click must not reach them
+                    // through it, though a wheel over it still scrolls
+                    // the list it heads.
                     .bg(theme.surface)
                     .border_b_1()
                     .border_color(theme.divider())
-                    .occlude()
+                    .block_mouse_except_scroll()
                     // A copy of the header in the list: read once.
                     .a11y_synthetic_children(|b| b.parent_node().set_hidden())
                     .child(head),
