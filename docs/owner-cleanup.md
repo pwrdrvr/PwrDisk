@@ -123,8 +123,10 @@ The stable gate accepts only those two patch versions, not future 1.64.x.
 * **Locking/in use:** installation uses `ROOT/__dirlock`; uninstall takes
   no lock. PwrDisk refuses an existing lock, including a stale one, both
   during preview and just before execution. It never clears the lock.
-  Existing process checks cover the owner and executables inside the cache;
-  they are best effort and cannot exclude a new installer/browser starting
+  Existing process checks cover the owner and executables inside the cache.
+  Playwright is identified by its exact resolved executable or known owner
+  launcher names/paths, never another package's generic `cli.js` basename.
+  Checks are best effort and cannot exclude a new installer/browser starting
   afterwards. Stop installers, tests and cached browsers first.
 * **Limits:** upstream `removeFolders` catches filesystem removal errors,
   so exit success can leave browsers behind. Report the exit result and

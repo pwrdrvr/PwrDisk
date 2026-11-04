@@ -283,24 +283,68 @@ fn playwright_only_audited_versions_reach_configuration() {
 /// path does, while unrelated packages with a cli.js must remain distinct.
 #[test]
 fn playwright_running_launcher_paths_identify_the_owner() {
-    for package in ["playwright", "playwright-core", "@playwright/test"] {
-        for prefix in ["/usr/lib/node_modules", "/project/node_modules"] {
-            let argument = format!("{prefix}/{package}/cli.js");
+    let resolved = Path::new("/custom-installation/cli.js");
+    for executable in [None, Some(resolved)] {
+        assert!(process::owner_named(
+            Owner::Playwright,
+            executable,
+            "playwright"
+        ));
+        for package in ["playwright", "playwright-core", "@playwright/test"] {
+            for prefix in ["/usr/lib/node_modules", "/project/node_modules"] {
+                let argument = format!("{prefix}/{package}/cli.js");
+                assert!(
+                    process::owner_named(
+                        Owner::Playwright,
+                        executable,
+                        &argument
+                    ),
+                    "{executable:?}: {argument}"
+                );
+            }
+        }
+        for argument in [
+            "cli.js",
+            "/other/cli.js",
+            "/project/node_modules/webpack-cli/bin/cli.js",
+            "/project/playwright/cli.py",
+            "/project/@other/test/cli.js",
+        ] {
             assert!(
-                process::owner_named(Owner::Playwright, None, &argument),
-                "{argument}"
+                !process::owner_named(Owner::Playwright, executable, argument),
+                "{executable:?}: {argument}"
             );
         }
     }
-    for argument in [
-        "cli.js",
-        "/other/cli.js",
-        "/project/playwright/cli.py",
-        "/project/@other/test/cli.js",
-    ] {
+    assert!(process::owner_named(
+        Owner::Playwright,
+        Some(resolved),
+        resolved.to_str().expect("executable")
+    ));
+}
+
+/// A resolved executable is evidence for that exact path, not for
+/// unrelated packages sharing its generic cli.js basename. The generator
+/// gives each installation its own path and an unrelated package name.
+#[test]
+fn playwright_unrelated_cli_paths_stay_distinct_from_resolved_executable() {
+    use crate::test_rng::Rng;
+    for seed in 0..256 {
+        let mut rng = Rng::new(seed);
+        let executable =
+            PathBuf::from(format!("/install-{}/cli.js", rng.next()));
+        let argument = format!(
+            "/project-{}/node_modules/tool-{}/cli.js",
+            rng.next(),
+            rng.next()
+        );
         assert!(
-            !process::owner_named(Owner::Playwright, None, argument),
-            "{argument}"
+            !process::owner_named(
+                Owner::Playwright,
+                Some(&executable),
+                &argument
+            ),
+            "seed {seed}: {executable:?} cannot identify {argument}"
         );
     }
 }

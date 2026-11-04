@@ -140,7 +140,9 @@ root, then `PLAYWRIGHT_BROWSERS_PATH=ROOT playwright uninstall --all`
 removes managed browsers and reference files inside that root, including
 versions other projects use. Branded Chrome/Edge and unrelated files stay.
 It takes no uninstall lock; an existing `__dirlock` is refused and process
-checks are best effort. Stop installers, tests and cached browsers first.
+checks are best effort. A generic `cli.js` basename does not identify
+Playwright: its exact executable or known owner launchers must match.
+Stop installers, tests and cached browsers first.
 Exit success may leave files behind; report the rescan and measured change.
 Playwright log/profile writes and version-display overrides are disabled
 for the probes and command. pnpm remains inspection-only because prune

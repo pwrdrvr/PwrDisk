@@ -483,9 +483,12 @@ pub(super) fn owner_named(
     executable.is_some_and(|executable| path == executable)
         || name.is_some_and(|name| {
             name == owner.executable()
-                || executable.is_some_and(|executable| {
-                    Some(name) == executable.file_name()
-                })
+                // Playwright's cli.js basename is shared by unrelated
+                // packages; only its exact path or known launchers count.
+                || (owner != Owner::Playwright
+                    && executable.is_some_and(|executable| {
+                        Some(name) == executable.file_name()
+                    }))
                 || (matches!(owner, Owner::Npm | Owner::Npx)
                     && matches!(
                         name.to_str(),
