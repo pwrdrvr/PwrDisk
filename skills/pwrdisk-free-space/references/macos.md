@@ -223,12 +223,23 @@ subtrees too. All removal modes may return a preparing response while
 inspection runs on a worker; retry only the read-only preview. Exported
 lists keep marked paths, and raw script exports cannot replace owner cleanup.
 
-On macOS and Linux the initial adapters cover npm packages (9–11), npm's
-separate npx cache (11.2–11.x), uv (0.11.x), pip (23–26) and Cypress (13–15),
-only when their installed CLI resolves the selected cache. pnpm, Homebrew,
-Playwright and Puppeteer remain explicit inspection-only owners because their
-full command/configuration scopes are not supported. Windows command
-launchers have no execution adapter yet. Neither containers nor volumes are
+On macOS and Linux the adapters cover npm packages (9–11), npm's separate
+npx cache (11.2–11.x), uv (0.11.x), pip (23–26), Cypress (13–15) and the
+installed JavaScript Playwright CLI (only 1.64.0–1.64.1). Each CLI must
+resolve the selected cache. Playwright's read-only dry-run verifies its
+root, then `PLAYWRIGHT_BROWSERS_PATH=ROOT playwright uninstall --all`
+removes managed browsers and reference files inside that root, including
+versions other projects use. Branded Chrome/Edge and unrelated files stay.
+It takes no uninstall lock; an existing `__dirlock` is refused and process
+checks are best effort. Stop installers, tests and cached browsers first.
+Exit success may leave files behind; report the rescan and measured change.
+Playwright log/profile writes and version-display overrides are disabled
+for the probes and command. pnpm remains inspection-only because prune
+reaches separate metadata/dlx/runtime state; Homebrew reaches installed versions, logs and
+locks; Puppeteer loads executable config and requires interactive input
+without a verified root-pinned argument-list adapter. See
+[the scope audit](https://github.com/pwrdrvr/PwrDisk/blob/main/docs/owner-cleanup.md#candidate-audit-2026-11-04).
+Windows command launchers have no execution adapter yet. Neither containers nor volumes are
 cleanup scopes.
 
 Each path gets its own result: succeeded, failed with a reason, cancelled

@@ -122,6 +122,13 @@ fn resolve_executable(
                         "npm proxy/wrapper launchers are unsupported; expose the installed npm-cli.js through its npm symlink on PATH",
                     ));
                 }
+                if name == "playwright"
+                    && resolved.file_name().is_none_or(|name| name != "cli.js")
+                {
+                    return Err(launcher(
+                        "Playwright requires its installed JavaScript cli.js on PATH; Python, shell and downloading proxy launchers are unsupported",
+                    ));
+                }
                 validate_interpreter(&resolved, env, depth)?;
                 #[cfg(unix)]
                 {
@@ -485,6 +492,14 @@ pub(super) fn owner_named(
                         Some("npm" | "npx" | "npm-cli.js" | "npx-cli.js")
                     ))
                 || (owner == Owner::Uv && name == "uvx")
+                || (owner == Owner::Playwright
+                    && [
+                        "playwright/cli.js",
+                        "playwright-core/cli.js",
+                        "@playwright/test/cli.js",
+                    ]
+                    .iter()
+                    .any(|suffix| path.ends_with(suffix)))
                 || (owner == Owner::Pip
                     && name.to_str().is_some_and(versioned_pip))
         })

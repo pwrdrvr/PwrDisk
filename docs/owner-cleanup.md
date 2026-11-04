@@ -27,7 +27,7 @@ parent: deleting a cache's files happens only as a Delete files decision.
 | Unknown caches were refused | Unknown owner, "not known to be disposable"; Delete files is offered with a runtime/installation warning | PwrDisk never labels an unknown cache disposable; agents inspect first and never suggest Delete files |
 | Exports: marked paths only; raw scripts refuse caches | Unchanged | Owner scopes never widen an export |
 
-## Initial allowlist
+## Allowlist
 
 Commands below are argument lists, executed directly with an absolute
 resolved executable. `ROOT` is the owner's queried configured root; it is
@@ -41,6 +41,7 @@ never inferred solely from a directory name. PwrDisk does not use `npx`,
 | uv | 0.11.x | `uv cache dir` | `uv cache clean --cache-dir ROOT`; whole cache, using uv's exclusive cache lock, without `--force` |
 | pip | 23–26 | `pip cache dir` | `pip --cache-dir ROOT cache purge`; HTTP and wheel entries in that cache; other files can remain |
 | Cypress | 13–15 | `cypress cache path` | `CYPRESS_CACHE_FOLDER=ROOT cypress cache clear`; ALL cached binary versions, including ones other projects use |
+| Playwright (installed JavaScript CLI) | 1.64.0–1.64.1 only | `playwright install --dry-run ffmpeg`, repeated with the reported root pinned | `PLAYWRIGHT_BROWSERS_PATH=ROOT playwright uninstall --all`; managed browser directories and `.links` reference files inside ROOT; unrelated files and branded Chrome/Edge remain |
 
 The version is queried first. Unknown output, prereleases, unsupported
 versions, non-executable launchers and failed configuration queries withhold
@@ -51,7 +52,9 @@ Known version-manager shims (including shimmed `env node` interpreters) are
 refused before version probing, because a probe can otherwise install a
 missing runtime. Expose the actual installed CLI/runtime directly on PATH.
 npm must resolve to its installed `npm-cli.js`; downloading proxy launchers
-such as Corepack are unsupported.
+such as Corepack are unsupported. Playwright must resolve to its installed
+JavaScript `cli.js`; Python, shell, .NET and downloading wrappers are not
+audited adapters.
 Relative PATH entries are removed from the captured execution environment;
 non-UTF-8 environments fail closed instead of silently losing configuration.
 Only macOS and Linux have execution adapters; Windows cache recognition
@@ -72,9 +75,142 @@ the npm wrapper previews its supported sibling caches separately.
 | --- | --- |
 | pnpm | `store prune` can also affect metadata, dlx/runtime caches and global virtual-store state outside a selected store; these scopes are not modeled here |
 | Homebrew | `brew cleanup`, including `--prune=all`, also removes old installed formula versions and stale locks outside the selected cache |
-| Playwright | `uninstall` manages browser installations and package references; no adapter models that wider scope |
-| Puppeteer | The browser API and interactive `browsers clear --path` exist; resolving the correct installed API/configuration and its confirmation is not implemented |
+| Puppeteer | The installed CLI loads executable configuration, disables `--path`, and `browsers clear` requires a stdin answer without a noninteractive flag; no verified adapter |
 | codex-runtimes, gh, Electron, VS Code C++ and unknown caches | No verified owner adapter; inspect the owning installation and its supported lifecycle |
+
+## Candidate audit (2026-11-04)
+
+This audit reads official documentation and tagged source; it never runs
+an installed tool, downloads a runtime, or cleans a real cache. The ranges
+below describe the evidence checked, not a claim about unreviewed releases.
+Mock executables exercise probes, approval revalidation and execution in
+temporary trees. Only Playwright gains an adapter.
+
+### Playwright: enabled for 1.64.0 and 1.64.1
+
+The [browser guide](https://playwright.dev/docs/browsers#uninstall-browsers)
+documents `uninstall --all` and `PLAYWRIGHT_BROWSERS_PATH`. In both audited
+tags, the [registry](https://github.com/microsoft/playwright/blob/v1.64.1/packages/playwright-core/src/server/registry/index.ts)
+and [CLI actions](https://github.com/microsoft/playwright/blob/v1.64.1/packages/playwright-core/src/cli/installActions.ts)
+are identical to their
+[1.64.0 registry](https://github.com/microsoft/playwright/blob/v1.64.0/packages/playwright-core/src/server/registry/index.ts)
+and [1.64.0 actions](https://github.com/microsoft/playwright/blob/v1.64.0/packages/playwright-core/src/cli/installActions.ts).
+The stable gate accepts only those two patch versions, not future 1.64.x.
+
+* **Scope:** `uninstall --all` unlinks every entry of `ROOT/.links`, then
+  removes immediate children of ROOT whose names match Playwright's managed
+  browser directory prefixes, including old revisions and helper binaries.
+  It leaves the root, `.links` directory and unrelated files. References are
+  files inside this cache, not changes to the referenced packages. Branded
+  Chrome/Edge installations are excluded. All projects sharing these
+  browsers need to install them again. A subtree selection expands to ROOT.
+* **Configuration:** Playwright's `getFromENV` reads
+  `PLAYWRIGHT_BROWSERS_PATH`, then `npm_config_playwright_browsers_path`,
+  then `npm_package_config_playwright_browsers_path`. Otherwise it uses
+  `XDG_CACHE_HOME/ms-playwright` or `~/.cache/ms-playwright` on Linux and
+  `~/Library/Caches/ms-playwright` on macOS. `0` selects the installed
+  package's `.local-browsers`; relative values resolve against `INIT_CWD`
+  (with the same npm fallbacks), or the command's working directory.
+  PwrDisk queries from home and accepts only the actual absolute root the
+  installed CLI prints. It never evaluates a project's test configuration.
+* **Read-only query and pin:** `install --dry-run ffmpeg` reports exactly
+  one install location without installing browsers, dependencies or links.
+  Its `ffmpeg-<revision>` parent is the cache root. PwrDisk repeats that
+  query with `PLAYWRIGHT_BROWSERS_PATH` set to the parsed root and requires
+  identical complete output, so whitespace is preserved and embedded
+  newlines cannot forge a different root. Malformed, multiple, relative or
+  traversing locations fail closed. The cleanup keeps that override.
+* **Locking/in use:** installation uses `ROOT/__dirlock`; uninstall takes
+  no lock. PwrDisk refuses an existing lock, including a stale one, both
+  during preview and just before execution. It never clears the lock.
+  Existing process checks cover the owner and executables inside the cache;
+  they are best effort and cannot exclude a new installer/browser starting
+  afterwards. Stop installers, tests and cached browsers first.
+* **Limits:** upstream `removeFolders` catches filesystem removal errors,
+  so exit success can leave browsers behind. Report the exit result and
+  rescan, never promise every file or byte went. No raw removal fallback.
+  [Debug logging](https://github.com/microsoft/playwright/blob/v1.64.1/packages/utils/debugLogger.ts)
+  opens `DEBUG_FILE` even for probes; PwrDisk overrides it to empty. The
+  [startup profiler](https://github.com/microsoft/playwright/blob/v1.64.1/packages/playwright-core/src/bootstrap.ts)
+  can write `PW_PROFILE_DIR` on exit, so that is also overridden to empty.
+  `PW_CLI_DISPLAY_VERSION` is also overridden to empty so the CLI reports
+  its installed package version. All overrides are shown in the proposal.
+
+### pnpm: inspection-only
+
+The [10.x store guide](https://pnpm.io/10.x/cli/store) describes
+`store prune`. The
+[10.20.0 dispatcher](https://github.com/pnpm/pnpm/blob/v10.20.0/store/plugin-commands-store/src/store.ts),
+[prune orchestration](https://github.com/pnpm/pnpm/blob/v10.20.0/store/plugin-commands-store/src/storePrune.ts)
+and [store pruning](https://github.com/pnpm/pnpm/blob/v10.20.0/store/package-store/src/storeController/prune.ts)
+show separate scopes: unused content/indexes and temporary store files,
+`cacheDir/metadata*`, and expired dlx environments under `cacheDir`.
+`--store-dir` alone does not constrain that metadata or dlx scope.
+The [current guide](https://pnpm.io/cli/store) also describes versioned
+metadata and (since 12.7.0) abandoned private pnpm/runtime copies.
+No supported version range or store-only invocation is established here.
+
+[Store/cache settings](https://pnpm.io/10.x/settings) independently choose
+`storeDir` (including `PNPM_HOME`/`XDG_DATA_HOME`/platform defaults) and
+`cacheDir` (`XDG_CACHE_HOME`/platform defaults); project/user settings can
+change them. `store path` reports the versioned store, not every prune
+scope. This audit does not establish a cache-wide exclusion lock or safe
+coordination with store servers, installers and runtime management.
+Redirecting cacheDir and every auxiliary state location into the selected
+store was not verified. Keep pnpm inspection-only rather than silently
+retarget those other configured caches.
+
+### Homebrew: inspection-only
+
+The [cleanup manual](https://docs.brew.sh/Manpage#cleanup-options-formulacask-)
+and [5.0.0 command](https://github.com/Homebrew/brew/blob/5.0.0/Library/Homebrew/cmd/cleanup.rb)
+/ [implementation](https://github.com/Homebrew/brew/blob/5.0.0/Library/Homebrew/cleanup.rb)
+show that `cleanup`, `--prune=all` and `--scrub` also reach installed kegs,
+logs, temporary Cellar entries, prefix directories, caches of installation
+state and stale locks. `--prune-prefix` deliberately acts outside the cache.
+There is no verified cache-only command or accepted version range.
+`HOMEBREW_CACHE` selects downloads (`brew --cache` reports it), with the
+macOS Library/Caches and Linux XDG defaults; it does not retarget those
+other locations. Cleanup uses per-download locks and skips lock files it
+cannot exclusively lock; this is not a cache-wide in-use guarantee and
+cannot make the wider scope acceptable.
+
+### Puppeteer: inspection-only
+
+The [configuration guide](https://pptr.dev/guides/configuration) describes
+`cacheDirectory` and `PUPPETEER_CACHE_DIR` (default `~/.cache/puppeteer`).
+The installed CLI loads configuration before dispatch, including JavaScript
+files found up the directory tree. In
+[25.16.0's entry point](https://github.com/puppeteer/puppeteer/blob/puppeteer-v25.16.0/packages/puppeteer/src/node/cli.ts),
+`allowCachePathOverride` is false: the `--path` option of the standalone
+browser CLI is not an option of `puppeteer browsers clear`.
+The [browser CLI](https://github.com/puppeteer/puppeteer/blob/puppeteer-v25.16.0/packages/browsers/src/CLI.ts)
+asks for `y`/`yes` on stdin; there is no audited noninteractive flag.
+[Cache.clear](https://github.com/puppeteer/puppeteer/blob/puppeteer-v25.16.0/packages/browsers/src/Cache.ts)
+recursively removes the entire cache root, including metadata and unrelated
+files there, without an exclusion lock or running-browser check. The older
+24.26.1 CLI has the same confirmation behavior. No version range is
+accepted: evaluating arbitrary configuration or scripting stdin consent is
+not a read-only root query or an approved argument-list adapter.
+
+### Windows launchers: inspection-only
+
+Windows is an execution platform, not another cache owner: the tool's
+version still decides command scope, and the owner's settings still decide
+its root (for example npm's `cache`, `UV_CACHE_DIR`, `PIP_CACHE_DIR` and
+`PLAYWRIGHT_BROWSERS_PATH`, with their Windows defaults). No Windows
+launcher/version combination is accepted by this audit. A Unix adapter is
+not evidence that a `.cmd`, PowerShell, Python or native launcher has the
+same startup, quoting, in-use and cancellation behavior.
+
+Microsoft's [CreateProcess documentation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)
+requires a command interpreter for batch files; Rust documents
+[Windows argument handling](https://doc.rust-lang.org/std/process/struct.Command.html#method.arg)
+and implements [batch escaping separately](https://github.com/rust-lang/rust/blob/1.97.0/library/std/src/sys/pal/windows/args.rs).
+PwrDisk has neither an audited Windows launch/cancellation adapter nor a
+Windows active-use check. Neither shelling through `cmd.exe` nor accepting a
+native `.exe` alone establishes those guarantees. Recognition remains
+available; execution and Delete files remain unavailable on Windows.
 
 ## Proposals
 
@@ -154,7 +290,8 @@ A failed step reports why and the run moves on to the next. Probes time
 out after ten seconds; commands after ten minutes. Stop kills the current
 owner process group; that step reads cancelled, may be partly done, and the
 rest read not reached. Nothing is retried automatically. npm logging and
-rotation and pip log writes are disabled for these invocations so files
+rotation, pip log writes and Playwright log/profile writes are disabled for
+these invocations so files
 outside the approved scope stay untouched.
 
 Every marked path gets a result: succeeded, failed with its problem and
