@@ -54,7 +54,7 @@ fn pnpm_independent_roots_and_descendants_require_inspection() {
 }
 
 /// Playwright accepts npm's two fallback environment keys. Puppeteer's
-/// default stays under home even when another tool uses XDG_CACHE_HOME.
+/// default stays under home even when another tool uses `XDG_CACHE_HOME`.
 #[test]
 fn browser_environment_roots_do_not_bypass_raw_removal_inspection() {
     for key in [
