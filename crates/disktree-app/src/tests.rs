@@ -10245,22 +10245,19 @@ fn raw_inspection_prepares_off_thread_and_execution_rechecks(
 }
 
 /// Review must agree with the worker's recursive oracle before consent.
-/// Skipping a relocated cache must leave unrelated marks removable.
+/// Unmarking a relocated cache must leave unrelated marks removable on
+/// every platform, including those without cleanup's Delete files option.
 #[gpui_kit::test]
 fn review_routes_relocated_cache_before_confirmation_and_removes_unrelated_mark(
     cx: &mut TestAppContext,
 ) {
-    use disktree_core::cleanup::{Action, Decision};
-
     cx.update(init);
     let temp = fixture();
     let cache = temp.path().join("project/vendor/_cacache/content-v2/blob");
     std::fs::create_dir_all(cache.parent().expect("parent")).unwrap();
     std::fs::write(&cache, b"cache payload").unwrap();
-    let no_tools = tempfile::TempDir::new().expect("empty owner PATH");
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
-        app.cleanup_path = Some(no_tools.path().display().to_string());
         for name in ["project", "junk"] {
             let crumbs = child_crumbs(app, &[], name);
             app.toggle_mark(&crumbs, cx);
@@ -10279,22 +10276,19 @@ fn review_routes_relocated_cache_before_confirmation_and_removes_unrelated_mark(
         assert!(!app.confirm_open, "routing precedes confirmation");
         assert!(app.run.is_none());
     });
-    update(&view, cx, Disktree::prepare_cleanup);
-    cx.run_until_parked();
     update(&view, cx, |app, cx| {
-        let prepared = app.cleanup_ready().expect("checked owners");
-        let junk = prepared
-            .proposals
-            .iter()
-            .position(|proposal| {
-                proposal.selected == app.root_path.join("junk")
-            })
-            .expect("unrelated proposal");
-        app.decide_cleanup(junk, Decision::DeleteFiles, cx);
-        app.set_cleanup_files(Action::Permanent, cx);
+        // Ordinary removal is available everywhere; cleanup's Delete
+        // files additionally requires the macOS/Linux active-use check.
+        app.unmark(&app.root_path.join("project"), cx);
+        app.removal_mode = RemovalMode::Permanent;
         app.commit(false, cx);
-        assert!(app.confirm_open);
-        app.tick_cleanup_files(cx);
+        assert!(!app.confirm_open, "changed marks need a fresh inspection");
+        assert!(app.run.is_none());
+    });
+    inspect_raw(&view, cx);
+    update(&view, cx, |app, cx| {
+        app.commit(false, cx);
+        assert!(app.confirm_open, "{:?}", app.notice());
         app.confirm_delete(cx);
         assert_eq!(app.screen, Screen::Running);
     });
@@ -10315,7 +10309,7 @@ fn review_routes_relocated_cache_before_confirmation_and_removes_unrelated_mark(
         assert_eq!(app.run_list.totals().removed, 1);
         assert_eq!(app.run_list.totals().failed, 0);
     });
-    assert!(cache.exists(), "Skip preserves the cache");
+    assert!(cache.exists(), "the unmarked project is preserved");
     assert!(!temp.path().join("junk").exists());
     assert!(temp.path().join("keep/notes.txt").exists());
 }
