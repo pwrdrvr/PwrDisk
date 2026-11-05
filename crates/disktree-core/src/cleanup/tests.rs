@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use super::*;
 use Decision::{DeleteFiles, Owner as Run, Skip};
 
+mod candidates;
 #[cfg(unix)]
 mod playwright;
 mod properties;

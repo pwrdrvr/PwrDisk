@@ -445,6 +445,14 @@ fn check_in_use(
                 .exe()
                 .is_some_and(|path| path.starts_with(scope))
                 || process.cwd().is_some_and(|path| path.starts_with(scope));
+            // argv[0] is caller controlled, and process arguments may be
+            // unavailable. The kernel's image path is separate evidence.
+            let owner_image = owner.is_some_and(|owner| {
+                process
+                    .exe()
+                    .and_then(|path| path.to_str())
+                    .is_some_and(|image| owner_named(owner, executable, image))
+            });
             let using_cache = process.cmd().iter().any(|argument| {
                 let argument = argument.to_string_lossy();
                 argument.contains(cache)
@@ -452,7 +460,7 @@ fn check_in_use(
                         owner_named(owner, executable, &argument)
                     })
             });
-            if in_scope || using_cache {
+            if in_scope || owner_image || using_cache {
                 return Err(format!(
                     "{} may be in use (process {pid}); stop it and prepare a new preview",
                     owner.map_or("This path", Owner::label)
