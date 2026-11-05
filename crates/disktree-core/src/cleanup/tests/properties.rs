@@ -33,6 +33,36 @@ fn count(rng: &mut Rng, low: u64, high: u64) -> usize {
     usize::try_from(low + rng.below(high - low + 1)).expect("count")
 }
 
+/// The worker visits exactly the prefix through the first refusal. The
+/// fixture's one cleanable cache supplies an oracle for that position.
+#[test]
+fn raw_worker_visits_only_the_prefix_through_its_first_refusal() {
+    for seed in seeds(32) {
+        let mut rng = Rng::new(seed);
+        let fixture = Fixture::new();
+        let marked = count(&mut rng, 2, 8);
+        let refused = count(&mut rng, 0, (marked - 1) as u64);
+        let targets: Vec<_> = (0..marked)
+            .map(|index| {
+                let name = format!("project-{index}");
+                let path = fixture.dir(&name);
+                if index == refused {
+                    fixture.dir(&format!("{name}/vendor/_cacache"));
+                }
+                target(&path)
+            })
+            .collect();
+        let (result, visited) =
+            trace_raw_targets(|| check_raw_with(&targets, &fixture.env));
+        assert!(result.is_err(), "seed {seed}");
+        let expected: Vec<_> = targets[..=refused]
+            .iter()
+            .map(|target| target.path.clone())
+            .collect();
+        assert_eq!(visited, expected, "seed {seed}");
+    }
+}
+
 /// Per-mark results share one selection budget. The filesystem is the
 /// oracle: one visit per selected directory and per immediate file. Once
 /// their cumulative count exceeds the bound, no later mark is admitted.

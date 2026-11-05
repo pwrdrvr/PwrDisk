@@ -52,9 +52,9 @@ fn check_raw_with(
     targets: &[Target],
     environment: &Environment,
 ) -> Result<(), String> {
-    inspect_raw_with(targets, environment, MAX_PREFLIGHT_ENTRIES)
-        .into_iter()
-        .collect()
+    // A worker refuses the entire run on the first error, so later marks
+    // must not be walked while preparing a refusal it already knows.
+    raw_inspections_with(targets, environment, MAX_PREFLIGHT_ENTRIES).collect()
 }
 
 fn inspect_raw_with(
@@ -62,20 +62,19 @@ fn inspect_raw_with(
     environment: &Environment,
     maximum: usize,
 ) -> Vec<Result<(), String>> {
+    raw_inspections_with(targets, environment, maximum).collect()
+}
+
+fn raw_inspections_with<'a>(
+    targets: &'a [Target],
+    environment: &'a Environment,
+    maximum: usize,
+) -> impl Iterator<Item = Result<(), String>> + 'a {
     let roots = recognize::roots(environment);
     let mut visited = 0;
-    targets
-        .iter()
-        .map(|target| {
-            inspect_raw_target(
-                target,
-                environment,
-                &roots,
-                &mut visited,
-                maximum,
-            )
-        })
-        .collect()
+    targets.iter().map(move |target| {
+        inspect_raw_target(target, environment, &roots, &mut visited, maximum)
+    })
 }
 
 #[allow(
@@ -89,6 +88,8 @@ fn inspect_raw_target(
     visited: &mut usize,
     maximum: usize,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    tests::record_raw_target(&target.path);
     if let Some(reason) = recognize::inspection_with(&target.path, environment)
     {
         return Err(format!("{:?}: {reason}", target.path));
