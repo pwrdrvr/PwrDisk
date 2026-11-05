@@ -19,8 +19,32 @@ static IMAGES: Mutex<()> = Mutex::new(());
 struct Image {
     temp: Option<tempfile::TempDir>,
     mounted: bool,
+    device: Option<PathBuf>,
     eject: fn(&Path, bool) -> Result<(), String>,
     _guard: MutexGuard<'static, ()>,
+}
+
+fn attachment_device(plist: &[u8]) -> PathBuf {
+    let source = tempfile::NamedTempFile::new().expect("attachment plist");
+    fs::write(source.path(), plist).expect("attachment records");
+    let output = checked(
+        Command::new("plutil")
+            .args(["-extract", "system-entities", "json", "-o", "-"])
+            .arg(source.path()),
+    );
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout)
+            .expect("structured attachment records");
+    let mut devices = entries.iter().filter_map(|entry| {
+        (entry["content-hint"] == "GUID_partition_scheme")
+            .then(|| entry["dev-entry"].as_str())
+            .flatten()
+    });
+    let device = devices.next().expect("backing image device");
+    assert!(devices.next().is_none(), "one private backing image");
+    let suffix = device.strip_prefix("/dev/disk").expect("disk device");
+    assert!(!suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()));
+    PathBuf::from(device)
 }
 
 fn eject(root: &Path, force: bool) -> Result<(), String> {
@@ -63,6 +87,7 @@ impl Image {
         let mut image = Self {
             temp: Some(tempfile::tempdir().expect("private image directory")),
             mounted: false,
+            device: None,
             eject,
             _guard: guard,
         };
@@ -107,11 +132,14 @@ impl Image {
     }
 
     fn attach(&mut self) {
-        checked(
+        // A reattach can receive another device number. Never retain the
+        // previous attachment's identity if decoding this one fails.
+        self.device = None;
+        let output = checked(
             Command::new("hdiutil")
                 .args([
                     "attach",
-                    "-quiet",
+                    "-plist",
                     "-nobrowse",
                     "-noautoopen",
                     "-mountpoint",
@@ -120,6 +148,7 @@ impl Image {
                 .arg(self.backing()),
         );
         self.mounted = true;
+        self.device = Some(attachment_device(&output.stdout));
     }
 
     fn detach(&mut self) {
@@ -127,14 +156,15 @@ impl Image {
     }
 
     fn try_detach(&mut self) -> Result<(), String> {
-        let root = self.root();
-        (self.eject)(&root, false).or_else(|normal| {
-            // Only this fixture's private mount is eligible. Background
-            // readers can hold it briefly even after our files are closed.
-            (self.eject)(&root, true)
+        let target = self.device.clone().unwrap_or_else(|| self.root());
+        (self.eject)(&target, false).or_else(|normal| {
+            // A busy eject can leave APFS unmounted. The backing device
+            // returned by our attach still exists when the mount path does not.
+            (self.eject)(&target, true)
                 .map_err(|forced| format!("{normal}\nforced detach: {forced}"))
         })?;
         self.mounted = false;
+        self.device = None;
         Ok(())
     }
 
@@ -178,6 +208,7 @@ fn failed_image_cleanup_does_not_panic_or_remove_its_backing_files() {
     let image = Image {
         temp: Some(temp),
         mounted: true,
+        device: None,
         eject: fail_eject,
         _guard: IMAGES
             .lock()
@@ -230,7 +261,11 @@ proptest! {
         let eject = if normal_ok { eject_succeeds }
             else if forced_ok { force_succeeds }
             else { fail_eject };
-        let image = Image { temp: Some(temp), mounted: true, eject,
+        let image = Image {
+            temp: Some(temp),
+            mounted: true,
+            device: None,
+            eject,
             _guard: IMAGES.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         };
@@ -253,6 +288,37 @@ proptest! {
                 .expect("remove the unmounted stand-in");
         }
     }
+}
+
+#[test]
+fn an_unmounted_volume_still_detaches_its_backing_image() {
+    let mut image = Image::new();
+    let device = image.device.clone().expect("attached device");
+    let retained = image
+        .temp
+        .as_ref()
+        .expect("image directory")
+        .path()
+        .to_owned();
+    // A busy detach can unmount APFS before failing to eject the image.
+    // Reproduce that state directly, without relying on background readers.
+    checked(
+        Command::new("diskutil")
+            .args(["unmount", "force"])
+            .arg(image.root()),
+    );
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            image.detach();
+        }));
+    drop(image);
+    if outcome.is_err() {
+        // On pre-fix code the mount point is gone, but the recorded image
+        // device still belongs to this test and must be released explicitly.
+        eject(&device, true).expect("release the retained private image");
+        fs::remove_dir_all(retained).expect("remove retained backing files");
+    }
+    assert!(outcome.is_ok(), "unmounting must not lose the eject target");
 }
 
 impl Drop for Image {
