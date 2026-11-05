@@ -5,14 +5,17 @@ use rustc_hash::FxHashMap;
 use super::{Allocation, CloneInfo};
 use crate::tree::Node;
 
+#[cfg(all(test, target_os = "macos"))]
+mod apfs_tests;
+
 /// Scan-derived bounds before snapshots, open files, compression and changes
 /// after the scan. Only the lower bound is projected onto the volume meter.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Estimate {
     pub lower: u64,
     pub upper: u64,
-    /// Missing metadata, bounded accounting or inconsistent observations of
-    /// one file, including more names than its reported link count.
+    /// Missing extent relationships or metadata, bounded accounting, or
+    /// inconsistent observations of one file.
     pub partial: bool,
 }
 
@@ -41,14 +44,17 @@ impl Group {
     fn credit(&self) -> Estimate {
         let complete =
             self.references >= 2 && self.members == u64::from(self.references);
+        // APFS gives a modified clone a new ID even while it retains some
+        // of this group's blocks. It may be outside the scanned root, so
+        // selecting every reference to this ID proves only possible savings.
         Estimate {
-            lower: if complete { self.shared } else { 0 },
+            lower: 0,
             upper: if complete && self.all_zero_private {
                 self.shared
             } else {
                 0
             },
-            partial: false,
+            partial: complete && self.shared > 0,
         }
     }
 }
@@ -69,6 +75,7 @@ impl Links {
 pub(super) struct Accumulator {
     base: Estimate,
     credit: Estimate,
+    uncertain_groups: u64,
     groups: FxHashMap<(u64, u64), Group>,
     links: FxHashMap<(u64, u64), Links>,
     limit: usize,
@@ -89,13 +96,11 @@ impl Accumulator {
 
     pub(super) const fn estimate(&self) -> Estimate {
         Estimate {
-            lower: self.base.lower.saturating_add(if self.base.partial {
-                0
-            } else {
-                self.credit.lower
-            }),
+            lower: self.base.lower,
             upper: self.base.upper.saturating_add(self.credit.upper),
-            partial: self.base.partial || self.incomplete,
+            partial: self.base.partial
+                || self.incomplete
+                || self.uncertain_groups > 0,
         }
     }
 
@@ -206,7 +211,12 @@ impl Accumulator {
         group.references = group.references.max(file.references);
         group.shared = group.shared.min(file.shared);
         group.all_zero_private &= file.all_zero_private;
-        replace(&mut self.credit, before, group.credit());
+        replace(
+            &mut self.credit,
+            &mut self.uncertain_groups,
+            before,
+            group.credit(),
+        );
     }
 
     pub(super) fn merge(&mut self, mut other: Self) {
@@ -254,7 +264,12 @@ impl Accumulator {
         old.references = old.references.max(group.references);
         old.shared = old.shared.min(group.shared);
         old.all_zero_private &= group.all_zero_private;
-        replace(&mut self.credit, before, old.credit());
+        replace(
+            &mut self.credit,
+            &mut self.uncertain_groups,
+            before,
+            old.credit(),
+        );
     }
 
     fn join_links(&mut self, key: (u64, u64), links: Links) {
@@ -305,7 +320,16 @@ const fn adjust(total: &mut u64, value: u64, add: bool) {
     };
 }
 
-const fn replace(total: &mut Estimate, before: Estimate, after: Estimate) {
+const fn replace(
+    total: &mut Estimate,
+    uncertain: &mut u64,
+    before: Estimate,
+    after: Estimate,
+) {
+    // Count current uncertain groups so a later observation that changes
+    // completeness gives the same answer in either merge order.
+    adjust(uncertain, before.partial as u64, false);
+    adjust(uncertain, after.partial as u64, true);
     total.lower = total
         .lower
         .saturating_sub(before.lower)
@@ -317,7 +341,7 @@ const fn replace(total: &mut Estimate, before: Estimate, after: Estimate) {
 }
 
 /// Accepted non-overlapping aggregated subtrees are evaluated together, so complete
-/// groups spanning separate marks receive credit once.
+/// groups spanning separate marks count possible shared savings once.
 ///
 /// Callers cache this scan-derived answer; removal authorization must still be checked afresh.
 pub fn estimate<'a>(nodes: impl IntoIterator<Item = Node<'a>>) -> Estimate {
@@ -485,9 +509,11 @@ mod tests {
                 partial: false,
             }
         );
-        // Including the surviving member completes the union exactly once.
-        assert_eq!(estimate(root.children()).lower, LISTED + 450 * MIB);
+        // Completing an ID adds possible savings, never measured private
+        // allocation: another ID may retain some of its blocks.
+        assert_eq!(estimate(root.children()).lower, 500 * MIB);
         assert_eq!(estimate(root.children()).upper, LISTED + 450 * MIB);
+        assert!(estimate(root.children()).partial);
     }
 
     #[test]
@@ -544,9 +570,10 @@ mod tests {
         assert_eq!(root.bytes, 8192);
         assert_eq!(root.sharing().duplicate_bytes, 4096);
         assert_eq!(estimate(root.children().iter().take(2)).lower, 0);
-        assert_eq!(estimate(root.children()).lower, 4096);
-        assert_eq!(root.sharing().reclaimable(root.bytes), 4096);
+        assert_eq!(estimate(root.children()).lower, 0);
+        assert_eq!(root.sharing().reclaimable(root.bytes), 0);
         assert_eq!(estimate(root.children()).upper, 4096);
+        assert!(estimate(root.children()).partial);
     }
 
     #[test]
@@ -644,7 +671,7 @@ mod tests {
         assert_eq!(estimate([Tree::from(&a).root()]).upper, 4096);
         assert_eq!(
             estimate([Tree::from(&a).root(), Tree::from(&b).root()]).lower,
-            5120
+            2048
         );
         assert_eq!(
             estimate([Tree::from(&a).root(), Tree::from(&b).root()]).upper,
@@ -714,7 +741,9 @@ mod tests {
             }
             WORK.set(0);
             let value = estimate(nodes.iter().map(Tree::root));
-            assert_eq!(value.lower, n * 4096);
+            assert_eq!(value.lower, 0);
+            assert_eq!(value.upper, n * 4096);
+            assert!(value.partial);
             let work = WORK.get();
             assert!(work < n * 40, "absolute work budget: {n}: {work}");
             counts.push(work);
@@ -868,7 +897,9 @@ mod addition_tests {
                 Selected::new(nodes[..1].iter().copied())
                     .additions(&nodes[1..]);
             assert!(alternatives.iter().all(|(_, union)| union.upper == 0));
-            assert_eq!(together.lower, count * 4096);
+            assert_eq!(together.lower, 0);
+            assert_eq!(together.upper, count * 4096);
+            assert!(together.partial);
             let operations = WORK.get();
             assert!(operations < count * 200, "{count}: {operations}");
             counts.push(operations);

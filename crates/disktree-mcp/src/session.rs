@@ -5280,7 +5280,7 @@ mod tests {
     }
 
     #[test]
-    fn clone_rows_split_shared_bytes_and_a_complete_group_frees_one_copy() {
+    fn clone_rows_split_shared_bytes_and_a_complete_group_has_partial_bounds() {
         let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
             .expect("fixture");
         let root = temp.path().canonicalize().expect("root");
@@ -5343,7 +5343,7 @@ mod tests {
                 paths: copies(&root),
             })
             .expect("mark all");
-        assert!(all.contains("estimate: 12 MiB\u{2013}12 MiB"), "{all}");
+        assert!(all.contains("estimate: 0 B\u{2013}12 MiB"), "{all}");
         assert!(all.contains("36 MiB of the selection is APFS clone"));
     }
 
@@ -5404,7 +5404,7 @@ mod tests {
     }
 
     #[test]
-    fn marking_a_worktree_trio_one_by_one_frees_one_copy_at_the_end() {
+    fn marking_a_worktree_trio_keeps_shared_blocks_out_of_the_lower_bound() {
         const MIB: u64 = 1024 * 1024;
         for modified in [false, true] {
             let temp =
@@ -5425,17 +5425,17 @@ mod tests {
                 assert_eq!(estimate.on_volume, estimate.lower, "{report}");
                 seen.push((estimate.lower, estimate.upper));
             }
-            // Each worktree's own 100 MiB until the last clone of the
-            // group is selected; then the shared data counts, once.
+            // Each worktree's own 100 MiB is measured; completing the ID
+            // adds only possible savings because other IDs can share blocks.
             let lower: Vec<u64> =
                 seen.iter().map(|(lower, _)| *lower).collect();
             assert_eq!(
                 lower,
-                [100 * MIB, 200 * MIB, (300 + 10_140) * MIB],
+                [100 * MIB, 200 * MIB, 300 * MIB],
                 "modified={modified}"
             );
             if !modified {
-                // Full clones beside ordinary files: exact, no range.
+                // The full group's shared data enters the upper bound once.
                 let upper: Vec<_> =
                     seen.iter().map(|(_, upper)| *upper).collect();
                 assert_eq!(
