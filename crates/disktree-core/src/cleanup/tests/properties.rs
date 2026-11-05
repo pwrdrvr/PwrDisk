@@ -414,6 +414,15 @@ fn only_a_cleanable_cache_holds_a_removal_back() {
         let case = format!("seed {seed}: {selected:?}");
         let hint = recognize::inspection_with(&selected, &fixture.env);
         assert_eq!(hint.is_some(), above, "{case}: {hint:?}");
+        // Cache cleanup asks the owner Review named, not a nearer one
+        // without a command.
+        if above {
+            let owner = recognize::hinted(&selected, &fixture.env);
+            assert!(
+                owner.as_ref().is_some_and(|(owner, _)| owner.has_cleanup()),
+                "{case}: {hint:?} but Cache cleanup asks {owner:?}"
+            );
+        }
         let raw = check_raw_with(&[target(&selected)], &fixture.env);
         assert_eq!(raw.is_err(), above || inside, "{case}: {raw:?}");
         assert!(selected.exists(), "{case}: checking cannot delete");
@@ -440,16 +449,38 @@ fn a_wrapper_holding_a_cleanable_cache_is_named_in_review() {
         ];
         let planted: Vec<_> =
             homes.iter().filter(|_| rng.percent(40)).copied().collect();
+        // A root that is a link is not deleted with its wrapper, which
+        // removes the link only, so it holds nothing back.
+        let elsewhere = fixture.root.join("elsewhere");
+        let mut linked = Vec::new();
         for (path, _) in &planted {
-            std::fs::create_dir_all(home.join(path).join("entry"))
-                .expect("cache");
+            let root = home.join(path);
+            #[cfg(unix)]
+            if rng.percent(25) {
+                std::fs::create_dir_all(elsewhere.join(path).join("entry"))
+                    .expect("cache elsewhere");
+                std::fs::create_dir_all(root.parent().expect("parent"))
+                    .expect("parent");
+                std::os::unix::fs::symlink(elsewhere.join(path), &root)
+                    .expect("link");
+                linked.push(true);
+                continue;
+            }
+            std::fs::create_dir_all(root.join("entry")).expect("cache");
+            linked.push(false);
         }
+        // Only Unix makes links here.
+        let _ = &elsewhere;
         let wrapper = home
             .join(pick(rng, &[".cache", "Library", "Library/Caches", ".npm"]));
         std::fs::create_dir_all(&wrapper).expect("wrapper");
-        let holds = planted.iter().any(|(path, cleanable)| {
-            *cleanable && home.join(path).starts_with(&wrapper)
-        });
+        let holds =
+            planted
+                .iter()
+                .zip(&linked)
+                .any(|((path, cleanable), link)| {
+                    *cleanable && !link && home.join(path).starts_with(&wrapper)
+                });
         let case = format!("seed {seed}: {wrapper:?} with {planted:?}");
         let hint = recognize::inspection_with(&wrapper, &fixture.env);
         assert_eq!(hint.is_some(), holds, "{case}: {hint:?}");

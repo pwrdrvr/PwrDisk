@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use super::{Environment, Owner};
 
 /// Where each owner keeps its cache by default or as configured.
-fn roots(env: &Environment) -> Vec<(Owner, PathBuf)> {
+pub(super) fn roots(env: &Environment) -> Vec<(Owner, PathBuf)> {
     let cache = env
         .variables
         .get("XDG_CACHE_HOME")
@@ -203,14 +203,8 @@ pub(super) fn inspection_with(
     path: &Path,
     env: &Environment,
 ) -> Option<String> {
-    // Any cleanable cache above, not only the nearest owner: npm's npx
-    // cache can hold a pnpm store, which has no command of its own.
-    let inside = roots(env)
-        .into_iter()
-        .find(|(owner, root)| owner.has_cleanup() && path.starts_with(root))
-        .map(|(owner, _)| owner)
-        .or_else(|| path.ancestors().find_map(cleanable_here));
-    if let Some(owner) = inside {
+    let roots = roots(env);
+    if let Some((owner, _)) = cleanable_owner(path, &roots) {
         return Some(format!(
             "In the {}: Cache cleanup can run `{}` for it instead of deleting its files",
             owner.label(),
@@ -220,10 +214,15 @@ pub(super) fn inspection_with(
     // A wrapper such as ~/.cache or ~/Library/Caches, marked whole. Only
     // the roots where owners keep their caches are looked for here, so
     // Review stays cheap; the removal worker's walk finds the rest.
-    roots(env)
+    // A link is not followed by removal, so a root that is one is not
+    // bypassed by deleting the wrapper.
+    roots
         .into_iter()
         .filter(|(owner, root)| {
-            owner.has_cleanup() && root.starts_with(path) && root.is_dir()
+            owner.has_cleanup()
+                && root.starts_with(path)
+                && std::fs::symlink_metadata(root)
+                    .is_ok_and(|meta| meta.is_dir())
         })
         .map(|(owner, root)| {
             format!(
@@ -236,32 +235,55 @@ pub(super) fn inspection_with(
         .next()
 }
 
+/// The cleanable cache holding `path`, and its root. Any cleanable cache
+/// above, not only the nearest owner: npm's npx cache can hold a pnpm
+/// store, which has no command of its own.
+fn cleanable_owner(
+    path: &Path,
+    roots: &[(Owner, PathBuf)],
+) -> Option<(Owner, PathBuf)> {
+    roots
+        .iter()
+        .find(|(owner, root)| owner.has_cleanup() && path.starts_with(root))
+        .cloned()
+        .or_else(|| {
+            path.ancestors().find_map(|ancestor| {
+                cleanable_here(ancestor)
+                    .map(|owner| (owner, ancestor.to_owned()))
+            })
+        })
+}
+
 /// The cleanable cache rooted exactly at `directory`, for the walk below a
 /// marked path: its own root, name or layout, never an ancestor's, which
-/// the marked path's own check has already seen.
+/// the marked path's own check has already seen. `roots` is built once
+/// per walk, not once per directory.
 pub(super) fn cleanable_root(
     directory: &Path,
-    env: &Environment,
+    roots: &[(Owner, PathBuf)],
 ) -> Option<Owner> {
-    roots(env)
-        .into_iter()
+    roots
+        .iter()
         .find(|(owner, root)| owner.has_cleanup() && root == directory)
-        .map(|(owner, _)| owner)
+        .map(|(owner, _)| *owner)
         .or_else(|| cleanable_here(directory))
 }
 
-/// The owner a path most likely belongs to: a known or configured root
-/// containing it, or a recognizable layout a few levels up. A hint picks
-/// which owner to ask; only that owner's own query confirms a root.
+/// The owner a path most likely belongs to: first the cleanable cache
+/// Review named for it, then any known or configured root containing it,
+/// or a recognizable layout a few levels up. A hint picks which owner to
+/// ask; only that owner's own query confirms a root.
 pub(super) fn hinted(
     path: &Path,
     env: &Environment,
 ) -> Option<(Owner, PathBuf)> {
-    owner(path, env).or_else(|| {
-        path.ancestors().take(4).find_map(|root| {
-            shape_owner(root).map(|owner| (owner, root.to_owned()))
+    cleanable_owner(path, &roots(env))
+        .or_else(|| owner(path, env))
+        .or_else(|| {
+            path.ancestors().take(4).find_map(|root| {
+                shape_owner(root).map(|owner| (owner, root.to_owned()))
+            })
         })
-    })
 }
 
 // Enough to name the caches inside a wrapper such as ~/.cache without
@@ -277,6 +299,7 @@ pub(super) fn contained(
     path: &Path,
     env: &Environment,
 ) -> Result<Vec<String>, String> {
+    let roots = roots(env);
     let mut found = Vec::new();
     let mut pending = vec![(path.to_owned(), 0)];
     let mut visited = 0;
@@ -310,7 +333,7 @@ pub(super) fn contained(
             if visited > CONTAINED_DIRECTORIES {
                 return Err("Too many folders to list the caches inside; inspect a smaller selection".into());
             }
-            let label = cleanable_root(&child, env)
+            let label = cleanable_root(&child, &roots)
                 .map(|owner| owner.label().to_owned());
             if let Some(label) = label {
                 if found.len() < CONTAINED_LISTED {

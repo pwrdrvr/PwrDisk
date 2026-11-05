@@ -50,6 +50,7 @@ fn check_raw_with(
             return Err(format!("{:?}: {reason}", target.path));
         }
     }
+    let roots = recognize::roots(environment);
     let mut pending: Vec<_> =
         targets.iter().map(|target| target.path.clone()).collect();
     let mut visited = 0;
@@ -66,7 +67,7 @@ fn check_raw_with(
             Err(error) => return Err(error.to_string()),
         };
         if meta.is_dir() {
-            if let Some(owner) = recognize::cleanable_root(&path, environment) {
+            if let Some(owner) = recognize::cleanable_root(&path, &roots) {
                 return Err(format!(
                     "{path:?}: the {} inside can be cleaned with `{}`; choose Cache cleanup for it",
                     owner.label(),
