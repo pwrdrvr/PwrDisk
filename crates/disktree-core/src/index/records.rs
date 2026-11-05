@@ -57,6 +57,23 @@ impl Starts {
     }
 }
 
+/// A batch's shared records can already belong to earlier directories.
+/// Other tables still move by one offset each.
+pub(super) struct Moves {
+    starts: Starts,
+    shared: Vec<usize>,
+}
+
+impl Moves {
+    pub(super) fn moved(&self, tag: u32, index: usize) -> usize {
+        if tag == SHARED {
+            self.shared[index]
+        } else {
+            self.starts.moved(tag, index)
+        }
+    }
+}
+
 /// A clone with one name and no private blocks: what nearly every file
 /// of a directory of cloned worktrees is. Every file of a clone group
 /// reads the same one, which is kept once: see [`Records::reuse`].
@@ -219,6 +236,35 @@ pub(super) struct Records {
 }
 
 impl Records {
+    pub(super) fn clear(&mut self) {
+        self.shared.clear();
+        self.clones.clear();
+        self.links.clear();
+        self.full.clear();
+        self.reuse.clear();
+    }
+
+    /// Include the temporary interning map in the worker's buffer budget.
+    pub(super) fn reuse_room(&self) -> usize {
+        // Thirty-two bytes per usable entry cover the key, index, control
+        // bytes and spare buckets at the table's maximum load factor.
+        self.reuse.capacity() * 32
+    }
+
+    fn push_shared(&mut self, record: SharedClone) -> usize {
+        if let Some(&index) = self.reuse.get(&record) {
+            return index as usize;
+        }
+        let index = self.shared.len();
+        self.shared.push(record);
+        if self.reuse.len() < REUSED
+            && let Ok(at) = u32::try_from(index)
+        {
+            self.reuse.insert(record, at);
+        }
+        index
+    }
+
     /// Keep `allocation` for a node of `facts`: the tag of the table it
     /// went into and its index there.
     pub(super) fn push(
@@ -227,19 +273,7 @@ impl Records {
         facts: &Facts,
     ) -> (u32, usize) {
         match Packed::of(allocation, facts) {
-            Packed::SharedClone(record) => {
-                if let Some(&index) = self.reuse.get(&record) {
-                    return (SHARED, index as usize);
-                }
-                let index = self.shared.len();
-                self.shared.push(record);
-                if self.reuse.len() < REUSED
-                    && let Ok(at) = u32::try_from(index)
-                {
-                    self.reuse.insert(record, at);
-                }
-                (SHARED, index)
-            }
+            Packed::SharedClone(record) => (SHARED, self.push_shared(record)),
             Packed::PartialClone(record) => {
                 self.clones.push(record);
                 (CLONE, self.clones.len() - 1)
@@ -339,6 +373,22 @@ impl Records {
         self.clones.extend_from_slice(&other.clones);
         self.links.extend_from_slice(&other.links);
         self.full.extend_from_slice(&other.full);
+    }
+
+    /// Keep the global store's interning across independently packed
+    /// batches, so moving encoding off the lock does not repeat a clone
+    /// group's record in every directory.
+    pub(super) fn append_batch(&mut self, other: &Self) -> Moves {
+        let starts = self.starts();
+        let shared = other
+            .shared
+            .iter()
+            .map(|&record| self.push_shared(record))
+            .collect();
+        self.clones.extend_from_slice(&other.clones);
+        self.links.extend_from_slice(&other.links);
+        self.full.extend_from_slice(&other.full);
+        Moves { starts, shared }
     }
 
     /// A copy made on every worker, as [`super::Store`]'s is.

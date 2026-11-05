@@ -13,7 +13,7 @@
 )]
 
 use std::cell::RefCell;
-use std::ffi::{CString, OsStr, c_int, c_void};
+use std::ffi::{CStr, CString, OsStr, c_int, c_void};
 use std::fs::Metadata;
 use std::os::unix::fs::MetadataExt as _;
 
@@ -25,6 +25,56 @@ use std::path::{Path, PathBuf};
 use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 
 use crate::sharing::CloneInfo;
+
+/// APFS listing throughput can fall as more workers contend in the kernel.
+/// On an 8P/4E M2 Max, ten workers beat twelve on 6.2 million files while
+/// using 19% less system CPU. Keep all performance cores and half the
+/// efficiency cores; unknown topologies and smaller Rayon pools keep their
+/// existing budget. An explicit `ScanThreads` budget bypasses this default.
+pub fn walk_threads(threads: usize) -> usize {
+    let Some((performance, efficiency)) =
+        logical_cpus(c"hw.perflevel0.logicalcpu")
+            .zip(logical_cpus(c"hw.perflevel1.logicalcpu"))
+    else {
+        return threads;
+    };
+    walk_threads_for(threads, performance, efficiency)
+}
+
+const fn walk_threads_for(
+    threads: usize,
+    performance: usize,
+    efficiency: usize,
+) -> usize {
+    if performance == 0
+        || performance > threads
+        || efficiency != threads - performance
+    {
+        return threads;
+    }
+    performance + efficiency.div_ceil(2)
+}
+
+fn logical_cpus(name: &CStr) -> Option<usize> {
+    let mut count = 0_u32;
+    let mut size = std::mem::size_of_val(&count);
+    // SAFETY: the NUL-terminated name is borrowed for this call, and the
+    // output points to a writable u32 whose byte length is supplied. No
+    // value is written to the sysctl; malformed or absent results fall back.
+    let result = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            (&raw mut count).cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if result != 0 || size != std::mem::size_of_val(&count) {
+        return None;
+    }
+    usize::try_from(count).ok()
+}
 
 /// Bytes the kernel fills per call: some hundreds of entries.
 const BUFFER_BYTES: usize = 64 * 1024;
@@ -375,6 +425,7 @@ pub struct ReadDir {
     offset: usize,
     done: bool,
     clones: Clones,
+    listed_dirs: bool,
 }
 
 /// Directories listed without sharing flags, so a test can tell that its
@@ -408,6 +459,7 @@ pub fn read_dir(dir: &Path, clones: Clones) -> io::Result<ReadDir> {
         offset: 0,
         done: false,
         clones,
+        listed_dirs: false,
     })
 }
 
@@ -458,6 +510,12 @@ impl Iterator for ReadDir {
 }
 
 impl ReadDir {
+    /// A caller that checks mounts by path can trust directory flags from
+    /// the listing. Otherwise a covered mount point needs a fresh stat.
+    pub(crate) const fn use_listed_directories(&mut self) {
+        self.listed_dirs = true;
+    }
+
     /// Ask the kernel for the next buffer of records; how many it wrote.
     fn fill(&mut self) -> io::Result<u32> {
         let buffer = self.buffer.as_mut().expect("held until drop");
@@ -553,7 +611,7 @@ impl ReadDir {
             return Ok((Err(error), length));
         }
         let entry = if common & MEASURED == MEASURED {
-            cursor.entry(file, extended, self.clones, name)?
+            cursor.entry(file, extended, self.clones, name, self.listed_dirs)?
         } else {
             None
         };
@@ -638,6 +696,7 @@ impl<'a> Cursor<'a> {
         extended: u32,
         clones: Clones,
         name: &[u8],
+        listed_dirs: bool,
     ) -> io::Result<Option<Entry>> {
         let device = self.u32()?.cast_signed();
         let kind = match self.u32()? {
@@ -650,6 +709,24 @@ impl<'a> Cursor<'a> {
         self.at += 8;
         let flags = self.u32()?;
         let inode = self.u64()?;
+        if kind == Kind::Directory && listed_dirs {
+            let (name, exact) = Entry::named(name);
+            // Directory sizes and dates are derived from descendants.
+            // Only identity and the dataless flag are read by the walk.
+            return Ok(Some(Entry {
+                name,
+                exact,
+                kind,
+                apparent: 0,
+                allocated: 0,
+                modified,
+                device: i64::from(device).cast_unsigned(),
+                inode,
+                links: 0,
+                flags,
+                hints: None,
+            }));
+        }
         // A directory is stated the ordinary way. A mount point is listed
         // with the attributes of the directory it covers, so its DEVID is
         // the parent volume's, and the walk would cross into every disk,
@@ -710,6 +787,32 @@ mod tests {
     use std::os::unix::fs::symlink;
     use tempfile::TempDir;
 
+    #[test]
+    fn default_walk_budget_keeps_performance_cores_and_explicit_pools() {
+        assert_eq!(walk_threads_for(12, 8, 4), 10);
+        assert_eq!(walk_threads_for(18, 12, 6), 15);
+        assert_eq!(walk_threads_for(10, 8, 2), 9);
+        assert_eq!(walk_threads_for(8, 8, 0), 8);
+        assert_eq!(walk_threads_for(12, 0, 0), 12);
+        // A smaller caller pool is already a deliberate concurrency budget.
+        for threads in 1..12 {
+            assert_eq!(walk_threads_for(threads, 8, 4), threads);
+        }
+        // Stale or unrecognized topology must not enlarge a pool.
+        for threads in 1..64 {
+            for performance in 0..32 {
+                for efficiency in 0..32 {
+                    let budget =
+                        walk_threads_for(threads, performance, efficiency);
+                    assert!((1..=threads).contains(&budget));
+                    if performance + efficiency == threads {
+                        assert!(budget >= performance);
+                    }
+                }
+            }
+        }
+    }
+
     fn listed(dir: &Path) -> Vec<Entry> {
         let mut entries: Vec<Entry> = read_dir(dir, Clones::Off)
             .expect("list")
@@ -747,6 +850,33 @@ mod tests {
             entry.shared(),
             entry.evicted(),
         )
+    }
+
+    #[test]
+    fn listed_directory_identity_and_eviction_match_stat() {
+        let mut rng = crate::test_rng::Rng::new(0);
+        for _ in 0..32 {
+            let temp = TempDir::new().expect("tempdir");
+            for index in 0..=rng.below(24) {
+                let name =
+                    format!("{index}-é\n{}", "🦀".repeat(1 + index as usize));
+                fs::create_dir(temp.path().join(name)).expect("mkdir");
+            }
+            let expected = listed(temp.path());
+            let mut entries = read_dir(temp.path(), Clones::Off).expect("list");
+            entries.use_listed_directories();
+            let mut entries =
+                entries.collect::<io::Result<Vec<_>>>().expect("entries");
+            entries.sort_by(|left, right| left.name.cmp(&right.name));
+            assert_eq!(entries.len(), expected.len());
+            for (entry, expected) in entries.iter().zip(&expected) {
+                assert_eq!(entry.name(), expected.name());
+                assert_eq!(entry.kind(), Kind::Directory);
+                assert_eq!(entry.device(), expected.device());
+                assert_eq!(entry.identity(), expected.identity());
+                assert_eq!(entry.evicted(), expected.evicted());
+            }
+        }
     }
 
     #[test]
