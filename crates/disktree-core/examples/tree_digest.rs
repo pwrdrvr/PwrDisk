@@ -9,6 +9,7 @@
 //! Which name of a hardlinked file is charged depends on which worker
 //! reaches it first, so set `NODEDUP=1` to compare two builds exactly.
 //! `DUMP=1` prints one line per node as well, to find where they differ.
+//! `BENCH_NOCLONE=1` omits APFS clone metadata, as in `scan_bench`.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
@@ -62,6 +63,7 @@ fn main() -> std::io::Result<()> {
         &root,
         ScanOptions {
             dedup_hardlinks: std::env::var_os("NODEDUP").is_none(),
+            apfs_clone_metadata: std::env::var_os("BENCH_NOCLONE").is_none(),
             ..ScanOptions::default()
         },
     )?;

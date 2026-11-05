@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "disktree-app"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1462,6 +1462,7 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "proptest",
  "rustc-hash 2.1.3",
  "rustix 1.1.4",
  "rustls",
@@ -1476,10 +1477,11 @@ dependencies = [
 
 [[package]]
 name = "disktree-core"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "chrono",
  "libc",
+ "proptest",
  "rayon",
  "rustc-hash 2.1.3",
  "rustix 1.1.4",
@@ -1495,7 +1497,7 @@ dependencies = [
 
 [[package]]
 name = "disktree-link"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "disktree-core",
  "serde",
@@ -1507,7 +1509,7 @@ dependencies = [
 
 [[package]]
 name = "disktree-mcp"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "disktree-core",
@@ -1523,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "disktree-scan"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "disktree-core",
  "rustix 1.1.4",
@@ -1533,7 +1535,7 @@ dependencies = [
 
 [[package]]
 name = "disktree-tui"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -9457,7 +9459,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "disktree-core",
 ]

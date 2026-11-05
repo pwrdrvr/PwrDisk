@@ -456,8 +456,7 @@ impl WalkContext {
             }
         }
         // Read at most once per directory: macOS needs it for the dataless
-        // flag, and the device check below wherever the mount table cannot
-        // be read, which on macOS is everywhere.
+        // flag, and the device check below when the mount table is unavailable.
         let directory_cell = std::cell::OnceCell::new();
         let directory = || directory_cell.get_or_init(|| entry.directory());
         if EVICTED_IS_KNOWN
@@ -853,6 +852,7 @@ fn list(
     _volume: Option<u64>,
     _clones: bool,
     _clone_flags: bool,
+    _listed_dirs: bool,
 ) -> io::Result<impl Iterator<Item = io::Result<Named>>> {
     let entries = fs::read_dir(path)?;
     Ok(entries.map(|entry| {
@@ -872,16 +872,21 @@ fn list(
     _volume: Option<u64>,
     clones: bool,
     clone_flags: bool,
+    listed_dirs: bool,
 ) -> io::Result<crate::macos::ReadDir> {
     use crate::macos::Clones;
-    crate::macos::read_dir(
+    let mut entries = crate::macos::read_dir(
         path,
         match (clones, clone_flags) {
             (false, _) => Clones::Off,
             (true, false) => Clones::Ids,
             (true, true) => Clones::Flags,
         },
-    )
+    )?;
+    if listed_dirs {
+        entries.use_listed_directories();
+    }
+    Ok(entries)
 }
 
 #[cfg(windows)]
@@ -890,6 +895,7 @@ fn list(
     volume: Option<u64>,
     _clones: bool,
     _clone_flags: bool,
+    _listed_dirs: bool,
 ) -> io::Result<crate::windows::ReadDir> {
     crate::windows::read_dir(path, volume)
 }
@@ -1103,15 +1109,19 @@ fn scan_on_pool(
     }
 
     let context: &WalkContext = context;
-    let tree = Tree::try_build(|builder| {
-        let sink = Sink {
-            builder,
-            root: Mutex::new(None),
-        };
-        walk_tree(root, context, pool, &sink)?;
-        let node = lock(&sink.root).take();
-        node.ok_or_else(|| {
-            io::Error::other(format!("{} produced no tree", root.display()))
+    // Building ends with parallel relayout too. Keep it on the selected
+    // pool so fixed budgets and isolation from the UI cover that phase.
+    let tree = pool.install(|| {
+        Tree::try_build(|builder| {
+            let sink = Sink {
+                builder,
+                root: Mutex::new(None),
+            };
+            walk_tree(root, context, pool, &sink)?;
+            let node = lock(&sink.root).take();
+            node.ok_or_else(|| {
+                io::Error::other(format!("{} produced no tree", root.display()))
+            })
         })
     })?;
     context.progress.finalizing.store(true, Ordering::Relaxed);
@@ -1188,8 +1198,9 @@ fn walk_tree(
 /// them only queue: on Windows a home directory of 3.4 million files
 /// walked in 6.5 s on 16 threads and 8.1 s on all 24. That cap was
 /// measured on one 24-thread NTFS laptop; another disk or CPU may want
-/// another. Elsewhere the default count. A pool of its own on every
-/// platform all the same: work the UI hands the global pool, such as
+/// another. macOS uses its measured heterogeneous-core budget. A pool of
+/// its own on every platform all the same: work the UI hands the global
+/// pool, such as
 /// re-ranking a tree, must not queue behind a scan's blocking reads.
 static WALK_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     let threads = if cfg!(windows) {
@@ -1197,6 +1208,8 @@ static WALK_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     } else {
         rayon::current_num_threads()
     };
+    #[cfg(target_os = "macos")]
+    let threads = crate::macos::walk_threads(threads);
     rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .thread_name(|index| format!("disktree-walk-{index}"))
@@ -1306,6 +1319,11 @@ fn walk<'h>(
         context.volume.get().copied(),
         clones,
         dir.clone_flags,
+        // The bulk listing describes the covered directory at a mount.
+        // With boundaries checked by path, no mounted root reaches the
+        // directory metadata checks and ordinary entries need no stat.
+        context.options.one_filesystem
+            && context.foreign_mounts.get().is_some(),
     ) {
         Ok(entries) => {
             for entry in entries {
@@ -1377,14 +1395,6 @@ fn walk<'h>(
     let clone_flags = !clones
         || always_flags()
         || subdirectory_flags(dir.clone_flags, &found);
-    leaves.extend(
-        sink.builder.leaves(
-            found
-                .iter()
-                .map(|leaf| (&*leaf.name, leaf.facts, leaf.allocation)),
-        ),
-    );
-    drop(found);
 
     // A depth-limited scan still measures what is directly in the directory,
     // it just does not descend further.
@@ -1392,19 +1402,24 @@ fn walk<'h>(
         .options
         .max_depth
         .is_none_or(|max_depth| dir.depth < max_depth);
-    // Sized once for the leaves and every subdirectory to come, before any
-    // subdirectory task can push its node, so no push grows the list
-    // again. The leaves are copied, not moved: the list they grew in
-    // carries up to twice their size in slack, which a pending directory
-    // would hold until its last subdirectory is done. Moving it in whole
-    // made a home directory walk a second slower (measured before the
-    // tree held its own buffers, 5 interleaved pairs).
+    // Allocate exactly once before publishing any child tasks. Files are
+    // packed straight into this block, avoiding an intermediate vector
+    // while retaining only the space the pending directory actually needs.
     let spawned = if descend { subdirs.len() } else { 0 };
     {
         let mut partial = lock(&dir.partial);
-        partial.children.reserve_exact(leaves.len() + spawned);
+        partial
+            .children
+            .reserve_exact(leaves.len() + found.len() + spawned);
         partial.children.extend(leaves);
+        sink.builder.extend_leaves(
+            found
+                .iter()
+                .map(|leaf| (&*leaf.name, leaf.facts, leaf.allocation)),
+            &mut partial.children,
+        );
     }
+    drop(found);
     let mut children = Vec::new();
     if descend {
         for mut subdir in subdirs {
@@ -1899,6 +1914,64 @@ mod tests {
             assert_eq!(tree.dirs, 193);
             assert_eq!(tree.bytes, (1..=96).sum::<u64>());
         }
+    }
+
+    /// An occupied global pool must not delay a scan with its own budget.
+    /// A child process isolates the blocked pool from other parallel tests.
+    #[test]
+    fn fixed_scan_finishes_while_the_global_pool_is_busy() {
+        const CHILD: &str = "DISKTREE_TEST_BUSY_GLOBAL_POOL";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("test executable"),
+            )
+            .args([
+                "--exact",
+                "scan::tests::fixed_scan_finishes_while_the_global_pool_is_busy",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("RAYON_NUM_THREADS", "1")
+            .output()
+            .expect("isolated test");
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let temp = TempDir::new().expect("tempdir");
+        // Above relayout's sequential cutoff, so it must schedule work.
+        let files = 16 * 1024;
+        for index in 0..files {
+            fs::File::create(temp.path().join(format!("f{index}")))
+                .expect("file");
+        }
+        let (ready, started) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        rayon::spawn(move || {
+            let _ = ready.send(());
+            let _ = blocked.recv();
+        });
+        started.recv().expect("global worker blocked");
+        let root = temp.path().to_path_buf();
+        let (finished, result) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut settings = options();
+            settings.threads.max_threads = 1;
+            let _ = finished.send(scan(&root, settings));
+        });
+        let scanned = result.recv_timeout(std::time::Duration::from_secs(10));
+        // Release before asserting, including the failing pre-fix case.
+        drop(release);
+        worker.join().expect("scan worker");
+        let tree = scanned
+            .expect("a fixed scan must not wait for the global pool")
+            .expect("scan");
+        assert_eq!(tree.root().files, files);
     }
 
     #[test]

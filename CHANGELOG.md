@@ -7,6 +7,58 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.18.0
+
+- Cache cleanup - Check owners in Review to prepare a proposal for each
+  marked cache. Choose Skip (the default), the owner's exact command, or
+  Delete files per path. Ordinary Trash and Permanent removal now refuse
+  recognized caches, including caches inside a selected parent.
+- Owner commands - On macOS and Linux, support verified versions of npm,
+  npx, uv, pip/pip3 and Cypress. Preview the executable, version, arguments,
+  configured root, effects and full scope, including unselected siblings.
+  Recheck before running; a missing, unsupported, failed or cancelled
+  command never falls back to deleting files.
+- Playwright - Add owner cleanup for the installed JavaScript CLI versions
+  1.64.0 and 1.64.1. The preview names the configured browser cache and
+  explains that uninstalling all managed browser versions affects other
+  projects sharing it. Owner commands for pnpm, Homebrew and Puppeteer
+  remain unavailable; Windows supports cache inspection only.
+- Direct cache deletion - Delete files acts only on the selected path and
+  requires its own disclosure and consent, separate from owner approval.
+  Choose Trash or permanent deletion for the run. This action is available
+  on macOS and Linux; unknown caches are never labelled disposable.
+- Cleanup safety - Charge each owner's whole scope against the capacity
+  limit, reject conflicting overlapping choices, and refuse paths whose
+  owners are in use, including versioned pip launchers and uvx. Active-use
+  detection is best effort; stop owning tools before approval. Exports
+  retain only marked paths and cannot become raw cache-deletion scripts.
+- Cleanup results - Report each step's success, failure, cancellation or
+  skipped state, keeping scope allocation separate from observed volume
+  change. Stop cancels the active owner command; failed steps do not prevent
+  later steps from running. Cache cleanup always rescans, including after
+  partial failure, without treating a retained cache root as deleted.
+- Agent cleanup - MCP previews return per-path proposals before consent.
+  Decided previews bind every path's action and deletion mode to a
+  single-use confirmation; approving owner commands cannot approve direct
+  file deletion. Status reports retain per-path cleanup results.
+- APFS scans - Reduce clone-accounting memory and repeated metadata work,
+  share identical clone records, and avoid private-extent walks for freshly
+  confirmed fully shared clones. Modified clones and incomplete metadata
+  keep the conservative queries and estimates.
+- Scan performance - Relayout indexed trees in parallel without a second
+  node array, reduce shared-store locking, and discover artifact roots in
+  parallel. Tune the default macOS worker count to reduce APFS contention
+  while preserving explicit worker budgets.
+- Hardlink estimates - Keep partial-estimate flags independent of directory
+  merge order, including conflicting link counts, clone facts or allocation
+  observations. Inconsistent observations remain marked partial.
+- Legend and tooltips - Use the only pill, or `o` on a focused legend chip,
+  to switch a kind or age filter to that chip alone. Normal clicks still
+  combine or cycle chips. Delay tooltips and position them clear of the
+  pointer so they do not cover nearby controls.
+- Compatibility - The window link now uses protocol version 9. Update
+  and restart both the PwrDisk window and MCP process together.
+
 ## v0.17.0
 
 - Artifact assessments - Distinguish Detected artifacts from Suggested for
