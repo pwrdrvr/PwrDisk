@@ -6718,6 +6718,76 @@ fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
     panic!("the removal did not finish");
 }
 
+/// Cargo writes a cache tag into every `target` directory. Review once
+/// read that tag as an opaque cache: it switched to Cache cleanup, and
+/// Permanent refused `target/debug/deps` with "no raw deletion
+/// fallback". Build output is an ordinary removal in every mode.
+#[gpui_kit::test]
+fn a_cargo_build_is_an_ordinary_removal(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let build = temp.path().join("checkout/target");
+    for (path, text) in [
+        ("checkout/Cargo.toml", "[workspace]\n"),
+        ("checkout/src/main.rs", "fn main() {}\n"),
+        (
+            "checkout/target/CACHEDIR.TAG",
+            concat!(
+                "Signature: 8a477f597d28d172789f06886806bc55\n",
+                "# This file is a cache directory tag created by cargo.\n",
+                "# For information about cache directory tags see ",
+                "https://bford.info/cachedir/\n",
+            ),
+        ),
+        ("checkout/target/.rustc_info.json", "{}"),
+        ("checkout/target/debug/deps/libapp.rlib", "rlib"),
+        (
+            "checkout/target/debug/incremental/app-1/s-1/dep-graph.bin",
+            "g",
+        ),
+    ] {
+        let file = temp.path().join(path);
+        std::fs::create_dir_all(file.parent().expect("parent")).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    let epoch = update(&view, cx, |app, cx| {
+        for name in ["debug/deps", "debug/incremental"] {
+            let crumbs =
+                app.crumbs_for_path(&build.join(name)).expect("in the tree");
+            app.toggle_mark(&crumbs, cx);
+        }
+        let before = app.removal_mode;
+        app.open_review(cx);
+        assert_eq!(app.removal_mode, before, "Review keeps the user's mode");
+        app.removal_mode = RemovalMode::Permanent;
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
+        app.run_epoch
+    });
+    draw(cx);
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done, "the removal finished");
+    read(&view, cx, |app| {
+        let totals = app.run_list.totals();
+        assert_eq!(totals.failed, 0, "{:?}", app.notice());
+    });
+    assert!(!build.join("debug/deps").exists());
+    assert!(!build.join("debug/incremental").exists());
+    assert!(build.join("CACHEDIR.TAG").exists(), "only marks go");
+    assert!(temp.path().join("checkout/src/main.rs").exists());
+}
+
 /// The run's list is on screen from Removing's first frame, says what
 /// each item is, and stays on Done, every item checked off, rather than
 /// only the names of what already went.
@@ -10116,8 +10186,13 @@ fn raw_inspection_prepares_off_thread_and_execution_rechecks(
 
     // This appears after the preview. Confirmation must not walk it on the
     // UI thread, but the fresh worker check must protect it before writes.
+    // A relocated uv cache: its tag and one of its buckets. A tag alone
+    // is any build tool's and would not stop the removal.
     let tag = temp.path().join("junk/deeper/CACHEDIR.TAG");
-    std::fs::write(&tag, "cache").expect("fixture cache appeared");
+    std::fs::write(&tag, "Signature: 8a477f597d28d172789f06886806bc55")
+        .expect("fixture cache appeared");
+    std::fs::create_dir(temp.path().join("junk/deeper/wheels-v5"))
+        .expect("uv bucket");
     let response = ask(
         cx,
         Request::Remove(ConfirmedRemoval {

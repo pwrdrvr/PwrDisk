@@ -181,39 +181,74 @@ fn an_owner_command_acts_only_on_the_root_the_owner_printed() {
 }
 
 /// Signs of a cache that no name gives away. Each is put on a directory
-/// in the generated tree; the decoys look close but are not caches.
+/// in the generated tree; the decoys look close but are not caches an
+/// owner manages. Build outputs carry the standard cache tag and are
+/// decoys too: the tag says its writer rebuilds them, not that an owner
+/// must clean them, and Review once sent every Cargo `target` to Cache
+/// cleanup because of it.
 #[derive(Clone, Copy, Debug)]
 enum Sign {
-    Tag,
+    Uv,
     Pip,
     Pnpm,
     Cypress,
+    BareTag,
+    CargoTarget,
+    Venv,
+    ToolCache,
+    UvBucketOnly,
     TagDirectory,
     WheelsOnly,
     EmptyPnpmVersion,
     ShortCypressVersion,
 }
 
-const SIGNS: [Sign; 8] = [
-    Sign::Tag,
+const SIGNS: [Sign; 13] = [
+    Sign::Uv,
     Sign::Pip,
     Sign::Pnpm,
     Sign::Cypress,
+    Sign::BareTag,
+    Sign::CargoTarget,
+    Sign::Venv,
+    Sign::ToolCache,
+    Sign::UvBucketOnly,
     Sign::TagDirectory,
     Sign::WheelsOnly,
     Sign::EmptyPnpmVersion,
     Sign::ShortCypressVersion,
 ];
 
+const BARE_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n";
+
+/// What Cargo writes into every target directory, word for word.
+const CARGO_TAG: &str = concat!(
+    "Signature: 8a477f597d28d172789f06886806bc55\n",
+    "# This file is a cache directory tag created by cargo.\n",
+    "# For information about cache directory tags see ",
+    "https://bford.info/cachedir/\n",
+);
+
+const UV_BUCKETS: [&str; 6] = [
+    "archive-v0",
+    "wheels-v5",
+    "sdists-v9",
+    "simple-v16",
+    "interpreter-v4",
+    "built-wheels-v3",
+];
+
 fn put(sign: Sign, at: &Path, rng: &mut Rng) {
     let dir = |path: PathBuf| std::fs::create_dir_all(path).expect("sign");
+    let file = |path: PathBuf, text: &str| {
+        std::fs::write(path, text).expect("sign file");
+    };
     match sign {
-        Sign::Tag => {
-            std::fs::write(
-                at.join("CACHEDIR.TAG"),
-                "Signature: 8a477f597d28d172789f06886806bc55",
-            )
-            .expect("tag");
+        Sign::Uv => {
+            file(at.join("CACHEDIR.TAG"), BARE_TAG);
+            for _ in 0..count(rng, 1, 3) {
+                dir(at.join(pick(rng, &UV_BUCKETS)));
+            }
         }
         Sign::Pip => {
             dir(at.join("wheels"));
@@ -226,10 +261,35 @@ fn put(sign: Sign, at: &Path, rng: &mut Rng) {
                 dir(at.join(version).join("Cypress.app"));
             } else {
                 dir(at.join(&version).join("Cypress"));
-                std::fs::write(at.join(version).join("Cypress/Cypress"), "")
-                    .expect("binary");
+                file(at.join(version).join("Cypress/Cypress"), "");
             }
         }
+        Sign::BareTag => file(at.join("CACHEDIR.TAG"), BARE_TAG),
+        Sign::CargoTarget => {
+            file(at.join("CACHEDIR.TAG"), CARGO_TAG);
+            file(at.join(".rustc_info.json"), "{}");
+            let profile = at.join(pick(rng, &["debug", "release"]));
+            for part in ["deps", "incremental", ".fingerprint", "build"] {
+                dir(profile.join(part));
+            }
+            if rng.percent(40) {
+                let triple = at.join("x86_64-pc-windows-msvc");
+                dir(triple.join("debug/deps"));
+                file(triple.join("CACHEDIR.TAG"), CARGO_TAG);
+            }
+        }
+        Sign::Venv => {
+            file(at.join("CACHEDIR.TAG"), BARE_TAG);
+            file(at.join("pyvenv.cfg"), "home = /usr/bin\n");
+            dir(at.join("lib/python3.12/site-packages"));
+            dir(at.join("bin"));
+        }
+        Sign::ToolCache => {
+            file(at.join("CACHEDIR.TAG"), BARE_TAG);
+            file(at.join(".gitignore"), "*\n");
+            dir(at.join(pick(rng, &["0.8.4", "v", "content"])));
+        }
+        Sign::UvBucketOnly => dir(at.join(pick(rng, &UV_BUCKETS))),
         Sign::TagDirectory => dir(at.join("CACHEDIR.TAG")),
         Sign::WheelsOnly => dir(at.join("wheels")),
         Sign::EmptyPnpmVersion => dir(at.join("v7")),
@@ -237,15 +297,15 @@ fn put(sign: Sign, at: &Path, rng: &mut Rng) {
     }
 }
 
-/// The oracle: does this directory itself carry a cache's sign? Reads
-/// every entry, where the code under test reads a bounded few.
+/// The oracle: does this directory itself carry a supported owner's
+/// sign? Reads every entry, where the code under test reads a bounded
+/// few, and spells each layout out on its own terms.
 fn signed(directory: &Path) -> bool {
     let is_dir = |name: &str| directory.join(name).is_dir();
-    if directory.join("CACHEDIR.TAG").is_file()
-        || (is_dir("wheels") && (is_dir("http") || is_dir("http-v2")))
-    {
+    if is_dir("wheels") && (is_dir("http") || is_dir("http-v2")) {
         return true;
     }
+    let tagged = directory.join("CACHEDIR.TAG").is_file();
     std::fs::read_dir(directory)
         .into_iter()
         .flatten()
@@ -253,6 +313,7 @@ fn signed(directory: &Path) -> bool {
         .any(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
             let path = entry.path();
+            let uv = tagged && path.is_dir() && UV_BUCKETS.contains(&&*name);
             let pnpm = name.strip_prefix('v').is_some_and(|digits| {
                 !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
             }) && path.join("files").is_dir();
@@ -263,7 +324,7 @@ fn signed(directory: &Path) -> bool {
                 })
                 && (path.join("Cypress.app").is_dir()
                     || path.join("Cypress/Cypress").is_file());
-            pnpm || cypress
+            uv || pnpm || cypress
         })
 }
 

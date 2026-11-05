@@ -79,6 +79,42 @@ pub(super) fn owner(
         })
 }
 
+/// The standard cache directory tag (<https://bford.info/cachedir/>).
+const TAG: &str = "CACHEDIR.TAG";
+
+/// One of the versioned buckets uv keeps at its cache root, such as
+/// `wheels-v5` or `archive-v0`. Old bucket versions are accepted too: a
+/// cache an older uv wrote is still uv's.
+fn uv_bucket(name: &str) -> bool {
+    const STEMS: [&str; 12] = [
+        "archive",
+        "binaries",
+        "builds",
+        "built-wheels",
+        "environments",
+        "flat-index",
+        "git",
+        "interpreter",
+        "python",
+        "sdists",
+        "simple",
+        "wheels",
+    ];
+    name.rsplit_once("-v").is_some_and(|(stem, version)| {
+        STEMS.contains(&stem)
+            && !version.is_empty()
+            && version.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+/// The owner a directory's own layout gives away, wherever it was moved.
+///
+/// A cache tag on its own is not an owner. Cargo tags every `target`
+/// directory and `~/.cargo/registry`, virtualenv and uv tag each `.venv`,
+/// and ruff, pytest and mypy tag their project caches: all of it is the
+/// writer's to rebuild, by the tag's own definition, and none of it has
+/// an owner command to run. Of the supported owners only uv writes the
+/// tag, so a tag counts when uv's buckets sit beside it.
 pub(super) fn shape_owner(root: &Path) -> Option<Owner> {
     if root.join("wheels").is_dir()
         && (root.join("http-v2").is_dir() || root.join("http").is_dir())
@@ -88,11 +124,15 @@ pub(super) fn shape_owner(root: &Path) -> Option<Owner> {
     // Versioned stores and binary caches can be relocated to arbitrary
     // names. Read only a bounded immediate listing for recognition; the
     // installed owner must still verify the exact configured root.
+    let tagged = root.join(TAG).is_file();
     let entries = std::fs::read_dir(root).ok()?;
     for entry in entries.take(32).flatten() {
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_str()?;
+        if tagged && uv_bucket(name) && path.is_dir() {
+            return Some(Owner::Uv);
+        }
         if name.strip_prefix('v').is_some_and(|version| {
             !version.is_empty()
                 && version.bytes().all(|byte| byte.is_ascii_digit())
@@ -135,12 +175,14 @@ pub(super) fn inspection_with(
         matches!(name.as_str(), "cache" | "caches" | ".cache" | ".npm" | "npm-cache" | ".pnpm-store" | "codex-runtimes")
             .then(|| "Cache/runtime state requires inspection and an owner cleanup preview; a cache name or regenerable classification does not authorize raw deletion".into())
     }).or_else(|| {
-        // An opaque cache tag is a refusal hint for relocated caches too;
-        // it is never enough evidence to build an owner cleanup command.
+        // A supported owner's layout is a refusal hint for its relocated
+        // caches too; it is never enough evidence to build an owner
+        // cleanup command. A bare cache tag is not such a layout: see
+        // `shape_owner`.
         path.ancestors().find_map(|ancestor| {
-            (ancestor.join("CACHEDIR.TAG").is_file()
-                || shape_owner(ancestor).is_some())
-                .then(|| "Opaque cache/store layout requires inspection and owner cleanup; no raw deletion fallback".into())
+            shape_owner(ancestor).map(|owner| {
+                format!("Relocated {} layout requires inspection and owner cleanup; no raw deletion fallback", owner.label())
+            })
         })
     })
 }

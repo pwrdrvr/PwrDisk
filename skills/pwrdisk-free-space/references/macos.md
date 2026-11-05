@@ -218,9 +218,12 @@ software. An unsupported version, failed probe, or failed or cancelled owner
 command never falls back to deleting files, and never to a shell command;
 deleting them instead is a new preview the user decides.
 
-Cache tags and owner layouts on ancestors protect contained files and
-subtrees too. All removal modes may return a preparing response while
-inspection runs on a worker; retry only the read-only preview. Exported
+Owner layouts on ancestors protect contained files and subtrees too.
+A cache tag (`CACHEDIR.TAG`) alone is not an owner: a Cargo `target`,
+a `.venv` or a ruff cache stays an ordinary removal; a tag beside uv's
+versioned buckets is uv's relocated cache. All removal modes may
+return a preparing response while inspection runs on a worker; retry
+only the read-only preview. Exported
 lists keep marked paths, and raw script exports cannot replace owner cleanup.
 
 On macOS and Linux the adapters cover npm packages (9–11), npm's separate

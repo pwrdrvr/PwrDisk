@@ -254,7 +254,8 @@ Looking is free; acting is the user's call.
    Every mode may return preparing while inspection runs on a worker;
    retry only the read-only preview. Exports contain marked paths, never
    expanded owner scopes; a refused raw script is not a deletion fallback.
-   Cache tags/layouts on ancestors protect contained files and subtrees too.
+   Owner layouts on ancestors protect contained files and subtrees too; a
+   bare `CACHEDIR.TAG` (Cargo `target`, `.venv`, ruff) is not an owner.
    Unknown,
    unsupported, unavailable or failed owners never fall back to raw deletion.
    Show every returned actual-scope path and

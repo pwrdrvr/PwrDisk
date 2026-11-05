@@ -448,6 +448,87 @@ fn relocated_cache_ancestors_protect_subtrees_and_files() {
     check_raw(&[target(&ordinary)]).expect("unrelated build output");
 }
 
+/// Cargo tags every target directory as a cache, uv and virtualenv tag
+/// each `.venv`, and ruff tags its project cache. Review once sent every
+/// marked `target/debug/deps` to Cache cleanup over that tag, and raw
+/// removal refused a whole checkout that held a build. A tag is not an
+/// owner: only uv's layout beside it makes it one.
+#[test]
+fn tagged_build_outputs_stay_ordinary_removals() {
+    const CARGO_TAG: &str = concat!(
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+        "# This file is a cache directory tag created by cargo.\n",
+        "# For information about cache directory tags see ",
+        "https://bford.info/cachedir/\n",
+    );
+    const BARE_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55";
+    let fixture = Fixture::new();
+    let tag = |at: &Path, text: &str| {
+        std::fs::write(at.join("CACHEDIR.TAG"), text).expect("tag");
+    };
+    let checkout = fixture.dir(".pwragent/worktrees/mvyanipw/disktree");
+    std::fs::write(checkout.join("Cargo.toml"), "[workspace]").expect("toml");
+    let build = checkout.join("target");
+    let deps =
+        fixture.dir(".pwragent/worktrees/mvyanipw/disktree/target/debug/deps");
+    let incremental = fixture
+        .dir(".pwragent/worktrees/mvyanipw/disktree/target/debug/incremental");
+    let triple = fixture.dir(
+        ".pwragent/worktrees/mvyanipw/disktree/target/x86_64-pc-windows-msvc",
+    );
+    std::fs::create_dir_all(triple.join("debug/deps")).expect("triple");
+    tag(&build, CARGO_TAG);
+    tag(&triple, CARGO_TAG);
+    std::fs::write(build.join(".rustc_info.json"), "{}").expect("info");
+    std::fs::write(deps.join("libpayload.rlib"), [0; 64]).expect("payload");
+    let venv = checkout.join(".venv");
+    std::fs::create_dir_all(venv.join("lib/python3.12/site-packages"))
+        .expect("venv");
+    tag(&venv, BARE_TAG);
+    std::fs::write(venv.join("pyvenv.cfg"), "home = /usr/bin").expect("cfg");
+    let ruff = checkout.join(".ruff_cache");
+    std::fs::create_dir_all(ruff.join("0.8.4")).expect("ruff");
+    tag(&ruff, BARE_TAG);
+    // Cargo tags its git checkouts too. (Its registry keeps downloads in
+    // a folder named `cache`, which the name rule still routes.)
+    let checkouts = fixture.dir(".cargo/git/checkouts/gpui-1a2b3c");
+    tag(&fixture.env.home.join(".cargo/git"), CARGO_TAG);
+
+    for selected in [
+        deps.clone(),
+        deps.join("libpayload.rlib"),
+        incremental,
+        triple.join("debug/deps"),
+        build,
+        checkout.clone(),
+        venv,
+        ruff,
+        checkouts,
+        fixture.env.home.join(".cargo/git"),
+    ] {
+        assert_eq!(
+            recognize::inspection_with(&selected, &fixture.env),
+            None,
+            "{selected:?} is not a cache an owner manages"
+        );
+        check_raw(&[target(&selected)])
+            .unwrap_or_else(|error| panic!("{selected:?}: {error}"));
+        assert!(selected.exists(), "checking cannot delete");
+    }
+
+    // A uv cache moved into the checkout is still uv's, and still keeps
+    // raw removal of the checkout around it out.
+    let uv = checkout.join("uv-data");
+    std::fs::create_dir_all(uv.join("wheels-v5/entries")).expect("uv");
+    tag(&uv, BARE_TAG);
+    assert!(
+        recognize::inspection_with(&uv.join("wheels-v5/entries"), &fixture.env)
+            .is_some()
+    );
+    assert!(check_raw(&[target(&checkout)]).is_err());
+    assert!(check_raw(&[target(&deps)]).is_ok(), "a sibling stays free");
+}
+
 #[cfg(unix)]
 #[test]
 fn external_cache_links_are_refused_while_internal_layout_links_are_allowed() {

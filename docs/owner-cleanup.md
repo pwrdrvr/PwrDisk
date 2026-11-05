@@ -13,8 +13,17 @@ where the person decides each marked path on its own:
   its own disclosure and its own consent.
 
 Ordinary Trash and Permanent removal still refuse recognized cache paths,
-cache wrappers and opaque cache tags, including caches inside a selected
-parent: deleting a cache's files happens only as a Delete files decision.
+cache wrappers and supported owners' relocated layouts, including caches
+inside a selected parent: deleting a cache's files happens only as a Delete
+files decision.
+
+A `CACHEDIR.TAG` on its own is not an owner. Cargo writes one into every
+`target` directory and `~/.cargo/git` and `~/.cargo/registry`, uv and
+virtualenv into each `.venv`, ruff, pytest and mypy into their project
+caches; the tag says its writer rebuilds the data, and none of those
+writers has an owner command. Such paths stay ordinary removals. Of the
+supported owners only uv writes the tag, so a tag beside one of uv's
+versioned buckets (`wheels-v5`, `archive-v0`, …) is uv's relocated cache.
 
 ## How this reconciles with the earlier guard policy
 
