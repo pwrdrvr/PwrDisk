@@ -19,6 +19,13 @@ cleanup, wherever they are: marked themselves, under a marked path, or
 inside a marked folder. Deleting their files happens only as a Delete
 files decision.
 
+Review checks each planned mark with the worker's bounded recursive
+inspection in the background, including relocated cache names and layouts.
+Trash and Permanent confirmation wait for that check. Results belong to
+the exact scan and marks; a changed selection or scan is checked again.
+The removal worker still inspects afresh before writing, so a cache that
+appears after Review can still stop a run.
+
 Everything else is an ordinary removal, however cache-like it looks. A
 folder named `cache`, `.cache`, `Caches` or `codex-runtimes`, a
 `regenerable` hatch, a `CACHEDIR.TAG`, a Cargo `target`, a `.venv`,

@@ -33,6 +33,43 @@ fn count(rng: &mut Rng, low: u64, high: u64) -> usize {
     usize::try_from(low + rng.below(high - low + 1)).expect("count")
 }
 
+/// Per-mark results share one selection budget. The filesystem is the
+/// oracle: one visit per selected directory and per immediate file. Once
+/// their cumulative count exceeds the bound, no later mark is admitted.
+#[test]
+fn raw_inspection_results_share_the_selection_bound() {
+    for seed in seeds(32) {
+        let mut rng = Rng::new(seed);
+        let fixture = Fixture::new();
+        let mut targets = Vec::new();
+        let mut visits = Vec::new();
+        for index in 0..count(&mut rng, 2, 8) {
+            let path = fixture.env.home.join(format!("ordinary-{index}"));
+            std::fs::create_dir(&path).expect("directory");
+            for file in 0..count(&mut rng, 0, 5) {
+                std::fs::write(path.join(format!("file-{file}")), b"data")
+                    .expect("file");
+            }
+            visits.push(1 + std::fs::read_dir(&path).expect("listing").count());
+            targets.push(target(&path));
+        }
+        for maximum in 0..=visits.iter().sum() {
+            let results = inspect_raw_with(&targets, &fixture.env, maximum);
+            let mut required = 0;
+            for (index, (result, visits)) in
+                results.iter().zip(&visits).enumerate()
+            {
+                required += visits;
+                assert_eq!(
+                    result.is_ok(),
+                    required <= maximum,
+                    "seed {seed}, bound {maximum}, mark {index}: {result:?}"
+                );
+            }
+        }
+    }
+}
+
 /// A directory name that can hold the characters a cache root's name may
 /// legally have, the ones a careless parser strips or splits on included.
 #[cfg(unix)]
