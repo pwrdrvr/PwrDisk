@@ -1,2 +1,3 @@
 /target
+# Keep artifacts from the retired verification workflow private.
 /.local/sandboxer/

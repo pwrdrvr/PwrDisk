@@ -102,11 +102,10 @@ and the notes Velopack displays beside an update.
 
 ## Verify and push main
 
-Run the repository gates and inspect their actual results. Follow
-[remote verification](../../../docs/sandboxer.md) for Linux checks when
-Sandboxer is available. Commit preparation locally before transferring it;
-if corrections are needed, amend the unpublished release commit and verify
-its final tree.
+Run the repository gates and inspect their actual results. Use native
+headless checks and the relevant platform CI; report any platform checks
+that could not run. If corrections are needed, amend the unpublished
+release commit and verify its final tree.
 
 ```bash
 cargo xtask release-check --tag vX.Y.Z
@@ -143,8 +142,7 @@ Do not force-push, add a merge commit, or fall back to a PR if repository
 policy rejects the push; report the rejection and stop. Verify remote main
 holds the exact release commit before tagging it.
 
-Report the commit and verification results. Stop the verification sandbox
-after checks; this workflow has no PR watch to clean it up automatically.
+Report the commit and verification results.
 
 ## Tag and monitor publication
 
