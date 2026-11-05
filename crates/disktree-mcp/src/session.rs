@@ -3901,13 +3901,10 @@ mod tests {
             .mark(&PathsParams { paths })
             .expect("mark across scans");
         let bytes = 10 * 1024 * 1024 * 1024 - 50 * 1024 * 1024;
-        let range = format!("{}–{}", human_bytes(bytes), human_bytes(bytes));
+        let range = format!("0 B–{}", human_bytes(bytes));
         assert!(report.contains(&range), "{report}");
         assert_eq!(report.matches("Selected-set reclaim estimate:").count(), 1);
-        assert!(
-            report.contains(&format!("Projects {}", human_bytes(bytes))),
-            "{report}"
-        );
+        assert!(report.contains("Projects 0 B"), "{report}");
     }
 
     #[test]
@@ -4259,10 +4256,10 @@ mod tests {
         let union =
             planning::estimate(&scan.tree, context, &copies(&root), None, 0)
                 .expect("union");
-        assert!(
-            union.reclaim.expect("union bounds").lower
-                > clone.reclaim.expect("alone bounds").upper
-        );
+        let union = union.reclaim.expect("union bounds");
+        assert_eq!(union.lower, 0);
+        assert!(union.partial);
+        assert!(union.upper > clone.reclaim.expect("alone bounds").upper);
     }
 
     /// Proposals inform; only a preview of the person's decisions can be

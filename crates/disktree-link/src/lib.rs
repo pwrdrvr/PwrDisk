@@ -921,10 +921,12 @@ mod tests {
                 partial: false,
             }
         );
-        // Every member is beneath the root, so the group is freed once.
+        // Every member of this ID is beneath the root, but modified clones
+        // with other IDs can retain shared blocks even outside the scan.
         let all = Clones::of(root.root()).expect("clones beneath");
         assert_eq!((all.private, all.shared, all.repeated), (50, 3000, 2000));
-        assert_eq!((all.lower, all.upper), (1050, 1050));
+        assert_eq!((all.lower, all.upper), (50, 1050));
+        assert!(all.partial);
     }
 
     #[test]
