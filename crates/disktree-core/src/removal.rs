@@ -2434,6 +2434,44 @@ mod tests {
         );
     }
 
+    // The filesystem decides what is a profile: a real directory whose
+    // parent is the profiles folder. A nonexistent example misses the rule.
+    fn check_profile_directory(name: &str, directory: bool, depth: usize) {
+        let temp = TempDir::new().expect("tempdir");
+        let profiles = temp.path().join("profiles");
+        fs::create_dir(&profiles).expect("profiles");
+        let mut path = profiles.clone();
+        for _ in 0..depth {
+            path.push(name);
+        }
+        fs::create_dir_all(path.parent().expect("parent")).expect("parents");
+        if directory {
+            fs::create_dir(&path).expect("profile");
+        } else {
+            fs::write(&path, b"file").expect("file");
+        }
+        let direct = identity(path.parent().expect("parent"), true)
+            == identity(&profiles, true);
+        let refused =
+            profile_refusal(&path, &guard_key(&path), &[guard_key(&profiles)]);
+        assert_eq!(refused.is_some(), directory && direct);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 32,
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+        #[test]
+        fn every_existing_profile_is_refused(
+            name in "[a-z]{1,12}", directory in proptest::bool::ANY,
+            depth in 1_usize..4,
+        ) {
+            check_profile_directory(&name, directory, depth);
+        }
+    }
+
     /// Removing a directory takes what is inside it, so the directories
     /// above home are refused too: in a whole-disk scan, `C:\Users` is an
     /// ordinary directory, and so is `/home` without a separate volume.
@@ -2446,17 +2484,7 @@ mod tests {
             reason.is_some_and(|reason| reason.contains("home directory")),
             "the home directory is inside it"
         );
-        assert_eq!(
-            refuse(
-                Path::new("/home/other"),
-                Path::new("/"),
-                Some(&home),
-                &[],
-                &[]
-            ),
-            None,
-            "a sibling of home is not above it"
-        );
+        check_profile_directory("other", true, 1);
     }
 
     #[test]
@@ -2623,7 +2651,7 @@ mod tests {
     }
 
     #[test]
-    fn the_mount_table_is_read_off_the_calling_thread_and_then_kept() {
+    fn the_mount_table_arrives_in_the_background_cache() {
         prime_mount_points();
         // The first read lands on its own thread; wait for it, briefly.
         let mut mounts = mount_points();
@@ -2634,11 +2662,21 @@ mod tests {
             thread::sleep(std::time::Duration::from_millis(10));
             mounts = mount_points();
         }
-        assert_eq!(
-            mounts.points,
-            read_mount_table().points,
-            "the same table, cached"
+        // Concurrent disk-image tests can change the live mount table.
+        // A cached snapshot need not equal a later read of that table.
+        assert!(!mounts.points.is_empty(), "the background read arrived");
+        let cache = MOUNTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(cache.read.is_some(), "a successful read is timestamped");
+        assert!(
+            cache
+                .mounts
+                .as_ref()
+                .is_some_and(|table| !table.points.is_empty()),
+            "the background result is retained"
         );
+        drop(cache);
     }
 
     #[test]

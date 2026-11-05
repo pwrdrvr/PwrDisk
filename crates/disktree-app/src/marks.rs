@@ -854,6 +854,67 @@ mod tests {
         assert_eq!(marks.len(), 1);
     }
 
+    fn check_missing_mark_history(history: &[Option<u16>]) {
+        use disktree_core::scan::{ScanOptions, scan};
+        let temp = tempfile::tempdir().expect("tree");
+        let path = temp.path().join("marked");
+        let mut marks = Marks::default();
+        marks.toggle(
+            Target {
+                path: path.clone(),
+                bytes: 1,
+                is_dir: false,
+                hidden: false,
+            },
+            PathStyle::Native,
+        );
+        for &size in history {
+            if let Some(size) = size {
+                std::fs::write(&path, vec![0; usize::from(size)])
+                    .expect("write");
+            } else if path.exists() {
+                std::fs::remove_file(&path).expect("remove");
+            }
+            let tree = scan(
+                temp.path(),
+                ScanOptions {
+                    apparent_size: true,
+                    ..ScanOptions::default()
+                },
+            )
+            .expect("scan");
+            marks.refresh(
+                temp.path(),
+                tree.root(),
+                Metric::Bytes,
+                PathStyle::Native,
+            );
+            assert_eq!(marks.len(), 1, "refresh retains missing marks");
+            assert_eq!(marks.items()[0].path, path);
+            assert_eq!(marks.items()[0].bytes, u64::from(size.unwrap_or(0)));
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 32,
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+        #[test]
+        fn refresh_keeps_missing_marks_without_claiming_their_bytes(
+            history in proptest::collection::vec(
+                proptest::option::of(0_u16..128), 1..12)
+        ) {
+            check_missing_mark_history(&history);
+        }
+    }
+
+    #[test]
+    fn a_missing_mark_stays_at_zero_until_its_path_returns() {
+        check_missing_mark_history(&[Some(1), None, Some(2)]);
+    }
+
     #[test]
     fn refresh_re_reads_sizes_from_a_new_tree() {
         let root_path = Path::new("/home/tobi");
