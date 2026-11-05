@@ -80,6 +80,16 @@ fn fmt(fix: bool) -> Result<(), String> {
 }
 
 fn clippy() -> Result<(), String> {
+    // Keep both the shipping dependency graph and opt-in development tools
+    // linted. In particular, screenshots must not rot between UI PRs.
+    run(&[
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
+    ])?;
     run(&[
         "clippy",
         "--workspace",
@@ -93,10 +103,31 @@ fn clippy() -> Result<(), String> {
 
 fn test() -> Result<(), String> {
     run(&["test", "--workspace"])?;
+    run(&[
+        "test",
+        "-p",
+        "disktree-app",
+        "--features",
+        "screenshots",
+        "screenshots::",
+    ])?;
     // The DMG layout and the signing keychain's cleanup, with `security`
     // and `xcrun` mocked: no credentials, so they run anywhere with a
     // Python 3. Windows has neither the tools nor the scripts' shell.
     if cfg!(unix) {
+        let status = Command::new("python3")
+            .args(["-B", "-m", "unittest", "discover", "-s"])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../scripts/screenshots"),
+            )
+            .args(["-p", "*_test.py"])
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|err| format!("could not start python3: {err}"))?;
+        if !status.success() {
+            return Err("the screenshot scripts' tests failed".into());
+        }
         let status = Command::new("python3")
             .args(["-B", "-m", "unittest", "discover", "-s"])
             .arg(

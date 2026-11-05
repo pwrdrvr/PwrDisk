@@ -13,67 +13,171 @@ names; the status bar names the volume and its free space; the source chooser
 lists mounts and the SSH hosts from your config. So point the app at a tree
 built for the picture, never at `~` or a real volume.
 
-Make them in the PwrSuiteLab headed E2E VM, never on the operator's Mac.
-Launching PwrDisk on the operator's Mac and driving it with synthetic input
-lands keys in whatever the operator is using; see
-[AGENTS.md](../AGENTS.md#testing-on-a-desktop). Everything below runs inside
-one guest job, and [headed-e2e-pwrsuitelab.md](headed-e2e-pwrsuitelab.md)
-has the job's shape and an example. Without the PwrSuiteLab Control MCP,
-stop and ask the operator.
+## Offscreen macOS pictures
 
-1. In the job, create a disk image with an invented name and build the tree
-   on it: `hdiutil create -ov -size 512m -fs APFS -volname Fixtures -attach
-   target/fixtures.dmg` mounts it at `/Volumes/Fixtures`. Detach it at the
-   end. The image is required in the lab: a tree anywhere else shows the
-   guest's paths, volume name and free space, which are lab details. If
-   `hdiutil` fails, stop and report it to the operator as a baseline issue.
-2. On that image, build a contrived tree with invented names, sized so the
-   treemap has something to show. Sparse files do not work, because sizes
-   come from allocated blocks; write real bytes.
+The operator approved this host workflow on 2026-11-04. It renders the real
+PwrDisk view through GPUI's headless Metal renderer and native macOS text.
+It creates only TestWindows, opens no on-screen window, sends no OS mouse
+or keyboard input, and never connects to an existing PwrDisk window. Run
+it as the binary on the main thread: libtest cannot initialize MacPlatform
+on its worker threads, even with `--test-threads=1`.
 
-   ```sh
-   root=/Volumes/Fixtures/Projects
-   mkdir -p "$root"/{atlas/build,atlas/src,beacon/node_modules,photos/2024}
-   # dd, not head -c 120m: macOS's head takes no size suffix.
-   fill() { dd if=/dev/urandom of="$1" bs=1048576 count="$2" 2>/dev/null; }
-   fill "$root/atlas/build/app.bin" 120
-   fill "$root/beacon/node_modules/bundle.js" 40
-   fill "$root/photos/2024/IMG_0001.raw" 80
-   ```
+This is opt-in development tooling. `screenshots` enables GPUI test support
+and PNG encoding; a release build with that feature is a compile error.
+Normal builds reject the screenshot command before normal startup. The
+mode skips startup hooks, logging, updates and the agent link. It applies
+a fixed theme without the native theme watcher. `cargo xtask lint` checks
+both feature configurations, and `cargo xtask test` covers the scenario
+parser and script adapters on CI.
 
-3. Launch `pwrdisk <that root>` in the guest, in the background: with a path
-   it scans directly and skips the chooser. Wait for its window, drive the
-   screen under test from the job's command, and capture only the PwrDisk
-   window (`screencapture -o -x -l <window id>`), not the screen. Write the
-   images to a checkout-relative directory such as `target/lab-shots/`, list
-   it in the job's `artifacts`, and quit the app.
-4. Fetch them with `lab_e2e_collect`;
-   [headed-e2e-pwrsuitelab.md](headed-e2e-pwrsuitelab.md) says where its
-   `artifact_directory` is. Copy each image to a short local name, such as
-   `./after.png`, and attach that copy; the artifact directory's own path
-   never goes in a PR. Never commit the copy, and delete it once the
-   uploaded links check out.
-5. For "before", run the same job against a clean, committed worktree of
-   `main` (`git fetch origin main && git worktree add --detach <path>
-   origin/main`), with the same tree and the same window size. Remove it
-   with `git worktree remove <path>` afterwards.
+From the repository root, on a Mac with Rust, Python 3.9+ and the usual
+build tools:
 
-Lab VMs start with clipboard sharing off. Images come back as collected
-artifacts, never through the clipboard, and the operator is never asked to
-copy one out of the guest.
+```sh
+scripts/screenshots/fixtures.sh scripts/screenshots/render.sh \
+  scripts/screenshots/explore.json target/pr-shots/demo
+```
 
-In the guest, the source chooser lists the guest's mounts and SSH config
-hosts, which are lab details: never attach a guest capture of them. If the
-change is to the chooser, say so in the body and ask the operator. Any other
-screen that can only be shown with real data: **show the image to the
-operator and wait for approval before attaching it.** Crop or redact user
-names, host names, volume names and anything else that is not invented.
+`fixtures.sh` creates a temporary 256 MiB APFS image named Fixtures, mounts
+it with `-nobrowse` at `/Volumes/Fixtures`, and fills `Demo` with invented
+Projects, Cache, Media and Documents data. The files contain real allocated
+bytes; sparse files do not have the desired tile weights. Fixed fixture
+timestamps keep age labels unchanged across rebuilds. It refuses an
+existing `/Volumes/Fixtures`, exports `PWRDISK_FIXTURE_ROOT` to the command,
+and detaches and removes its image on success or failure. A failed detach
+is an error and prints the retained image path: resolve it before finishing.
+Do not use real paths or disks as fixture input.
 
-Say in the PR body how each image was made ("`pwrdisk` on a contrived tree on
-a disk image named Fixtures, macOS 27, in the PwrSuiteLab VM"), without the
-VM's name or any other lab detail. If nothing can show the change, including
-a Linux or Windows window the lab cannot show, say why and ask the operator
-before merging; a missing screenshot is not optional.
+The wrapper builds a debug binary and calls only:
+
+```sh
+target/debug/pwrdisk offscreen-screenshots \
+  scripts/screenshots/explore.json /Volumes/Fixtures/Demo target/pr-shots/demo
+```
+
+Run that direct command only while the fixture wrapper owns the mounted
+image. Never substitute a normal app launch or `cargo run`.
+
+For before and after with one fixture mount and the same scenario:
+
+```sh
+scripts/screenshots/pair.sh scripts/screenshots/explore.json target/pr-shots
+# Optional third argument: a different before ref (default origin/main).
+```
+
+The pair command fetches `origin/main`, makes its own detached worktree in
+`target/`, and builds both revisions with this workspace's `target/` cache.
+Each build cleans only PwrDisk's path crates, preserving expensive GPUI
+dependencies. Cargo can otherwise reuse another worktree's same-version
+binary. The scripts set `PWRDISK_SCREENSHOT_CHECKOUT`; the renderer verifies
+its compiled source directory against it and prints the compiled commit.
+The adapter transplants only the screenshot harness, entry point, feature,
+dependency edges and constructor gates into the temporary baseline. It
+preserves the baseline UI and locked package versions; it fails if its
+anchors or GPUI version differ, requiring a deliberate adapter update.
+It removes its baseline worktree even if rendering fails. Outputs go to
+`before/` and `after/`; the final shared binary is rebuilt from this
+workspace. Do not run another Cargo command against that target directory
+concurrently. The scripts honor an absolute `CARGO_TARGET_DIR` override.
+
+### Scenarios
+
+A scenario is strict JSON: unknown fields and steps fail before rendering.
+The scan root and output directory are explicit command arguments; there
+is no implicit home scan. `size` is in logical pixels (320..2560 per side),
+and `theme` is `tokyo_night` or `flexoki_light`. PNG dimensions depend on the
+renderer scale; the command prints both sizes. Keep the same Mac and fonts
+for before and after.
+
+```json
+{
+  "size": [1180, 620],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "capture", "name": "explore.png"},
+    {"op": "setup", "state": {"type": "legend", "kind": "code"}},
+    {"op": "hover", "at": [450, 400]},
+    {"op": "wait", "ms": 900},
+    {"op": "capture", "name": "hover.png", "pointer": true},
+    {"op": "click", "at": [450, 400]},
+    {"op": "capture", "name": "clicked.png", "pointer": true}
+  ]
+}
+```
+
+Steps run in order, settling redraws between them:
+
+Screenshot runs explicitly enable reduced motion. Navigation lands on its
+destination layout immediately; it never interpolates with the wall clock.
+The simulated clock still advances tooltip delays and other timed tasks.
+
+| Step | Behavior |
+| --- | --- |
+| `hover`, `at: [x,y]` | Move GPUI's simulated pointer in logical pixels. |
+| `click`, `at: [x,y]` | Move, dispatch left down and up, with real hit testing. |
+| `wait`, `ms` | Advance the deterministic clock, up to 60000 ms per step; useful for tooltips. |
+| `capture`, `name`, `pointer` | Write a PNG. `pointer` defaults false; true draws an arrow at the last hover/click. |
+| `setup`, `state` | A named app state hook, described below. |
+
+Setup hooks are `legend` with a `kind` (the core category name, such as
+`code`, `cache`, `media` or `documents`), `select` or `mark` with a relative
+POSIX fixture `path`, and `review`, `file_list` or `help` without arguments.
+`legend` cycles that category as a click does. Marks obey the normal guards
+and capacity limit; a refused mark fails the scenario. Setup does not
+confirm removal. Never use clicks to approve removal, open the source
+chooser, launch external apps or run owner commands. Scenarios are trusted
+developer input, not a sandbox for arbitrary app interactions.
+
+Capture names are unique simple filenames: letters, digits, `_` and `-`,
+then `.png`. A scenario needs 1..256 steps and at least one capture. Each
+capture also writes `<name>.bounds.json`, with logical bounds and paths for
+Kit's observed controls. This can be empty: GPUI's `debug_selector` bounds
+are only exposed through its test context, not HeadlessAppContext. For
+other elements, inspect a first render and divide image coordinates by the
+printed scale (usually 2x); do not guess from another revision's layout.
+Add a new named setup hook in `screenshots/render.rs` when a change needs
+state that these hooks cannot express, and keep it confined to fixture data.
+
+**Inspect every PNG.** Real rendering has caught a see-through pill that
+headless state tests missed. Check clipping, tooltip delay and private data.
+A drawn arrow is an annotation, not a native pointer; say so in the PR body.
+For example: "GPUI offscreen Metal render with native macOS text, contrived
+Fixtures image, Tokyo Night, 1180×620 logical pixels; arrow drawn by the
+harness." Copy only the PNGs to short temporary attachment paths. Never
+commit screenshots or the image. Attach with `gh --attach` below and fetch
+every resulting URL; an upload can silently return 404.
+
+## When this needs the lab or the operator
+
+Native accessibility, VoiceOver, OS dialogs, window chrome behavior and
+anything that requires an on-screen macOS window still use the PwrSuiteLab
+headed E2E VM. Read [headed-e2e-pwrsuitelab.md](headed-e2e-pwrsuitelab.md)
+before the first job. Without that MCP, stop and ask the operator; there is
+no local desktop or script fallback. For Linux or Windows windows, ask the
+operator. Offscreen macOS pixels do not verify these systems.
+
+In the lab, create the same invented Fixtures image and allocated tree,
+launch `pwrdisk` on its explicit root, drive the screen, and capture only
+its window (`screencapture -o -x -l <window id>`). Detach the image and quit
+the app at the end. List checkout-relative image paths in the job's
+`artifacts` and fetch them with `lab_e2e_collect`. Copy images to short local
+attachment paths; keep artifact directory paths and all other lab details
+out of the PR. For before, run the same job against a clean committed
+`origin/main` worktree, then remove that worktree. Use identical fixture
+bytes, window size, theme and fonts in both jobs.
+
+Lab VMs have clipboard sharing off. Inputs arrive through committed source,
+outputs through collected artifacts; never ask the operator to copy or
+paste anything in the guest. The source chooser lists real mounts and SSH
+hosts on either system. Do not capture it with this offscreen workflow or
+attach a guest chooser capture. Say why in the PR and ask the operator.
+
+For any image that is not 100% contrived, **show it to the operator and
+wait for approval before attaching it**. Crop or redact user names, host
+names, volume names and anything else that is not invented. Say in the PR
+body how each image was made, without lab details. If nothing can show the
+change, say why and ask the operator before merging; a missing screenshot
+is not optional.
 
 ## Attaching them with `gh --attach`
 

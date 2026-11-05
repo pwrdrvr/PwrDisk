@@ -7,7 +7,7 @@ commands in [AGENTS.md](../AGENTS.md#commands) when Sandboxer is not
 available; never `make run` or `cargo run`, which open a window.
 
 Sandboxer is Linux only and has no desktop. A check that needs an on-screen
-macOS window, screenshots included, runs in the PwrSuiteLab VM as
+macOS window runs in the PwrSuiteLab VM as
 [headed-e2e-pwrsuitelab.md](headed-e2e-pwrsuitelab.md) says, never on the
 local desktop.
 
@@ -213,9 +213,9 @@ scripts/sandboxer/transfer.sh get "$URL" test.log /tmp/pwrdisk-test.log
 ```
 
 The transfer server accepts single file names. Archive a directory before
-download. Screenshots are not made here: they come from a contrived tree in
-the PwrSuiteLab VM, and [pr-screenshots.md](pr-screenshots.md) covers making
-and attaching them.
+download. Screenshots are not made here: [pr-screenshots.md](pr-screenshots.md)
+covers offscreen macOS rendering and the headed lab fallback, using only
+contrived trees.
 
 ## Build or refresh the base snapshot
 
