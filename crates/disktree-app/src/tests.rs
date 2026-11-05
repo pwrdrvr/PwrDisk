@@ -11624,3 +11624,99 @@ fn the_only_pill_switches_kinds_and_the_tooltip_stays_clear(
     // chip is taken to be under it until the pointer says so.
     assert_eq!(read(&view, cx, |app| app.legend_hover), None);
 }
+
+/// The model remembers which disk the person typed for. Revisiting Review
+/// with the same percentage cannot confirm another disk.
+fn check_phrase_disk_sequence(
+    view: &Entity<Disktree>,
+    cx: &mut Window,
+    commands: &[(bool, bool)],
+) -> Result<(), proptest::test_runner::TestCaseError> {
+    let mut confirmed = None;
+    for &(usb, type_phrase) in commands {
+        update(view, cx, |app, cx| {
+            app.screen = Screen::Explore;
+            app.marks.clear();
+            app.disk_probe = |path| {
+                let usb =
+                    path.components().any(|part| part.as_os_str() == "junk");
+                Ok(crate::mark_guard::Disk {
+                    key: if usb { "usb" } else { "boot" }.into(),
+                    capacity: if usb { 1_500_000 } else { 5_000 },
+                    name: if usb { "/Volumes/USB" } else { "/" }.into(),
+                })
+            };
+            app.removal_mode = RemovalMode::Trash;
+            let crumbs =
+                child_crumbs(app, &[], if usb { "junk" } else { "keep" });
+            app.mark_anyway(&crumbs, cx);
+            app.open_review(cx);
+        });
+        draw(cx);
+        if type_phrase {
+            click_on(cx, "over-limit-phrase");
+            let input = read(view, cx, |app| app.over_phrase.clone())
+                .expect("phrase field");
+            cx.update(|window, cx| {
+                input.update(cx, |input, cx| input.set_value("", window, cx));
+            });
+            cx.simulate_input("trash 20% of my disk");
+            draw(cx);
+            confirmed = Some(usb);
+        }
+        update(view, cx, |app, cx| {
+            let plan = app.plan();
+            let gate = app.removal_gate(&plan).expect("20% exceeds 5%");
+            proptest::prop_assert_eq!(
+                app.gate_met(&gate, cx),
+                confirmed == Some(usb),
+                "confirmation belongs to the disk it named: {:?}",
+                commands
+            );
+            proptest::prop_assert_eq!(
+                app.removal_limit(&plan, cx).is_ok(),
+                confirmed == Some(usb)
+            );
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+#[gpui_kit::test]
+fn a_boot_disk_phrase_does_not_confirm_a_usb_disk(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = over_limit_view(temp.path(), cx);
+    check_phrase_disk_sequence(&view, cx, &[(false, true), (true, false)])
+        .expect("a boot phrase cannot confirm the USB disk");
+}
+
+#[gpui_kit::test]
+fn review_phrases_follow_the_confirmed_disk_model(cx: &mut TestAppContext) {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = over_limit_view(temp.path(), cx);
+    let window = std::cell::RefCell::new(cx);
+    TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: None,
+        ..Config::default()
+    })
+    .run(
+        &prop::collection::vec((any::<bool>(), any::<bool>()), 1..12),
+        |commands| {
+            update(&view, &mut window.borrow_mut(), |app, _| {
+                app.over_phrase = None;
+            });
+            check_phrase_disk_sequence(
+                &view,
+                &mut window.borrow_mut(),
+                &commands,
+            )
+        },
+    )
+    .expect("phrase consent follows the named disk");
+}

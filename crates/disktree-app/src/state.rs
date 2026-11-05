@@ -647,6 +647,8 @@ pub struct Disktree {
     pub mark_menu: Option<PathBuf>,
     /// Review's field for the over-limit phrase, made when first shown.
     pub over_phrase: Option<Entity<InputState>>,
+    /// The disks, shares and mode the person last typed for.
+    pub over_phrase_for: Option<crate::mark_guard::Ticked>,
     /// The shares and mode the over-limit box was ticked for: a tick says
     /// "20% of this disk, to the trash", and means nothing once any of it
     /// changes.
@@ -875,6 +877,7 @@ impl Disktree {
             refusal_cache: RefCell::new(None),
             mark_menu: None,
             over_phrase: None,
+            over_phrase_for: None,
             over_ticked: None,
             disk_probe: crate::mark_guard::disk_of,
             disk_cache: RefCell::default(),
@@ -3794,6 +3797,7 @@ impl Disktree {
         // A confirmation is for this removal only: the next one past the
         // limit asks again, even for the same share and mode.
         self.over_phrase = None;
+        self.over_phrase_for = None;
         self.over_ticked = None;
         self.screen = Screen::Running;
         self.run = Some(if let Some(approved) = cleanup {
