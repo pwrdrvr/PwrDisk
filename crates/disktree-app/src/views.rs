@@ -2985,7 +2985,10 @@ fn legend_chip(
     };
     let size = chip_size(app, id);
     let only = state == Chip::Only;
-    let faded = state == Chip::Shown && app.legend.narrowed(id);
+    let hovered = app.legend_hover == Some(id);
+    // The chip under the pointer is not faded: it is the one being read,
+    // and its pill would fade with it and let the size show through.
+    let faded = state == Chip::Shown && app.legend.narrowed(id) && !hovered;
     let hover = theme.foreground.opacity(0.06);
     // In the menu a chip is a row of its own, under its own name, so a
     // test or a screen reader never finds two of one chip.
@@ -3012,8 +3015,11 @@ fn legend_chip(
             format!("{} \u{00b7} {size} in the whole scan", app.legend.hint(id))
         },
     );
-    let pill = (app.legend_hover == Some(id) && app.legend.offers_only(id))
+    let pill = (hovered && app.legend.offers_only(id))
         .then(|| legend_only_pill(id, &key, in_menu, theme, cx));
+    // Under the pill the size keeps its room, so nothing moves, but is not
+    // drawn: a size longer than the pill would peek out beside it.
+    let covered = pill.is_some();
     with_tooltip(
         div()
             .id(ElementId::Name(key.clone().into()))
@@ -3095,6 +3101,7 @@ fn legend_chip(
                 div()
                     .text_size(text::CAPTION)
                     .text_color(theme.secondary.opacity(0.75))
+                    .when(covered, Styled::invisible)
                     .child(size)
             }))
             .children(pill),
