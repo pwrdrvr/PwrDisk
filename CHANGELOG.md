@@ -7,6 +7,27 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.19.0
+
+- Cleanup routing - Send paths to Cache cleanup only when PwrDisk
+  positively recognizes a cache whose owner has a supported cleanup
+  command. Cargo build output, virtual environments, generic cache names,
+  bare cache tags and caches for pnpm, Homebrew or Puppeteer use ordinary
+  Trash or Permanent removal, with the usual guards, limits and consent.
+- Cache recognition - Keep supported owners' cache roots and contained
+  caches in the cleanup flow, including relocated layouts and wrappers.
+  Recognize pnpm's independent store and metadata locations, Playwright's
+  npm environment aliases and Puppeteer's home cache for owner proposals,
+  without probing unsupported owners or adding cleanup commands for them.
+- Active-use checks - Check the running process's executable image as well
+  as its arguments before cache cleanup, so a native owner cannot escape
+  detection by changing its command-line name. Detection remains best
+  effort; stop owning tools before approval.
+- Development screenshots - Add opt-in offscreen macOS rendering of the
+  real app views with contrived fixtures, scripted scenarios and native
+  text. The renderer does not open an on-screen window or send OS input,
+  and it is unavailable in release builds.
+
 ## v0.18.0
 
 - Cache cleanup - Check owners in Review to prepare a proposal for each

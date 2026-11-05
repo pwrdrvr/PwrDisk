@@ -4,10 +4,9 @@
 use super::*;
 
 /// The oracle assigns independent directories to data and cache settings.
-/// These are owner hints; without a cleanup command, raw removal stays
-/// available even when a hint positively identifies pnpm's cache.
+/// A store query cannot establish ownership of the other prune scopes.
 #[test]
-fn pnpm_independent_roots_are_hints_without_holding_back_raw_removal() {
+fn pnpm_independent_roots_keep_owner_hints_without_forcing_cleanup() {
     for key in [
         "PNPM_HOME",
         "XDG_DATA_HOME",
@@ -39,9 +38,10 @@ fn pnpm_independent_roots_are_hints_without_holding_back_raw_removal() {
                 Some(Owner::Pnpm),
                 "{key}: {selected:?}"
             );
-            assert_eq!(
-                recognize::inspection_with(&selected, &fixture.env),
-                None
+            // pnpm is recognized for proposals, but has no cleanup command:
+            // its paths follow ordinary removal rather than forcing cleanup.
+            assert!(
+                recognize::inspection_with(&selected, &fixture.env).is_none()
             );
             check_raw_with(&[target(&selected)], &fixture.env)
                 .expect("pnpm has no supported cleanup command");
