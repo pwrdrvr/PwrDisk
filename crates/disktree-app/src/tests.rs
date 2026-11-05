@@ -10234,7 +10234,9 @@ fn cache_exports_keep_marks_and_refuse_raw_scripts(cx: &mut TestAppContext) {
     update(&view, cx, |app, cx| {
         let file = app
             .crumbs_for_path(
-                &app.root_path.join(".npm/_cacache/content-v2/blob.bin"),
+                &npm_cache_dir(&app.root_path)
+                    .join("content-v2")
+                    .join("blob.bin"),
             )
             .expect("in the tree");
         app.toggle_mark(&file, cx);
@@ -10283,7 +10285,7 @@ fn cache_review_requires_owner_preview_and_never_falls_back_to_raw_removal(
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
         let cache = app
-            .crumbs_for_path(&app.root_path.join(".npm/_cacache"))
+            .crumbs_for_path(&npm_cache_dir(&app.root_path))
             .expect("in the tree");
         app.toggle_mark(&cache, cx);
         app.open_review(cx);
@@ -11062,6 +11064,7 @@ fn mock_uv(cache: &std::path::Path) -> tempfile::TempDir {
 
 /// Give `root` uv's cache layout: the tag uv writes and one of its
 /// versioned buckets.
+#[cfg(unix)]
 fn uv_layout(root: &Path) {
     std::fs::create_dir_all(root.join("wheels-v5")).expect("uv bucket");
     std::fs::write(
@@ -11071,10 +11074,16 @@ fn uv_layout(root: &Path) {
     .expect("uv tag");
 }
 
+/// Where `npm_cache` puts npm's package cache under `root`, joined part by
+/// part so it reads the same as a scanned path on Windows.
+fn npm_cache_dir(root: &Path) -> PathBuf {
+    root.join(".npm").join("_cacache")
+}
+
 /// An npm package cache, by the name only npm gives it, holding one
 /// file; returns that file.
 fn npm_cache(root: &Path) -> PathBuf {
-    let file = root.join(".npm/_cacache/content-v2/blob.bin");
+    let file = npm_cache_dir(root).join("content-v2").join("blob.bin");
     std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
     std::fs::write(&file, vec![b'x'; 300_000]).expect("payload");
     file
