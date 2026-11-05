@@ -346,10 +346,14 @@ fn unknown_unsupported_and_missing_owners_do_not_produce_a_write() {
         let warning = &proposal.delete.as_ref().expect("offered").warning;
         if problem == Problem::UnknownOwner {
             assert!(
-                warning.contains("does not know that this is disposable"),
-                "{name}: unknown caches are never labelled safe"
+                warning.contains("as any other marked path"),
+                "{name}: {warning}"
             );
         }
+        // With no command to offer, none of them holds a removal back.
+        assert_eq!(recognize::inspection_with(&path, &fixture.env), None);
+        check_raw_with(&[target(&path)], &fixture.env)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
         assert!(path.join("payload").exists());
     }
 }
@@ -409,16 +413,29 @@ fn actual_scope_must_be_beneath_scan_and_must_not_be_the_scan_root() {
     assert!(issue.detail.contains("relative"));
 }
 
+/// A name that sounds like a cache holds nothing back; a cache PwrDisk
+/// can clean does, marked itself or inside a marked folder.
 #[test]
-fn raw_removal_refuses_cache_wrappers_and_descendants_but_accepts_build_output()
-{
+fn raw_removal_holds_back_only_cleanable_caches() {
     let fixture = Fixture::new();
-    let cache = fixture.dir("wrapper/.cache/unknown-runtime");
-    assert!(check_raw(&[target(&cache)]).is_err());
-    assert!(check_raw(&[target(&fixture.env.home.join("wrapper"))]).is_err());
-    let build = fixture.dir("project/target/debug");
-    check_raw(&[target(&build)]).expect("ordinary build output");
-    assert!(cache.join("payload").exists());
+    let raw = |path: &Path| check_raw_with(&[target(path)], &fixture.env);
+    let unknown = fixture.dir("wrapper/.cache/unknown-runtime");
+    let project = fixture.dir("project/node_modules/.cache/babel-loader");
+    let source = fixture.dir("project/src/cache");
+    for path in [
+        unknown.clone(),
+        fixture.env.home.join("wrapper"),
+        project,
+        source,
+        fixture.env.home.join("project"),
+    ] {
+        raw(&path).unwrap_or_else(|error| panic!("{path:?}: {error}"));
+    }
+    let npm = fixture.dir("wrapper/.cache/_cacache/index-v5");
+    assert!(raw(&npm).is_err(), "in npm's cache");
+    assert!(raw(&fixture.env.home.join("wrapper")).is_err(), "holds it");
+    raw(&unknown).expect("a sibling stays ordinary");
+    assert!(unknown.join("payload").exists());
 }
 
 #[test]
@@ -434,7 +451,7 @@ fn relocated_cache_ancestors_protect_subtrees_and_files() {
     fixture.dir("pip-data/http-v2");
     let pnpm = fixture.dir("pnpm-data/v10/files/deep/entries");
     let cypress = fixture.dir("browser-data/15.0.0/Cypress.app/deep/entries");
-    for path in [tagged, pip, pnpm, cypress] {
+    for path in [tagged, pip, cypress] {
         for selected in [path.clone(), path.join("payload")] {
             assert!(
                 recognize::inspection_with(&selected, &fixture.env).is_some(),
@@ -444,6 +461,10 @@ fn relocated_cache_ancestors_protect_subtrees_and_files() {
             assert!(selected.exists(), "inspection cannot delete");
         }
     }
+    // PwrDisk recognizes pnpm's store but has no command for it, so it
+    // has nothing better to offer than removing it.
+    assert_eq!(recognize::inspection_with(&pnpm, &fixture.env), None);
+    check_raw(&[target(&pnpm)]).expect("no command, nothing held back");
     let ordinary = fixture.dir("ordinary/project/target");
     check_raw(&[target(&ordinary)]).expect("unrelated build output");
 }
@@ -489,10 +510,12 @@ fn tagged_build_outputs_stay_ordinary_removals() {
     let ruff = checkout.join(".ruff_cache");
     std::fs::create_dir_all(ruff.join("0.8.4")).expect("ruff");
     tag(&ruff, BARE_TAG);
-    // Cargo tags its git checkouts too. (Its registry keeps downloads in
-    // a folder named `cache`, which the name rule still routes.)
+    // Cargo tags its git checkouts and its registry too; the registry
+    // keeps its downloads in a folder named `cache`.
     let checkouts = fixture.dir(".cargo/git/checkouts/gpui-1a2b3c");
     tag(&fixture.env.home.join(".cargo/git"), CARGO_TAG);
+    let downloads = fixture.dir(".cargo/registry/cache/index.crates.io-1");
+    tag(&fixture.env.home.join(".cargo/registry"), CARGO_TAG);
 
     for selected in [
         deps.clone(),
@@ -505,13 +528,15 @@ fn tagged_build_outputs_stay_ordinary_removals() {
         ruff,
         checkouts,
         fixture.env.home.join(".cargo/git"),
+        downloads,
+        fixture.env.home.join(".cargo"),
     ] {
         assert_eq!(
             recognize::inspection_with(&selected, &fixture.env),
             None,
             "{selected:?} is not a cache an owner manages"
         );
-        check_raw(&[target(&selected)])
+        check_raw_with(&[target(&selected)], &fixture.env)
             .unwrap_or_else(|error| panic!("{selected:?}: {error}"));
         assert!(selected.exists(), "checking cannot delete");
     }
@@ -1177,7 +1202,7 @@ fn one_failure_is_one_proposal_and_the_other_paths_stay_offered() {
         Some(Problem::UnknownOwner)
     );
     // Delete files is offered everywhere the guards allow it, and says
-    // what it bypasses; an unknown runtime is never called disposable.
+    // what it bypasses.
     for proposal in &prepared.proposals {
         assert!(proposal.allows(Decision::DeleteFiles));
         assert!(proposal.allows(Decision::Skip));
@@ -1196,7 +1221,7 @@ fn one_failure_is_one_proposal_and_the_other_paths_stay_offered() {
             .as_ref()
             .expect("offered")
             .warning
-            .contains("does not know that this is disposable")
+            .contains("as any other marked path")
     );
     let text = prepared.description();
     assert!(text.contains("Owner command (choose owner)"));
@@ -1355,6 +1380,7 @@ fn delete_files_names_the_caches_it_would_bypass() {
     let fixture = Fixture::new();
     let wrapper = fixture.env.home.join(".cache");
     let uv = fixture.dir(".cache/uv");
+    let npm = fixture.dir(".cache/tool/_cacache");
     let tagged = fixture.dir(".cache/tool/data");
     std::fs::write(
         tagged.join("CACHEDIR.TAG"),
@@ -1382,9 +1408,12 @@ fn delete_files_names_the_caches_it_would_bypass() {
         disclosure
             .contains
             .iter()
-            .any(|item| item.starts_with("tagged cache")),
+            .any(|item| item
+                == &format!("npm package cache at {}", npm.display())),
         "{disclosure:?}"
     );
+    // A tag names no owner to bypass.
+    assert_eq!(disclosure.contains.len(), 2, "{disclosure:?}");
     let text = disclosure.description(Action::Trash);
     assert!(text.contains("owners are not involved either"));
     assert!(text.contains("recoverable until the Trash is emptied"));

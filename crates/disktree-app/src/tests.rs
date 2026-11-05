@@ -10229,11 +10229,14 @@ fn raw_inspection_prepares_off_thread_and_execution_rechecks(
 fn cache_exports_keep_marks_and_refuse_raw_scripts(cx: &mut TestAppContext) {
     cx.update(init);
     let temp = fixture();
-    let selected = temp.path().join(".cache").join("blob.bin");
+    let selected = npm_cache(temp.path());
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
-        let cache = child_crumbs(app, &[], ".cache");
-        let file = child_crumbs(app, &cache, "blob.bin");
+        let file = app
+            .crumbs_for_path(
+                &app.root_path.join(".npm/_cacache/content-v2/blob.bin"),
+            )
+            .expect("in the tree");
         app.toggle_mark(&file, cx);
         app.open_review(cx);
         let (list, count) = app.export_text(false).expect("marked list");
@@ -10276,9 +10279,12 @@ fn cache_review_requires_owner_preview_and_never_falls_back_to_raw_removal(
 ) {
     cx.update(init);
     let temp = fixture();
+    let blob = npm_cache(temp.path());
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
-        let cache = child_crumbs(app, &[], ".cache");
+        let cache = app
+            .crumbs_for_path(&app.root_path.join(".npm/_cacache"))
+            .expect("in the tree");
         app.toggle_mark(&cache, cx);
         app.open_review(cx);
         assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
@@ -10308,7 +10314,58 @@ fn cache_review_requires_owner_preview_and_never_falls_back_to_raw_removal(
         assert!(app.run.is_none());
     });
     draw(cx);
-    assert!(temp.path().join(".cache/blob.bin").exists());
+    assert!(blob.exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// A folder that only sounds like a cache is an ordinary mark: Review
+/// keeps the person's mode, and Trash or Permanent goes ahead.
+#[gpui_kit::test]
+fn a_cache_named_folder_is_an_ordinary_mark(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    for path in [
+        "project/node_modules/.cache/babel-loader/blob.bin",
+        "Library/Caches/com.example.app/blob.bin",
+    ] {
+        let file = temp.path().join(path);
+        std::fs::create_dir_all(file.parent().expect("parent")).unwrap();
+        std::fs::write(file, vec![b'x'; 10_000]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    let epoch = update(&view, cx, |app, cx| {
+        for name in [".cache", "project", "Library/Caches/com.example.app"] {
+            let crumbs = app
+                .crumbs_for_path(&app.root_path.join(name))
+                .expect("in the tree");
+            app.toggle_mark(&crumbs, cx);
+        }
+        let before = app.removal_mode;
+        app.open_review(cx);
+        assert_eq!(app.removal_mode, before, "Review keeps the user's mode");
+        app.removal_mode = RemovalMode::Permanent;
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
+        app.run_epoch
+    });
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done, "the removal finished");
+    read(&view, cx, |app| {
+        assert_eq!(app.run_list.totals().failed, 0, "{:?}", app.notice());
+    });
+    for gone in [".cache", "project", "Library/Caches/com.example.app"] {
+        assert!(!temp.path().join(gone).exists(), "{gone}");
+    }
     assert!(temp.path().join("junk/blob.bin").exists());
 }
 
@@ -11003,6 +11060,26 @@ fn mock_uv(cache: &std::path::Path) -> tempfile::TempDir {
     bin
 }
 
+/// Give `root` uv's cache layout: the tag uv writes and one of its
+/// versioned buckets.
+fn uv_layout(root: &Path) {
+    std::fs::create_dir_all(root.join("wheels-v5")).expect("uv bucket");
+    std::fs::write(
+        root.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55",
+    )
+    .expect("uv tag");
+}
+
+/// An npm package cache, by the name only npm gives it, holding one
+/// file; returns that file.
+fn npm_cache(root: &Path) -> PathBuf {
+    let file = root.join(".npm/_cacache/content-v2/blob.bin");
+    std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+    std::fs::write(&file, vec![b'x'; 300_000]).expect("payload");
+    file
+}
+
 /// Cleanup's in-use check sees any running `uv`, the other test's mock
 /// included, so the tests that run one take turns.
 #[cfg(unix)]
@@ -11024,6 +11101,9 @@ fn cache_cleanup_view<'a>(
         std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
         std::fs::write(file, vec![b'x'; 50_000]).expect("payload");
     }
+    // uv's own layout, so it is recognized wherever it was moved: Review
+    // goes to Cache cleanup for it, and only for a cache it knows.
+    uv_layout(&temp.path().join(".cache/uvdata"));
     let (view, cx) = view_over(temp.path(), cx);
     let root = read(&view, cx, |app| app.root_path.clone());
     let paths = [

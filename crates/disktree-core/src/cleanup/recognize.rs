@@ -1,14 +1,16 @@
-//! Cheap inspection hints. The owner's own query must confirm a root before
-//! a command can act on it. These checks never authorize deletion.
+//! Cheap recognition of tool caches. A path goes to Cache cleanup only
+//! when it is positively one PwrDisk can clean better than by deleting
+//! it: a cache whose owner command has an adapter here. A name such as
+//! `cache`, a cache tag or a regenerable hatch is not that, and never
+//! holds a removal back. The owner's own query must still confirm a root
+//! before a command can act on it.
 
 use std::path::{Path, PathBuf};
 
 use super::{Environment, Owner};
 
-pub(super) fn owner(
-    path: &Path,
-    env: &Environment,
-) -> Option<(Owner, PathBuf)> {
+/// Where each owner keeps its cache by default or as configured.
+fn roots(env: &Environment) -> Vec<(Owner, PathBuf)> {
     let cache = env
         .variables
         .get("XDG_CACHE_HOME")
@@ -62,19 +64,32 @@ pub(super) fn owner(
         }
     }
     roots
+}
+
+/// The owner a cache directory's own name gives away, wherever it is.
+fn named_owner(directory: &Path) -> Option<Owner> {
+    match directory.file_name()?.to_str()? {
+        "_cacache" => Some(Owner::Npm),
+        "_npx" => Some(Owner::Npx),
+        ".pnpm-store" => Some(Owner::Pnpm),
+        "ms-playwright" => Some(Owner::Playwright),
+        _ => None,
+    }
+}
+
+/// The owner whose cache holds `path`, and that cache's root: a default
+/// or configured root, or a directory named the way only that owner
+/// names it. Every owner, for Cache cleanup's proposals.
+pub(super) fn owner(
+    path: &Path,
+    env: &Environment,
+) -> Option<(Owner, PathBuf)> {
+    roots(env)
         .into_iter()
         .find(|(_, root)| path.starts_with(root))
         .or_else(|| {
             path.ancestors().find_map(|root| {
-                let name = root.file_name()?.to_str()?;
-                let owner = match name {
-                    "_cacache" => Owner::Npm,
-                    "_npx" => Owner::Npx,
-                    ".pnpm-store" => Owner::Pnpm,
-                    "ms-playwright" => Owner::Playwright,
-                    _ => return None,
-                };
-                Some((owner, root.to_owned()))
+                named_owner(root).map(|owner| (owner, root.to_owned()))
             })
         })
 }
@@ -116,29 +131,40 @@ fn uv_bucket(name: &str) -> bool {
 /// an owner command to run. Of the supported owners only uv writes the
 /// tag, so a tag counts when uv's buckets sit beside it.
 pub(super) fn shape_owner(root: &Path) -> Option<Owner> {
+    shapes(root).into_iter().next()
+}
+
+/// Every owner whose layout `root` has. A directory can match more than
+/// one, and one PwrDisk has no command for must not hide one it has.
+fn shapes(root: &Path) -> Vec<Owner> {
+    let mut found = Vec::new();
     if root.join("wheels").is_dir()
         && (root.join("http-v2").is_dir() || root.join("http").is_dir())
     {
-        return Some(Owner::Pip);
+        found.push(Owner::Pip);
     }
     // Versioned stores and binary caches can be relocated to arbitrary
     // names. Read only a bounded immediate listing for recognition; the
     // installed owner must still verify the exact configured root.
     let tagged = root.join(TAG).is_file();
-    let entries = std::fs::read_dir(root).ok()?;
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return found;
+    };
     for entry in entries.take(32).flatten() {
         let path = entry.path();
         let name = entry.file_name();
-        let name = name.to_str()?;
+        let Some(name) = name.to_str() else {
+            continue;
+        };
         if tagged && uv_bucket(name) && path.is_dir() {
-            return Some(Owner::Uv);
+            found.push(Owner::Uv);
         }
         if name.strip_prefix('v').is_some_and(|version| {
             !version.is_empty()
                 && version.bytes().all(|byte| byte.is_ascii_digit())
         }) && path.join("files").is_dir()
         {
-            return Some(Owner::Pnpm);
+            found.push(Owner::Pnpm);
         }
         if name.split('.').count() == 3
             && name
@@ -147,14 +173,27 @@ pub(super) fn shape_owner(root: &Path) -> Option<Owner> {
             && (path.join("Cypress.app").is_dir()
                 || path.join("Cypress/Cypress").is_file())
         {
-            return Some(Owner::Cypress);
+            found.push(Owner::Cypress);
         }
     }
-    None
+    found
 }
 
-/// Suitable for review and for raw-removal preflight. An ancestor named
-/// cache is a reason to inspect, never evidence that raw deletion is safe.
+/// The cleanable owner whose cache starts at `directory` by its name or
+/// its layout, wherever it was moved.
+fn cleanable_here(directory: &Path) -> Option<Owner> {
+    named_owner(directory)
+        .into_iter()
+        .chain(shapes(directory))
+        .find(|owner| owner.has_cleanup())
+}
+
+/// Why `path` should go through Cache cleanup rather than plain removal.
+///
+/// It should when it is in, or holds, a cache PwrDisk recognizes and has
+/// the owner's command for. Review switches to Cache cleanup for it, and
+/// Trash and Permanent leave it to Cache cleanup. Everything else is an
+/// ordinary removal, cache-like or not.
 pub fn inspection_reason(path: &Path) -> Option<String> {
     let env = Environment::current().ok()?;
     inspection_with(path, &env)
@@ -164,27 +203,51 @@ pub(super) fn inspection_with(
     path: &Path,
     env: &Environment,
 ) -> Option<String> {
-    if let Some((owner, _)) = owner(path, env) {
+    // Any cleanable cache above, not only the nearest owner: npm's npx
+    // cache can hold a pnpm store, which has no command of its own.
+    let inside = roots(env)
+        .into_iter()
+        .find(|(owner, root)| owner.has_cleanup() && path.starts_with(root))
+        .map(|(owner, _)| owner)
+        .or_else(|| path.ancestors().find_map(cleanable_here));
+    if let Some(owner) = inside {
         return Some(format!(
-            "{} requires owner-managed cleanup; no raw deletion fallback",
-            owner.label()
+            "In the {}: Cache cleanup can run `{}` for it instead of deleting its files",
+            owner.label(),
+            owner.command_label()
         ));
     }
-    path.ancestors().find_map(|ancestor| {
-        let name = ancestor.file_name()?.to_str()?.to_ascii_lowercase();
-        matches!(name.as_str(), "cache" | "caches" | ".cache" | ".npm" | "npm-cache" | ".pnpm-store" | "codex-runtimes")
-            .then(|| "Cache/runtime state requires inspection and an owner cleanup preview; a cache name or regenerable classification does not authorize raw deletion".into())
-    }).or_else(|| {
-        // A supported owner's layout is a refusal hint for its relocated
-        // caches too; it is never enough evidence to build an owner
-        // cleanup command. A bare cache tag is not such a layout: see
-        // `shape_owner`.
-        path.ancestors().find_map(|ancestor| {
-            shape_owner(ancestor).map(|owner| {
-                format!("Relocated {} layout requires inspection and owner cleanup; no raw deletion fallback", owner.label())
-            })
+    // A wrapper such as ~/.cache or ~/Library/Caches, marked whole. Only
+    // the roots where owners keep their caches are looked for here, so
+    // Review stays cheap; the removal worker's walk finds the rest.
+    roots(env)
+        .into_iter()
+        .filter(|(owner, root)| {
+            owner.has_cleanup() && root.starts_with(path) && root.is_dir()
         })
-    })
+        .map(|(owner, root)| {
+            format!(
+                "Holds the {} at {}: Cache cleanup can run `{}` for it instead of deleting its files",
+                owner.label(),
+                root.display(),
+                owner.command_label()
+            )
+        })
+        .next()
+}
+
+/// The cleanable cache rooted exactly at `directory`, for the walk below a
+/// marked path: its own root, name or layout, never an ancestor's, which
+/// the marked path's own check has already seen.
+pub(super) fn cleanable_root(
+    directory: &Path,
+    env: &Environment,
+) -> Option<Owner> {
+    roots(env)
+        .into_iter()
+        .find(|(owner, root)| owner.has_cleanup() && root == directory)
+        .map(|(owner, _)| owner)
+        .or_else(|| cleanable_here(directory))
 }
 
 /// The owner a path most likely belongs to: a known or configured root
@@ -207,7 +270,7 @@ const CONTAINED_DEPTH: usize = 3;
 const CONTAINED_DIRECTORIES: usize = 20_000;
 const CONTAINED_LISTED: usize = 8;
 
-/// Recognized caches strictly inside `path`, for the disclosure shown
+/// Cleanable caches strictly inside `path`, for the disclosure shown
 /// before deleting it directly: their owners are bypassed too. Bounded,
 /// and fails closed so a disclosure is never silently incomplete.
 pub(super) fn contained(
@@ -247,18 +310,8 @@ pub(super) fn contained(
             if visited > CONTAINED_DIRECTORIES {
                 return Err("Too many folders to list the caches inside; inspect a smaller selection".into());
             }
-            let label = owner(&child, env)
-                .filter(|(_, root)| *root == child)
-                .map(|(owner, _)| owner.label().to_owned())
-                .or_else(|| {
-                    shape_owner(&child).map(|owner| owner.label().to_owned())
-                })
-                .or_else(|| {
-                    child
-                        .join("CACHEDIR.TAG")
-                        .is_file()
-                        .then(|| "tagged cache".to_owned())
-                });
+            let label = cleanable_root(&child, env)
+                .map(|owner| owner.label().to_owned());
             if let Some(label) = label {
                 if found.len() < CONTAINED_LISTED {
                     found.push(format!("{label} at {}", child.display()));

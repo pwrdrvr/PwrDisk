@@ -1615,7 +1615,7 @@ impl Session {
     ) -> String {
         if preview.confirmation.is_empty() {
             return format!(
-                "Cache cleanup proposals, one per marked path. Nothing is approved and nothing can be confirmed yet.\n\n{}\n\nShow the user EVERY proposal: owner, version, executable, arguments, environment overrides, working directory, actual scope (wider than selected where it says so), effects, limitations and recoverability, and every unavailable reason. Ask the user to choose for each path: skip, owner (only where offered) or delete_files. Never suggest delete_files yourself, never choose for the user, and inspect unknown runtime caches first. A failed or unavailable owner command is never a reason to delete files. Then call pwrdisk_removal_preview again with mode owner_cleanup, decisions naming every marked path once, and delete_files_mode when any path uses delete_files.",
+                "Cache cleanup proposals, one per marked path. Nothing is approved and nothing can be confirmed yet.\n\n{}\n\nShow the user EVERY proposal: owner, version, executable, arguments, environment overrides, working directory, actual scope (wider than selected where it says so), effects, limitations and recoverability, and every unavailable reason. Ask the user to choose for each path: skip, owner (only where offered) or delete_files. Never choose for the user; recommend the owner's command where it is offered. A failed or unavailable owner command is never a reason to delete files. Then call pwrdisk_removal_preview again with mode owner_cleanup, decisions naming every marked path once, and delete_files_mode when any path uses delete_files.",
                 preview.consent
             );
         }
@@ -3078,7 +3078,7 @@ mod tests {
         };
         let text = session.cleanup_preview_text(&undecided);
         assert!(text.contains("Nothing is approved"), "{text}");
-        assert!(text.contains("Never suggest delete_files yourself"));
+        assert!(text.contains("Never choose for the user"));
         assert!(session.pending_removal.is_none(), "nothing to confirm");
 
         let decided = RemovalPreview {

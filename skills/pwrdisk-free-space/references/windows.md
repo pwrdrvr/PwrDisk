@@ -107,17 +107,22 @@ the same allocated size as directory scans.
 
 ## Owner-managed caches
 
-A cache name or regenerable classification is an inspection lead, never
-permission to delete it. Cache cleanup is decided path by path. Call
+Cache cleanup is for caches PwrDisk can clean with their owner's own
+command (npm, npx, uv, pip, Cypress, Playwright): a marked path in one, or
+holding one, is refused for `trash` and `permanent` and goes through
+`owner_cleanup`. Anything else (a folder named `cache` or `Caches`, a
+`regenerable` hatch, a cache tag, a Cargo `target`, a `.venv`, or a cache
+whose owner has no command here, such as pnpm or Homebrew) is an ordinary
+`trash` or `permanent` removal, proposed, agreed and confirmed like any
+other path. Cache cleanup is decided path by path. Call
 `pwrdisk_removal_preview` with `owner_cleanup` and no decisions: it returns
 one proposal per marked path with its status and problem, resolved owner,
 version, executable, arguments, environment overrides, configured root, full
 actual scope (including unselected siblings), effects, limitations,
 recoverability, and whether Delete files is offered. Show every proposal and
 let the user choose for each path `skip`, `owner` (only where offered) or
-`delete_files`. Never choose for them and never suggest `delete_files`
-yourself; inspect unknown runtime/install caches first, since nothing says
-they are disposable. Then preview again with `decisions` naming every marked
+`delete_files`. Never choose for them; where the owner's command is
+offered, recommend it over `delete_files`. Then preview again with `decisions` naming every marked
 path once, and `delete_files_mode` (`trash` or `permanent`, as the user
 chose) when any path uses `delete_files`. Confirmation needs that preview's
 exact paths and its own text: `RUN OWNER CLEANUP`, `DELETE CACHE FILES`,
@@ -127,10 +132,9 @@ software. An unsupported version, failed probe, or failed or cancelled owner
 command never falls back to deleting files, and never to a shell command;
 deleting them instead is a new preview the user decides.
 
-Owner layouts on ancestors protect contained files and subtrees too.
-A cache tag (`CACHEDIR.TAG`) alone is not an owner: a Cargo `target`,
-a `.venv` or a ruff cache stays an ordinary removal; a tag beside uv's
-versioned buckets is uv's relocated cache. All removal modes may
+An owner's cache is recognized by its default or configured root, a name
+only it uses, or the layout it keeps when moved; a cache tag alone is not
+uv's. All removal modes may
 return a preparing response while inspection runs on a worker; retry
 only the read-only preview. Exported
 lists keep marked paths, and raw script exports cannot replace owner cleanup.

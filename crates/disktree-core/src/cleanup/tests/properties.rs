@@ -180,18 +180,18 @@ fn an_owner_command_acts_only_on_the_root_the_owner_printed() {
     }
 }
 
-/// Signs of a cache that no name gives away. Each is put on a directory
-/// in the generated tree; the decoys look close but are not caches an
-/// owner manages. Build outputs carry the standard cache tag and are
-/// decoys too: the tag says its writer rebuilds them, not that an owner
-/// must clean them, and Review once sent every Cargo `target` to Cache
-/// cleanup because of it.
+/// Signs of a cache put on a directory in the generated tree. Only the
+/// layouts of owners PwrDisk has a cleanup command for count; the rest
+/// are decoys that look close. Build outputs carry the standard cache tag
+/// and are decoys too: Review once sent every Cargo `target` to Cache
+/// cleanup because of it. So is pnpm's store, which PwrDisk recognizes
+/// but has no command for.
 #[derive(Clone, Copy, Debug)]
 enum Sign {
     Uv,
     Pip,
-    Pnpm,
     Cypress,
+    Pnpm,
     BareTag,
     CargoTarget,
     Venv,
@@ -199,15 +199,14 @@ enum Sign {
     UvBucketOnly,
     TagDirectory,
     WheelsOnly,
-    EmptyPnpmVersion,
     ShortCypressVersion,
 }
 
-const SIGNS: [Sign; 13] = [
+const SIGNS: [Sign; 12] = [
     Sign::Uv,
     Sign::Pip,
-    Sign::Pnpm,
     Sign::Cypress,
+    Sign::Pnpm,
     Sign::BareTag,
     Sign::CargoTarget,
     Sign::Venv,
@@ -215,8 +214,26 @@ const SIGNS: [Sign; 13] = [
     Sign::UvBucketOnly,
     Sign::TagDirectory,
     Sign::WheelsOnly,
-    Sign::EmptyPnpmVersion,
     Sign::ShortCypressVersion,
+];
+
+/// Names a generated directory can take. Three are the names only npm
+/// and Playwright give their caches; the others merely sound like caches,
+/// or belong to an owner PwrDisk has no command for.
+const NAMES: [&str; 13] = [
+    "_cacache",
+    "_npx",
+    "ms-playwright",
+    "cache",
+    ".cache",
+    "caches",
+    "Caches",
+    "codex-runtimes",
+    "npm-cache",
+    ".npm",
+    ".pnpm-store",
+    "target",
+    "node_modules",
 ];
 
 const BARE_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n";
@@ -254,7 +271,6 @@ fn put(sign: Sign, at: &Path, rng: &mut Rng) {
             dir(at.join("wheels"));
             dir(at.join(pick(rng, &["http", "http-v2"])));
         }
-        Sign::Pnpm => dir(at.join(format!("v{}/files", rng.below(20)))),
         Sign::Cypress => {
             let version = format!("{}.{}.0", 10 + rng.below(6), rng.below(9));
             if rng.percent(50) {
@@ -264,6 +280,7 @@ fn put(sign: Sign, at: &Path, rng: &mut Rng) {
                 file(at.join(version).join("Cypress/Cypress"), "");
             }
         }
+        Sign::Pnpm => dir(at.join(format!("v{}/files", rng.below(20)))),
         Sign::BareTag => file(at.join("CACHEDIR.TAG"), BARE_TAG),
         Sign::CargoTarget => {
             file(at.join("CACHEDIR.TAG"), CARGO_TAG);
@@ -292,15 +309,18 @@ fn put(sign: Sign, at: &Path, rng: &mut Rng) {
         Sign::UvBucketOnly => dir(at.join(pick(rng, &UV_BUCKETS))),
         Sign::TagDirectory => dir(at.join("CACHEDIR.TAG")),
         Sign::WheelsOnly => dir(at.join("wheels")),
-        Sign::EmptyPnpmVersion => dir(at.join("v7")),
         Sign::ShortCypressVersion => dir(at.join("14.0/Cypress.app")),
     }
 }
 
-/// The oracle: does this directory itself carry a supported owner's
-/// sign? Reads every entry, where the code under test reads a bounded
-/// few, and spells each layout out on its own terms.
-fn signed(directory: &Path) -> bool {
+/// The oracle: is this directory itself the root of a cache PwrDisk can
+/// clean with its owner's command? Reads every entry, where the code
+/// under test reads a bounded few, and spells each owner out on its own.
+fn cleanable(directory: &Path) -> bool {
+    let name = directory.file_name().and_then(|name| name.to_str());
+    if matches!(name, Some("_cacache" | "_npx" | "ms-playwright")) {
+        return true;
+    }
     let is_dir = |name: &str| directory.join(name).is_dir();
     if is_dir("wheels") && (is_dir("http") || is_dir("http-v2")) {
         return true;
@@ -314,9 +334,6 @@ fn signed(directory: &Path) -> bool {
             let name = entry.file_name().to_string_lossy().into_owned();
             let path = entry.path();
             let uv = tagged && path.is_dir() && UV_BUCKETS.contains(&&*name);
-            let pnpm = name.strip_prefix('v').is_some_and(|digits| {
-                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
-            }) && path.join("files").is_dir();
             let parts: Vec<_> = name.split('.').collect();
             let cypress = parts.len() == 3
                 && parts.iter().all(|part| {
@@ -324,7 +341,7 @@ fn signed(directory: &Path) -> bool {
                 })
                 && (path.join("Cypress.app").is_dir()
                     || path.join("Cypress/Cypress").is_file());
-            uv || pnpm || cypress
+            uv || cypress
         })
 }
 
@@ -343,21 +360,28 @@ fn directories_under(path: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// A cache's sign on any directory protects everything under it: Review
-/// treats the path as a cache, and raw removal refuses it, however deep
-/// the path is. Raw removal also refuses a path with a cache inside it.
-/// Anything with no sign above or inside it stays removable.
+/// Cache cleanup steps in only for a cache PwrDisk can clean better than
+/// by deleting it. A path in such a cache goes to Cache cleanup in Review,
+/// and plain removal leaves it to Cache cleanup; so does a folder with
+/// one inside. Everything else stays an ordinary removal, whatever its
+/// name, tag or hatch says: `cache`, `.cache`, Cargo's `target`, a venv,
+/// or pnpm's store, which has no command here.
 ///
 /// The oracle walks every ancestor up to the fixture and every directory
 /// below the path, reading each one whole.
 #[test]
-fn a_cache_sign_protects_everything_under_it_and_nothing_else() {
-    for seed in seeds(120) {
+fn only_a_cleanable_cache_holds_a_removal_back() {
+    for seed in seeds(150) {
         let rng = &mut Rng::new(seed);
         let fixture = Fixture::new();
         let mut chain = vec![fixture.env.home.join(format!("n{seed:x}"))];
         for level in 0..count(rng, 1, 5) {
-            let next = chain.last().expect("level").join(format!("n{level}"));
+            let name = if rng.percent(35) {
+                (*pick(rng, &NAMES)).to_owned()
+            } else {
+                format!("n{level}")
+            };
+            let next = chain.last().expect("level").join(name);
             chain.push(next);
         }
         let deepest = chain.last().expect("deepest");
@@ -365,10 +389,15 @@ fn a_cache_sign_protects_everything_under_it_and_nothing_else() {
         std::fs::write(deepest.join("payload"), [0; 64]).expect("payload");
         for (level, directory) in chain.iter().enumerate() {
             if rng.percent(30) {
-                std::fs::create_dir(directory.join(format!("m{level}")))
+                let name = if rng.percent(50) {
+                    (*pick(rng, &NAMES)).to_owned()
+                } else {
+                    format!("m{level}")
+                };
+                std::fs::create_dir_all(directory.join(name))
                     .expect("neighbour");
             }
-            if rng.percent(20) {
+            if rng.percent(25) {
                 put(*pick(rng, &SIGNS), directory, rng);
             }
         }
@@ -380,14 +409,55 @@ fn a_cache_sign_protects_everything_under_it_and_nothing_else() {
         let above = selected
             .ancestors()
             .take_while(|ancestor| ancestor.starts_with(&fixture.root))
-            .any(signed);
-        let inside = directories_under(&selected).iter().any(|d| signed(d));
+            .any(cleanable);
+        let inside = directories_under(&selected).iter().any(|d| cleanable(d));
         let case = format!("seed {seed}: {selected:?}");
         let hint = recognize::inspection_with(&selected, &fixture.env);
         assert_eq!(hint.is_some(), above, "{case}: {hint:?}");
-        let raw = check_raw(&[target(&selected)]);
+        let raw = check_raw_with(&[target(&selected)], &fixture.env);
         assert_eq!(raw.is_err(), above || inside, "{case}: {raw:?}");
         assert!(selected.exists(), "{case}: checking cannot delete");
+    }
+}
+
+/// A wrapper that holds an owner's cache where the owner keeps it, such
+/// as `~/.cache` with uv's cache in it, goes to Cache cleanup in Review
+/// as soon as it is marked, not only when removal is refused later. One
+/// that holds only caches PwrDisk has no command for stays ordinary.
+#[test]
+fn a_wrapper_holding_a_cleanable_cache_is_named_in_review() {
+    for seed in seeds(60) {
+        let rng = &mut Rng::new(seed);
+        let fixture = Fixture::new();
+        let home = &fixture.env.home;
+        let homes: [(&str, bool); 6] = [
+            (".cache/uv", true),
+            (".cache/pip", true),
+            ("Library/Caches/ms-playwright", true),
+            (".npm/_cacache", true),
+            ("Library/Caches/Homebrew", false),
+            (".cache/some-app", false),
+        ];
+        let planted: Vec<_> =
+            homes.iter().filter(|_| rng.percent(40)).copied().collect();
+        for (path, _) in &planted {
+            std::fs::create_dir_all(home.join(path).join("entry"))
+                .expect("cache");
+        }
+        let wrapper = home
+            .join(pick(rng, &[".cache", "Library", "Library/Caches", ".npm"]));
+        std::fs::create_dir_all(&wrapper).expect("wrapper");
+        let holds = planted.iter().any(|(path, cleanable)| {
+            *cleanable && home.join(path).starts_with(&wrapper)
+        });
+        let case = format!("seed {seed}: {wrapper:?} with {planted:?}");
+        let hint = recognize::inspection_with(&wrapper, &fixture.env);
+        assert_eq!(hint.is_some(), holds, "{case}: {hint:?}");
+        assert_eq!(
+            check_raw_with(&[target(&wrapper)], &fixture.env).is_err(),
+            holds,
+            "{case}"
+        );
     }
 }
 
