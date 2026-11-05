@@ -1,0 +1,7 @@
+{
+  "size": [1180, 620],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "capture", "name": "explore.png"}
+  ]
+}

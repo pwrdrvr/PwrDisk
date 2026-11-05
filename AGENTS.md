@@ -102,6 +102,10 @@ native accessibility checks and every other GUI check, and for `make run`
 or `cargo run` to look at a change. The window-harness tests (`make test`,
 `cargo xtask test`) are fine: they draw headless.
 
+* **Offscreen macOS PR pictures** may run on the host with the opt-in
+  `screenshots` feature and a contrived Fixtures image. This uses GPUI's
+  headless Metal renderer and macOS text; no on-screen window or OS input.
+  Read [docs/pr-screenshots.md](docs/pr-screenshots.md) for the commands.
 * **An on-screen macOS window** (screenshots, VoiceOver, native AX checks) runs
   in the PwrSuiteLab headed E2E Tart VM through the PwrSuiteLab Control
   MCP. Read [docs/headed-e2e-pwrsuitelab.md](docs/headed-e2e-pwrsuitelab.md)
@@ -350,9 +354,10 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
   `--attach`, and before any later body edit.
 * **A PR that changes what the window shows has before/after screenshots**,
   of a contrived tree rather than a real disk;
-  [docs/pr-screenshots.md](docs/pr-screenshots.md) says how to make one in
-  the lab VM, never on the operator's desktop. If nothing can show the
-  change, say why in the body and ask the operator.
+  [docs/pr-screenshots.md](docs/pr-screenshots.md) covers offscreen macOS
+  rendering and the lab fallback. Never open a window on the operator's
+  desktop. If nothing can show the change, say why in the body and ask
+  the operator.
 * **Scans are private data.** A real scan shows user names in paths,
   project and client names, volume names and sizes, and the chooser lists
   mounts and SSH hosts. Show any screenshot that is not 100% contrived to the
@@ -386,7 +391,8 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
 * A PwrDisk window open on this machine belongs to the operator or another
   thread: several checkouts and builds run here at once. Leave it alone, and
   do not start another to look at a change; that runs in the lab, as
-  [Testing on a desktop](#testing-on-a-desktop) says. That includes the
+  [Testing on a desktop](#testing-on-a-desktop) says, or in the explicitly
+  offscreen screenshot mode. That includes the
   link: do not point a local `pwrdisk mcp` at it to test a change; the
   `disktree-mcp` tests use a stand-in window.
 

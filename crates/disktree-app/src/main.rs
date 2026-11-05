@@ -11,6 +11,9 @@
 // reach one. Ignored elsewhere.
 #![windows_subsystem = "windows"]
 
+#[cfg(all(feature = "screenshots", not(debug_assertions)))]
+compile_error!("the screenshots feature is only for debug builds");
+
 mod agent;
 mod agent_removal;
 mod app_menu;
@@ -44,6 +47,8 @@ mod power;
 mod run_list;
 mod run_view;
 mod safety;
+#[cfg(any(test, feature = "screenshots"))]
+mod screenshots;
 mod semantics;
 mod settings;
 mod state;
@@ -134,6 +139,19 @@ options:
 ";
 
 fn main() -> Result<()> {
+    // Must precede every normal startup hook, on macOS's main thread.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "offscreen-screenshots")
+    {
+        #[cfg(feature = "screenshots")]
+        return screenshots::run();
+        #[cfg(not(feature = "screenshots"))]
+        anyhow::bail!(
+            "offscreen screenshots require a debug build with \
+             --features screenshots (macOS only)"
+        );
+    }
     // First: Setup, updates and the uninstaller start pwrdisk.exe with a
     // hook argument, which this runs and then exits, before a console or a
     // window could appear.
