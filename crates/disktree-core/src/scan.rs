@@ -1198,8 +1198,9 @@ fn walk_tree(
 /// them only queue: on Windows a home directory of 3.4 million files
 /// walked in 6.5 s on 16 threads and 8.1 s on all 24. That cap was
 /// measured on one 24-thread NTFS laptop; another disk or CPU may want
-/// another. Elsewhere the default count. A pool of its own on every
-/// platform all the same: work the UI hands the global pool, such as
+/// another. macOS uses its measured heterogeneous-core budget. A pool of
+/// its own on every platform all the same: work the UI hands the global
+/// pool, such as
 /// re-ranking a tree, must not queue behind a scan's blocking reads.
 static WALK_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     let threads = if cfg!(windows) {
@@ -1207,6 +1208,8 @@ static WALK_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     } else {
         rayon::current_num_threads()
     };
+    #[cfg(target_os = "macos")]
+    let threads = crate::macos::walk_threads(threads);
     rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .thread_name(|index| format!("disktree-walk-{index}"))
