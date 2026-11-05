@@ -212,13 +212,14 @@ merged about 90 pull requests since. Compared with disktree 0.11.0 and its
 | **Size limit** | — | one removal may take 5% of a disk; past that, Mark anyway and a typed confirmation. Agents are always held to it |
 | **Removing** | finished items appear as bare names; Done drops the list | the whole list is on screen from the start and checks off item by item, with the space measured back as it goes; Done keeps it |
 | **APFS clones** | each clone counted at full size | shared and private bytes reported apart, so savings are never overstated |
-| **Quitting** | frees the whole tree on the main thread: 1.1–1.2 s for a whole disk (40M files) when idle, up to 15 s under memory pressure | instant |
-| **Memory for a whole-disk scan** (40M files) | 5.84 GiB | 4.2–4.3 GiB, 28% less; 5.6 GiB with APFS clone accounting, the macOS default |
+| **Quitting** | frees the whole tree on the main thread: about 1 s for a whole disk (34M files) when idle, up to 15 s under memory pressure | instant |
+| **Memory for a whole-disk scan** (34M files) | 4.85 GiB | 3.6 GiB, 25% less; 4.2–4.3 GiB with APFS clone accounting, the macOS default |
 | **Window** | system title bar | custom title strip, menus, Settings, Help, Changelog and Logs windows |
 | **Accessibility** | not audited | audited: keyboard focus, screen-reader labels, 200% text, reduced motion |
 
-Without clone accounting a scan takes 7–8% longer than disktree's; with
-it, the macOS default, 1.65–1.8× as long. The measurements, the program
+Without clone accounting a whole-disk scan takes 2–4% longer than
+disktree's; with it, the macOS default, up to 1.35× as long (PwrDisk
+v0.18.0). The measurements, the program
 behind them and the caveats are in
 [docs/performance/vs-disktree](docs/performance/vs-disktree/README.md).
 
