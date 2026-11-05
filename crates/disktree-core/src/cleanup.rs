@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::removal::{Plan, Target};
 
+mod playwright;
 mod process;
 mod recognize;
 #[cfg(test)]
@@ -125,10 +126,8 @@ impl Owner {
             Self::Uv => "uv cache clean",
             Self::Pip => "pip cache purge",
             Self::Cypress => "cypress cache clear",
-            Self::Pnpm
-            | Self::Homebrew
-            | Self::Playwright
-            | Self::Puppeteer => "owner command",
+            Self::Playwright => "playwright uninstall --all",
+            Self::Pnpm | Self::Homebrew | Self::Puppeteer => "owner command",
         }
     }
 
@@ -139,9 +138,6 @@ impl Owner {
             ),
             Self::Homebrew => Some(
                 "brew cleanup also removes old installed formula versions and lock files outside the cache; cache-only cleanup is not supported.",
-            ),
-            Self::Playwright => Some(
-                "playwright uninstall changes browser installations and package-reference state; selected-cache-only cleanup is not supported.",
             ),
             Self::Puppeteer => Some(
                 "Puppeteer has a browser cleanup API, but its installed API, JavaScript configuration and interactive CLI scope are not resolved by this version of PwrDisk. Inspect with the owning installation.",
@@ -836,6 +832,7 @@ fn resolve(
                 Owner::Uv,
                 Owner::Pip,
                 Owner::Cypress,
+                Owner::Playwright,
             ]
         },
         |(owner, _)| vec![*owner],
@@ -931,6 +928,15 @@ fn resolve_owner(
             ("npm_config_timing".into(), "false".into()),
         ]);
     }
+    if owner == Owner::Playwright {
+        // Startup can write logs/profiles even for read-only queries;
+        // the display override can mask the installed package version.
+        command.environment.extend([
+            ("DEBUG_FILE".into(), String::new()),
+            ("PW_PROFILE_DIR".into(), String::new()),
+            ("PW_CLI_DISPLAY_VERSION".into(), String::new()),
+        ]);
+    }
     if owner == Owner::Uv
         && env
             .variables
@@ -957,15 +963,19 @@ fn resolve_owner(
         .map_err(|detail| Issue::new(Problem::UnsupportedVersion, detail))?;
     let inspection_only =
         || Issue::new(Problem::NoCommand, "Owner is inspection-only");
-    command.arguments = strings(match owner {
-        Owner::Npm | Owner::Npx => &["config", "get", "cache"],
-        Owner::Uv | Owner::Pip => &["cache", "dir"],
-        Owner::Cypress => &["cache", "path"],
-        _ => return Err(inspection_only()),
-    });
-    let output = probe
-        .output(&command, env)
-        .map_err(|detail| Issue::new(Problem::ConfigCheckFailed, detail))?;
+    let output = if owner == Owner::Playwright {
+        playwright::cache_root(&mut command, env, probe)?
+    } else {
+        command.arguments = strings(match owner {
+            Owner::Npm | Owner::Npx => &["config", "get", "cache"],
+            Owner::Uv | Owner::Pip => &["cache", "dir"],
+            Owner::Cypress => &["cache", "path"],
+            _ => return Err(inspection_only()),
+        });
+        probe
+            .output(&command, env)
+            .map_err(|detail| Issue::new(Problem::ConfigCheckFailed, detail))?
+    };
     let config = |detail: &str| Issue::new(Problem::ConfigCheckFailed, detail);
     // Remove the CLI's line terminator, never whitespace that can be part
     // of a real directory name. Guessing here can select a different tree.
@@ -1038,6 +1048,7 @@ fn resolve_owner(
                 .insert("CYPRESS_CACHE_FOLDER".into(), root_arg);
             strings(&["cache", "clear"])
         }
+        Owner::Playwright => strings(&["uninstall", "--all"]),
         _ => return Err(inspection_only()),
     };
     let effects = match owner {
@@ -1056,6 +1067,9 @@ fn resolve_owner(
         Owner::Cypress => {
             "Removes ALL cached Cypress binary versions, including versions other projects use. Tests require reinstalling their matching binary."
         }
+        Owner::Playwright => {
+            "Removes ALL Playwright-managed browser versions and package references inside this cache, including browsers other projects use. Branded Chrome/Edge installations and unrelated files remain. Tests require reinstalling their matching browsers."
+        }
         _ => "",
     };
     Ok(Some(Operation {
@@ -1066,7 +1080,13 @@ fn resolve_owner(
         scope,
         command,
         effects: effects.into(),
-        limitations: OWNER_LIMITATIONS.into(),
+        limitations: if owner == Owner::Playwright {
+            format!(
+                "{OWNER_LIMITATIONS} Playwright uninstall takes no cache lock and can retain files after removal errors. An existing __dirlock is refused; stop Playwright installers, tests and cached browsers first. This check cannot prevent a new process starting afterwards."
+            )
+        } else {
+            OWNER_LIMITATIONS.into()
+        },
     }))
 }
 
@@ -1081,6 +1101,7 @@ fn supported_version(owner: Owner, output: &str) -> Result<(), String> {
     let text = match owner {
         Owner::Uv => output.strip_prefix("uv "),
         Owner::Pip => output.strip_prefix("pip "),
+        Owner::Playwright => output.strip_prefix("Version "),
         _ => Some(output),
     }
     .and_then(|text| text.split_whitespace().next())
@@ -1096,6 +1117,10 @@ fn supported_version(owner: Owner, output: &str) -> Result<(), String> {
         (Owner::Uv, [0, minor, _]) => *minor == 11,
         (Owner::Pip, [major, ..]) => (23..=26).contains(major),
         (Owner::Cypress, [major, _, _]) => (13..=15).contains(major),
+        // Only these two tags were audited, including the dry-run format.
+        (Owner::Playwright, [1, 64, 0 | 1]) => {
+            matches!(output, "Version 1.64.0" | "Version 1.64.1")
+        }
         _ => false,
     };
     let runs = match owner {
@@ -1104,6 +1129,7 @@ fn supported_version(owner: Owner, output: &str) -> Result<(), String> {
         Owner::Uv => "uv 0.11.x",
         Owner::Pip => "pip 23 to 26",
         Owner::Cypress => "Cypress 13 to 15",
+        Owner::Playwright => "Playwright 1.64.0 to 1.64.1",
         _ => "no version",
     };
     if supported {

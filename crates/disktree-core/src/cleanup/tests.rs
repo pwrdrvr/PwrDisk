@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use super::*;
 use Decision::{DeleteFiles, Owner as Run, Skip};
 
+#[cfg(unix)]
+mod playwright;
 mod properties;
 
 // These tests deliberately create live processes named uv. Serialize them
@@ -318,7 +320,6 @@ fn unknown_unsupported_and_missing_owners_do_not_produce_a_write() {
     for name in [
         "Library/pnpm/store",
         "Library/Caches/Homebrew",
-        "Library/Caches/ms-playwright",
         ".cache/puppeteer",
         ".cache/codex-runtimes",
         ".cache/gh",
