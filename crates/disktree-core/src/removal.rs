@@ -2383,26 +2383,54 @@ mod tests {
     /// be projected onto its free space.
     #[test]
     fn only_the_scanned_volumes_marks_are_projected() {
-        let table = "\
-/dev/mapper/root / btrfs rw,subvol=/@ 0 0
-/dev/mapper/root /home btrfs rw,subvol=/@home 0 0
-/dev/mapper/root /.snapshots btrfs rw,subvol=/@snapshots 0 0
-/dev/mapper/data /data ext4 rw 0 0
-";
+        // The table models volume identities, but removal still needs real,
+        // native absolute paths: `/home` is root-relative on Windows.
+        let temp = removable_tempdir();
+        let root = fs::canonicalize(temp.path()).expect("native root");
+        assert!(root.is_absolute());
+        let home = root.join("home");
+        let data = root.join("data");
+        let snapshots = root.join(".snapshots");
+        let junk = home.join("tobi/junk");
+        fs::create_dir_all(junk.join("deeper")).expect("nested tree");
+        fs::create_dir(&data).expect("other volume");
+        fs::create_dir_all(snapshots.join("7")).expect("snapshot");
+        fs::write(junk.join("own"), [b'x'; 40]).expect("own bytes");
+        fs::write(junk.join("deeper/file"), [b'x'; 60]).expect("nested bytes");
+        fs::write(data.join("junk"), [b'x'; 200]).expect("other bytes");
+        fs::write(snapshots.join("7/junk"), [b'x'; 400])
+            .expect("snapshot bytes");
+        let mount = |point, source: &str, fstype: &str, options: &str| {
+            crate::space::Mount {
+                point,
+                source: source.into(),
+                fstype: fstype.into(),
+                options: options.into(),
+            }
+        };
+        let other = mount(data.clone(), "other-disk", "ext4", "rw");
+        let table = vec![
+            mount(root.clone(), "root-disk", "btrfs", "rw,subvol=/@"),
+            mount(home, "root-disk", "btrfs", "rw,subvol=/@home"),
+            mount(
+                snapshots.clone(),
+                "root-disk",
+                "btrfs",
+                "rw,subvol=/@snapshots",
+            ),
+            other.clone(),
+        ];
         let mounts = MountTable {
-            points: crate::space::parse_mounts(table)
-                .iter()
-                .map(|mount| guard_key(&mount.point))
-                .collect(),
+            points: table.iter().map(|mount| guard_key(&mount.point)).collect(),
             media: Vec::new(),
-            mounts: Some(crate::space::parse_mounts(table)),
+            mounts: Some(table),
         };
         let marked = [
-            target(Path::new("/home/tobi/junk"), 100),
-            target(Path::new("/data/junk"), 200),
-            target(Path::new("/.snapshots/7/junk"), 400),
+            target(&junk, 100),
+            target(&data.join("junk"), 200),
+            target(&snapshots.join("7/junk"), 400),
         ];
-        let plan = plan_against(&marked, Path::new("/"), &mounts);
+        let plan = plan_against(&marked, &root, &mounts);
         assert!(
             plan.blocked.is_empty(),
             "a mark inside another volume is legal: {:?}",
@@ -2432,11 +2460,8 @@ mod tests {
 
         // A mark inside another is removed with it, so its bytes are counted
         // once here as they are in the total.
-        let nested = [
-            target(Path::new("/home/tobi/junk"), 100),
-            target(Path::new("/home/tobi/junk/deeper"), 60),
-        ];
-        let plan = plan_against(&nested, Path::new("/"), &mounts);
+        let nested = [target(&junk, 100), target(&junk.join("deeper"), 60)];
+        let plan = plan_against(&nested, &root, &mounts);
         assert_eq!(plan.covered.len(), 1);
         assert_eq!(plan.bytes(), 100);
         assert_eq!(plan.reclaim(), 100);
@@ -2444,14 +2469,17 @@ mod tests {
         // Where the table cannot place the paths, nothing is claimed: a
         // projection the meter cannot stand behind is worse than none.
         let partial = MountTable {
-            mounts: Some(crate::space::parse_mounts(
-                "/dev/mapper/data /data ext4 rw 0 0\n",
-            )),
+            mounts: Some(vec![other]),
             ..MountTable::default()
         };
-        let root = Path::new("/disktree-untabled");
-        let plan =
-            plan_against(&[target(&root.join("junk"), 50)], root, &partial);
+        let untabled = root.join("untabled");
+        fs::create_dir(&untabled).expect("unplaced root");
+        fs::write(untabled.join("junk"), [b'x'; 50]).expect("unplaced bytes");
+        let plan = plan_against(
+            &[target(&untabled.join("junk"), 50)],
+            &untabled,
+            &partial,
+        );
         assert_eq!(plan.bytes(), 50);
         assert_eq!(plan.reclaim(), 0);
         assert_eq!(plan.foreign(), 0);
