@@ -141,7 +141,7 @@ Looking is free; acting is the user's call.
   and refuses an operation with unknown capacity or unreadable selection.
   Do not raise the setting, split a selection into batches, or retry an
   ambiguous result to evade the guard. Ask the user how to proceed.
-  A linked window refuses a mark that would take the list past the limit,
+  A linked window refuses a mark when capacity is unknown or the list would exceed the limit,
   and removal checks it again; only the person can go past it, in the
   window, and agents keep the 5% default even when the window's limit is
   off. Without a window, marks are checked when they reach one, so a mark

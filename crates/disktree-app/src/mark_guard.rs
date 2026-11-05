@@ -291,7 +291,14 @@ impl Disktree {
             return Some(reason);
         }
         let limit = self.policy().agent_limit();
-        self.over_limit(target, limit).map(|share| {
+        let Some(capacity) = self.capacity().filter(|&total| total > 0) else {
+            return Some(
+                "cannot read the scanned volume's capacity; marking is \
+                 refused because the capacity limit cannot be checked"
+                    .into(),
+            );
+        };
+        Share::over(self.marked_with(target), capacity, limit).map(|share| {
             format!(
                 "marking it would put {}% of the volume in the list, over \
                  the {}% limit; only the person can mark past it, in the \
