@@ -91,6 +91,14 @@ guard refusal for the folder. Look inside it with `pwrdisk_ls`, propose
 entries the user recognizes as their own leftovers, and leave files a
 running program may still use. Do not bypass the guard.
 
+These rules use the real path even when the scan root was entered through
+a symlink or a volume alias such as `/Volumes/Macintosh HD`. For example,
+`/var/folders` is still protected `/private/var/folders`, and an aliased
+`/Users/Shared` is still an account folder. Directories containing a nested
+mount stay refused through aliases too; a one-filesystem scan stops at the
+same mounts under every spelling of its root. Marking a symlink itself
+still removes only that link.
+
 ## Never propose
 
 - **Inside a library package**: the Photos Library, Music, Apple TV, iMovie,

@@ -608,7 +608,8 @@ mod tests {
         refs: u32,
         private: Option<u64>,
     ) -> (tempfile::TempDir, Tree, Context) {
-        let temp = tempfile::tempdir().expect("fixture");
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("removable fixture");
         let mut root = Draft::directory("root");
         for index in 1..=4 {
             let name = format!("worktree-{index}");
@@ -868,7 +869,8 @@ mod tests {
 
     #[test]
     fn peer_scope_can_find_a_known_holder_outside_the_default_parent() {
-        let temp = tempfile::tempdir().expect("fixture");
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("removable fixture");
         let mut root = Draft::directory("root");
         let mut near = Draft::directory("near");
         for inode in 1..=3 {

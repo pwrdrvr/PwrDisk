@@ -38,6 +38,8 @@ pub mod scan_threads;
 pub mod sharing;
 pub mod size;
 pub mod space;
+#[cfg(all(test, unix))]
+mod test_paths;
 #[cfg(test)]
 mod test_rng;
 pub mod tree;
