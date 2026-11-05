@@ -41,7 +41,8 @@ scripts/screenshots/fixtures.sh scripts/screenshots/render.sh \
 `fixtures.sh` creates a temporary 256 MiB APFS image named Fixtures, mounts
 it with `-nobrowse` at `/Volumes/Fixtures`, and fills `Demo` with invented
 Projects, Cache, Media and Documents data. The files contain real allocated
-bytes; sparse files do not have the desired tile weights. It refuses an
+bytes; sparse files do not have the desired tile weights. Fixed fixture
+timestamps keep age labels unchanged across rebuilds. It refuses an
 existing `/Volumes/Fixtures`, exports `PWRDISK_FIXTURE_ROOT` to the command,
 and detaches and removes its image on success or failure. A failed detach
 is an error and prints the retained image path: resolve it before finishing.
@@ -66,6 +67,10 @@ scripts/screenshots/pair.sh scripts/screenshots/explore.json target/pr-shots
 
 The pair command fetches `origin/main`, makes its own detached worktree in
 `target/`, and builds both revisions with this workspace's `target/` cache.
+Each build cleans only PwrDisk's path crates, preserving expensive GPUI
+dependencies. Cargo can otherwise reuse another worktree's same-version
+binary. The scripts set `PWRDISK_SCREENSHOT_CHECKOUT`; the renderer verifies
+its compiled source directory against it and prints the compiled commit.
 The adapter transplants only the screenshot harness, entry point, feature,
 dependency edges and constructor gates into the temporary baseline. It
 preserves the baseline UI and locked package versions; it fails if its

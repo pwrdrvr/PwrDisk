@@ -43,4 +43,6 @@ fill .cache/preview.bin 4
 fill Photos/Summer/coast.raw 32
 fill Music/orbit.flac 16
 fill Documents/field-notes.pdf 8
+# A rebuild between captures must not turn "just now" into "1 minute ago".
+find "$PWRDISK_FIXTURE_ROOT" -exec touch -t 202401011200 {} +
 "$@"

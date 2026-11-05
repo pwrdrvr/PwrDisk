@@ -13,6 +13,22 @@ use super::scenario::{Scenario, State, Step, Theme};
 use crate::{legend::ChipId, state::Disktree};
 
 pub fn run() -> Result<()> {
+    if let Some(expected) = std::env::var_os("PWRDISK_SCREENSHOT_CHECKOUT") {
+        let expected =
+            dunce::canonicalize(expected)?.join("crates/disktree-app");
+        let compiled = dunce::canonicalize(env!("CARGO_MANIFEST_DIR"))?;
+        ensure!(
+            compiled == expected,
+            "stale screenshot binary: built in {}, expected {}",
+            compiled.display(),
+            expected.display()
+        );
+    }
+    println!(
+        "screenshot build: {} ({})",
+        env!("PWRDISK_BUILD_COMMIT"),
+        env!("CARGO_MANIFEST_DIR")
+    );
     let args: Vec<_> = std::env::args_os().skip(2).collect();
     ensure!(
         args.len() == 3,
@@ -274,7 +290,7 @@ mod tests {
             100,
             image::Rgba([128, 128, 128, 255]),
         );
-        draw_pointer(&mut image, [98.0, 98.0], 100.0);
+        draw_pointer(&mut image, [95.0, 95.0], 100.0);
         assert_eq!(image.get_pixel(50, 50).0, [128, 128, 128, 255]);
         assert!(image.pixels().any(|p| p.0 == [0, 0, 0, 255]));
     }

@@ -41,8 +41,10 @@ python3 "$scripts/install-baseline.py" "$repo" "$worktree"
 mkdir -p "$out/before" "$out/after"
 (
     cd "$worktree"
+    cargo clean -p disktree-app -p disktree-core -p disktree-link -p disktree-mcp
     cargo build --locked -p disktree-app --features screenshots
-    "$CARGO_TARGET_DIR/debug/pwrdisk" offscreen-screenshots \
+    PWRDISK_SCREENSHOT_CHECKOUT="$worktree" \
+        "$CARGO_TARGET_DIR/debug/pwrdisk" offscreen-screenshots \
         "$scenario" "$PWRDISK_FIXTURE_ROOT" "$out/before"
 )
 # Build after last, so the shared target's binary belongs to this workspace.
