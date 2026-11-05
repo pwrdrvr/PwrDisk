@@ -17,9 +17,32 @@ const BLOCK: usize = 4096;
 static IMAGES: Mutex<()> = Mutex::new(());
 
 struct Image {
-    temp: tempfile::TempDir,
+    temp: Option<tempfile::TempDir>,
     mounted: bool,
+    eject: fn(&Path, bool) -> Result<(), String>,
     _guard: MutexGuard<'static, ()>,
+}
+
+fn eject(root: &Path, force: bool) -> Result<(), String> {
+    let mut command = Command::new("hdiutil");
+    command.args(["detach", "-quiet"]);
+    if force {
+        command.arg("-force");
+    }
+    let output = command
+        .arg(root)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{command:?}: {}\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ))
+    }
 }
 
 fn checked(command: &mut Command) -> Output {
@@ -38,8 +61,9 @@ impl Image {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut image = Self {
-            temp: tempfile::tempdir().expect("private image directory"),
+            temp: Some(tempfile::tempdir().expect("private image directory")),
             mounted: false,
+            eject,
             _guard: guard,
         };
         checked(
@@ -67,11 +91,19 @@ impl Image {
     }
 
     fn backing(&self) -> PathBuf {
-        self.temp.path().join("oracle.sparseimage")
+        self.temp
+            .as_ref()
+            .expect("image directory")
+            .path()
+            .join("oracle.sparseimage")
     }
 
     fn root(&self) -> PathBuf {
-        self.temp.path().join("mount")
+        self.temp
+            .as_ref()
+            .expect("image directory")
+            .path()
+            .join("mount")
     }
 
     fn attach(&mut self) {
@@ -91,12 +123,25 @@ impl Image {
     }
 
     fn detach(&mut self) {
-        checked(
-            Command::new("hdiutil")
-                .args(["detach", "-quiet"])
-                .arg(self.root()),
-        );
+        self.try_detach().expect("detach private APFS image");
+    }
+
+    fn try_detach(&mut self) -> Result<(), String> {
+        let root = self.root();
+        (self.eject)(&root, false).or_else(|normal| {
+            // Only this fixture's private mount is eligible. Background
+            // readers can hold it briefly even after our files are closed.
+            (self.eject)(&root, true)
+                .map_err(|forced| format!("{normal}\nforced detach: {forced}"))
+        })?;
         self.mounted = false;
+        Ok(())
+    }
+
+    fn close(mut self) {
+        // A final unmount failure still fails a successful test. Drop is
+        // best-effort because it also runs during assertion unwinding.
+        self.detach();
     }
 
     fn free(&mut self) -> u64 {
@@ -118,10 +163,110 @@ impl Image {
     }
 }
 
+fn fail_eject(_: &Path, _: bool) -> Result<(), String> {
+    Err("injected detach failure".into())
+}
+
+#[test]
+fn failed_image_cleanup_does_not_panic_or_remove_its_backing_files() {
+    let temp = tempfile::tempdir().expect("cleanup fixture");
+    let retained = temp.path().to_owned();
+    fs::write(retained.join("oracle.sparseimage"), b"owned image")
+        .expect("backing file");
+    // A failed unmount means the directory can still hold a live mount.
+    // A stand-in ejector exercises that state without leaving a real disk.
+    let image = Image {
+        temp: Some(temp),
+        mounted: true,
+        eject: fail_eject,
+        _guard: IMAGES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    };
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(image);
+        }));
+    assert!(outcome.is_ok(), "cleanup must not introduce a second panic");
+    assert!(retained.join("oracle.sparseimage").exists());
+    fs::remove_dir_all(retained).expect("remove the unmounted stand-in");
+}
+
+fn eject_succeeds(_: &Path, force: bool) -> Result<(), String> {
+    if force {
+        Err("unnecessary forced retry".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn force_succeeds(root: &Path, force: bool) -> Result<(), String> {
+    if force {
+        Ok(())
+    } else {
+        fail_eject(root, false)
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 32,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+
+    /// Failed unmounts leave the backing files intact; destruction never
+    /// introduces a panic, including when it runs during another failure.
+    #[test]
+    fn image_cleanup_follows_the_unmount_result(
+        normal_ok in any::<bool>(),
+        forced_ok in any::<bool>(),
+        unwinding in any::<bool>(),
+    ) {
+        let temp = tempfile::tempdir().expect("cleanup model");
+        let retained = temp.path().to_owned();
+        fs::write(retained.join("oracle.sparseimage"), b"owned image")
+            .expect("backing file");
+        let eject = if normal_ok { eject_succeeds }
+            else if forced_ok { force_succeeds }
+            else { fail_eject };
+        let image = Image { temp: Some(temp), mounted: true, eject,
+            _guard: IMAGES.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        };
+        let outcome = std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| {
+                let image = image;
+                assert!(!unwinding, "original oracle failure");
+                drop(image);
+            }),
+        );
+        prop_assert_eq!(outcome.is_err(), unwinding);
+        if let Err(payload) = outcome {
+            prop_assert_eq!(payload.downcast_ref::<&str>(),
+                Some(&"original oracle failure"));
+        }
+        prop_assert_eq!(retained.join("oracle.sparseimage").exists(),
+            !normal_ok && !forced_ok);
+        if retained.exists() {
+            fs::remove_dir_all(retained)
+                .expect("remove the unmounted stand-in");
+        }
+    }
+}
+
 impl Drop for Image {
     fn drop(&mut self) {
-        if self.mounted {
-            self.detach();
+        if self.mounted
+            && let Err(error) = self.try_detach()
+        {
+            // TempDir would recurse into a still-mounted volume. Retain the
+            // backing directory, and never turn an assertion into an abort.
+            let retained = self.temp.take().expect("image directory").keep();
+            eprintln!(
+                "{error}\nprivate APFS image retained at {}",
+                retained.display()
+            );
         }
     }
 }
@@ -196,7 +341,7 @@ fn truncated_external_clone_retains_half_a_selected_clone_group() {
         .expect("truncate clone");
     check_deletion(&mut image, true)
         .expect("lower bound survives real deletion");
-    drop(image);
+    image.close();
 }
 
 proptest! {
@@ -256,6 +401,6 @@ proptest! {
             *inside || *operation != 0
         });
         check_deletion(&mut image, uncertain)?;
-        drop(image);
+        image.close();
     }
 }
