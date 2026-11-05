@@ -14,6 +14,10 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# Development binary only; main.rs rejects release builds with this enabled.
+screenshots = ["gpui-kit/test-support", "dep:image"]
+
 [dependencies]
 gpui-kit = { version = "=0.7.3", default-features = false, features = ["assets"] }
 gpui-omarchy = "0.2.1"
@@ -53,6 +57,8 @@ rustls = { version = "0.23.45", default-features = false, features = ["ring", "s
 rustix = { version = "1.1", features = ["process"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# The renderer already uses this version. Only PNG encoding is needed here.
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 # AppKit for the Dock icon of a run outside the app bundle (dock_icon.rs)
 # and the screen under the pointer (placement.rs): the crates and versions
 # GPUI already builds, with only the classes used.
@@ -90,5 +96,5 @@ gpui-kit = { version = "=0.7.3", default-features = false, features = [
     "assets",
     "test-support",
 ] }
-# Property tests of the legend's state, as the core crate has them.
+# Property and model tests of legend state and screenshot scenarios.
 proptest = "1.12"

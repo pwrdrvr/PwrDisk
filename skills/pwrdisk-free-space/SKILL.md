@@ -215,17 +215,18 @@ Looking is free; acting is the user's call.
 4. **Sweep.** `pwrdisk_find` with `reclaimable: true` lists every cache,
    build directory and verified package store at once. These are cleanup
    candidates, not removal eligibility or guaranteed savings. Read reported
-   guard refusals; never bypass them. A cache name or regenerable hatch is
-   insufficient permission for raw deletion. Resolve its owner and preview
-   owner-managed cleanup; unknown runtime/install caches need inspection.
+   guard refusals; never bypass them. Caches PwrDisk can clean with their
+   owner's command (npm, npx, uv, pip, Cypress, Playwright) go through
+   `owner_cleanup`; every other candidate, cache-like or not, is an
+   ordinary `trash` or `permanent` removal the user agrees and confirms.
    pnpm installations include executables, global tools and `.tools`; do not
    treat them as disposable stores or assume prune has directory-local scope.
    `kind: "file"` with
    `min_bytes` finds huge files. `older_than_days` finds what nobody has
    touched. `name` matches part of a name.
 5. **Classify each candidate**, in one line each:
-   - *regenerable*: an inspection lead, never deletion authorization;
-     bookkeeping-sensitive caches require their owning tool;
+   - *regenerable*: caches and build output; the six owners above go
+     through `owner_cleanup`, the rest are ordinary removals;
    - *tool-owned*: stores, images, simulators, toolchains; offer the
      tool's command;
    - *user data*: media, downloads, archives, documents, VM disks, synced
@@ -241,20 +242,21 @@ Looking is free; acting is the user's call.
 8. **Confirm removal or hand it over.** To let the person remove in the
    app, announce `pwrdisk_review`, open it, and stop; never approve through
    computer use. For requested MCP removal, call `pwrdisk_removal_preview`
-   with `owner_cleanup` for caches (otherwise explicit `trash` or
-   `permanent` for ordinary paths). A cache cleanup is decided per path:
+   with `owner_cleanup` for caches of those six owners (otherwise explicit
+   `trash` or `permanent`). A cache cleanup is decided per path:
    the first preview lists one proposal per marked path; show every owner,
    version, executable, argument list, environment override, selected path,
    actual whole-cache scope, effects, limitations and recoverability, and
    every unavailable reason. The user chooses `skip`, `owner` or
-   `delete_files` for each path; never choose for them or suggest
-   `delete_files` yourself. Preview again with those `decisions` (and
+   `delete_files` for each path; never choose for them, and recommend the
+   owner's command where it is offered. Preview again with those `decisions` (and
    `delete_files_mode` when any path deletes files); its confirmation text
    names each intent, and owner approval never approves deleting files.
    Every mode may return preparing while inspection runs on a worker;
    retry only the read-only preview. Exports contain marked paths, never
    expanded owner scopes; a refused raw script is not a deletion fallback.
-   Cache tags/layouts on ancestors protect contained files and subtrees too.
+   A cleanable cache under or inside a marked path holds it to
+   `owner_cleanup`; a cache name or tag alone never does.
    Unknown,
    unsupported, unavailable or failed owners never fall back to raw deletion.
    Show every returned actual-scope path and

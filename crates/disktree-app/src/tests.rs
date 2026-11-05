@@ -6759,6 +6759,76 @@ fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
     panic!("the removal did not finish");
 }
 
+/// Cargo writes a cache tag into every `target` directory. Review once
+/// read that tag as an opaque cache: it switched to Cache cleanup, and
+/// Permanent refused `target/debug/deps` with "no raw deletion
+/// fallback". Build output is an ordinary removal in every mode.
+#[gpui_kit::test]
+fn a_cargo_build_is_an_ordinary_removal(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let build = temp.path().join("checkout/target");
+    for (path, text) in [
+        ("checkout/Cargo.toml", "[workspace]\n"),
+        ("checkout/src/main.rs", "fn main() {}\n"),
+        (
+            "checkout/target/CACHEDIR.TAG",
+            concat!(
+                "Signature: 8a477f597d28d172789f06886806bc55\n",
+                "# This file is a cache directory tag created by cargo.\n",
+                "# For information about cache directory tags see ",
+                "https://bford.info/cachedir/\n",
+            ),
+        ),
+        ("checkout/target/.rustc_info.json", "{}"),
+        ("checkout/target/debug/deps/libapp.rlib", "rlib"),
+        (
+            "checkout/target/debug/incremental/app-1/s-1/dep-graph.bin",
+            "g",
+        ),
+    ] {
+        let file = temp.path().join(path);
+        std::fs::create_dir_all(file.parent().expect("parent")).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    let epoch = update(&view, cx, |app, cx| {
+        for name in ["debug/deps", "debug/incremental"] {
+            let crumbs =
+                app.crumbs_for_path(&build.join(name)).expect("in the tree");
+            app.toggle_mark(&crumbs, cx);
+        }
+        let before = app.removal_mode;
+        app.open_review(cx);
+        assert_eq!(app.removal_mode, before, "Review keeps the user's mode");
+        app.removal_mode = RemovalMode::Permanent;
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
+        app.run_epoch
+    });
+    draw(cx);
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done, "the removal finished");
+    read(&view, cx, |app| {
+        let totals = app.run_list.totals();
+        assert_eq!(totals.failed, 0, "{:?}", app.notice());
+    });
+    assert!(!build.join("debug/deps").exists());
+    assert!(!build.join("debug/incremental").exists());
+    assert!(build.join("CACHEDIR.TAG").exists(), "only marks go");
+    assert!(temp.path().join("checkout/src/main.rs").exists());
+}
+
 /// The run's list is on screen from Removing's first frame, says what
 /// each item is, and stays on Done, every item checked off, rather than
 /// only the names of what already went.
@@ -9258,6 +9328,67 @@ fn file_list_keeps_a_complete_entry_visible_at_double_scale(
     assert!(row.size.height >= px(24.));
 }
 
+/// Every screenshot navigation paints destination geometry without waiting
+/// for wall time, independent of the preceding navigation sequence.
+#[gpui_kit::test]
+fn screenshot_navigation_always_matches_the_destination_layout(
+    cx: &mut TestAppContext,
+) {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+
+    cx.update(init);
+    cx.update(|cx| cx.set_reduce_motion(false));
+    cx.update(crate::screenshots::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let window = std::cell::RefCell::new(cx);
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: None,
+        ..Config::default()
+    });
+    runner
+        .run(&prop::collection::vec(0_u8..5, 1..24), |moves| {
+            update(&view, &mut window.borrow_mut(), |app, cx| {
+                app.go_to(Vec::new(), cx);
+                for movement in moves {
+                    let junk = child_crumbs(app, &[], "junk");
+                    let deeper = child_crumbs(app, &junk, "deeper");
+                    match movement {
+                        0 | 1 => {
+                            app.selected =
+                                Some(if movement == 0 { junk } else { deeper });
+                            app.descend(cx);
+                        }
+                        2 => app.ascend(cx),
+                        3 => app.go_back(cx),
+                        _ => app.go_forward(cx),
+                    }
+                    // The cached destination layout is an independent oracle:
+                    // screenshots must never paint wall-clock interpolation.
+                    prop_assert!(app.transition.is_none());
+                    let expected: Vec<_> = app
+                        .layout()
+                        .expect("layout")
+                        .iter()
+                        .map(|tile| tile.rect)
+                        .collect();
+                    let painted: Vec<_> = app
+                        .prepare()
+                        .tiles
+                        .into_iter()
+                        .map(|tile| tile.rect)
+                        .collect();
+                    prop_assert_eq!(painted, expected);
+                }
+                Ok(())
+            })
+        })
+        .expect("every screenshot navigation lands immediately");
+}
+
 /// Reduced motion lands on the same real layout and preserves the ordinary
 /// selection/history/mark behavior, including wheel-driven descent.
 #[gpui_kit::test]
@@ -10096,8 +10227,13 @@ fn raw_inspection_prepares_off_thread_and_execution_rechecks(
 
     // This appears after the preview. Confirmation must not walk it on the
     // UI thread, but the fresh worker check must protect it before writes.
+    // A relocated uv cache: its tag and one of its buckets. A tag alone
+    // is any build tool's and would not stop the removal.
     let tag = temp.path().join("junk/deeper/CACHEDIR.TAG");
-    std::fs::write(&tag, "cache").expect("fixture cache appeared");
+    std::fs::write(&tag, "Signature: 8a477f597d28d172789f06886806bc55")
+        .expect("fixture cache appeared");
+    std::fs::create_dir(temp.path().join("junk/deeper/wheels-v5"))
+        .expect("uv bucket");
     let response = ask(
         cx,
         Request::Remove(ConfirmedRemoval {
@@ -10134,11 +10270,16 @@ fn raw_inspection_prepares_off_thread_and_execution_rechecks(
 fn cache_exports_keep_marks_and_refuse_raw_scripts(cx: &mut TestAppContext) {
     cx.update(init);
     let temp = fixture();
-    let selected = temp.path().join(".cache").join("blob.bin");
+    let selected = npm_cache(temp.path());
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
-        let cache = child_crumbs(app, &[], ".cache");
-        let file = child_crumbs(app, &cache, "blob.bin");
+        let file = app
+            .crumbs_for_path(
+                &npm_cache_dir(&app.root_path)
+                    .join("content-v2")
+                    .join("blob.bin"),
+            )
+            .expect("in the tree");
         app.toggle_mark(&file, cx);
         app.open_review(cx);
         let (list, count) = app.export_text(false).expect("marked list");
@@ -10181,9 +10322,12 @@ fn cache_review_requires_owner_preview_and_never_falls_back_to_raw_removal(
 ) {
     cx.update(init);
     let temp = fixture();
+    let blob = npm_cache(temp.path());
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
-        let cache = child_crumbs(app, &[], ".cache");
+        let cache = app
+            .crumbs_for_path(&npm_cache_dir(&app.root_path))
+            .expect("in the tree");
         app.toggle_mark(&cache, cx);
         app.open_review(cx);
         assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
@@ -10213,7 +10357,58 @@ fn cache_review_requires_owner_preview_and_never_falls_back_to_raw_removal(
         assert!(app.run.is_none());
     });
     draw(cx);
-    assert!(temp.path().join(".cache/blob.bin").exists());
+    assert!(blob.exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// A folder that only sounds like a cache is an ordinary mark: Review
+/// keeps the person's mode, and Trash or Permanent goes ahead.
+#[gpui_kit::test]
+fn a_cache_named_folder_is_an_ordinary_mark(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    for path in [
+        "project/node_modules/.cache/babel-loader/blob.bin",
+        "Library/Caches/com.example.app/blob.bin",
+    ] {
+        let file = temp.path().join(path);
+        std::fs::create_dir_all(file.parent().expect("parent")).unwrap();
+        std::fs::write(file, vec![b'x'; 10_000]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    let epoch = update(&view, cx, |app, cx| {
+        for name in [".cache", "project", "Library/Caches/com.example.app"] {
+            let crumbs = app
+                .crumbs_for_path(&app.root_path.join(name))
+                .expect("in the tree");
+            app.toggle_mark(&crumbs, cx);
+        }
+        let before = app.removal_mode;
+        app.open_review(cx);
+        assert_eq!(app.removal_mode, before, "Review keeps the user's mode");
+        app.removal_mode = RemovalMode::Permanent;
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
+        app.run_epoch
+    });
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done, "the removal finished");
+    read(&view, cx, |app| {
+        assert_eq!(app.run_list.totals().failed, 0, "{:?}", app.notice());
+    });
+    for gone in [".cache", "project", "Library/Caches/com.example.app"] {
+        assert!(!temp.path().join(gone).exists(), "{gone}");
+    }
     assert!(temp.path().join("junk/blob.bin").exists());
 }
 
@@ -10908,6 +11103,33 @@ fn mock_uv(cache: &std::path::Path) -> tempfile::TempDir {
     bin
 }
 
+/// Give `root` uv's cache layout: the tag uv writes and one of its
+/// versioned buckets.
+#[cfg(unix)]
+fn uv_layout(root: &Path) {
+    std::fs::create_dir_all(root.join("wheels-v5")).expect("uv bucket");
+    std::fs::write(
+        root.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55",
+    )
+    .expect("uv tag");
+}
+
+/// Where `npm_cache` puts npm's package cache under `root`, joined part by
+/// part so it reads the same as a scanned path on Windows.
+fn npm_cache_dir(root: &Path) -> PathBuf {
+    root.join(".npm").join("_cacache")
+}
+
+/// An npm package cache, by the name only npm gives it, holding one
+/// file; returns that file.
+fn npm_cache(root: &Path) -> PathBuf {
+    let file = npm_cache_dir(root).join("content-v2").join("blob.bin");
+    std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+    std::fs::write(&file, vec![b'x'; 300_000]).expect("payload");
+    file
+}
+
 /// Cleanup's in-use check sees any running `uv`, the other test's mock
 /// included, so the tests that run one take turns.
 #[cfg(unix)]
@@ -10929,6 +11151,9 @@ fn cache_cleanup_view<'a>(
         std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
         std::fs::write(file, vec![b'x'; 50_000]).expect("payload");
     }
+    // uv's own layout, so it is recognized wherever it was moved: Review
+    // goes to Cache cleanup for it, and only for a cache it knows.
+    uv_layout(&temp.path().join(".cache/uvdata"));
     let (view, cx) = view_over(temp.path(), cx);
     let root = read(&view, cx, |app| app.root_path.clone());
     let paths = [

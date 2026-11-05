@@ -26,21 +26,31 @@ pub use recognize::inspection_reason;
 // enormous flat directory cannot exhaust memory before the limit is seen.
 const MAX_PREFLIGHT_ENTRIES: usize = 2_000_000;
 
-/// Cache classifications never silently reach the recursive remover. Check
-/// descendants too: deleting a wrapper must not bypass an owner's policy.
+/// Keep caches PwrDisk can clean from the recursive remover.
+///
+/// Such a cache, marked itself or inside a marked folder, goes to Cache
+/// cleanup, which offers its owner's command first. Nothing else is held
+/// back, however cache-like its name.
+pub fn check_raw(targets: &[Target]) -> Result<(), String> {
+    check_raw_with(targets, &Environment::current()?)
+}
+
 #[allow(
     clippy::unnecessary_debug_formatting,
     reason = "Quote paths and expose controls in safety refusals"
 )]
-pub fn check_raw(targets: &[Target]) -> Result<(), String> {
-    let environment = Environment::current()?;
+fn check_raw_with(
+    targets: &[Target],
+    environment: &Environment,
+) -> Result<(), String> {
     for target in targets {
         if let Some(reason) =
-            recognize::inspection_with(&target.path, &environment)
+            recognize::inspection_with(&target.path, environment)
         {
             return Err(format!("{:?}: {reason}", target.path));
         }
     }
+    let roots = recognize::roots(environment);
     let mut pending: Vec<_> =
         targets.iter().map(|target| target.path.clone()).collect();
     let mut visited = 0;
@@ -57,10 +67,12 @@ pub fn check_raw(targets: &[Target]) -> Result<(), String> {
             Err(error) => return Err(error.to_string()),
         };
         if meta.is_dir() {
-            if let Some(reason) =
-                recognize::inspection_with(&path, &environment)
-            {
-                return Err(format!("{path:?}: {reason}"));
+            if let Some(owner) = recognize::cleanable_root(&path, &roots) {
+                return Err(format!(
+                    "{path:?}: the {} inside can be cleaned with `{}`; choose Cache cleanup for it",
+                    owner.label(),
+                    owner.command_label()
+                ));
             }
             for entry in
                 std::fs::read_dir(&path).map_err(|error| error.to_string())?
@@ -129,6 +141,13 @@ impl Owner {
             Self::Playwright => "playwright uninstall --all",
             Self::Pnpm | Self::Homebrew | Self::Puppeteer => "owner command",
         }
+    }
+
+    /// Whether PwrDisk has this owner's cleanup command, and so a better
+    /// way than deleting the cache's files. Only these hold a plain
+    /// removal back; the rest are named in Cache cleanup's proposals.
+    pub const fn has_cleanup(self) -> bool {
+        self.unsupported().is_none()
     }
 
     pub const fn unsupported(self) -> Option<&'static str> {
@@ -786,8 +805,8 @@ fn check_scope(
     Ok((bytes, identity))
 }
 
-/// What Delete files means for this path. Never "safe": an unknown cache is
-/// said to be unknown, and a recognized one is said to bypass its owner.
+/// What Delete files means for this path: a recognized cache is said to
+/// bypass its owner; anything else is deleted like any other mark.
 fn disclose(
     proposal: &Proposal,
     env: &Environment,
@@ -799,7 +818,7 @@ fn disclose(
             "Deletes exactly this path and its contents directly; the {} is not involved. Anything it expects to find there must be downloaded or rebuilt, and installed environments that link into it can break until reinstalled.",
             owner.label()
         ),
-        (None, Some(_)) => "No verified owner: PwrDisk does not know that this is disposable. It may be installed runtime or application state, and software that needs it can break. Inspect it before choosing this.".to_owned(),
+        (None, Some(_)) => "Deletes exactly this path and its contents directly, including the caches listed inside it; their owners are not involved, so anything those caches hold must be downloaded or rebuilt again.".to_owned(),
         (None, None) => "Not recognized as a cache. Deletes exactly this path and its contents, as any other marked path.".to_owned(),
     };
     Ok(Disclosure {
@@ -886,7 +905,7 @@ fn resolve(
     Err(Issue::new(
         Problem::UnknownOwner,
         format!(
-            "No supported owner cleanup resolves to {:?}. Inspect the cache and its owning installation. Software may be installed outside PwrDisk's PATH; an unavailable command does not prove it is absent. {}",
+            "PwrDisk has no owner command for {:?}. Skip it, or choose Delete files to remove it like any other marked path. {}",
             path,
             failures
                 .iter()
@@ -903,6 +922,12 @@ fn resolve_owner(
     env: &Environment,
     probe: &mut impl Probe,
 ) -> Result<Option<Operation>, Issue> {
+    // Keep the gate at resolution as well as hint routing: adding a new
+    // discovery path must never start a candidate's executable config or
+    // downloading launcher, even for an apparently read-only probe.
+    if let Some(reason) = owner.unsupported() {
+        return Err(Issue::new(Problem::NoCommand, reason));
+    }
     let executable = probe.executable(owner.executable(), env)?;
     let mut command = Command {
         executable,

@@ -672,7 +672,7 @@ pub struct Disktree {
 }
 
 impl Disktree {
-    #[cfg(test)]
+    #[cfg(any(test, all(feature = "screenshots", target_os = "macos")))]
     pub fn new(
         root_path: PathBuf,
         options: ScanOptions,
@@ -925,7 +925,7 @@ impl Disktree {
     /// Mirrors [`Self::new`] without starting a walk, so a test can hand the
     /// screens a tree it already has instead of waiting on a real one. A
     /// feature that opens an archived scan would use this too.
-    #[cfg(test)]
+    #[cfg(any(test, all(feature = "screenshots", target_os = "macos")))]
     pub fn with_tree(
         root_path: PathBuf,
         tree: Tree,

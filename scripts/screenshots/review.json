@@ -1,0 +1,10 @@
+{
+  "size": [1180, 620],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "setup", "state": {"type": "mark", "path": "Projects/atlas/target/debug/deps"}},
+    {"op": "setup", "state": {"type": "mark", "path": "Projects/atlas/target/debug/incremental"}},
+    {"op": "setup", "state": {"type": "review"}},
+    {"op": "capture", "name": "review.png"}
+  ]
+}

@@ -224,15 +224,17 @@ MIT. See [LICENSE](LICENSE) and
 
 ### Cache cleanup
 
-Marked caches go to **Cache cleanup** in Review, or MCP's
-`pwrdisk_removal_preview` with `mode: "owner_cleanup"`. Check owners shows,
+Marked caches that PwrDisk can clean with their owner's own command (npm,
+npx, uv, pip, Cypress, Playwright) go to **Cache cleanup** in Review, or
+MCP's `pwrdisk_removal_preview` with `mode: "owner_cleanup"`; anything
+else, cache-like or not, is an ordinary removal. Check owners shows,
 for each marked path, the installed owner's exact command, version and
 whole-cache scope, or why there is none. You then choose per path: skip it,
 run that command, or deliberately delete the files, which has its own
 disclosure and its own confirmation. Missing, unsupported, failed or
-cancelled owner commands never fall back to deleting files, and unknown
-runtime caches are never called disposable. Each path gets its own result;
-listed allocation is separate from measured free-space change. See
+cancelled owner commands never fall back to deleting files. Each path
+gets its own result; listed allocation is separate from measured
+free-space change. See
 [supported owners, versions and scope limitations](docs/owner-cleanup.md).
 
 ## In the terminal

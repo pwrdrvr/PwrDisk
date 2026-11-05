@@ -112,17 +112,22 @@ terminal removal enforces the same configured capacity limit and guards.
 
 ## Owner-managed caches
 
-A cache name or regenerable classification is an inspection lead, never
-permission to delete it. Cache cleanup is decided path by path. Call
+Cache cleanup is for caches PwrDisk can clean with their owner's own
+command (npm, npx, uv, pip, Cypress, Playwright): a marked path in one, or
+holding one, is refused for `trash` and `permanent` and goes through
+`owner_cleanup`. Anything else (a folder named `cache` or `Caches`, a
+`regenerable` hatch, a cache tag, a Cargo `target`, a `.venv`, or a cache
+whose owner has no command here, such as pnpm or Homebrew) is an ordinary
+`trash` or `permanent` removal, proposed, agreed and confirmed like any
+other path. Cache cleanup is decided path by path. Call
 `pwrdisk_removal_preview` with `owner_cleanup` and no decisions: it returns
 one proposal per marked path with its status and problem, resolved owner,
 version, executable, arguments, environment overrides, configured root, full
 actual scope (including unselected siblings), effects, limitations,
 recoverability, and whether Delete files is offered. Show every proposal and
 let the user choose for each path `skip`, `owner` (only where offered) or
-`delete_files`. Never choose for them and never suggest `delete_files`
-yourself; inspect unknown runtime/install caches first, since nothing says
-they are disposable. Then preview again with `decisions` naming every marked
+`delete_files`. Never choose for them; where the owner's command is
+offered, recommend it over `delete_files`. Then preview again with `decisions` naming every marked
 path once, and `delete_files_mode` (`trash` or `permanent`, as the user
 chose) when any path uses `delete_files`. Confirmation needs that preview's
 exact paths and its own text: `RUN OWNER CLEANUP`, `DELETE CACHE FILES`,
@@ -132,9 +137,11 @@ software. An unsupported version, failed probe, or failed or cancelled owner
 command never falls back to deleting files, and never to a shell command;
 deleting them instead is a new preview the user decides.
 
-Cache tags and owner layouts on ancestors protect contained files and
-subtrees too. All removal modes may return a preparing response while
-inspection runs on a worker; retry only the read-only preview. Exported
+An owner's cache is recognized by its default or configured root, a name
+only it uses, or the layout it keeps when moved; a cache tag alone is not
+uv's. All removal modes may
+return a preparing response while inspection runs on a worker; retry
+only the read-only preview. Exported
 lists keep marked paths, and raw script exports cannot replace owner cleanup.
 
 On macOS and Linux the adapters cover npm packages (9–11), npm's separate
@@ -157,6 +164,21 @@ without a verified root-pinned argument-list adapter. See
 [the scope audit](https://github.com/pwrdrvr/PwrDisk/blob/main/docs/owner-cleanup.md#candidate-audit-2026-11-04).
 Windows command launchers have no execution adapter yet. Neither containers nor volumes are
 cleanup scopes.
+
+Owner inspection includes pnpm's independently located store and
+metadata/dlx caches (`PNPM_HOME`, XDG data/cache and Windows local-app-data
+locations), Playwright's npm environment aliases, and Puppeteer's home cache
+even with `XDG_CACHE_HOME` set. These are inspection hints, never permission
+to clean the whole installation. pnpm's `store path` can create temporary
+files/hardlink probes; do not run it as guaranteed read-only discovery.
+Homebrew cleanup also reaches dependency autoremove and its own vendored
+runtime. Puppeteer single-build removal can rewrite parent metadata.
+No new candidate adapter or Windows execution is enabled; see the
+[scope review](https://github.com/pwrdrvr/PwrDisk/blob/main/docs/owner-cleanup.md#scope-review-2026-11-05).
+A native owner image can identify active use even when its arguments do not.
+Windows requires audited runtime/entry-point identity, child Job Object
+cancellation and active-use coverage before any command can be offered;
+never bridge the refusal through a shell or stop another application.
 
 Each path gets its own result: succeeded, failed with a reason, cancelled
 (possibly part done), skipped, or not reached after Stop. A command's

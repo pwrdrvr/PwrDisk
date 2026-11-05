@@ -9,9 +9,10 @@ app the operator is using; that has happened.
 [AGENTS.md](../AGENTS.md#testing-on-a-desktop) has the rule.
 
 This file covers macOS only. Linux builds, lint, tests and SSH integration
-run in [Sandboxer](sandboxer.md), which has no desktop. A Linux or Windows
-window that the lab cannot show is a question for the operator, never a
-reason to use the local desktop.
+use a Linux host and the existing CI routes; see
+[AGENTS.md](../AGENTS.md#commands). A Linux or Windows window that the lab
+cannot show is a question for the operator, never a reason to use the local
+desktop.
 
 ## Through PwrSuiteLab Control MCP
 

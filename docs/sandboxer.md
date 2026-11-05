@@ -1,5 +1,14 @@
 # Remote Linux verification with Sandboxer
 
+> **Dormant:** This development verification workflow is paused while we
+> evaluate another provider. Keep this procedure and `scripts/sandboxer/`
+> as reference; do not run its provider setup, VM or snapshot operations.
+> Use the native headless commands and existing CI described in
+> [AGENTS.md](../AGENTS.md#commands). Report any platform checks that cannot
+> run. This pause does not change product integrations or MCP settings.
+
+The following procedure records the former workflow.
+
 Use this procedure when the thread has Sandboxer MCP tools. Run Linux
 builds, lint, tests and integration checks in the remote VM. This keeps
 the Rust compile load off the local machine. Use the headless local
@@ -7,7 +16,7 @@ commands in [AGENTS.md](../AGENTS.md#commands) when Sandboxer is not
 available; never `make run` or `cargo run`, which open a window.
 
 Sandboxer is Linux only and has no desktop. A check that needs an on-screen
-macOS window, screenshots included, runs in the PwrSuiteLab VM as
+macOS window runs in the PwrSuiteLab VM as
 [headed-e2e-pwrsuitelab.md](headed-e2e-pwrsuitelab.md) says, never on the
 local desktop.
 
@@ -213,9 +222,9 @@ scripts/sandboxer/transfer.sh get "$URL" test.log /tmp/pwrdisk-test.log
 ```
 
 The transfer server accepts single file names. Archive a directory before
-download. Screenshots are not made here: they come from a contrived tree in
-the PwrSuiteLab VM, and [pr-screenshots.md](pr-screenshots.md) covers making
-and attaching them.
+download. Screenshots are not made here: [pr-screenshots.md](pr-screenshots.md)
+covers offscreen macOS rendering and the headed lab fallback, using only
+contrived trees.
 
 ## Build or refresh the base snapshot
 
