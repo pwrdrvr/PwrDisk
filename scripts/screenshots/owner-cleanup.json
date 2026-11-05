@@ -1,5 +1,5 @@
 {
-  "size": [1180, 900],
+  "size": [1180, 1100],
   "theme": "tokyo_night",
   "steps": [
     {"op": "setup", "state": {"type": "mark", "path": ".cache/pnpm"}},

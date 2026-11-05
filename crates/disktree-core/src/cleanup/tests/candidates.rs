@@ -212,7 +212,18 @@ fn windows_native_and_batch_candidates_are_not_execution_adapters() {
             Problem::UnsupportedLauncher
         );
     }
-    assert!(!process::ACTIVE_USE_CHECKED);
+    let cache = fixture.dir("Library/pnpm/store");
+    let prepared = where_checkable(
+        prepare_with(
+            &[target(&cache)],
+            &fixture.root,
+            fixture.env.clone(),
+            &mut NoProbe,
+        )
+        .expect("inspection"),
+    );
+    assert!(prepared.proposals[0].delete.is_none());
+    assert!(prepared.approve(&[DeleteFiles], Action::Permanent).is_err());
 }
 
 /// The kernel's image path identifies a native owner even if argv[0]

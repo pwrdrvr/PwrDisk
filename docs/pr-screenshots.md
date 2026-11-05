@@ -133,6 +133,10 @@ with an empty CLI search path. It never probes installed owners or chooses
 an action; every path stays on Skip. Environment hints for a screenshot
 must point only into the contrived fixture image.
 
+`scripts/screenshots/owner-cleanup.sh target/pr-shots/owner-cleanup` builds
+before/after pictures for pnpm's separate metadata/dlx cache. It adds only
+invented data to the owned Fixtures image and sets its XDG cache hint there.
+
 Capture names are unique simple filenames: letters, digits, `_` and `-`,
 then `.png`. A scenario needs 1..256 steps and at least one capture. Each
 capture also writes `<name>.bounds.json`, with logical bounds and paths for
