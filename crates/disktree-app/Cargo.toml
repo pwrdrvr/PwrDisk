@@ -90,3 +90,5 @@ gpui-kit = { version = "=0.7.3", default-features = false, features = [
     "assets",
     "test-support",
 ] }
+# Property tests of the legend's state, as the core crate has them.
+proptest = "1.12"

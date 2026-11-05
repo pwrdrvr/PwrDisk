@@ -26,8 +26,10 @@ use gpui_kit::{
 use gpui_omarchy::{
     ActiveTheme, ButtonVariant, ChoiceItem, Theme, alert_dialog, button,
     button_group, checkbox, dialog_button, dialog_description, dialog_popup,
-    dialog_title, with_tooltip,
+    dialog_title,
 };
+
+use crate::widgets::with_tooltip;
 
 use gpui_kit::prelude::FluentBuilder as _;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -2983,7 +2985,10 @@ fn legend_chip(
     };
     let size = chip_size(app, id);
     let only = state == Chip::Only;
-    let faded = state == Chip::Shown && app.legend.narrowed(id);
+    let hovered = app.legend_hover == Some(id);
+    // The chip under the pointer is not faded: it is the one being read,
+    // and its pill would fade with it and let the size show through.
+    let faded = state == Chip::Shown && app.legend.narrowed(id) && !hovered;
     let hover = theme.foreground.opacity(0.06);
     // In the menu a chip is a row of its own, under its own name, so a
     // test or a screen reader never finds two of one chip.
@@ -2994,16 +2999,27 @@ fn legend_chip(
     };
     // The size is the whole scan's, wherever the view is, as the filter
     // is: said so, since the mosaic beside it may show a single folder.
-    let spoken = size.as_ref().map_or_else(
+    let mut spoken = size.as_ref().map_or_else(
         || id.label().to_owned(),
         |size| format!("{}, {size} in the scan", id.label()),
     );
+    // The pill is the pointer's; the keyboard's way to it is `o`, said here
+    // since the tooltip that names it is never read out.
+    if app.legend.offers_only(id) {
+        spoken.push_str(", O shows only ");
+        spoken.push_str(id.label());
+    }
     let hint = size.as_ref().map_or_else(
         || app.legend.hint(id),
         |size| {
             format!("{} \u{00b7} {size} in the whole scan", app.legend.hint(id))
         },
     );
+    let pill = (hovered && app.legend.offers_only(id))
+        .then(|| legend_only_pill(id, &key, in_menu, theme, cx));
+    // Under the pill the size keeps its room, so nothing moves, but is not
+    // drawn: a size longer than the pill would peek out beside it.
+    let covered = pill.is_some();
     with_tooltip(
         div()
             .id(ElementId::Name(key.clone().into()))
@@ -3011,6 +3027,7 @@ fn legend_chip(
             .role(gpui_kit::Role::Button)
             .aria_label(spoken)
             .aria_value(state.spoken())
+            .relative()
             .focusable()
             .tab_stop(true)
             .flex()
@@ -3031,13 +3048,30 @@ fn legend_chip(
             .when(faded, |chip| chip.opacity(0.42))
             .when(state == Chip::Hidden, |chip| chip.opacity(0.6))
             .cursor_pointer()
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.legend_hover = Some(id);
+                } else if this.legend_hover == Some(id) {
+                    this.legend_hover = None;
+                }
+                // Only a chip that can show the pill needs a new frame.
+                if this.legend.offers_only(id) {
+                    cx.notify();
+                }
+            }))
             .on_key_down(cx.listener(
                 move |this, event: &KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                    {
-                        this.cycle_legend(id, cx);
-                        cx.stop_propagation();
+                    let plain = !event.keystroke.modifiers.modified();
+                    match event.keystroke.key.as_str() {
+                        "enter" | "space" => this.cycle_legend(id, cx),
+                        // The pill, for the keyboard. Plain `o` only:
+                        // Cmd-O and Ctrl-O belong to the app's bindings.
+                        "o" if plain && this.legend.offers_only(id) => {
+                            this.solo_legend(id, cx);
+                        }
+                        _ => return,
                     }
+                    cx.stop_propagation();
                 },
             ))
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -3067,10 +3101,66 @@ fn legend_chip(
                 div()
                     .text_size(text::CAPTION)
                     .text_color(theme.secondary.opacity(0.75))
+                    .when(covered, Styled::invisible)
                     .child(size)
-            })),
+            }))
+            .children(pill),
         hint,
     )
+}
+
+/// The "only" pill a chip shows on hover once its set filters: one click
+/// from Code to just Cache, or from Code, Cache and Media to one of them,
+/// where the chip itself would add or cycle. Laid over the chip's right
+/// end, over its size, rather than beside it, so showing it never moves
+/// the chips after it out from under the pointer.
+fn legend_only_pill(
+    id: crate::legend::ChipId,
+    key: &str,
+    in_menu: bool,
+    theme: &Theme,
+    cx: &Context<'_, Disktree>,
+) -> Stateful<Div> {
+    let key = format!("{key}-only");
+    let (fill, ink) = (theme.accent, theme.on_accent);
+    div()
+        .id(ElementId::Name(key.clone().into()))
+        .debug_selector(move || key)
+        .role(gpui_kit::Role::Button)
+        .aria_label(format!("Show only {}", id.label()))
+        .absolute()
+        // The chip's own padding, so the pill ends where its size does.
+        .right(space::XS)
+        .top_0()
+        .bottom_0()
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .id("only")
+                .px(space::XS)
+                .border_1()
+                .border_color(fill.opacity(0.55))
+                .bg(theme.surface)
+                .text_size(text::CAPTION)
+                .text_color(fill)
+                .hover(move |style| style.bg(fill).text_color(ink))
+                .cursor_pointer()
+                .child("only"),
+        )
+        // The press is the pill's, not the chip's under it, which would
+        // cycle as well.
+        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+            cx.stop_propagation();
+        })
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            this.solo_legend(id, cx);
+            if in_menu {
+                this.legend_menu_open = false;
+            }
+            window.focus(&this.focus, cx);
+        }))
 }
 
 /// Show all, or the pill that stands for the chips not on screen. A tab
