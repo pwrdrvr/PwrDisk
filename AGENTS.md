@@ -93,6 +93,10 @@ gate (`cargo xtask lint`, `cargo xtask test`) on those systems and CI;
 anything needing a window follows
 [Testing on a desktop](#testing-on-a-desktop).
 
+The [Sandboxer verification process](docs/sandboxer.md) and its helper
+scripts are retained as reference. That workflow is dormant while another
+provider is evaluated; do not run its provider operations.
+
 ## Testing on a desktop
 
 Never launch PwrDisk, or send synthetic input, on the operator's desktop.

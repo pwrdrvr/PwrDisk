@@ -107,6 +107,10 @@ headless checks and the relevant platform CI; report any platform checks
 that could not run. If corrections are needed, amend the unpublished
 release commit and verify its final tree.
 
+The former [remote verification process](../../../docs/sandboxer.md) is
+retained as reference and dormant while another provider is evaluated.
+Do not run its provider operations.
+
 ```bash
 cargo xtask release-check --tag vX.Y.Z
 cargo xtask licenses --check
