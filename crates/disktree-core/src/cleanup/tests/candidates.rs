@@ -169,6 +169,9 @@ proptest::proptest! {
         depth in 0_usize..8,
     ) {
         let mut fixture = Fixture::new();
+        // Keep generated names legal on Windows too (no device basename
+        // or trailing space), while exercising embedded whitespace.
+        let name = format!("cache-{name}-root");
         let cache = fixture.dir(&name);
         let keys = [
             "PLAYWRIGHT_BROWSERS_PATH",
