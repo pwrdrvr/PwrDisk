@@ -244,6 +244,21 @@ without a verified root-pinned argument-list adapter. See
 Windows command launchers have no execution adapter yet. Neither containers nor volumes are
 cleanup scopes.
 
+Owner inspection includes pnpm's independently located store and
+metadata/dlx caches (`PNPM_HOME`, XDG data/cache and Windows local-app-data
+locations), Playwright's npm environment aliases, and Puppeteer's home cache
+even with `XDG_CACHE_HOME` set. These are inspection hints, never permission
+to clean the whole installation. pnpm's `store path` can create temporary
+files/hardlink probes; do not run it as guaranteed read-only discovery.
+Homebrew cleanup also reaches dependency autoremove and its own vendored
+runtime. Puppeteer single-build removal can rewrite parent metadata.
+No new candidate adapter or Windows execution is enabled; see the
+[scope review](https://github.com/pwrdrvr/PwrDisk/blob/main/docs/owner-cleanup.md#scope-review-2026-11-05).
+A native owner image can identify active use even when its arguments do not.
+Windows requires audited runtime/entry-point identity, child Job Object
+cancellation and active-use coverage before any command can be offered;
+never bridge the refusal through a shell or stop another application.
+
 Each path gets its own result: succeeded, failed with a reason, cancelled
 (possibly part done), skipped, or not reached after Stop. A command's
 success reports the owner's exit result, not guaranteed savings.

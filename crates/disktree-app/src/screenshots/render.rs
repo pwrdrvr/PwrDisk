@@ -221,6 +221,15 @@ fn setup(
                     }
                 }
                 State::Review => app.open_review(cx),
+                State::CleanupReview => {
+                    // Proposals only: an empty search path prevents any
+                    // installed CLI, proxy or config from being probed.
+                    app.cleanup_path = Some(String::new());
+                    app.open_review(cx);
+                    app.removal_mode =
+                        disktree_core::removal::RemovalMode::OwnerCleanup;
+                    app.prepare_cleanup(cx);
+                }
                 State::FileList => app.file_list = true,
                 State::Help => app.open_help(cx),
             }

@@ -1,0 +1,9 @@
+{
+  "size": [1180, 900],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "setup", "state": {"type": "mark", "path": ".cache/pnpm"}},
+    {"op": "setup", "state": {"type": "cleanup_review"}},
+    {"op": "capture", "name": "owner-cleanup.png"}
+  ]
+}

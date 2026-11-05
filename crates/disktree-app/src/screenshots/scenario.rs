@@ -50,6 +50,7 @@ pub enum State {
     Select { path: String },
     Mark { path: String },
     Review,
+    CleanupReview,
     FileList,
     Help,
 }
@@ -117,7 +118,10 @@ impl Scenario {
                             "setup path must be relative to the fixture root"
                         );
                     }
-                    State::Review | State::FileList | State::Help => {}
+                    State::Review
+                    | State::CleanupReview
+                    | State::FileList
+                    | State::Help => {}
                 },
             }
         }

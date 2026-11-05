@@ -24,10 +24,17 @@ pub(super) fn owner(
         (Owner::Cypress, library.join("Cypress")),
         (Owner::Pnpm, env.home.join(".local/share/pnpm/store")),
         (Owner::Pnpm, env.home.join("Library/pnpm/store")),
+        (Owner::Pnpm, env.home.join(".pnpm/store")),
+        (Owner::Pnpm, cache.join("pnpm")),
+        (Owner::Pnpm, library.join("pnpm")),
+        (Owner::Pnpm, env.home.join(".pnpm-cache")),
         (Owner::Homebrew, library.join("Homebrew")),
         (Owner::Homebrew, cache.join("Homebrew")),
         (Owner::Playwright, cache.join("ms-playwright")),
         (Owner::Playwright, library.join("ms-playwright")),
+        // Puppeteer does not consult XDG_CACHE_HOME for its default.
+        (Owner::Puppeteer, env.home.join(".cache/puppeteer")),
+        // Retain the earlier conservative hint for relocated caches too.
         (Owner::Puppeteer, cache.join("puppeteer")),
     ];
     if let Some(local) = env.variables.get("LOCALAPPDATA") {
@@ -38,7 +45,22 @@ pub(super) fn owner(
             (Owner::Uv, local.join("uv/cache")),
             (Owner::Pip, local.join("pip/Cache")),
             (Owner::Playwright, local.join("ms-playwright")),
+            (Owner::Pnpm, local.join("pnpm/store")),
+            (Owner::Pnpm, local.join("pnpm-cache")),
         ]);
+    }
+    // pnpm's data/store and metadata/dlx cache are independent settings.
+    // These are refusal hints, never a store-prune scope or permission to
+    // touch PNPM_HOME's installed tools and runtimes.
+    for (key, suffix) in
+        [("PNPM_HOME", "store"), ("XDG_DATA_HOME", "pnpm/store")]
+    {
+        if let Some(value) = env.variables.get(key) {
+            let root = PathBuf::from(value);
+            if root.is_absolute() {
+                roots.push((Owner::Pnpm, root.join(suffix)));
+            }
+        }
     }
     for (key, owner) in [
         ("UV_CACHE_DIR", Owner::Uv),
@@ -46,6 +68,11 @@ pub(super) fn owner(
         ("CYPRESS_CACHE_FOLDER", Owner::Cypress),
         ("HOMEBREW_CACHE", Owner::Homebrew),
         ("PLAYWRIGHT_BROWSERS_PATH", Owner::Playwright),
+        ("npm_config_playwright_browsers_path", Owner::Playwright),
+        (
+            "npm_package_config_playwright_browsers_path",
+            Owner::Playwright,
+        ),
         ("PUPPETEER_CACHE_DIR", Owner::Puppeteer),
     ] {
         if let Some(value) = env.variables.get(key) {

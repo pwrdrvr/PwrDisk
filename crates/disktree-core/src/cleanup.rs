@@ -903,6 +903,12 @@ fn resolve_owner(
     env: &Environment,
     probe: &mut impl Probe,
 ) -> Result<Option<Operation>, Issue> {
+    // Keep the gate at resolution as well as hint routing: adding a new
+    // discovery path must never start a candidate's executable config or
+    // downloading launcher, even for an apparently read-only probe.
+    if let Some(reason) = owner.unsupported() {
+        return Err(Issue::new(Problem::NoCommand, reason));
+    }
     let executable = probe.executable(owner.executable(), env)?;
     let mut command = Command {
         executable,
