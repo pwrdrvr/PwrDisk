@@ -6,7 +6,7 @@ use super::*;
 /// The oracle assigns independent directories to data and cache settings.
 /// A store query cannot establish ownership of the other prune scopes.
 #[test]
-fn pnpm_independent_roots_are_discoverable_without_a_cleanup_guard() {
+fn pnpm_independent_roots_keep_owner_hints_without_forcing_cleanup() {
     for key in [
         "PNPM_HOME",
         "XDG_DATA_HOME",
@@ -38,11 +38,10 @@ fn pnpm_independent_roots_are_discoverable_without_a_cleanup_guard() {
                 Some(Owner::Pnpm),
                 "{key}: {selected:?}"
             );
-            // Invariant 12: an owner without a supported cleanup command
-            // is a discovery lead, never a gate on ordinary removal.
-            assert_eq!(
-                recognize::inspection_with(&selected, &fixture.env),
-                None
+            // pnpm is recognized for proposals, but has no cleanup command:
+            // its paths follow ordinary removal rather than forcing cleanup.
+            assert!(
+                recognize::inspection_with(&selected, &fixture.env).is_none()
             );
             check_raw(&[target(&selected)]).expect("no supported pnpm command");
             // Nearby user files do not acquire an owner from a common prefix.
