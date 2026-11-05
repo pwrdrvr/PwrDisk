@@ -196,6 +196,7 @@ fn truncated_external_clone_retains_half_a_selected_clone_group() {
         .expect("truncate clone");
     check_deletion(&mut image, true)
         .expect("lower bound survives real deletion");
+    drop(image);
 }
 
 proptest! {
@@ -255,5 +256,6 @@ proptest! {
             *inside || *operation != 0
         });
         check_deletion(&mut image, uncertain)?;
+        drop(image);
     }
 }
