@@ -205,7 +205,9 @@ fn setup(
                         .context("unknown legend kind")?;
                     app.cycle_legend(ChipId::Kind(index), cx);
                 }
-                State::Select { path } | State::Mark { path } => {
+                State::Select { path }
+                | State::Mark { path }
+                | State::Removed { path } => {
                     let crumbs = app
                         .crumbs_for_path(&root.join(path))
                         .with_context(|| format!("no fixture path: {path}"))?;
@@ -216,6 +218,12 @@ fn setup(
                                 .contains(&root.join(path), app.path_style()),
                             "fixture mark was refused: {path}"
                         );
+                    } else if matches!(state, State::Removed { .. }) {
+                        // Simulate the successful report without deleting
+                        // fixture files or approving a removal operation.
+                        let target =
+                            app.target_at(&crumbs).context("target")?;
+                        app.note_removed(vec![target]);
                     } else {
                         app.select(Some(crumbs), cx);
                     }

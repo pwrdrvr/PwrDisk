@@ -4037,12 +4037,20 @@ impl Disktree {
 
     /// Keep what a removal took, so the tree shows it as gone and it is
     /// never marked again before a scan.
-    fn note_removed(&mut self, removed: Vec<disktree_core::removal::Target>) {
+    pub(crate) fn note_removed(
+        &mut self,
+        removed: Vec<disktree_core::removal::Target>,
+    ) {
         let style = self.path_style();
-        for target in removed {
+        for mut target in removed {
             if self.was_removed(&target.path) {
                 continue;
             }
+            // The run reports only what remained. Preserve the scan's full
+            // size before absorbing records of earlier removals inside it.
+            target.bytes = target
+                .bytes
+                .saturating_add(self.removed.below(&target.path, style));
             let path = target.path.clone();
             self.removed.toggle(target, style);
             self.removed.absorb(&path, style);
@@ -5362,6 +5370,9 @@ impl Render for Disktree {
         crate::chrome::client_frame(&frame, root, window, &theme)
     }
 }
+
+#[cfg(test)]
+mod removal_tests;
 
 #[cfg(test)]
 mod tests {
