@@ -1,5 +1,14 @@
 # Remote Linux verification with Sandboxer
 
+> **Dormant:** This development verification workflow is paused while we
+> evaluate another provider. Keep this procedure and `scripts/sandboxer/`
+> as reference; do not run its provider setup, VM or snapshot operations.
+> Use the native headless commands and existing CI described in
+> [AGENTS.md](../AGENTS.md#commands). Report any platform checks that cannot
+> run. This pause does not change product integrations or MCP settings.
+
+The following procedure records the former workflow.
+
 Use this procedure when the thread has Sandboxer MCP tools. Run Linux
 builds, lint, tests and integration checks in the remote VM. This keeps
 the Rust compile load off the local machine. Use the headless local

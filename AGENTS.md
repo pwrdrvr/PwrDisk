@@ -83,14 +83,19 @@ done, and it must not fix anything: a red local run is the same signal CI gives.
 On Windows, where there is no make, run `cargo xtask lint`, `cargo xtask test`
 and `cargo build --release` directly; CI runs the gate on both systems.
 
-When Sandboxer MCP tools are available, run Linux builds, lint, tests, SSH
-integration and other Linux-only checks there. Start from
-`pwrdisk-base-us-east` in `us-east`; read
-[remote verification](docs/sandboxer.md) first. Use local checks when
-Sandboxer is unavailable. Sandboxer is Linux only. macOS and Windows changes
-are verified on those systems with the headless gate (`cargo xtask lint`,
-`cargo xtask test`) and CI; anything that needs a window follows
+Run headless checks on the matching platform and in CI. For Linux builds
+and tests, use the existing commands in `.github/workflows/ci.yml`. Run
+SSH integration with `bun scripts/test-ssh.ts` and mount-namespace checks
+with `scripts/test-linux-mounts.sh`. Linux-only checks require a Linux
+host. If that platform is unavailable, report the unrun checks and rely
+on the relevant CI results. macOS and Windows changes use the headless
+gate (`cargo xtask lint`, `cargo xtask test`) on those systems and CI;
+anything needing a window follows
 [Testing on a desktop](#testing-on-a-desktop).
+
+The [Sandboxer verification process](docs/sandboxer.md) and its helper
+scripts are retained as reference. That workflow is dormant while another
+provider is evaluated; do not run its provider operations.
 
 ## Testing on a desktop
 
