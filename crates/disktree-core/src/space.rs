@@ -113,23 +113,14 @@ pub fn device_for(path: &Path) -> Option<String> {
 /// `/proc/self/mounts`. `None` where that table cannot be read.
 #[cfg(not(any(target_os = "macos", windows)))]
 pub fn device_for(path: &Path) -> Option<String> {
-    let table = std::fs::read_to_string("/proc/self/mounts").ok()?;
+    let mounts = read_mounts(Path::new("/proc/self/mounts")).ok()?;
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    device_in(&table, &path)
+    covering(&mounts, &path).map(|mount| mount.source.clone())
 }
 
 /// [`device_for`] over a given mount table, for testing.
 pub fn device_in(table: &str, path: &Path) -> Option<String> {
-    table
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let device = unescape_octal(fields.next()?);
-            let mount = unescape_octal(fields.next()?);
-            path.starts_with(&mount).then_some((mount.len(), device))
-        })
-        .max_by_key(|(length, _)| *length)
-        .map(|(_, device)| device)
+    covering(&parse_mounts(table), path).map(|mount| mount.source.clone())
 }
 
 /// One line of the mount table.
@@ -144,15 +135,39 @@ pub struct Mount {
 
 /// Parse `/proc/self/mounts`.
 pub fn parse_mounts(table: &str) -> Vec<Mount> {
+    parse_mounts_bytes(table.as_bytes())
+}
+
+fn fields(line: &[u8]) -> impl Iterator<Item = &[u8]> {
+    line.split(u8::is_ascii_whitespace)
+        .filter(|field| !field.is_empty())
+}
+
+fn text_field(field: &[u8]) -> String {
+    String::from_utf8_lossy(&unescape_octal(field)).into_owned()
+}
+
+fn path_field(field: &[u8]) -> PathBuf {
+    let bytes = unescape_octal(field);
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+        std::ffi::OsString::from_vec(bytes).into()
+    }
+    #[cfg(not(unix))]
+    PathBuf::from(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn parse_mounts_bytes(table: &[u8]) -> Vec<Mount> {
     table
-        .lines()
+        .split(|&byte| byte == b'\n')
         .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            // Escaped as in mountinfo: space, tab, newline and backslash.
-            let source = unescape_octal(fields.next()?);
-            let point = PathBuf::from(unescape_octal(fields.next()?));
-            let fstype = fields.next()?.to_string();
-            let options = fields.next().unwrap_or_default().to_string();
+            let mut fields = fields(line);
+            // Decode paths as bytes: the kernel need not write UTF-8.
+            let source = text_field(fields.next()?);
+            let point = path_field(fields.next()?);
+            let fstype = text_field(fields.next()?);
+            let options = text_field(fields.next().unwrap_or_default());
             Some(Mount {
                 source,
                 point,
@@ -213,9 +228,13 @@ fn is_snapshot(mount: &Mount) -> bool {
 /// review screen plans on every frame.
 #[cfg(not(any(target_os = "macos", windows)))]
 pub fn mount_table() -> Option<Vec<Mount>> {
-    std::fs::read_to_string("/proc/self/mounts")
-        .ok()
-        .map(|table| parse_mounts(&table))
+    read_mounts(Path::new("/proc/self/mounts")).ok()
+}
+
+/// Read separately from parsing so raw kernel path bytes are testable.
+#[cfg(not(windows))]
+fn read_mounts(path: &Path) -> io::Result<Vec<Mount>> {
+    std::fs::read(path).map(|table| parse_mounts_bytes(&table))
 }
 
 /// [`mount_table`] where there is no `/proc/self/mounts` to read.
@@ -395,9 +414,9 @@ pub fn volume_root(mounts: &[Mount], path: &Path) -> Option<PathBuf> {
 /// [`volume_root`] for this machine.
 #[cfg(not(any(target_os = "macos", windows)))]
 pub fn volume_root_for(path: &Path) -> Option<PathBuf> {
-    let table = std::fs::read_to_string("/proc/self/mounts").ok()?;
+    let mounts = read_mounts(Path::new("/proc/self/mounts")).ok()?;
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    volume_root(&parse_mounts(&table), &path)
+    volume_root(&mounts, &path)
 }
 
 /// The top of the volume `path` lives on: its drive, such as `C:\`.
@@ -450,8 +469,8 @@ pub fn mount_boundaries_for(root: &Path) -> Option<Vec<PathBuf>> {
 /// be read, so the caller can fall back to comparing devices.
 #[cfg(not(windows))]
 pub fn foreign_mounts_for(root: &Path) -> Option<Vec<PathBuf>> {
-    let table = std::fs::read_to_string("/proc/self/mounts").ok()?;
-    Some(foreign_mounts(&parse_mounts(&table), root))
+    let mounts = read_mounts(Path::new("/proc/self/mounts")).ok()?;
+    Some(foreign_mounts(&mounts, root))
 }
 
 /// One line of `/proc/self/mountinfo`.
@@ -474,19 +493,24 @@ pub struct MountView {
 
 /// Parse `/proc/self/mountinfo`. Lines it cannot read are skipped.
 pub fn parse_mountinfo(table: &str) -> Vec<MountView> {
+    parse_mountinfo_bytes(table.as_bytes())
+}
+
+/// Parse the kernel's raw table without requiring UTF-8 path names.
+pub fn parse_mountinfo_bytes(table: &[u8]) -> Vec<MountView> {
     table
-        .lines()
+        .split(|&byte| byte == b'\n')
         .filter_map(|line| {
             // Optional fields run up to a lone `-`; after it come the type
             // and the source.
-            let (left, right) = line.split_once(" - ")?;
-            let mut left = left.split_whitespace().skip(2);
-            let device = left.next()?.to_string();
-            let fs_root = PathBuf::from(unescape_octal(left.next()?));
-            let point = PathBuf::from(unescape_octal(left.next()?));
-            let mut right = right.split_whitespace();
-            let fstype = right.next()?.to_string();
-            let source = unescape_octal(right.next()?);
+            let separator = line.windows(3).position(|part| part == b" - ")?;
+            let mut left = fields(&line[..separator]).skip(2);
+            let device = text_field(left.next()?);
+            let fs_root = path_field(left.next()?);
+            let point = path_field(left.next()?);
+            let mut right = fields(&line[separator + 3..]);
+            let fstype = text_field(right.next()?);
+            let source = text_field(right.next()?);
             Some(MountView {
                 device,
                 source,
@@ -501,8 +525,7 @@ pub fn parse_mountinfo(table: &str) -> Vec<MountView> {
 /// The kernel writes space, tab, newline and backslash in mount fields as
 /// three octal digits after a backslash. Decoded in one pass, so a name that
 /// really contains `\040` is not decoded twice.
-fn unescape_octal(field: &str) -> String {
-    let bytes = field.as_bytes();
+fn unescape_octal(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
@@ -519,7 +542,7 @@ fn unescape_octal(field: &str) -> String {
             index += 1;
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 /// Paths under `root` that show a directory the scan already reaches
@@ -562,6 +585,16 @@ fn repeated_mounts_excluding(
     root: &Path,
     excluded: &[PathBuf],
 ) -> Vec<PathBuf> {
+    // The last mount on a point is the view the kernel exposes there.
+    // A hidden bind must not exclude a newer disk mounted over it.
+    let mut points = std::collections::HashSet::new();
+    let mounts: Vec<_> = mounts
+        .iter()
+        .rev()
+        .filter(|mount| points.insert(&mount.point))
+        .cloned()
+        .collect();
+    let mounts = mounts.as_slice();
     let own = covering_mount(mounts, root);
     let mut visible: Vec<&MountView> = mounts
         .iter()
@@ -633,7 +666,7 @@ pub fn repeated_mounts_for(
     canonical: &Path,
     one_filesystem: bool,
 ) -> Vec<PathBuf> {
-    let Ok(table) = std::fs::read_to_string("/proc/self/mountinfo") else {
+    let Ok(table) = std::fs::read("/proc/self/mountinfo") else {
         return Vec::new();
     };
     let excluded = if one_filesystem {
@@ -641,11 +674,15 @@ pub fn repeated_mounts_for(
     } else {
         Vec::new()
     };
-    repeated_mounts_excluding(&parse_mountinfo(&table), canonical, &excluded)
-        .iter()
-        .filter_map(|path| path.strip_prefix(canonical).ok())
-        .map(|below| root.join(below))
-        .collect()
+    repeated_mounts_excluding(
+        &parse_mountinfo_bytes(&table),
+        canonical,
+        &excluded,
+    )
+    .iter()
+    .filter_map(|path| path.strip_prefix(canonical).ok())
+    .map(|below| root.join(below))
+    .collect()
 }
 
 /// The mount points in what macOS's `mount` prints.
@@ -790,10 +827,10 @@ pub struct Volume {
 /// a scan no longer crosses into another mount implicitly.
 #[cfg(not(any(target_os = "macos", windows)))]
 pub fn volumes() -> Vec<Volume> {
-    let Ok(table) = std::fs::read_to_string("/proc/self/mounts") else {
+    let Ok(mounts) = read_mounts(Path::new("/proc/self/mounts")) else {
         return Vec::new();
     };
-    volumes_in(&parse_mounts(&table))
+    volumes_in(&mounts)
 }
 
 /// Read root candidates without opening them, measuring free space, or
@@ -837,15 +874,14 @@ pub fn volume_roots() -> io::Result<Vec<Volume>> {
 /// Root candidates from a mount table; deliberately never calls statvfs.
 pub fn volume_roots_in(mounts: &[Mount]) -> Vec<Volume> {
     let mut seen: Vec<&Mount> = Vec::new();
-    for mount in mounts {
-        if !is_volume_candidate(mount) {
+    let mut points = std::collections::HashSet::new();
+    for mount in mounts.iter().rev() {
+        // Record even filtered mounts: a service filesystem may hide a disk.
+        if !points.insert(&mount.point) || !is_volume_candidate(mount) {
             continue;
         }
         // Nested mounts are not traversed. Even mounts sharing a device
         // must remain individually selectable; only overmounts collapse.
-        if seen.iter().any(|known| known.point == mount.point) {
-            continue;
-        }
         seen.push(mount);
     }
     let mut volumes: Vec<Volume> = seen
@@ -917,6 +953,7 @@ fn is_volume_candidate(mount: &Mount) -> bool {
             | "devtmpfs"
             | "efivarfs"
             | "fuse.portal"
+            | "fuse.lxcfs"
             | "fusectl"
             | "hugetlbfs"
             | "mqueue"
@@ -925,6 +962,7 @@ fn is_volume_candidate(mount: &Mount) -> bool {
             | "proc"
             | "pstore"
             | "ramfs"
+            | "rpc_pipefs"
             | "securityfs"
             | "sysfs"
             | "tmpfs"
@@ -1045,6 +1083,146 @@ portal /run/user/1000/doc fuse.portal rw 0 0
             repeated_mounts(&parse_mountinfo(table), Path::new(root));
         paths.sort();
         paths
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_raw_non_utf8_mount_does_not_break_discovery() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let table = tempfile::NamedTempFile::new().expect("table");
+        std::fs::write(
+            table.path(),
+            b"/dev/root / ext4 rw 0 0\n/dev/usb /mnt/\xff ext4 rw 0 0\n",
+        )
+        .expect("write table");
+        let mounts = read_mounts(table.path()).expect("read every mount");
+        assert_eq!(volume_roots_in(&mounts).len(), 2);
+        assert_eq!(mounts[1].point.as_os_str().as_bytes(), b"/mnt/\xff");
+    }
+
+    #[cfg(unix)]
+    fn check_mount_name_bytes(name: &[u8]) {
+        use std::fmt::Write as _;
+        use std::os::unix::ffi::OsStrExt as _;
+        let escaped = name.iter().fold(String::new(), |mut out, byte| {
+            write!(out, "\\{byte:03o}").expect("write to string");
+            out
+        });
+        let mounts = parse_mounts(&format!("/dev/usb /mnt/{escaped} ext4 rw"));
+        let views = parse_mountinfo(&format!(
+            "1 0 8:1 / /mnt/{escaped} rw - ext4 /dev/usb rw"
+        ));
+        let mut expected = b"/mnt/".to_vec();
+        expected.extend_from_slice(name);
+        assert_eq!(mounts[0].point.as_os_str().as_bytes(), expected);
+        assert_eq!(views[0].point.as_os_str().as_bytes(), expected);
+        let mut raw = b"1 0 8:1 / /mnt/".to_vec();
+        raw.extend_from_slice(name);
+        raw.extend_from_slice(b" rw - ext4 /dev/usb rw");
+        assert_eq!(
+            parse_mountinfo_bytes(&raw)[0].point.as_os_str().as_bytes(),
+            expected
+        );
+    }
+
+    #[cfg(unix)]
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+        #[test]
+        fn mount_paths_preserve_every_non_utf8_byte(
+            name in proptest::collection::vec(128_u8..=255, 1..16)
+        ) {
+            check_mount_name_bytes(&name);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_mount_path_with_ff_is_not_replaced() {
+        check_mount_name_bytes(&[128]);
+        check_mount_name_bytes(&[255]);
+    }
+
+    fn overmounted_bind_table(point: &str) -> String {
+        format!(
+            "1 0 8:1 / / rw - ext4 /dev/root rw\n\
+            2 1 8:1 /data {point} rw - ext4 /dev/root rw\n\
+            3 1 8:2 / {point} rw - ext4 /dev/usb rw\n"
+        )
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+        #[test]
+        fn hidden_bind_mounts_never_hide_the_visible_disk(name in "[a-z]{1,12}") {
+            let point = format!("/mnt/{name}");
+            let mounts = parse_mountinfo(&overmounted_bind_table(&point));
+            proptest::prop_assert!(repeated_mounts(&mounts, Path::new("/"))
+                .is_empty());
+        }
+
+        #[test]
+        fn discovery_and_lookup_agree_on_the_visible_mount(name in "[a-z]{1,12}") {
+            let point = format!("/mnt/{name}");
+            let text = format!("/dev/root {point} ext4 rw 0 0\n\
+                /dev/usb {point} ext4 rw 0 0\n");
+            let mounts = parse_mounts(&text);
+            let volumes = volume_roots_in(&mounts);
+            proptest::prop_assert_eq!(volumes.len(), 1);
+            proptest::prop_assert_eq!(&volumes[0].device,
+                &device_in(&text, Path::new(&point)));
+        }
+
+        #[test]
+        fn discovery_never_offers_kernel_service_filesystems(
+            parent in proptest::sample::select(vec!["/run", "/var/lib/nfs"]),
+            kind in proptest::sample::select(vec!["rpc_pipefs", "fuse.lxcfs"]),
+        ) {
+            let mounts = parse_mounts(&format!(
+                "service {parent}/service {kind} rw 0 0\n"));
+            proptest::prop_assert!(volume_roots_in(&mounts).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_usb_disk_over_a_bind_mount_is_not_a_repeat() {
+        for point in ["/mnt/a", "/mnt/backup"] {
+            assert!(repeated(&overmounted_bind_table(point), "/").is_empty());
+        }
+    }
+
+    #[test]
+    fn discovery_keeps_the_usb_disk_over_a_hidden_mount() {
+        for point in ["/mnt/a", "/mnt/backup"] {
+            let mounts = parse_mounts(&format!(
+                "/dev/root {point} ext4 rw 0 0\n\
+                 /dev/usb {point} ext4 rw 0 0\n"
+            ));
+            assert_eq!(
+                volume_roots_in(&mounts)[0].device.as_deref(),
+                Some("/dev/usb")
+            );
+        }
+    }
+
+    #[test]
+    fn rpc_pipefs_and_lxcfs_are_not_scan_roots() {
+        for (point, kind) in [
+            ("/run/service", "rpc_pipefs"),
+            ("/run/rpc_pipefs", "rpc_pipefs"),
+            ("/var/lib/nfs/rpc_pipefs", "rpc_pipefs"),
+            ("/var/lib/lxcfs", "fuse.lxcfs"),
+        ] {
+            let mounts =
+                parse_mounts(&format!("service {point} {kind} rw 0 0"));
+            assert!(volume_roots_in(&mounts).is_empty(), "{point}");
+        }
     }
 
     #[test]

@@ -773,8 +773,8 @@ fn read_mount_table() -> MountTable {
     // The same table the scan reads for its volume, so a projection is
     // judged by the rule the tree itself was built under.
     let mounts = crate::space::mount_table();
-    if let Ok(table) = fs::read_to_string("/proc/self/mountinfo") {
-        let views = crate::space::parse_mountinfo(&table);
+    if let Ok(table) = fs::read("/proc/self/mountinfo") {
+        let views = crate::space::parse_mountinfo_bytes(&table);
         return MountTable {
             points: views.iter().map(|mount| guard_key(&mount.point)).collect(),
             media: media_roots(&views),
@@ -896,11 +896,8 @@ pub fn prime_mount_points() {
 fn read_mount_points() -> Vec<PathBuf> {
     let points: Vec<PathBuf> = if cfg!(windows) {
         windows_mount_points()
-    } else if let Ok(table) = fs::read_to_string("/proc/self/mounts") {
-        crate::space::parse_mounts(&table)
-            .into_iter()
-            .map(|mount| mount.point)
-            .collect()
+    } else if let Some(mounts) = crate::space::mount_table() {
+        mounts.into_iter().map(|mount| mount.point).collect()
     } else if cfg!(target_os = "macos") {
         Command::new("/sbin/mount")
             .stdin(std::process::Stdio::null())
