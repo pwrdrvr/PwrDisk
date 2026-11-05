@@ -57,7 +57,7 @@ fn status(
             (format!("Refused \u{b7} {owner}"), theme.danger)
         }
         (Some(issue), None) if issue.problem == Problem::UnknownOwner => (
-            "Unknown owner \u{b7} not known to be disposable".into(),
+            "No owner command \u{b7} Skip or Delete files".into(),
             theme.warning,
         ),
         (Some(issue), None) => {

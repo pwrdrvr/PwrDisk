@@ -32,12 +32,20 @@ hdiutil attach -nobrowse -mountpoint "$mountpoint" "$scratch/fixtures.dmg"
 mounted=1
 export PWRDISK_FIXTURE_ROOT="$mountpoint/Demo"
 mkdir -p "$PWRDISK_FIXTURE_ROOT"/{Projects/atlas/src,Projects/beacon/src,\
-Projects/beacon/node_modules,.cache,Photos/Summer,Music,Documents}
+Projects/beacon/node_modules,.cache,Photos/Summer,Music,Documents,\
+Projects/atlas/target/debug/deps,Projects/atlas/target/debug/incremental}
 # Real allocation, not sparse lengths: the scanner weighs st_blocks * 512.
 fill() { dd if=/dev/urandom of="$PWRDISK_FIXTURE_ROOT/$1" \
     bs=1048576 count="$2" 2>/dev/null; }
 fill Projects/atlas/src/engine.rs 24
 fill Projects/beacon/src/app.ts 12
+# A Cargo build, with the cache tag Cargo writes into every target.
+printf '%s\n' 'Signature: 8a477f597d28d172789f06886806bc55' \
+    '# This file is a cache directory tag created by cargo.' |
+    dd of="$PWRDISK_FIXTURE_ROOT/Projects/atlas/target/CACHEDIR.TAG" \
+    2>/dev/null
+fill Projects/atlas/target/debug/deps/libatlas.rlib 6
+fill Projects/atlas/target/debug/incremental/atlas.bin 4
 fill Projects/beacon/node_modules/bundle.js 8
 fill .cache/preview.bin 4
 fill Photos/Summer/coast.raw 32

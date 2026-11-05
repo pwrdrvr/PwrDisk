@@ -60,14 +60,16 @@ marking. Approval to mark is never approval to remove. pwrdisk_review \
 only opens the marked list; announce it first and let the person approve. \
 NEVER use computer use, clicks, approval keys or accessibility actions to \
 approve a removal, even after the user approved marking or removal. \
-Caches go through owner_cleanup; a cache name or regenerable \
-classification never authorizes deletion. owner_cleanup without decisions \
+Caches PwrDisk can clean with their owner's command (npm, npx, uv, pip, \
+Cypress, Playwright) go through owner_cleanup; anything else, cache-like \
+or not, is an ordinary trash or permanent removal the user agrees and \
+confirms. owner_cleanup without decisions \
 lists one proposal per marked path and cannot be confirmed: show every \
 owner, version, executable, argument, environment override, actual \
 whole-cache scope (including unselected siblings), effects, limitations, \
 recoverability and unavailable reason, then let the user choose skip, owner \
-or delete_files for each path. Never choose for them or suggest \
-delete_files; inspect unknown runtime/install caches first. Preview again \
+or delete_files for each path. Never choose for them; recommend the \
+owner's command where offered. Preview again \
 with decisions for every path (and delete_files_mode when any deletes \
 files); its confirmation text names each intent, and owner approval never \
 approves deleting files. Unavailable, unsupported, failed or cancelled \

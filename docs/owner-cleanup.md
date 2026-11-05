@@ -1,7 +1,9 @@
 # Cache cleanup
 
-A cache name, category or `regenerable` hatch is an inspection lead, not
-permission to delete. Review steers marked caches to **Cache cleanup**,
+Cache cleanup exists for caches PwrDisk positively recognizes *and* can
+clean better than by deleting their files: the owners with a command in
+the allowlist below (npm, npx, uv, pip, Cypress, Playwright). A marked
+path in such a cache, or holding one, goes to **Cache cleanup** in Review,
 where the person decides each marked path on its own:
 
 * **Skip** (the default): nothing happens to it.
@@ -12,9 +14,26 @@ where the person decides each marked path on its own:
   its owner, by Trash or permanently. A separate destructive intent with
   its own disclosure and its own consent.
 
-Ordinary Trash and Permanent removal still refuse recognized cache paths,
-cache wrappers and opaque cache tags, including caches inside a selected
-parent: deleting a cache's files happens only as a Delete files decision.
+Ordinary Trash and Permanent removal leave those caches to Cache
+cleanup, wherever they are: marked themselves, under a marked path, or
+inside a marked folder. Deleting their files happens only as a Delete
+files decision.
+
+Everything else is an ordinary removal, however cache-like it looks. A
+folder named `cache`, `.cache`, `Caches` or `codex-runtimes`, a
+`regenerable` hatch, a `CACHEDIR.TAG`, a Cargo `target`, a `.venv`,
+`node_modules/.cache`, or a cache whose owner PwrDisk has no command for
+(pnpm, Homebrew, Puppeteer) is marked, reviewed and removed like any other
+path, with the same guards, capacity limit and confirmation. PwrDisk
+recognizes caches to offer a better way, not to hold back what it does
+not know.
+
+Recognition is by the owner's default or configured root, a name only
+that owner uses (`_cacache`, `_npx`, `ms-playwright`), or a layout it
+keeps when moved: pip's `wheels` beside `http`, Cypress's version folders,
+and uv's tag beside its versioned buckets (`wheels-v5`, `archive-v0`, …).
+A tag alone is not uv's: Cargo, virtualenv, ruff, pytest and mypy write
+the same tag.
 
 ## How this reconciles with the earlier guard policy
 
@@ -24,7 +43,7 @@ parent: deleting a cache's files happens only as a Delete files decision.
 | Approval meant running every command shown | Each path is decided; Skip is the default and nothing is chosen for the person | An agent cannot decide for the person |
 | Raw deletion of a recognized cache was always refused | Allowed only as an explicit Delete files decision for that exact path, never the owner's wider scope | Removal guards, protected folders, the capacity limit and Review's over-limit confirmation, permissions, and an in-use check |
 | "No raw deletion fallback" | Unchanged: a missing, unsupported, refused, failed or cancelled owner command deletes nothing else | Deleting those files instead needs a new review and its own decision |
-| Unknown caches were refused | Unknown owner, "not known to be disposable"; Delete files is offered with a runtime/installation warning | PwrDisk never labels an unknown cache disposable; agents inspect first and never suggest Delete files |
+| Anything cache-like was refused: names, tags, unsupported owners | Only caches with an owner command go to Cache cleanup; everything else is an ordinary removal | Removal guards, the capacity limit and the person's confirmation apply to every removal |
 | Exports: marked paths only; raw scripts refuse caches | Unchanged | Owner scopes never widen an export |
 
 ## Allowlist

@@ -220,6 +220,11 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
     worker as at the preview: nothing the person confirms in Review
     raises an agent's removal. `mark_guard.rs` holds the rule.
     Trash never falls back to permanent deletion. No headless or SSH removal.
+    Cache cleanup is for caches PwrDisk positively recognizes *and* can
+    clean better than by deleting them: an owner with a command here.
+    Nothing is held back for only looking like a cache (a name, a
+    `CACHEDIR.TAG`, a hatch, an owner without a command); that is an
+    ordinary removal. `cleanup/recognize.rs` holds the rule.
     A cache cleanup is decided per marked path (Skip by default, the
     owner's exact command, or Delete files); owner approval never approves
     deleting files, which has its own consent, and a failed owner command
