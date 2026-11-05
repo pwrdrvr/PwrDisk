@@ -30,7 +30,7 @@ a fixed theme without the native theme watcher. `cargo xtask lint` checks
 both feature configurations, and `cargo xtask test` covers the scenario
 parser and script adapters on CI.
 
-From the repository root, on a Mac with Rust, Python 3.11+ and the usual
+From the repository root, on a Mac with Rust, Python 3.9+ and the usual
 build tools:
 
 ```sh
@@ -106,6 +106,10 @@ for before and after.
 ```
 
 Steps run in order, settling redraws between them:
+
+Screenshot runs explicitly enable reduced motion. Navigation lands on its
+destination layout immediately; it never interpolates with the wall clock.
+The simulated clock still advances tooltip delays and other timed tasks.
 
 | Step | Behavior |
 | --- | --- |

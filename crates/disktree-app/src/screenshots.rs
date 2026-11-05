@@ -5,6 +5,14 @@ mod render;
 #[cfg(any(test, target_os = "macos"))]
 mod scenario;
 
+#[cfg(any(test, target_os = "macos"))]
+pub fn init(cx: &mut gpui_kit::App) {
+    gpui_kit::base::init(cx);
+    // LayoutTransition uses wall time, not the scenario's simulated clock.
+    // An explicit override lands navigation before any screenshot frame.
+    cx.set_reduce_motion(true);
+}
+
 #[cfg(feature = "screenshots")]
 pub fn run() -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]

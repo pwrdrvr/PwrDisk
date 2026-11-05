@@ -55,7 +55,7 @@ fn render(scenario: &Scenario, root: &Path, out: &Path) -> Result<()> {
     );
     cx.update(|cx| {
         // No gpui_omarchy::init: it watches the operator's theme files.
-        gpui_kit::base::init(cx);
+        super::init(cx);
         match scenario.theme {
             Theme::TokyoNight => gpui_omarchy::Theme::tokyo_night(),
             Theme::FlexokiLight => gpui_omarchy::Theme::flexoki_light(),

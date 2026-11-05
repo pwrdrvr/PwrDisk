@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -17,10 +18,25 @@ SPEC.loader.exec_module(ADAPTER)
 
 
 class BaselineTests(unittest.TestCase):
+    def test_adapter_import_needs_no_tomllib(self):
+        # An interpreter without 3.11's tomllib is the compatibility oracle,
+        # even when this suite is run by a newer Python on CI.
+        result = subprocess.run([
+            sys.executable, "-B", "-c",
+            "import sys, runpy; sys.modules['tomllib'] = None; "
+            "runpy.run_path(sys.argv[1], run_name='adapter')",
+            str(SCRIPTS / "install-baseline.py"),
+        ], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def baseline(self, root):
         app = root / "crates/disktree-app"
         (app / "src").mkdir(parents=True)
-        (app / "Cargo.toml").write_text('''[dependencies]
+        (app / "Cargo.toml").write_text('''[package]
+name = "disktree-app"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
 gpui-kit = { version = "=0.7.3" }
 [target.'cfg(target_os = "macos")'.dependencies]
 ''')
@@ -126,11 +142,9 @@ class PairTests(unittest.TestCase):
                 repo = root / "repo"
                 scripts = repo / "scripts/screenshots"
                 scripts.mkdir(parents=True)
-                app = repo / "crates/disktree-app"
-                app.mkdir(parents=True)
-                shutil.copyfile(SOURCE / "crates/disktree-app/Cargo.toml",
-                                app / "Cargo.toml")
-                shutil.copytree(SOURCE / "crates/disktree-app/src", app / "src")
+                app = BaselineTests().baseline(repo)
+                shutil.copytree(SOURCE / "crates/disktree-app/src",
+                                app / "src", dirs_exist_ok=True)
                 template = root / "baseline"
                 BaselineTests().baseline(template)
                 for filename in ("pair.sh", "render.sh", "install-baseline.py"):
@@ -155,6 +169,8 @@ fi
 import os
 from pathlib import Path
 import sys
+if sys.argv[1] == "read-manifest":
+    os.execv(os.environ["SHOT_TEST_CARGO"], ["cargo", *sys.argv[1:]])
 target = Path(os.environ["CARGO_TARGET_DIR"])
 target.mkdir(parents=True, exist_ok=True)
 cached = target / "cached-source"
@@ -176,6 +192,7 @@ else:
                 for path in fake.iterdir():
                     path.chmod(0o755)
                 env = dict(os.environ, PATH=f"{fake}:{os.environ['PATH']}",
+                           SHOT_TEST_CARGO=shutil.which("cargo"),
                            SHOT_TEST_BASELINE=str(template),
                            PWRDISK_FIXTURE_ROOT=str(root / "fixtures"),
                            CARGO_TARGET_DIR=str(repo / "target"))

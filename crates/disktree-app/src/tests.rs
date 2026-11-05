@@ -9217,6 +9217,67 @@ fn file_list_keeps_a_complete_entry_visible_at_double_scale(
     assert!(row.size.height >= px(24.));
 }
 
+/// Every screenshot navigation paints destination geometry without waiting
+/// for wall time, independent of the preceding navigation sequence.
+#[gpui_kit::test]
+fn screenshot_navigation_always_matches_the_destination_layout(
+    cx: &mut TestAppContext,
+) {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+
+    cx.update(init);
+    cx.update(|cx| cx.set_reduce_motion(false));
+    cx.update(crate::screenshots::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let window = std::cell::RefCell::new(cx);
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: None,
+        ..Config::default()
+    });
+    runner
+        .run(&prop::collection::vec(0_u8..5, 1..24), |moves| {
+            update(&view, &mut window.borrow_mut(), |app, cx| {
+                app.go_to(Vec::new(), cx);
+                for movement in moves {
+                    let junk = child_crumbs(app, &[], "junk");
+                    let deeper = child_crumbs(app, &junk, "deeper");
+                    match movement {
+                        0 | 1 => {
+                            app.selected =
+                                Some(if movement == 0 { junk } else { deeper });
+                            app.descend(cx);
+                        }
+                        2 => app.ascend(cx),
+                        3 => app.go_back(cx),
+                        _ => app.go_forward(cx),
+                    }
+                    // The cached destination layout is an independent oracle:
+                    // screenshots must never paint wall-clock interpolation.
+                    prop_assert!(app.transition.is_none());
+                    let expected: Vec<_> = app
+                        .layout()
+                        .expect("layout")
+                        .iter()
+                        .map(|tile| tile.rect)
+                        .collect();
+                    let painted: Vec<_> = app
+                        .prepare()
+                        .tiles
+                        .into_iter()
+                        .map(|tile| tile.rect)
+                        .collect();
+                    prop_assert_eq!(painted, expected);
+                }
+                Ok(())
+            })
+        })
+        .expect("every screenshot navigation lands immediately");
+}
+
 /// Reduced motion lands on the same real layout and preserves the ordinary
 /// selection/history/mark behavior, including wheel-driven descent.
 #[gpui_kit::test]

@@ -5,10 +5,11 @@ Fail on changed anchors or GPUI versions; never copy application UI code.
 All edits are prepared before any baseline file is written.
 """
 
+import json
 import re
 import shutil
+import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 
@@ -18,13 +19,30 @@ def once(text, old, new):
     return text.replace(old, new, 1)
 
 
+def read_manifest(path):
+    # Cargo is already required to build either revision. Its JSON avoids a
+    # second TOML parser and works with macOS's bundled Python 3.9.
+    result = subprocess.run([
+        "cargo", "read-manifest", "--manifest-path", str(path),
+    ], check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)
+
+
+def gpui_version(manifest):
+    versions = [dep["req"] for dep in manifest["dependencies"]
+                if dep["name"] == "gpui-kit" and dep["kind"] is None
+                and dep["target"] is None]
+    if len(versions) != 1:
+        raise ValueError("expected one normal gpui-kit dependency")
+    return versions[0]
+
+
 def install(source, target):
     app = Path("crates/disktree-app")
     manifest = (target / app / "Cargo.toml").read_text()
-    source_manifest = tomllib.loads((source / app / "Cargo.toml").read_text())
-    parsed = tomllib.loads(manifest)
-    if (parsed["dependencies"]["gpui-kit"]["version"] !=
-            source_manifest["dependencies"]["gpui-kit"]["version"]):
+    source_manifest = read_manifest(source / app / "Cargo.toml")
+    parsed = read_manifest(target / app / "Cargo.toml")
+    if gpui_version(parsed) != gpui_version(source_manifest):
         raise ValueError("GPUI versions differ; adapt the baseline manually")
     if "screenshots" not in parsed.get("features", {}):
         if "[features]" in manifest:
