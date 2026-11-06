@@ -1,0 +1,10 @@
+{
+  "size": [1440, 900],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "setup", "state": {"type": "mark", "path": "Projects/relay"}},
+    {"op": "setup", "state": {"type": "mark", "path": "Documents"}},
+    {"op": "setup", "state": {"type": "review"}},
+    {"op": "capture", "name": "review.png"}
+  ]
+}
