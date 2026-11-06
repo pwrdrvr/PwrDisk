@@ -4218,7 +4218,7 @@ mod tests {
             contents in proptest::collection::vec(1_usize..8192, 1..6),
             cannot_spawn in proptest::bool::ANY,
         ) {
-            let temp = scratch();
+            let temp = removable_tempdir();
             let targets: Vec<_> = contents.iter().enumerate().map(|(i, &size)| {
                 let path = temp.path().join(format!("artifact-{i}"));
                 fs::write(&path, vec![b'x'; size]).expect("fixture");
