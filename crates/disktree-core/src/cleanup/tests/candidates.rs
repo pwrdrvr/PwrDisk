@@ -43,6 +43,8 @@ fn pnpm_independent_roots_keep_owner_hints_without_forcing_cleanup() {
             assert!(
                 recognize::inspection_with(&selected, &fixture.env).is_none()
             );
+            check_raw_with(&[target(&selected)], &fixture.env)
+                .expect("pnpm has no supported cleanup command");
             // Nearby user files do not acquire an owner from a common prefix.
             assert!(
                 recognize::hinted(

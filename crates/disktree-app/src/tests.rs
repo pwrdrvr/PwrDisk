@@ -79,8 +79,17 @@ fn init(cx: &mut gpui_kit::App) {
 ///
 /// The hidden directory holds the largest file, which is both the common case
 /// in a home directory and the one the ranking has to get right.
+fn scratch() -> tempfile::TempDir {
+    // The default macOS temp directory is protected live application
+    // state. Removal fixtures must exercise a supported scratch location.
+    #[cfg(target_os = "macos")]
+    return tempfile::tempdir_in("/private/tmp").expect("scratch fixture");
+    #[cfg(not(target_os = "macos"))]
+    tempfile::TempDir::new().expect("scratch fixture")
+}
+
 fn fixture() -> tempfile::TempDir {
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = scratch();
     let root = temp.path();
     for (path, bytes) in [
         ("keep/notes.txt", 1_000_usize),
@@ -294,6 +303,12 @@ fn remote_view_over<'a>(
     let focus = view.read_with(cx, |app, _| app.focus.clone());
     cx.update(|window, cx| window.focus(&focus, cx));
     (view, cx, root)
+}
+
+/// Complete the read-only cache preflight before exercising a native run.
+fn inspect_raw(view: &Entity<Disktree>, cx: &mut Window) {
+    update(view, cx, |app, cx| app.prepare_raw_inspection(cx));
+    cx.run_until_parked();
 }
 
 fn draw(cx: &mut Window) {
@@ -3515,6 +3530,7 @@ fn escape_in_the_delete_dialog_cancels(cx: &mut TestAppContext) {
         app.screen = Screen::Review;
         cx.notify();
     });
+    inspect_raw(&view, cx);
     draw(cx);
 
     press(cx, "enter");
@@ -5118,7 +5134,7 @@ fn queue_budget_view(
 ) -> (tempfile::TempDir, Entity<Disktree>, &mut Window) {
     use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
 
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = scratch();
     let root_path = temp.path().to_path_buf();
     let mut tree = Draft::directory("root");
     let mut parent = Draft::directory("container");
@@ -6350,7 +6366,7 @@ fn accessible_file_pages_reach_every_entry_and_share_safe_marks(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = scratch();
     for i in 0..235 {
         std::fs::write(
             temp.path().join(format!("Résumé 日本語-{i:03}.txt")),
@@ -6421,7 +6437,7 @@ fn accessible_file_navigation_uses_absolute_paths_and_filter(
 }
 
 fn paginated_fixture(count: usize) -> tempfile::TempDir {
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = scratch();
     for index in 0..count {
         let prefix = if index < 150 { "match" } else { "other" };
         std::fs::write(
@@ -6655,13 +6671,16 @@ fn status_review_removal_completion_survives_its_background_rescan(
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
-    let epoch = update(&view, cx, |app, cx| {
+    update(&view, cx, |app, cx| {
         let keep = child_crumbs(app, &[], "keep");
         let notes = child_crumbs(app, &keep, "notes.txt");
         app.toggle_mark(&notes, cx);
         app.removal_mode = RemovalMode::Permanent;
         // Remove & rescan.
         app.rescan_after_removal = true;
+    });
+    inspect_raw(&view, cx);
+    let epoch = update(&view, cx, |app, cx| {
         app.begin_removal(cx);
         assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
         app.run_epoch
@@ -6693,7 +6712,7 @@ fn status_review_removal_completion_survives_its_background_rescan(
 /// Run a contrived permanent removal of `names`, each under the root, to
 /// its Done screen.
 fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
-    let epoch = update(view, cx, |app, cx| {
+    update(view, cx, |app, cx| {
         for name in names {
             let crumbs = app
                 .crumbs_for_path(&app.root_path.join(name))
@@ -6701,6 +6720,9 @@ fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
             app.toggle_mark(&crumbs, cx);
         }
         app.removal_mode = RemovalMode::Permanent;
+    });
+    inspect_raw(view, cx);
+    let epoch = update(view, cx, |app, cx| {
         app.begin_removal(cx);
         assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
         app.run_epoch
@@ -6751,7 +6773,7 @@ fn a_cargo_build_is_an_ordinary_removal(cx: &mut TestAppContext) {
         std::fs::write(file, text).unwrap();
     }
     let (view, cx) = view_over(temp.path(), cx);
-    let epoch = update(&view, cx, |app, cx| {
+    update(&view, cx, |app, cx| {
         for name in ["debug/deps", "debug/incremental"] {
             let crumbs =
                 app.crumbs_for_path(&build.join(name)).expect("in the tree");
@@ -6761,6 +6783,9 @@ fn a_cargo_build_is_an_ordinary_removal(cx: &mut TestAppContext) {
         app.open_review(cx);
         assert_eq!(app.removal_mode, before, "Review keeps the user's mode");
         app.removal_mode = RemovalMode::Permanent;
+    });
+    inspect_raw(&view, cx);
+    let epoch = update(&view, cx, |app, cx| {
         app.begin_removal(cx);
         assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
         app.run_epoch
@@ -6806,7 +6831,7 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
     std::fs::rename(temp.path().join(".cache"), &build_output)
         .expect("ordinary removal fixture");
     let (view, cx) = view_over(temp.path(), cx);
-    let epoch = update(&view, cx, |app, cx| {
+    update(&view, cx, |app, cx| {
         for name in ["target/debug/deps", "junk/deeper"] {
             let crumbs = app
                 .crumbs_for_path(&app.root_path.join(name))
@@ -6814,6 +6839,9 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
             app.toggle_mark(&crumbs, cx);
         }
         app.removal_mode = RemovalMode::Permanent;
+    });
+    inspect_raw(&view, cx);
+    let epoch = update(&view, cx, |app, cx| {
         app.begin_removal(cx);
         assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
         app.run_epoch
@@ -7607,6 +7635,7 @@ fn focus_review_delete_cancel_enter_preserves_the_fixture(
         app.toggle_mark(&junk, cx);
         app.open_review(cx);
     });
+    inspect_raw(&view, cx);
     draw(cx);
     let cancel_tabs = if crate::chrome::Platform::current()
         == crate::chrome::Platform::Windows
@@ -10284,6 +10313,188 @@ fn raw_inspection_prepares_off_thread_and_execution_rechecks(
     assert!(temp.path().join("keep/notes.txt").exists());
 }
 
+/// Review must agree with the worker's recursive oracle before consent.
+/// Unmarking a relocated cache must leave unrelated marks removable on
+/// every platform, including those without cleanup's Delete files option.
+#[gpui_kit::test]
+fn review_routes_relocated_cache_before_confirmation_and_removes_unrelated_mark(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let cache = temp.path().join("project/vendor/_cacache/content-v2/blob");
+    std::fs::create_dir_all(cache.parent().expect("parent")).unwrap();
+    std::fs::write(&cache, b"cache payload").unwrap();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        for name in ["project", "junk"] {
+            let crumbs = child_crumbs(app, &[], name);
+            app.toggle_mark(&crumbs, cx);
+        }
+        app.removal_mode = RemovalMode::Permanent;
+        // Differential oracle: this is the check the worker would run.
+        assert!(
+            disktree_core::cleanup::check_raw(&app.plan().targets).is_err()
+        );
+        app.open_review(cx);
+    });
+    cx.run_until_parked();
+    draw(cx);
+    read(&view, cx, |app| {
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+        assert!(!app.confirm_open, "routing precedes confirmation");
+        assert!(app.run.is_none());
+    });
+    update(&view, cx, |app, cx| {
+        // Ordinary removal is available everywhere; cleanup's Delete
+        // files additionally requires the macOS/Linux active-use check.
+        app.unmark(&app.root_path.join("project"), cx);
+        app.removal_mode = RemovalMode::Permanent;
+        app.commit(false, cx);
+        assert!(!app.confirm_open, "changed marks need a fresh inspection");
+        assert!(app.run.is_none());
+    });
+    inspect_raw(&view, cx);
+    update(&view, cx, |app, cx| {
+        app.commit(false, cx);
+        assert!(app.confirm_open, "{:?}", app.notice());
+        app.confirm_delete(cx);
+        assert_eq!(app.screen, Screen::Running);
+    });
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done);
+    read(&view, cx, |app| {
+        assert_eq!(app.run_list.totals().removed, 1);
+        assert_eq!(app.run_list.totals().failed, 0);
+    });
+    assert!(cache.exists(), "the unmarked project is preserved");
+    assert!(!temp.path().join("junk").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// Differential oracle: Review and the worker agree across names, layouts,
+/// nesting depths and ordinary build output. Pending inspection grants no
+/// confirmation, even if commit is called without the disabled button.
+#[gpui_kit::test]
+fn review_inspection_agrees_with_worker_for_relocated_layouts(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let layouts: &[(&str, &[&str])] = &[
+        ("npm", &["_cacache/content-v2/blob"]),
+        ("npx", &["_npx/package/blob"]),
+        ("playwright", &["ms-playwright/chromium/blob"]),
+        ("pip", &["cache/wheels/blob", "cache/http-v2/blob"]),
+        ("uv", &["cache/CACHEDIR.TAG", "cache/wheels-v5/blob"]),
+        ("cypress", &["cache/15.0.0/Cypress.app/blob"]),
+        ("cargo", &["target/CACHEDIR.TAG", "target/debug/deps/blob"]),
+        ("ordinary", &["node_modules/.cache/blob"]),
+    ];
+    for (depth, (name, paths)) in layouts.iter().enumerate() {
+        let nested = temp.path().join(name).join("nested/".repeat(depth));
+        for path in *paths {
+            let file = nested.join(path);
+            std::fs::create_dir_all(file.parent().expect("parent")).unwrap();
+            std::fs::write(file, b"fixture").unwrap();
+        }
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    for (name, _) in layouts {
+        let refused = update(&view, cx, |app, cx| {
+            app.clear_marks(cx);
+            let crumbs = child_crumbs(app, &[], name);
+            app.toggle_mark(&crumbs, cx);
+            let refused =
+                disktree_core::cleanup::check_raw(&app.plan().targets).is_err();
+            app.removal_mode = RemovalMode::Permanent;
+            app.open_review(cx);
+            app.commit(false, cx);
+            assert!(!app.confirm_open, "inspection is pending: {name}");
+            assert!(app.run.is_none());
+            refused
+        });
+        cx.run_until_parked();
+        draw(cx);
+        read(&view, cx, |app| {
+            assert_eq!(app.raw_inspection_ready().is_err(), refused, "{name}");
+            assert_eq!(
+                app.removal_mode == RemovalMode::OwnerCleanup,
+                refused,
+                "{name}"
+            );
+            assert!(!app.confirm_open);
+        });
+        assert_eq!(cx.debug_bounds("raw-inspection").is_some(), refused);
+    }
+}
+
+/// A result from an old selection or tree cannot change the mode, permit
+/// confirmation or authorize removal of a later selection.
+#[gpui_kit::test]
+fn review_inspection_discards_replaced_selection_and_scan(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    npm_cache(temp.path());
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let cache = child_crumbs(app, &[], ".npm");
+        app.toggle_mark(&cache, cx);
+        app.open_review(cx);
+        app.clear_marks(cx);
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+        app.removal_mode = RemovalMode::Permanent;
+        app.open_review(cx);
+    });
+    cx.run_until_parked();
+    read(&view, cx, |app| {
+        assert!(app.raw_inspection_ready().is_ok());
+        assert_eq!(app.removal_mode, RemovalMode::Permanent);
+    });
+    update(&view, cx, |app, cx| {
+        app.commit(false, cx);
+        assert!(app.confirm_open, "current selection was checked");
+        let cache = child_crumbs(app, &[], ".npm");
+        app.toggle_mark(&cache, cx);
+        app.confirm_delete(cx);
+        assert!(app.run.is_none(), "changed marks revoke confirmation");
+    });
+    cx.run_until_parked();
+    read(&view, cx, |app| {
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+        assert!(!app.confirm_open);
+    });
+    update(&view, cx, |app, _| {
+        // Same paths and marks, but a new complete scan has its own check.
+        app.tree = Some(std::sync::Arc::new(
+            scan(temp.path(), options()).expect("new scan"),
+        ));
+        assert!(app.raw_inspection_ready().is_err());
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    draw(cx);
+    cx.run_until_parked();
+    read(&view, cx, |app| {
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+        assert!(app.run.is_none());
+    });
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
 /// Exporting a cache selection cannot substitute raw deletion for its owner.
 #[gpui_kit::test]
 fn cache_exports_keep_marks_and_refuse_raw_scripts(cx: &mut TestAppContext) {
@@ -10349,6 +10560,9 @@ fn cache_review_requires_owner_preview_and_never_falls_back_to_raw_removal(
             .expect("in the tree");
         app.toggle_mark(&cache, cx);
         app.open_review(cx);
+    });
+    inspect_raw(&view, cx);
+    update(&view, cx, |app, cx| {
         assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
         // Confirm cannot execute a missing owner preview, even if reached
         // directly rather than through the disabled/preview UI.
@@ -10395,7 +10609,7 @@ fn a_cache_named_folder_is_an_ordinary_mark(cx: &mut TestAppContext) {
         std::fs::write(file, vec![b'x'; 10_000]).unwrap();
     }
     let (view, cx) = view_over(temp.path(), cx);
-    let epoch = update(&view, cx, |app, cx| {
+    update(&view, cx, |app, cx| {
         for name in [".cache", "project", "Library/Caches/com.example.app"] {
             let crumbs = app
                 .crumbs_for_path(&app.root_path.join(name))
@@ -10406,6 +10620,9 @@ fn a_cache_named_folder_is_an_ordinary_mark(cx: &mut TestAppContext) {
         app.open_review(cx);
         assert_eq!(app.removal_mode, before, "Review keeps the user's mode");
         app.removal_mode = RemovalMode::Permanent;
+    });
+    inspect_raw(&view, cx);
+    let epoch = update(&view, cx, |app, cx| {
         app.begin_removal(cx);
         assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
         app.run_epoch
@@ -11191,6 +11408,9 @@ fn cache_cleanup_view<'a>(
         let junk = child_crumbs(app, &[], "junk");
         app.toggle_mark(&junk, cx);
         app.open_review(cx);
+    });
+    inspect_raw(&view, cx);
+    read(&view, cx, |app| {
         assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
     });
     (view, cx, paths, bin)

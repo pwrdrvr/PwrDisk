@@ -208,14 +208,14 @@ fn setup(
                 State::Select { path }
                 | State::Mark { path }
                 | State::Removed { path } => {
+                    let path_in_tree = app.root_path.join(path);
                     let crumbs = app
-                        .crumbs_for_path(&root.join(path))
+                        .crumbs_for_path(&path_in_tree)
                         .with_context(|| format!("no fixture path: {path}"))?;
                     if matches!(state, State::Mark { .. }) {
                         app.toggle_mark(&crumbs, cx);
                         ensure!(
-                            app.marks
-                                .contains(&root.join(path), app.path_style()),
+                            app.marks.contains(&path_in_tree, app.path_style()),
                             "fixture mark was refused: {path}"
                         );
                     } else if matches!(state, State::Removed { .. }) {
@@ -237,6 +237,16 @@ fn setup(
                     app.removal_mode =
                         disktree_core::removal::RemovalMode::OwnerCleanup;
                     app.prepare_cleanup(cx);
+                }
+                State::SystemFolders => {
+                    ensure!(
+                        root == Path::new("/Volumes/Fixtures/Demo"),
+                        "system folders require the contrived Fixtures image"
+                    );
+                    // Keep the scanned fixture tree and its own disk meter.
+                    // Only its logical paths change, exercising real guards
+                    // without scanning or changing any system directory.
+                    app.root_path = Path::new("/").to_path_buf();
                 }
                 State::FileList => app.file_list = true,
                 State::Help => app.open_help(cx),

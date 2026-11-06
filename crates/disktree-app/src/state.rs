@@ -457,6 +457,7 @@ pub struct Disktree {
     /// pressing its button toggles instead of reopening.
     pub export_menu_was_open: bool,
     pub removal_mode: RemovalMode,
+    pub raw_inspection: Option<crate::raw_inspection::RawInspection>,
     pub cleanup_review: Option<crate::cleanup::Review>,
     pub cleanup_results: Vec<disktree_core::cleanup::Report>,
     /// What each step of the running cleanup does, in run-list order.
@@ -794,6 +795,7 @@ impl Disktree {
                 RemovalMode::Permanent
             },
             trash_backend,
+            raw_inspection: None,
             cleanup_review: None,
             cleanup_results: vec![],
             cleanup_actions: vec![],
@@ -1665,14 +1667,8 @@ impl Disktree {
         } else {
             self.reread_disks();
             self.screen = Screen::Review;
-            if self.remote.is_none()
-                && self.marks.items().iter().any(|target| {
-                    disktree_core::cleanup::inspection_reason(&target.path)
-                        .is_some()
-                })
-            {
-                self.removal_mode = RemovalMode::OwnerCleanup;
-            }
+            self.prepare_raw_inspection(cx);
+            self.route_inspected_caches(cx);
             self.focus_request = Some(FocusTarget::Root);
         }
         cx.notify();
@@ -3536,6 +3532,12 @@ impl Disktree {
     /// a permanent deletion, which cannot be undone. `rescan` is Remove &
     /// rescan; without it the tree drops what went and stays.
     pub fn commit(&mut self, rescan: bool, cx: &mut Context<'_, Self>) {
+        if self.removal_mode != RemovalMode::OwnerCleanup
+            && self.remote.is_none()
+            && !self.raw_removal_reviewed(cx)
+        {
+            return;
+        }
         // A cleanup is checked, then decided, before anything else: until
         // then there is nothing to confirm.
         if self.removal_mode == RemovalMode::OwnerCleanup
@@ -3715,24 +3717,6 @@ impl Disktree {
         let plan = cleanup
             .as_ref()
             .map_or_else(|| self.plan(), |approved| approved.plan.clone());
-        if self.removal_mode != RemovalMode::OwnerCleanup
-            && let Some((target, reason)) =
-                plan.targets.iter().find_map(|target| {
-                    disktree_core::cleanup::inspection_reason(&target.path)
-                        .map(|reason| (target, reason))
-                })
-        {
-            self.say(
-                format!(
-                    "{}: {reason}. Choose Cache cleanup to decide what happens to it.",
-                    target.path.display()
-                ),
-                Status::Warning,
-                cx,
-            );
-            cx.notify();
-            return;
-        }
         if plan.is_empty() {
             self.say("nothing is marked", Status::Warning, cx);
             cx.notify();
@@ -3750,6 +3734,12 @@ impl Disktree {
                 return;
             }
         };
+        if by == Remover::Person
+            && cleanup.is_none()
+            && !self.raw_removal_reviewed(cx)
+        {
+            return;
+        }
         // This window quits once the prompt is answered yes, and quitting
         // would stop a permanent delete halfway.
         if self.restarting {

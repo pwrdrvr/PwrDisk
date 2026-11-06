@@ -91,6 +91,20 @@ guard refusal for the folder. Look inside it with `pwrdisk_ls`, propose
 entries the user recognizes as their own leftovers, and leave files a
 running program may still use. Do not bypass the guard.
 
+`/Applications`, `/Applications/Utilities` and `/Volumes` themselves are
+protected containers. They cannot be marked or removed, including through
+case variants, the Data-volume spelling or a linked scan root. Individual
+third-party apps inside `/Applications` remain eligible under the other
+guards; prefer an app's supported uninstaller when it has one. Selecting a
+folder to inspect it is still allowed. The same guards apply in Review
+and again on the removal worker.
+
+Choosing a scan root through a link (`/var`, `/tmp`, a root-volume alias)
+does not bypass system-tree, profile or nested-mount guards. In particular,
+`/var/folders` remains protected as `/private/var/folders`; an explicit scan
+there does not make its live state removable. A selected symlink itself
+is still unlinked without deleting its destination.
+
 ## Never propose
 
 - **Inside a library package**: the Photos Library, Music, Apple TV, iMovie,
@@ -108,8 +122,9 @@ running program may still use. Do not bypass the guard.
 - **Mail and Messages attachments, Keychains, and iPhone and iPad backups**
   (`~/Library/Application Support/MobileSync/Backup`): user data and
   secrets. Old device backups are the user's to delete from Finder.
-- **`/Applications`**: uninstall with the app's uninstaller or by dragging to
-  the Trash in Finder, which the user does.
+- **All of `/Applications` or `/Applications/Utilities`**: inspect individual
+  apps instead. Establish that the user wants to uninstall that app and
+  whether it has an uninstaller before proposing its bundle for removal.
 
 ## Usually safe, with the owning tool first
 

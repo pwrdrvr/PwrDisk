@@ -141,6 +141,13 @@ reports can show removal accounting before a rescan.
 before/after pictures for pnpm's separate metadata/dlx cache. It adds only
 invented data to the owned Fixtures image and sets its XDG cache hint there.
 
+`bash scripts/screenshots/protected-folders.sh target/pr-shots/protected`
+compares the Applications folder and an individual invented app. Its
+`system_folders` setup retains the scanned fixture tree and fixture disk
+meter but maps paths to a logical `/`, so the real removal guards apply.
+It never scans the host's root or modifies its system folders. This hook
+requires the owned `/Volumes/Fixtures/Demo` image and is only for pictures.
+
 Capture names are unique simple filenames: letters, digits, `_` and `-`,
 then `.png`. A scenario needs 1..256 steps and at least one capture. Each
 capture also writes `<name>.bounds.json`, with logical bounds and paths for
