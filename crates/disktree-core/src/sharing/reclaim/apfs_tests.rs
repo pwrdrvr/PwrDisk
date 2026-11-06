@@ -12,6 +12,8 @@ use super::estimate;
 use crate::scan::{ScanOptions, scan};
 
 const BLOCK: usize = 4096;
+// hdiutil leaves this content hint untranslated for synthesized containers.
+const APFS_CONTAINER: &str = "EF57347C-0000-11AA-AA11-00306543ECAC";
 // DiskImages serializes device setup internally. Avoid competing oracle
 // mounts while libtest runs the named regression and property together.
 static IMAGES: Mutex<()> = Mutex::new(());
@@ -48,11 +50,35 @@ fn physical_device(entries: &[serde_json::Value]) -> Result<PathBuf, String> {
     if devices.next().is_some() {
         return Err("multiple backing image devices".into());
     }
+    disk_device(device)
+}
+
+fn disk_device(device: &str) -> Result<PathBuf, String> {
     let suffix = device.strip_prefix("/dev/disk").unwrap_or("");
     if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit()) {
         return Err(format!("invalid backing image device: {device}"));
     }
     Ok(PathBuf::from(device))
+}
+
+fn cleanup_device(entries: &[serde_json::Value]) -> Result<PathBuf, String> {
+    let physical = physical_device(entries)?;
+    let mut containers = entries.iter().filter_map(|entry| {
+        (entry["content-hint"] == APFS_CONTAINER)
+            .then(|| entry["dev-entry"].as_str())
+            .flatten()
+    });
+    let Some(container) = containers.next() else {
+        // A partially completed detach may have retired the APFS container
+        // already. The remaining owned physical attachment still needs to go.
+        return Ok(physical);
+    };
+    if containers.next().is_some() {
+        return Err("multiple owned APFS containers".into());
+    }
+    // Unmounting volumes does not retire their synthesized container. Ask
+    // that container to detach before ejecting the store it holds open.
+    disk_device(container)
 }
 
 fn attachment(backing: &Path) -> Result<Option<PathBuf>, String> {
@@ -81,7 +107,7 @@ fn attachment(backing: &Path) -> Result<Option<PathBuf>, String> {
     let entries = image["system-entities"]
         .as_array()
         .ok_or("missing owned attachment devices")?;
-    physical_device(entries).map(Some)
+    cleanup_device(entries).map(Some)
 }
 
 fn attachment_devices(plist: &[u8], root: &Path) -> (PathBuf, PathBuf) {
@@ -115,8 +141,7 @@ fn attachment_devices(plist: &[u8], root: &Path) -> (PathBuf, PathBuf) {
 
 fn eject(root: &Path, force: bool) -> Result<(), String> {
     if force {
-        // unmountDisk follows APFS's synthesized volumes back to this
-        // image's physical store before the backing device is ejected.
+        // Release the chosen whole disk's volumes before native detach.
         let unmount = run(Command::new("diskutil")
             .args(["unmountDisk", "force"])
             .arg(root));
@@ -155,6 +180,16 @@ fn checked(command: &mut Command) -> Output {
     run(command).expect("filesystem oracle command")
 }
 
+fn describe(command: &mut Command) -> String {
+    run(command).map_or_else(std::convert::identity, |output| {
+        format!(
+            "{command:?}:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
 impl Image {
     fn new() -> Self {
         let guard = IMAGES
@@ -169,22 +204,30 @@ impl Image {
             attachment,
             _guard: guard,
         };
-        checked(
-            Command::new("hdiutil")
-                .args([
-                    "create",
-                    "-quiet",
-                    "-size",
-                    "128m",
-                    "-type",
-                    "SPARSE",
-                    "-fs",
-                    "APFS",
-                    "-volname",
-                    "PwrDisk-reclaim-oracle",
-                ])
-                .arg(image.backing()),
-        );
+        run(Command::new("hdiutil")
+            .args([
+                "create",
+                "-verbose",
+                "-size",
+                "128m",
+                "-type",
+                "SPARSE",
+                "-fs",
+                "APFS",
+                "-volname",
+                "PwrDisk-reclaim-oracle",
+            ])
+            .arg(image.backing()))
+        .unwrap_or_else(|error| {
+            let space = describe(
+                Command::new("df")
+                    .arg("-kP")
+                    .arg(image.temp.as_ref().expect("image directory").path()),
+            );
+            panic!(
+                "create private APFS image: {error}\nbacking space:\n{space}"
+            );
+        });
         fs::create_dir(image.root()).expect("private mount point");
         image.attach();
         fs::write(image.root().join(".metadata_never_index"), [])
@@ -241,29 +284,48 @@ impl Image {
         // the backing path before each operation, including after an error:
         // a command's exit status alone does not say whether it detached.
         let mut failure = String::new();
+        let mut target = (self.attachment)(&self.backing())?;
         for force in [false, true] {
-            let target = (self.attachment)(&self.backing())
-                .map_err(|error| format!("{failure}\n{error}"))?;
-            let Some(target) = target else {
+            let Some(device) = target.take() else {
                 break;
             };
-            match (self.eject)(&target, force) {
-                Ok(()) => break,
-                Err(error) => {
-                    failure.push('\n');
-                    failure.push_str(&error);
-                    if force {
-                        let remaining = (self.attachment)(&self.backing())
-                            .map_err(|error| format!("{failure}\n{error}"))?;
-                        if let Some(device) = remaining {
-                            return Err(format!(
-                                "{failure}\nowned image still attached: {}",
-                                device.display()
-                            ));
-                        }
-                    }
-                }
+            if let Err(error) = (self.eject)(&device, force) {
+                failure.push('\n');
+                failure.push_str(&error);
             }
+            target = (self.attachment)(&self.backing())
+                .map_err(|error| format!("{failure}\n{error}"))?;
+        }
+        if let Some(device) = target {
+            // Query only the remaining owned device and our private paths.
+            // In-memory cleanup models never invoke native diagnostics.
+            let diagnostics = if self.device.is_some() {
+                format!(
+                    "\n{}\n{}\n{}",
+                    describe(
+                        Command::new("diskutil")
+                            .args(["info", "-plist"])
+                            .arg(&device)
+                    ),
+                    describe(
+                        Command::new("lsof")
+                            .args(["-nP", "--"])
+                            .arg(self.backing())
+                            .arg(&device)
+                    ),
+                    describe(
+                        Command::new("lsof")
+                            .args(["-nP", "+D"])
+                            .arg(self.root())
+                    )
+                )
+            } else {
+                String::new()
+            };
+            return Err(format!(
+                "{failure}\nowned image still attached: {}{diagnostics}",
+                device.display(),
+            ));
         }
         self.mounted = false;
         self.device = None;
@@ -316,20 +378,35 @@ fn unknown_attachment(_: &Path) -> Result<Option<PathBuf>, String> {
     Err("injected attachment query failure".into())
 }
 
-#[test]
-fn failed_image_cleanup_does_not_panic_or_remove_its_backing_files() {
+fn model_attachment(backing: &Path) -> Result<Option<PathBuf>, String> {
+    // Each byte models one observation: gone (0), live container (1), or
+    // residual physical store (2). Command status is generated separately.
+    let states = fs::read(backing).map_err(|error| error.to_string())?;
+    let (state, remaining) = states
+        .split_first()
+        .ok_or("exhausted attachment-state model")?;
+    fs::write(backing, remaining).map_err(|error| error.to_string())?;
+    Ok(match state {
+        0 => None,
+        1 => Some(PathBuf::from("/dev/disk999998")),
+        2 => Some(PathBuf::from("/dev/disk999999")),
+        _ => return Err("invalid attachment-state model".into()),
+    })
+}
+
+fn check_retained_backing(eject: fn(&Path, bool) -> Result<(), String>) {
     let temp = tempfile::tempdir().expect("cleanup fixture");
     let retained = temp.path().to_owned();
     fs::write(retained.join("oracle.sparseimage"), b"owned image")
         .expect("backing file");
-    // A failed unmount means the directory can still hold a live mount.
-    // A stand-in ejector exercises that state without leaving a real disk.
+    // A listed attachment can still hold a live mount, regardless of command
+    // status. Stand-ins exercise that state without leaving a real disk.
     let image = Image {
         temp: Some(temp),
         mounted: true,
         device: None,
         volume: None,
-        eject: fail_eject,
+        eject,
         attachment: |_| Ok(Some(PathBuf::from("/dev/disk999999"))),
         _guard: IMAGES
             .lock()
@@ -342,6 +419,16 @@ fn failed_image_cleanup_does_not_panic_or_remove_its_backing_files() {
     assert!(outcome.is_ok(), "cleanup must not introduce a second panic");
     assert!(retained.join("oracle.sparseimage").exists());
     fs::remove_dir_all(retained).expect("remove the unmounted stand-in");
+}
+
+#[test]
+fn failed_image_cleanup_does_not_panic_or_remove_its_backing_files() {
+    check_retained_backing(fail_eject);
+}
+
+#[test]
+fn successful_eject_status_does_not_remove_an_attached_image() {
+    check_retained_backing(force_succeeds);
 }
 
 fn eject_succeeds(root: &Path, force: bool) -> Result<(), String> {
@@ -367,22 +454,31 @@ proptest! {
         ..ProptestConfig::default()
     })]
 
-    /// Failed unmounts leave the backing files intact; destruction never
-    /// introduces a panic, including when it runs during another failure.
+    /// Only confirmed detachment permits backing-file removal. Command
+    /// status cannot replace that observation or mask another failure.
     #[test]
     fn image_cleanup_follows_the_unmount_result(
         normal_ok in any::<bool>(),
         forced_ok in any::<bool>(),
+        normal_detached in any::<bool>(),
+        forced_detached in any::<bool>(),
         attachment_known in any::<bool>(),
         unwinding in any::<bool>(),
     ) {
         let temp = tempfile::tempdir().expect("cleanup model");
         let retained = temp.path().to_owned();
-        fs::write(retained.join("oracle.sparseimage"), b"owned image")
+        fs::write(retained.join("oracle.sparseimage"), [
+            1, if normal_detached { 0 } else { 2 },
+            if forced_detached { 0 } else { 2 },
+        ])
             .expect("backing file");
-        let eject = if normal_ok { eject_succeeds }
-            else if forced_ok { force_succeeds }
-            else { fail_eject };
+        let eject: fn(&Path, bool) -> Result<(), String> =
+            match (normal_ok, forced_ok) {
+                (true, true) => |_, _| Ok(()),
+                (true, false) => eject_succeeds,
+                (false, true) => force_succeeds,
+                (false, false) => fail_eject,
+            };
         let image = Image {
             temp: Some(temp),
             mounted: true,
@@ -390,7 +486,7 @@ proptest! {
             volume: None,
             eject,
             attachment: if attachment_known {
-                |_| Ok(Some(PathBuf::from("/dev/disk999999")))
+                model_attachment
             } else { unknown_attachment },
             _guard: IMAGES.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -408,7 +504,7 @@ proptest! {
                 Some(&"original oracle failure"));
         }
         prop_assert_eq!(retained.join("oracle.sparseimage").exists(),
-            !attachment_known || (!normal_ok && !forced_ok));
+            !attachment_known || (!normal_detached && !forced_detached));
         if retained.exists() {
             fs::remove_dir_all(retained)
                 .expect("remove the unmounted stand-in");
@@ -534,6 +630,52 @@ fn a_failed_command_that_detached_the_image_is_successful_cleanup() {
     check_already_ejected(0, true).expect("detached backing image is gone");
 }
 
+fn busy_physical_store(target: &Path, force: bool) -> Result<(), String> {
+    let output = run(Command::new("hdiutil").args(["info", "-plist"]))?;
+    let records = plist_field(&output.stdout, "images")?;
+    let images = records.as_array().ok_or("attached image records")?;
+    let parent = images.iter().any(|image| {
+        image["system-entities"].as_array().is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                entry["dev-entry"].as_str().map(Path::new) == Some(target)
+                    && entry["content-hint"] == "GUID_partition_scheme"
+            })
+        })
+    });
+    if parent {
+        // Model the CI failure: unmounted APFS still holds its store open.
+        // The container itself remains detachable with the native tools.
+        Err("modeled EBUSY: physical store has a live APFS container".into())
+    } else {
+        eject(target, force)
+    }
+}
+
+fn check_busy_parent_cleanup(checkpoints: usize) -> Result<(), TestCaseError> {
+    let mut image = Image::new();
+    for _ in 0..checkpoints {
+        image.free();
+    }
+    image.eject = busy_physical_store;
+    let outcome = image.try_detach();
+    let remaining = attachment(&image.backing()).expect("attachment state");
+    image.eject = eject;
+    // Always release the real image, including on the pre-fix fixture.
+    image.mounted = remaining.is_some();
+    if image.mounted {
+        image.detach();
+    }
+    drop(image);
+    prop_assert!(outcome.is_ok(), "busy physical store: {outcome:?}");
+    prop_assert!(remaining.is_none(), "release the entire backing image");
+    Ok(())
+}
+
+#[test]
+fn container_cleanup_releases_a_busy_physical_store() {
+    check_busy_parent_cleanup(4).expect("release APFS before its store");
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 4,
@@ -554,6 +696,13 @@ proptest! {
         reported_error in any::<bool>(),
     ) {
         check_already_ejected(checkpoints, reported_error)?;
+    }
+
+    #[test]
+    fn image_cleanup_releases_a_busy_parent_after_checkpoints(
+        checkpoints in 0_usize..5,
+    ) {
+        check_busy_parent_cleanup(checkpoints)?;
     }
 }
 
