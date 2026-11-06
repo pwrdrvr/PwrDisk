@@ -352,6 +352,14 @@ fn judge(
         })
 }
 
+fn resolved_entry(path: &Path) -> Option<PathBuf> {
+    Some(
+        fs::canonicalize(path.parent()?)
+            .ok()?
+            .join(path.file_name()?),
+    )
+}
+
 /// Trees the operating system owns. A whole-disk scan shows them, because
 /// they are part of what fills the disk, but files there belong to packages
 /// and removing them by hand breaks the system; pacman, paccache,
@@ -726,7 +734,12 @@ fn refuse(
 ) -> Option<String> {
     let key = guard_key(path);
     let root_key = guard_key(root);
-    let home_key = home.map(|home| home.key.as_path());
+    let home_key = home.map(|home| {
+        home.real
+            .as_deref()
+            .filter(|real| key.starts_with(real))
+            .unwrap_or(&home.key)
+    });
     if path.parent().is_none() {
         return Some("the filesystem root cannot be removed".into());
     }
@@ -739,18 +752,8 @@ fn refuse(
                 .into(),
         );
     }
-    if cfg!(windows)
-        && let Some(name) = path.components().find_map(|part| match part {
-            Component::Normal(name) => {
-                misread_by_win32(&name.to_string_lossy()).then_some(name)
-            }
-            _ => None,
-        })
-    {
-        return Some(format!(
-            "Windows would read {} as a different name, and remove that",
-            name.display()
-        ));
+    if let Some(reason) = windows_spelling_refusal(path) {
+        return Some(reason);
     }
     if home_key.is_some_and(|home| key == home)
         || home
@@ -848,12 +851,31 @@ fn misread_by_win32(name: &str) -> bool {
     numbered || DEVICES.contains(&stem.as_str())
 }
 
+/// Resolve only after checking the original spelling: Win32 may strip a
+/// trailing dot or space from an ancestor while canonicalizing it.
+fn windows_spelling_refusal(path: &Path) -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let name = path.components().find_map(|part| match part {
+        Component::Normal(name) => {
+            misread_by_win32(&name.to_string_lossy()).then_some(name)
+        }
+        _ => None,
+    })?;
+    Some(format!(
+        "Windows would read {} as a different name, and remove that",
+        name.display()
+    ))
+}
+
 /// Why `path`, inside `root` as spelled, is somewhere else in fact, if it
 /// is. The guards compare spellings, and a link or junction on the way
 /// down makes a spelling inside the root name something outside it: the
 /// trash, and removal on Windows, follow it. Links above the root are the
 /// user's own choice of root, so the real path is compared with the real
-/// root. The home directory is looked for again by real path, too.
+/// root. Ownership and mount guards then judge the resolved entry in
+/// [`judge`]. The home directory is looked for again by real path, too.
 ///
 /// Anything that cannot be resolved passes: the removal of a path that is
 /// gone fails on its own.
@@ -863,8 +885,17 @@ fn linked(
     real_root: Option<&Path>,
     home: Option<&Home>,
 ) -> Option<String> {
-    let (parent, name) = (path.parent()?, path.file_name()?);
-    let real = guard_key(&fs::canonicalize(parent).ok()?.join(name));
+    linked_entry(path, root, real_root, home, &resolved_entry(path)?)
+}
+
+fn linked_entry(
+    path: &Path,
+    root: &Path,
+    real_root: Option<&Path>,
+    home: Option<&Home>,
+    real: &Path,
+) -> Option<String> {
+    let real = guard_key(real);
     if let (Some(real_root), Ok(rest)) = (real_root, path.strip_prefix(root))
         && real != guard_key(&real_root.join(rest))
     {
@@ -1754,13 +1785,16 @@ fn mounted(path: &Path, mounts: &[PathBuf]) -> Option<String> {
     if is_mount_point(path) {
         return Some("it became a mount point since it was marked".into());
     }
-    mount_below(&guard_key(path), mounts).map(|mount| {
-        format!(
-            "{} is mounted inside it: removing it would reach into another \
+    let real = resolved_entry(path);
+    mount_below(&guard_key(real.as_deref().unwrap_or(path)), mounts).map(
+        |mount| {
+            format!(
+                "{} is mounted inside it: removing it would reach into another \
              filesystem",
-            mount.display()
-        )
-    })
+                mount.display()
+            )
+        },
+    )
 }
 
 /// `rm -rf --one-file-system` semantics: a symlink is unlinked, never
@@ -2207,6 +2241,9 @@ fn deletion_date() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
+#[cfg(all(test, unix))]
+mod path_oracle;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2478,6 +2515,17 @@ mod tests {
                 &MountTable::default());
             prop_assert!(reason.is_some(), "{}", path.display());
         }
+
+        /// A configured profiles folder can be a junction on Windows.
+        /// Resolving a scan root must protect the same directory entries.
+        #[test]
+        #[cfg(any(unix, windows))]
+        fn profile_aliases_preserve_directory_identity(
+            name in "user-[a-z]{1,12}",
+            depth in 0_usize..5,
+        ) {
+            check_profile_aliases(&name, depth);
+        }
     }
 
     #[test]
@@ -2566,8 +2614,16 @@ mod tests {
         system_tree(&guard_key(path), Some(&guard_key(home)))
     }
 
+    fn removable_tempdir() -> TempDir {
+        tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("removable fixture")
+    }
+
     fn tree() -> TempDir {
-        let temp = scratch();
+        // The default macOS TMPDIR is protected system state. These tests
+        // need removable entries under every spelling of the root.
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("tempdir");
         fs::create_dir_all(temp.path().join("a/b")).expect("mkdir");
         fs::write(temp.path().join("a/one.bin"), vec![b'x'; 10])
             .expect("write");
@@ -2708,7 +2764,7 @@ mod tests {
 
     #[test]
     fn removal_nesting_budget() {
-        let temp = scratch();
+        let temp = removable_tempdir();
         let measure = |count| {
             let targets: Vec<_> = (0..count)
                 .map(|index| (index * 73) % count)
@@ -2737,7 +2793,7 @@ mod tests {
 
     #[test]
     fn nesting_keeps_component_boundaries_duplicates_and_output_order() {
-        let temp = scratch();
+        let temp = removable_tempdir();
         let targets: Vec<_> =
             ["z", "ab", "a/deep", "a", "a", "ab/inner", "a/deeper/file"]
                 .map(|name| target(&temp.path().join(name), 1))
@@ -2766,7 +2822,7 @@ mod tests {
     #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn nesting_uses_guard_case_order_even_when_the_child_sorts_first() {
-        let temp = scratch();
+        let temp = removable_tempdir();
         let parent = target(&temp.path().join("alpha"), 3);
         let child = target(&temp.path().join("ALPHA/child"), 1);
         let result = plan_against(
@@ -2802,26 +2858,54 @@ mod tests {
     /// be projected onto its free space.
     #[test]
     fn only_the_scanned_volumes_marks_are_projected() {
-        let table = "\
-/dev/mapper/root / btrfs rw,subvol=/@ 0 0
-/dev/mapper/root /home btrfs rw,subvol=/@home 0 0
-/dev/mapper/root /.snapshots btrfs rw,subvol=/@snapshots 0 0
-/dev/mapper/data /data ext4 rw 0 0
-";
+        // The table models volume identities, but removal still needs real,
+        // native absolute paths: `/home` is root-relative on Windows.
+        let temp = removable_tempdir();
+        let root = fs::canonicalize(temp.path()).expect("native root");
+        assert!(root.is_absolute());
+        let home = root.join("home");
+        let data = root.join("data");
+        let snapshots = root.join(".snapshots");
+        let junk = home.join("tobi/junk");
+        fs::create_dir_all(junk.join("deeper")).expect("nested tree");
+        fs::create_dir(&data).expect("other volume");
+        fs::create_dir_all(snapshots.join("7")).expect("snapshot");
+        fs::write(junk.join("own"), [b'x'; 40]).expect("own bytes");
+        fs::write(junk.join("deeper/file"), [b'x'; 60]).expect("nested bytes");
+        fs::write(data.join("junk"), [b'x'; 200]).expect("other bytes");
+        fs::write(snapshots.join("7/junk"), [b'x'; 400])
+            .expect("snapshot bytes");
+        let mount = |point, source: &str, fstype: &str, options: &str| {
+            crate::space::Mount {
+                point,
+                source: source.into(),
+                fstype: fstype.into(),
+                options: options.into(),
+            }
+        };
+        let other = mount(data.clone(), "other-disk", "ext4", "rw");
+        let table = vec![
+            mount(root.clone(), "root-disk", "btrfs", "rw,subvol=/@"),
+            mount(home, "root-disk", "btrfs", "rw,subvol=/@home"),
+            mount(
+                snapshots.clone(),
+                "root-disk",
+                "btrfs",
+                "rw,subvol=/@snapshots",
+            ),
+            other.clone(),
+        ];
         let mounts = MountTable {
-            points: crate::space::parse_mounts(table)
-                .iter()
-                .map(|mount| guard_key(&mount.point))
-                .collect(),
+            points: table.iter().map(|mount| guard_key(&mount.point)).collect(),
             media: Vec::new(),
-            mounts: Some(crate::space::parse_mounts(table)),
+            mounts: Some(table),
         };
         let marked = [
-            target(Path::new("/home/tobi/junk"), 100),
-            target(Path::new("/data/junk"), 200),
-            target(Path::new("/.snapshots/7/junk"), 400),
+            target(&junk, 100),
+            target(&data.join("junk"), 200),
+            target(&snapshots.join("7/junk"), 400),
         ];
-        let plan = plan_against(&marked, Path::new("/"), &mounts);
+        let plan = plan_against(&marked, &root, &mounts);
         assert!(
             plan.blocked.is_empty(),
             "a mark inside another volume is legal: {:?}",
@@ -2851,11 +2935,8 @@ mod tests {
 
         // A mark inside another is removed with it, so its bytes are counted
         // once here as they are in the total.
-        let nested = [
-            target(Path::new("/home/tobi/junk"), 100),
-            target(Path::new("/home/tobi/junk/deeper"), 60),
-        ];
-        let plan = plan_against(&nested, Path::new("/"), &mounts);
+        let nested = [target(&junk, 100), target(&junk.join("deeper"), 60)];
+        let plan = plan_against(&nested, &root, &mounts);
         assert_eq!(plan.covered.len(), 1);
         assert_eq!(plan.bytes(), 100);
         assert_eq!(plan.reclaim(), 100);
@@ -2863,14 +2944,17 @@ mod tests {
         // Where the table cannot place the paths, nothing is claimed: a
         // projection the meter cannot stand behind is worse than none.
         let partial = MountTable {
-            mounts: Some(crate::space::parse_mounts(
-                "/dev/mapper/data /data ext4 rw 0 0\n",
-            )),
+            mounts: Some(vec![other]),
             ..MountTable::default()
         };
-        let root = Path::new("/disktree-untabled");
-        let plan =
-            plan_against(&[target(&root.join("junk"), 50)], root, &partial);
+        let untabled = root.join("untabled");
+        fs::create_dir(&untabled).expect("unplaced root");
+        fs::write(untabled.join("junk"), [b'x'; 50]).expect("unplaced bytes");
+        let plan = plan_against(
+            &[target(&untabled.join("junk"), 50)],
+            &untabled,
+            &partial,
+        );
         assert_eq!(plan.bytes(), 50);
         assert_eq!(plan.reclaim(), 0);
         assert_eq!(plan.foreign(), 0);
@@ -3103,19 +3187,18 @@ mod tests {
     fn the_mount_table_is_read_off_the_calling_thread_and_then_kept() {
         prime_mount_points();
         // The first read lands on its own thread; wait for it, briefly.
-        let mut mounts = mount_points();
         for _ in 0..500 {
-            if !mounts.points.is_empty() {
-                break;
+            let mounts = mount_points();
+            let again = mount_points();
+            // Disk-image tests (or the user) may change the namespace
+            // between live reads. The promise is reuse of one snapshot,
+            // including while its asynchronous replacement is in flight.
+            if !mounts.points.is_empty() && Arc::ptr_eq(&mounts, &again) {
+                return;
             }
             thread::sleep(std::time::Duration::from_millis(10));
-            mounts = mount_points();
         }
-        assert_eq!(
-            mounts.points,
-            read_mount_table().points,
-            "the same table, cached"
-        );
+        panic!("no cached mount-table snapshot became available");
     }
 
     #[test]
@@ -3213,7 +3296,7 @@ mod tests {
     #[test]
     fn permanent_removal_unlinks_nested_symlinks_without_following_them() {
         let temp = tree();
-        let outside = TempDir::new().expect("tempdir");
+        let outside = removable_tempdir();
         fs::write(outside.path().join("keep"), "x").expect("write");
         link_dir(outside.path(), &temp.path().join("a/link"));
         remove_permanently(&temp.path().join("a"), temp.path())
@@ -3242,7 +3325,7 @@ mod tests {
     #[test]
     fn permanent_removal_unlinks_a_symlink_instead_of_following_it() {
         let temp = tree();
-        let keep = TempDir::new().expect("tempdir");
+        let keep = removable_tempdir();
         fs::write(keep.path().join("precious.bin"), b"data").expect("write");
         let link = temp.path().join("link");
         link_dir(keep.path(), &link);
@@ -3258,7 +3341,7 @@ mod tests {
     #[cfg(unix)]
     fn permanent_removal_does_not_follow_a_link_put_on_the_way_down() {
         let temp = tree();
-        let keep = TempDir::new().expect("tempdir");
+        let keep = removable_tempdir();
         fs::create_dir(keep.path().join("x")).expect("mkdir");
         fs::write(keep.path().join("x/precious.bin"), b"data").expect("write");
         let marked = temp.path().join("a/b/x");
@@ -3274,7 +3357,7 @@ mod tests {
     #[test]
     fn a_target_reached_through_a_link_is_refused() {
         let temp = tree();
-        let keep = TempDir::new().expect("tempdir");
+        let keep = removable_tempdir();
         fs::write(keep.path().join("precious.bin"), b"data").expect("write");
         link_dir(keep.path(), &temp.path().join("link"));
 
@@ -3295,7 +3378,7 @@ mod tests {
     #[test]
     fn a_link_put_on_the_way_down_after_planning_stops_the_worker() {
         let temp = tree();
-        let keep = TempDir::new().expect("tempdir");
+        let keep = removable_tempdir();
         fs::create_dir(keep.path().join("x")).expect("mkdir");
         fs::write(keep.path().join("x/precious.bin"), b"data").expect("write");
         fs::create_dir(temp.path().join("a/b/x")).expect("mkdir");
@@ -3327,7 +3410,7 @@ mod tests {
         let temp = tree();
         let real = temp.path().join("data");
         fs::create_dir_all(real.join("home/user")).expect("mkdir");
-        let spelled = TempDir::new().expect("tempdir");
+        let spelled = removable_tempdir();
         link_dir(&real.join("home"), &spelled.path().join("home"));
         let home = Home::of(&spelled.path().join("home/user"));
         let root = fs::canonicalize(temp.path()).expect("real root");
@@ -3368,7 +3451,7 @@ mod tests {
     #[test]
     fn permanent_removal_follows_links_above_the_root() {
         let temp = tree();
-        let spelled = TempDir::new().expect("tempdir");
+        let spelled = removable_tempdir();
         let root = spelled.path().join("root");
         link_dir(temp.path(), &root);
 
@@ -3434,7 +3517,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn trash_names_avoid_collisions() {
-        let temp = scratch();
+        let temp = removable_tempdir();
         let (first, first_name) = unique_name(temp.path(), "notes");
         assert_eq!(first_name, "notes");
         fs::write(&first, b"x").expect("write");
@@ -3448,8 +3531,8 @@ mod tests {
     #[test]
     fn the_xdg_trash_moves_a_file_and_records_where_it_came_from() {
         // A private trash directory keeps the test out of the real trash can.
-        let trash = TempDir::new().expect("tempdir");
-        let work = TempDir::new().expect("tempdir");
+        let trash = removable_tempdir();
+        let work = removable_tempdir();
         let file = work.path().join("doomed.bin");
         fs::write(&file, b"payload").expect("write");
 
@@ -3470,8 +3553,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_trash_info_path_is_restorable() {
-        let trash = TempDir::new().expect("tempdir");
-        let work = TempDir::new().expect("tempdir");
+        let trash = removable_tempdir();
+        let work = removable_tempdir();
         let file = work.path().join("with space.bin");
         fs::write(&file, b"x").expect("write");
         trash_into(&file, trash.path()).expect("trashed");
@@ -3598,7 +3681,7 @@ mod tests {
     #[test]
     fn a_trash_tool_is_called_with_the_path_after_a_separator() {
         use std::os::unix::fs::PermissionsExt as _;
-        let temp = scratch();
+        let temp = removable_tempdir();
         let recording = temp.path().join("argv");
         let script = temp.path().join("fake-trash-put");
         fs::write(
@@ -3627,7 +3710,7 @@ mod tests {
     #[test]
     fn a_failing_trash_tool_reports_its_stderr() {
         use std::os::unix::fs::PermissionsExt as _;
-        let temp = scratch();
+        let temp = removable_tempdir();
         let script = temp.path().join("angry-trash-put");
         fs::write(&script, "#!/bin/sh\necho 'no trash here' >&2\nexit 3\n")
             .expect("write");
@@ -3763,39 +3846,64 @@ mod tests {
         assert_eq!(refused(Path::new("/home/nobody-is-here")), None);
     }
 
-    /// Fedora's atomic editions link /home to /var/home: a scan from
-    /// either spelling shows the homes as folders directly in it.
-    #[cfg(unix)]
-    #[test]
-    fn a_linked_home_folder_is_judged_by_both_names() {
-        let temp = scratch();
-        // Its own real name, so the only link in play is the one made here.
+    /// Whole profiles are protected by identity, while directories inside
+    /// them and regular files in the container are judged separately.
+    #[cfg(any(unix, windows))]
+    fn check_profile_aliases(name: &str, depth: usize) {
+        let temp = removable_tempdir();
         let temp = fs::canonicalize(temp.path()).expect("canonical");
-        let real = temp.join("var/home");
-        fs::create_dir_all(real.join("guest")).expect("mkdir");
-        let link = temp.join("home");
-        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let real = temp.join("Profiles");
+        let nested = (0..depth)
+            .fold(Path::new(name).join("Downloads"), |path, _| {
+                path.join("nested")
+            });
+        fs::create_dir_all(real.join(&nested)).expect("profile contents");
+        fs::write(real.join("notes.txt"), b"shared file").expect("file");
+        let link = temp.join("Users");
+        link_dir(&real, &link);
         let keys = profiles_folder_keys(&link);
-        assert_eq!(keys.len(), 2, "{keys:?}");
-        let refused = |path: &Path| {
-            profile_refusal(path, &guard_key(path), &keys).unwrap_or_default()
-        };
+        let profiles_id = identity(&real, true).expect("profiles identity");
+        assert_eq!(identity(&link, true), Some(profiles_id));
         for folder in [&link, &real] {
-            assert!(refused(folder).contains("every user"));
-            let path = folder.join("guest");
-            assert!(
-                refused(&path).contains("home folder"),
-                "{} is an account's folder",
-                path.display()
-            );
+            for relative in [
+                Path::new(""),
+                Path::new(name),
+                nested.as_path(),
+                Path::new("notes.txt"),
+            ] {
+                let path = folder.join(relative);
+                let resolved = resolved_entry(&path).expect("real parent");
+                for path in [path, resolved] {
+                    let meta = fs::symlink_metadata(&path).expect("entry");
+                    let expected = identity(&path, true) == Some(profiles_id)
+                        || (meta.is_dir()
+                            && path
+                                .parent()
+                                .and_then(|parent| identity(parent, true))
+                                == Some(profiles_id));
+                    assert_eq!(
+                        profile_refusal(&path, &guard_key(&path), &keys)
+                            .is_some(),
+                        expected,
+                        "{}: {keys:?}",
+                        path.display()
+                    );
+                }
+            }
         }
         // A real folder has one name.
         assert_eq!(profiles_folder_keys(&real).len(), 1);
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn junctioned_profiles_are_protected_after_parent_resolution() {
+        check_profile_aliases("user-a", 0);
+    }
+
     #[test]
     fn a_single_path_is_judged_as_a_plan_would() {
-        let temp = scratch();
+        let temp = removable_tempdir();
         let root = temp.path();
         let inside = root.join("cache");
         fs::create_dir(&inside).expect("mkdir");
@@ -3804,7 +3912,7 @@ mod tests {
             refusal(root, root)
                 .is_some_and(|reason| reason.contains("scanned root"))
         );
-        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let elsewhere = removable_tempdir();
         assert!(
             refusal(elsewhere.path(), root)
                 .is_some_and(|reason| reason.contains("outside"))
@@ -3828,7 +3936,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_profiles_are_refused() {
-        let temp = scratch();
+        let temp = removable_tempdir();
         let profiles = temp.path();
         fs::create_dir_all(profiles.join(r"tobi\Downloads")).expect("mkdir");
         fs::write(profiles.join("notes.txt"), b"x").expect("write");
@@ -3863,7 +3971,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[ignore = "puts a file in this Mac's real Trash"]
     fn the_macos_trash_takes_a_file_and_leaves_a_linked_target() {
-        let temp = scratch();
+        let temp = removable_tempdir();
         let file = temp.path().join("disktree-trash-check.txt");
         fs::write(&file, b"x").expect("write");
         let keep = temp.path().join("keep.txt");
@@ -3883,7 +3991,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn a_name_that_is_not_utf8_is_refused_before_the_trash_sees_it() {
         use std::os::unix::ffi::OsStrExt as _;
-        let temp = scratch();
+        let temp = removable_tempdir();
         let odd = temp
             .path()
             .join(std::ffi::OsStr::from_bytes(b"not-\xff-utf8"));

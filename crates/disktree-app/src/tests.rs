@@ -75,21 +75,18 @@ fn init(cx: &mut gpui_kit::App) {
     Theme::tokyo_night().apply(cx);
 }
 
+// macOS's default TMPDIR is protected system state under /private/var.
+fn removable_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+        .expect("removable fixture")
+}
+
 /// A small tree on disk: two directories, a nested file, and a hidden one.
 ///
 /// The hidden directory holds the largest file, which is both the common case
 /// in a home directory and the one the ranking has to get right.
-fn scratch() -> tempfile::TempDir {
-    // The default macOS temp directory is protected live application
-    // state. Removal fixtures must exercise a supported scratch location.
-    #[cfg(target_os = "macos")]
-    return tempfile::tempdir_in("/private/tmp").expect("scratch fixture");
-    #[cfg(not(target_os = "macos"))]
-    tempfile::TempDir::new().expect("scratch fixture")
-}
-
 fn fixture() -> tempfile::TempDir {
-    let temp = scratch();
+    let temp = removable_tempdir();
     let root = temp.path();
     for (path, bytes) in [
         ("keep/notes.txt", 1_000_usize),
@@ -2103,7 +2100,7 @@ fn settings_safety_reads_the_limit_once_and_shows_a_saved_pick(
 /// Three checkouts side by side: each a worktree's `.git` file and some
 /// data, largest first, so the first is selected when the window opens.
 fn checkouts() -> tempfile::TempDir {
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     for (name, bytes) in
         [("alpha", 300_000), ("beta", 200_000), ("gamma", 100_000)]
     {
@@ -2781,9 +2778,8 @@ fn enter_in_the_focused_volume_picker_scans_the_selected_root(
 ) {
     cx.update(init);
     let temp = fixture();
-    // Accepting a local root canonicalizes it, and the temporary directory
-    // is behind a link on macOS (/var -> /private/var) and a short 8.3 name
-    // on Windows runners, so compare against the resolved path.
+    // Accepting a local root canonicalizes it; the checkout itself can
+    // have another spelling, so compare against the resolved path.
     let target = dunce::canonicalize(temp.path().join("junk")).unwrap();
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, _| {
@@ -4274,7 +4270,7 @@ fn switching_the_metric_keeps_the_directory_and_the_selection(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path();
     // Largest by size, but fewest files: the two swap places.
     std::fs::create_dir_all(root.join("big")).expect("mkdir");
@@ -4324,7 +4320,7 @@ fn toggling_the_metric_reorders_without_copying_the_tree(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path();
     std::fs::create_dir_all(root.join("big")).expect("mkdir");
     std::fs::write(root.join("big/one.bin"), vec![b'x'; 500_000])
@@ -4494,7 +4490,7 @@ fn mouse_side_buttons_go_back_and_forward(cx: &mut TestAppContext) {
 #[test]
 fn restart_arguments_parse_back_to_the_same_scan() {
     use disktree_core::tree::Metric;
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path().join("a folder");
     std::fs::create_dir(&root).expect("mkdir");
     let root = dunce::canonicalize(&root).expect("canonical root");
@@ -4851,7 +4847,7 @@ fn marked_window_resolution_budget(cx: &mut TestAppContext) {
 
     cx.update(init);
     let mut measure = |count| {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = removable_tempdir();
         let root_path = temp.path().to_path_buf();
         let mut tree = Draft::directory("root");
         for index in 0..count {
@@ -5032,7 +5028,7 @@ fn marked_interaction_timings(cx: &mut TestAppContext) {
     }
 
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     // One broad directory, kept fixed while only the number of marks grows.
     // Each marked folder contains a file: descendants still make one mark.
     for index in 0..1025 {
@@ -5134,7 +5130,7 @@ fn queue_budget_view(
 ) -> (tempfile::TempDir, Entity<Disktree>, &mut Window) {
     use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
 
-    let temp = scratch();
+    let temp = removable_tempdir();
     let root_path = temp.path().to_path_buf();
     let mut tree = Draft::directory("root");
     let mut parent = Draft::directory("container");
@@ -6366,7 +6362,7 @@ fn accessible_file_pages_reach_every_entry_and_share_safe_marks(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = scratch();
+    let temp = removable_tempdir();
     for i in 0..235 {
         std::fs::write(
             temp.path().join(format!("Résumé 日本語-{i:03}.txt")),
@@ -6437,7 +6433,7 @@ fn accessible_file_navigation_uses_absolute_paths_and_filter(
 }
 
 fn paginated_fixture(count: usize) -> tempfile::TempDir {
-    let temp = scratch();
+    let temp = removable_tempdir();
     for index in 0..count {
         let prefix = if index < 150 { "match" } else { "other" };
         std::fs::write(
@@ -7232,6 +7228,66 @@ fn removing_a_directory_after_part_of_it_counts_only_the_rest(
 }
 
 #[gpui_kit::test]
+fn enclosing_removal_preserves_scanned_bytes_in_marks_and_agent_reports(
+    cx: &mut TestAppContext,
+) {
+    use disktree_link::{FindRequest, Request, Response};
+
+    cx.update(init);
+    #[cfg(unix)]
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
+    #[cfg(not(unix))]
+    let temp = tempfile::tempdir().unwrap();
+    for (directory, bytes) in [("a", 40), ("a/b", 40), ("a/b/c", 20)] {
+        let path = temp.path().join(directory);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("payload"), vec![b'x'; bytes]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    remove_now(&view, cx, &["a/b/c"]);
+    remove_now(&view, cx, &["a/b"]);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Explore;
+        let a = temp.path().join("a");
+        let crumbs = app.crumbs_for_path(&a).unwrap();
+        app.toggle_mark(&crumbs, cx);
+        assert_eq!(app.marks.items()[0].bytes, 40);
+        let Response::Listing(listing) = app.answer_agent(
+            &Request::Ls {
+                path: a.clone(),
+                limit: 10,
+            },
+            cx,
+        ) else {
+            panic!("listing")
+        };
+        assert_eq!(listing.entry.removed_bytes, 60);
+        let Response::Found(found) = app.answer_agent(
+            &Request::Find(FindRequest {
+                name: Some("a".into()),
+                kind: "dir".into(),
+                limit: 10,
+                ..FindRequest::default()
+            }),
+            cx,
+        ) else {
+            panic!("search")
+        };
+        let hit = found.matches.iter().find(|hit| hit.path == a).unwrap();
+        assert_eq!(hit.entry.removed_bytes, 60);
+        // Metric changes refresh marks from the unchanged scanned tree.
+        app.toggle_metric(cx);
+        assert_eq!(app.marks.items()[0].bytes, 40);
+    });
+    draw(cx);
+    assert_eq!(
+        std::fs::read(temp.path().join("a/payload")).unwrap().len(),
+        40
+    );
+    assert!(!temp.path().join("a/b").exists());
+}
+
+#[gpui_kit::test]
 fn an_agent_listing_says_what_was_removed_since_the_scan(
     cx: &mut TestAppContext,
 ) {
@@ -7545,7 +7601,7 @@ fn a_large_directory_keeps_zero_weight_files_reachable_in_bounded_pages(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     for index in 0..50_000 {
         std::fs::write(temp.path().join(format!("entry-{index:05}.txt")), [])
             .expect("empty fixture file");

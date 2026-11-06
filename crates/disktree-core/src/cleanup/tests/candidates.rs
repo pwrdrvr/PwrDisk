@@ -1,4 +1,4 @@
-//! Independent owner locations must remain inspection leads even when
+//! Independent owner locations must remain discovery leads even when
 //! settings move them away from a directory named cache or store.
 
 use super::*;

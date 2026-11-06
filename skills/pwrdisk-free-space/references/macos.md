@@ -102,8 +102,9 @@ and again on the removal worker.
 Choosing a scan root through a link (`/var`, `/tmp`, a root-volume alias)
 does not bypass system-tree, profile or nested-mount guards. In particular,
 `/var/folders` remains protected as `/private/var/folders`; an explicit scan
-there does not make its live state removable. A selected symlink itself
-is still unlinked without deleting its destination.
+there does not make its live state removable. A one-filesystem scan stops
+at the same mounts under every spelling of its root. A selected symlink
+itself is still unlinked without deleting its destination.
 
 ## Never propose
 

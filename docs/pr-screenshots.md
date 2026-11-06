@@ -136,6 +136,10 @@ with an empty CLI search path. It never probes installed owners or chooses
 an action; every path stays on Skip. Environment hints for a screenshot
 must point only into the contrived fixture image.
 
+`removed` with a relative fixture `path` simulates a successful removal
+report in memory. It deletes no files and approves no removal. Consecutive
+reports can show removal accounting before a rescan.
+
 `scripts/screenshots/owner-cleanup.sh target/pr-shots/owner-cleanup` builds
 before/after pictures for pnpm's separate metadata/dlx cache. It adds only
 invented data to the owned Fixtures image and sets its XDG cache hint there.

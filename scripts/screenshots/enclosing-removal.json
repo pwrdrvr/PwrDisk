@@ -1,0 +1,41 @@
+{
+  "size": [
+    1180,
+    720
+  ],
+  "theme": "tokyo_night",
+  "steps": [
+    {
+      "op": "setup",
+      "state": {
+        "type": "removed",
+        "path": "Projects/atlas/target/debug/incremental"
+      }
+    },
+    {
+      "op": "setup",
+      "state": {
+        "type": "removed",
+        "path": "Projects/atlas/target/debug"
+      }
+    },
+    {
+      "op": "setup",
+      "state": {
+        "type": "select",
+        "path": "Projects/atlas/target"
+      }
+    },
+    {
+      "op": "setup",
+      "state": {
+        "type": "mark",
+        "path": "Projects/atlas/target"
+      }
+    },
+    {
+      "op": "capture",
+      "name": "enclosing-removal.png"
+    }
+  ]
+}
