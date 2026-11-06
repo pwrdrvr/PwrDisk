@@ -6644,12 +6644,18 @@ fn status_review_cancelled_widening_does_not_hide_the_active_screen(
         app.widen_to(temp.path().to_path_buf(), cx);
         app.cancel_scan(cx);
         app.open_review(cx);
-        for (screen, phase) in [
-            (Screen::Review, "Review marked paths"),
-            (Screen::Running, "Removal running"),
-            (Screen::Done, "Removal finished"),
+        for (screen, checked, phase) in [
+            (Screen::Review, false, "Review marked paths"),
+            (
+                Screen::Running,
+                false,
+                "Checking selection; nothing removed yet",
+            ),
+            (Screen::Running, true, "Removal running"),
+            (Screen::Done, false, "Removal finished"),
         ] {
             app.screen = screen;
+            app.run_checked = checked;
             let label = app.accessibility_status();
             assert!(label.starts_with(phase), "{label}");
             assert!(label.contains("Previous scan cancelled"), "{label}");
@@ -6817,6 +6823,30 @@ fn a_cargo_build_is_an_ordinary_removal(cx: &mut TestAppContext) {
 /// each item is, and stays on Done, every item checked off, rather than
 /// only the names of what already went.
 #[gpui_kit::test]
+fn removal_plan_captures_the_scan_accounting_options(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_paths(&view, cx, &[temp.path().join("junk")]);
+    update(&view, cx, |app, _| {
+        app.options.apparent_size = true;
+        app.options.apfs_clone_metadata = false;
+        app.options.dedup_hardlinks = false;
+        app.options.threads.max_threads = 2;
+        let captured = app.selection_plan();
+        assert_eq!(
+            serde_json::to_value(&captured.scan_options).expect("plan"),
+            serde_json::to_value(&app.options).expect("scan"),
+        );
+        app.options = ScanOptions::default();
+        assert!(captured.scan_options.apparent_size);
+        assert!(!captured.scan_options.apfs_clone_metadata);
+        assert!(!captured.scan_options.dedup_hardlinks);
+        assert_eq!(captured.scan_options.threads.max_threads, 2);
+    });
+}
+
+#[gpui_kit::test]
 fn the_removal_list_stays_on_screen_from_start_to_done(
     cx: &mut TestAppContext,
 ) {
@@ -6847,8 +6877,10 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
         app.run_epoch
     });
     draw(cx);
-    // Nothing is reported until the poll: both are listed, waiting, and
-    // the first is the one in hand.
+    // Until the worker reports Start, every row waits and no row claims
+    // to be removing anything. The current index is only the next target.
+    assert!(cx.debug_bounds("run-checking").is_some());
+    assert!(cx.debug_bounds("run-progress").is_none());
     assert!(cx.debug_bounds("run-list").is_some());
     assert!(cx.debug_bounds("run-row-0").is_some());
     assert!(cx.debug_bounds("run-row-1").is_some());
@@ -6989,6 +7021,7 @@ fn the_removal_list_follows_the_item_in_hand_like_the_live_log(
                 .collect(),
         );
         app.screen = Screen::Running;
+        app.run_checked = true;
         cx.notify();
     });
     draw(cx);
@@ -8588,6 +8621,7 @@ fn the_follow_pill_hides_the_row_under_it(cx: &mut TestAppContext) {
                 .collect(),
         );
         app.screen = Screen::Running;
+        app.run_checked = true;
         cx.notify();
     });
     draw(cx);

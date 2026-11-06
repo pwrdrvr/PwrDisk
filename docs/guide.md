@@ -500,6 +500,18 @@ may be recoverable until emptied; permanent deletion cannot be undone
 through PwrDisk. Settings > Safety sets the per-operation limit: 5% of each
 volume's capacity by default, for both UI and MCP removal. The app rechecks
 the guards and re-measures the complete selection before removing anything.
+During this check the window says **Checking selection**. Hardlinked files
+count once across all selected paths, as in the scan; both the reviewed and
+fresh volume totals must fit the confirmed limit. Scan and recheck use the
+same platform entry readers and aggregation code, with the scan's size,
+hardlink, clone-metadata and worker settings captured in the removal plan.
+A recheck completes hidden/deep traversal, stays on each target's volume,
+and never follows symbolic links, so filters cannot hide data removal would
+touch. Default scans and rechecks have identical options. If the check
+refuses the selection, no selected paths are removed. The observed
+free-space change
+includes other activity on the volume and can be negative even when nothing
+was removed.
 
 When a PwrDisk window is open, its tree is what the agent reads. `ls`,
 `find` and `scan` are answered from the mosaic on screen, a mark is

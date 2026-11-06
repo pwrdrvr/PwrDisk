@@ -1717,15 +1717,24 @@ impl Approved {
     ) -> Result<Vec<Option<Issue>>, String> {
         let mut refusals = vec![None; self.plan.targets.len()];
         let mut measured = Vec::new();
+        let mut listed = Vec::new();
+        let measurement = crate::removal_limit::Measurement::new(
+            &self.plan.scan_options,
+            &self.plan.targets,
+        );
         for (index, target) in self.plan.targets.iter().enumerate() {
-            match crate::removal_limit::measured(std::slice::from_ref(target)) {
-                Ok(mut fresh) => measured.append(&mut fresh),
+            match measurement.target(target) {
+                Ok(fresh) => {
+                    measured.push(fresh);
+                    listed.push(target.clone());
+                }
                 Err(reason) => {
                     refusals[index] =
                         Some(Issue::new(Problem::Refused, reason));
                 }
             }
         }
+        limit.check(&listed)?;
         limit.check(&measured)?;
         Ok(refusals)
     }

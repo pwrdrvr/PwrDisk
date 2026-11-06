@@ -104,6 +104,31 @@ impl Ceilings {
         self.check_with(targets, volume_of)
     }
 
+    /// Hold both the reviewed and freshly measured selection to the same
+    /// ceilings, without combining different hardlink charge assignments.
+    pub(crate) fn check_fresh(
+        &self,
+        targets: &[Target],
+        options: &crate::scan::ScanOptions,
+    ) -> Result<Vec<Budget>, String> {
+        self.check_fresh_with(targets, options, volume_of)
+    }
+
+    fn check_fresh_with(
+        &self,
+        targets: &[Target],
+        options: &crate::scan::ScanOptions,
+        mut volume: impl FnMut(&Path) -> Result<(String, u64), String>,
+    ) -> Result<Vec<Budget>, String> {
+        self.check_with(targets, &mut volume)?;
+        let measurement = Measurement::new(options, targets);
+        let fresh = targets
+            .iter()
+            .map(|target| measurement.target(target))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.check_with(&fresh, volume)
+    }
+
     /// [`Self::check`] with the volume of each target given, as `volume`
     /// gives it: a key and the volume's capacity.
     pub fn check_with(
@@ -218,89 +243,79 @@ pub fn volume_entry(path: &Path) -> Result<&Path, String> {
     }
 }
 
-/// Re-measure on the worker before any target is touched. A scan may have
-/// hidden entries skipped, a depth limit, or sizes that have since grown.
+/// Re-measure the whole selection using one hardlink identity set.
+///
+/// The listed and fresh totals must be checked separately. Hardlink charge
+/// can move between targets on a second walk; taking a per-target maximum
+/// would count both the old and new owner of the same allocation.
 pub(crate) fn measured(targets: &[Target]) -> Result<Vec<Target>, String> {
+    let measurement =
+        Measurement::new(&crate::scan::ScanOptions::default(), targets);
     targets
         .iter()
-        .map(|target| {
-            let meta =
-                std::fs::symlink_metadata(&target.path).map_err(|error| {
-                    format!(
-                        "Cannot re-measure {}: {error}",
-                        target.path.display()
-                    )
-                })?;
-            if meta.is_dir() != target.is_dir {
-                return Err(format!(
-                    "Target type changed: {}",
-                    target.path.display()
-                ));
-            }
-            let bytes = if meta.is_dir() {
-                directory_bytes(&target.path)?
-            } else {
-                #[cfg(windows)]
-                let bytes = crate::windows::allocated_size(&target.path)
-                    .map_err(|error| {
-                        format!(
-                            "Cannot re-measure {}: {error}",
-                            target.path.display()
-                        )
-                    })?;
-                #[cfg(not(windows))]
-                let bytes = crate::scan::measure(&meta, false);
-                bytes
-            };
-            Ok(Target {
-                bytes: bytes.max(target.bytes),
-                ..target.clone()
-            })
-        })
+        .map(|target| measurement.target(target))
         .collect()
 }
 
-#[cfg(unix)]
-fn directory_bytes(path: &Path) -> Result<u64, String> {
-    let mut bytes = 0_u64;
-    crate::removal::inspect(path, |_, stat, dir| {
-        // Count every leaf allocation, including links themselves and
-        // hardlinks/clones in full, as the non-deduplicating scan did.
-        // Directory totals come from their leaves, not directory blocks.
-        if dir.is_none() {
-            bytes = bytes
-                .checked_add((stat.st_blocks.max(0) as u64).saturating_mul(512))
-                .ok_or("Removal size overflow")?;
-        }
-        Ok(())
-    })?;
-    Ok(bytes)
+/// A cleanup can refuse an unreadable step alone while retaining one set
+/// of identities across all the steps it can measure. All accounting lives
+/// in the scanner; this wrapper only checks the removal target's type.
+pub(crate) struct Measurement {
+    scan: crate::scan::SelectionScan,
 }
 
-#[cfg(not(unix))]
-fn directory_bytes(path: &Path) -> Result<u64, String> {
-    let tree = crate::scan::scan(
-        path,
-        crate::scan::ScanOptions {
-            dedup_hardlinks: false,
-            apfs_clone_metadata: false,
-            ..crate::scan::ScanOptions::default()
-        },
-    )
-    .map_err(|error| format!("Cannot re-measure removal: {error}"))?;
-    let mut nodes = vec![tree.root()];
-    while let Some(node) = nodes.pop() {
-        if node.read_error {
-            return Err("Cannot enforce removal limit: part of the selection is unreadable".into());
+impl Measurement {
+    pub(crate) fn new(
+        options: &crate::scan::ScanOptions,
+        targets: &[Target],
+    ) -> Self {
+        Self {
+            scan: crate::scan::SelectionScan::new(
+                options.for_removal(),
+                targets
+                    .iter()
+                    .filter(|target| !target.is_dir)
+                    .map(|target| target.path.clone()),
+            ),
         }
-        nodes.extend(node.children());
     }
-    Ok(tree.root().bytes)
+
+    pub(crate) fn target(&self, target: &Target) -> Result<Target, String> {
+        let meta =
+            std::fs::symlink_metadata(&target.path).map_err(|error| {
+                format!("Cannot re-measure {}: {error}", target.path.display())
+            })?;
+        if meta.is_dir() != target.is_dir {
+            return Err(format!(
+                "Target type changed: {}",
+                target.path.display()
+            ));
+        }
+        let tree = self
+            .scan
+            .scan(&target.path)
+            .map_err(|error| format!("Cannot re-measure removal: {error}"))?;
+        Ok(Target {
+            bytes: tree.root().bytes,
+            ..target.clone()
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn measured_directory(path: &Path) -> Result<u64, String> {
+        measured(&[Target {
+            path: path.to_path_buf(),
+            bytes: 0,
+            is_dir: true,
+            hidden: false,
+        }])
+        .map(|fresh| fresh[0].bytes)
+    }
 
     #[cfg(unix)]
     #[test]
@@ -340,14 +355,15 @@ mod tests {
         let link = selected.join("link");
         std::os::unix::fs::symlink(&outside, &link).expect("outside link");
         let expected =
-            std::fs::metadata(&file).expect("file allocation").blocks()
-                * 512
-                * 2
+            std::fs::metadata(&file).expect("file allocation").blocks() * 512
                 + std::fs::symlink_metadata(&link)
                     .expect("link allocation")
                     .blocks()
                     * 512;
-        assert_eq!(directory_bytes(&selected).expect("measurement"), expected);
+        assert_eq!(
+            measured_directory(&selected).expect("measurement"),
+            expected
+        );
         assert!(outside.exists(), "measurement is read-only");
     }
 
@@ -366,12 +382,418 @@ mod tests {
             Mode::empty(),
         )
         .is_err();
-        let result = directory_bytes(&tree.selected);
+        let result = measured_directory(&tree.selected);
         fchmod(&tree.dir, Mode::RWXU).expect("restore fixture permissions");
         if unreadable {
             assert!(result.is_err(), "an incomplete measure cannot authorize");
         }
         assert!(tree.selected.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deep_scan_and_recheck_preserve_accounting_parameters() {
+        use rustix::fs::{AtFlags, linkat, statat, symlinkat};
+
+        let tree = crate::test_tree::DeepTree::new();
+        linkat(
+            &tree.dir,
+            c".payload",
+            &tree.dir,
+            c"alias",
+            AtFlags::empty(),
+        )
+        .expect("deep hardlink");
+        symlinkat(&tree.selected, &tree.dir, c"link").expect("deep symlink");
+        let file = statat(&tree.dir, c".payload", AtFlags::SYMLINK_NOFOLLOW)
+            .expect("file oracle");
+        let link = statat(&tree.dir, c"link", AtFlags::SYMLINK_NOFOLLOW)
+            .expect("link oracle");
+        let targets = [Target {
+            path: tree.selected.clone(),
+            bytes: 0,
+            is_dir: true,
+            hidden: false,
+        }];
+        for apparent_size in [false, true] {
+            let size = |stat: &rustix::fs::Stat| {
+                if apparent_size {
+                    stat.st_size.max(0) as u64
+                } else {
+                    (stat.st_blocks.max(0) as u64) * 512
+                }
+            };
+            for dedup_hardlinks in [false, true] {
+                let options = crate::scan::ScanOptions {
+                    apparent_size,
+                    dedup_hardlinks,
+                    ..crate::scan::ScanOptions::default()
+                };
+                // The link points at the selected root: following it would
+                // revisit the tree instead of charging the link itself.
+                let expected = size(&file)
+                    * if dedup_hardlinks { 1 } else { 2 }
+                    + size(&link);
+                let scan = crate::scan::scan(&tree.selected, options.clone())
+                    .expect("deep scan");
+                assert!(!scan.root().read_error);
+                assert_eq!(scan.root().bytes, expected, "scan oracle");
+                let recheck = Measurement::new(&options, &targets);
+                assert_eq!(
+                    recheck.target(&targets[0]).expect("deep recheck").bytes,
+                    expected,
+                    "recheck oracle"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    mod apfs;
+
+    #[cfg(unix)]
+    fn assert_sibling_work(
+        parents: usize,
+        siblings: usize,
+        reverse: bool,
+        sparse: bool,
+    ) {
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut targets = Vec::new();
+        let source = temp.path().join("parent0/file0");
+        for parent in 0..parents {
+            let dir = temp.path().join(format!("parent{parent}"));
+            std::fs::create_dir(&dir).expect("directory");
+            for file in 0..siblings {
+                let path = dir.join(format!("file{file}"));
+                if (parent != 0 || file != 0) && file % 3 == 0 {
+                    std::fs::hard_link(&source, &path).expect("hardlink");
+                } else {
+                    std::fs::write(&path, vec![b'x'; 8192]).expect("file");
+                }
+                if !sparse || (file + parent) % 2 == 1 {
+                    targets.push(Target {
+                        path,
+                        bytes: 0,
+                        is_dir: false,
+                        hidden: false,
+                    });
+                }
+            }
+        }
+        if reverse {
+            targets.reverse();
+        }
+        let expected = oracle_bytes(
+            &targets
+                .iter()
+                .map(|target| target.path.clone())
+                .collect::<Vec<_>>(),
+        );
+        let measurement =
+            Measurement::new(&crate::scan::ScanOptions::default(), &targets);
+        crate::scan::leaf_work::reset();
+        let actual: u64 = targets
+            .iter()
+            .map(|target| {
+                measurement.target(target).expect("measurement").bytes
+            })
+            .sum();
+        let (opens, entries) = crate::scan::leaf_work::snapshot();
+        assert_eq!(actual, expected, "shared hardlink identity set");
+        assert!(
+            opens <= parents,
+            "{opens} parent listings for {parents} parents"
+        );
+        assert!(
+            entries <= parents * siblings,
+            "{entries} entries for {} parent entries",
+            parents * siblings
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_siblings_enumerate_their_parent_once() {
+        assert_sibling_work(1, 2, false, false);
+    }
+
+    #[test]
+    fn leaf_listings_are_fresh_for_each_selection() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("file");
+        let targets = [Target {
+            path: path.clone(),
+            bytes: 0,
+            is_dir: false,
+            hidden: false,
+        }];
+        let options = crate::scan::ScanOptions {
+            apparent_size: true,
+            ..crate::scan::ScanOptions::default()
+        };
+        for size in [1, 8192, 0, 4096] {
+            std::fs::write(&path, vec![b'x'; size]).expect("resize");
+            let recheck = Measurement::new(&options, &targets);
+            assert_eq!(
+                recheck.target(&targets[0]).expect("fresh listing").bytes,
+                std::fs::symlink_metadata(&path).expect("size oracle").len(),
+                "a new selection must observe changes since the last one"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 32, failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+        // Work is linear in the parent entries, regardless of mark order;
+        // accounting still agrees with the filesystem identity union.
+        #[test]
+        fn leaf_selection_work_is_linear_in_parent_entries(
+            parents in 1_usize..4, siblings in 2_usize..16,
+            reverse in proptest::bool::ANY, sparse in proptest::bool::ANY,
+        ) {
+            assert_sibling_work(parents, siblings, reverse, sparse);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recheck_retains_the_scan_size_and_hardlink_parameters() {
+        let temp = tempfile::tempdir().expect("fixture");
+        for name in ["a", "b"] {
+            std::fs::create_dir(temp.path().join(name)).expect("directory");
+        }
+        let original = temp.path().join("a/original");
+        std::fs::write(&original, vec![b'x'; 8192]).expect("file");
+        std::fs::hard_link(&original, temp.path().join("b/alias"))
+            .expect("hardlink");
+        std::fs::File::create(temp.path().join("b/sparse"))
+            .expect("sparse")
+            .set_len(1024 * 1024)
+            .expect("length");
+        for apparent_size in [false, true] {
+            for dedup_hardlinks in [false, true] {
+                for apfs_clone_metadata in [false, true] {
+                    let options = crate::scan::ScanOptions {
+                        apparent_size,
+                        apfs_clone_metadata,
+                        dedup_hardlinks,
+                        ..crate::scan::ScanOptions::default()
+                    };
+                    let tree = crate::scan::scan(temp.path(), options.clone())
+                        .expect("scan");
+                    let targets: Vec<_> = tree
+                        .root()
+                        .children()
+                        .iter()
+                        .map(|node| Target {
+                            path: temp.path().join(node.name()),
+                            bytes: node.bytes,
+                            is_dir: true,
+                            hidden: false,
+                        })
+                        .collect();
+                    let recheck = Measurement::new(&options, &targets);
+                    let fresh: u64 = targets
+                        .iter()
+                        .map(|target| {
+                            recheck.target(target).expect("recheck").bytes
+                        })
+                        .sum();
+                    assert_eq!(
+                        fresh,
+                        tree.root().bytes,
+                        "apparent={apparent_size}, dedup={dedup_hardlinks}, \
+                         clones={apfs_clone_metadata}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    fn oracle_bytes(paths: &[std::path::PathBuf]) -> u64 {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt as _;
+        let mut seen = std::collections::HashSet::new();
+        let mut pending = paths.to_vec();
+        let mut bytes = 0;
+        while let Some(path) = pending.pop() {
+            let meta = std::fs::symlink_metadata(&path).expect("oracle stat");
+            if meta.is_dir() {
+                pending.extend(
+                    std::fs::read_dir(path)
+                        .expect("oracle listing")
+                        .map(|entry| entry.expect("oracle entry").path()),
+                );
+            } else {
+                #[cfg(unix)]
+                let (id, allocation) =
+                    ((meta.dev(), meta.ino()), meta.blocks() * 512);
+                #[cfg(windows)]
+                let (id, allocation) = (
+                    crate::windows::identity(&path).expect("oracle id"),
+                    crate::windows::allocated_size(&path)
+                        .expect("oracle allocation"),
+                );
+                if seen.insert(id) {
+                    bytes += allocation;
+                }
+            }
+        }
+        bytes
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn unchanged_hardlinked_artifacts_pass_the_same_budget_as_review() {
+        let temp = tempfile::tempdir().expect("fixture");
+        for name in ["a", "b"] {
+            std::fs::create_dir(temp.path().join(name)).expect("directory");
+        }
+        let file = temp.path().join("a/artifact");
+        std::fs::write(&file, vec![b'x'; 16_384]).expect("artifact");
+        for name in ["a/.incremental", "b/artifact"] {
+            std::fs::hard_link(&file, temp.path().join(name))
+                .expect("hardlink");
+        }
+        let tree =
+            crate::scan::scan(temp.path(), crate::scan::ScanOptions::default())
+                .expect("review scan");
+        let targets: Vec<_> = tree
+            .root()
+            .children()
+            .iter()
+            .map(|node| Target {
+                path: temp.path().join(node.name()),
+                bytes: node.bytes,
+                is_dir: true,
+                hidden: false,
+            })
+            .collect();
+        let expected = oracle_bytes(
+            &targets.iter().map(|t| t.path.clone()).collect::<Vec<_>>(),
+        );
+        assert_eq!(tree.root().bytes, expected);
+        let disk = |_: &Path| Ok(("fixture".into(), expected * 20));
+        Limit::default()
+            .check_with(&targets, disk)
+            .expect("review at 5%");
+        let fresh = measured(&targets).expect("preflight");
+        assert_eq!(
+            fresh.iter().map(|t| t.bytes).sum::<u64>(),
+            expected,
+            "unchanged selection counts each filesystem identity once"
+        );
+        Limit::default()
+            .check_with(&fresh, disk)
+            .expect("worker at 5%");
+    }
+
+    #[cfg(unix)]
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 32, failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        // The filesystem, not either scan path, defines the union of the
+        // selected allocations. Names can share within and across targets.
+        #[test]
+        fn preflight_matches_the_identity_union(
+            links in proptest::collection::vec((0_usize..3, 0_usize..3), 1..12),
+            reverse in proptest::bool::ANY,
+            canonical in proptest::bool::ANY,
+        ) {
+            let temp = tempfile::tempdir().expect("fixture");
+            let root = if canonical {
+                temp.path().canonicalize().expect("canonical")
+            } else { temp.path().to_path_buf() };
+            for i in 0..3 {
+                std::fs::create_dir(root.join(format!("d{i}")))
+                    .expect("directory");
+                std::fs::write(root.join(format!("source{i}")),
+                    vec![b'x'; 4096 * (i + 1)]).expect("source");
+            }
+            // These entries must be measured without following a link or
+            // charging sparse logical length as allocated data.
+            std::os::unix::fs::symlink("../source0", root.join("d0/symlink"))
+                .expect("symlink");
+            std::os::unix::fs::symlink("missing", root.join("d1/dangling"))
+                .expect("dangling link");
+            std::fs::File::create(root.join("d2/sparse")).expect("sparse file")
+                .set_len(6 * 1024 * 1024).expect("sparse length");
+            std::fs::write(root.join("d1/ordinary"), vec![b'y'; 4096])
+                .expect("ordinary file");
+            for (n, (source, directory)) in links.iter().enumerate() {
+                std::fs::hard_link(root.join(format!("source{source}")),
+                    root.join(format!("d{directory}/.artifact{n}")))
+                    .expect("hardlink");
+            }
+            let mut targets: Vec<_> = (0..3).map(|i| Target {
+                path: root.join(format!("d{i}")), bytes: 0,
+                is_dir: true, hidden: false,
+            }).collect();
+            // Individual file marks must share the same identity set as
+            // directory marks, including an alias already inside a target.
+            targets.push(Target { path: root.join("source0"), bytes: 0,
+                is_dir: false, hidden: false });
+            if reverse { targets.reverse(); }
+            let paths: Vec<_> =
+                targets.iter().map(|t| t.path.clone()).collect();
+            let expected = oracle_bytes(&paths);
+            let fresh = measured(&targets).expect("preflight");
+            proptest::prop_assert_eq!(
+                fresh.iter().map(|t| t.bytes).sum::<u64>(), expected);
+        }
+
+        // Model snapshots before and after writes. The safety ceiling is
+        // the larger volume total, independent of which name either scan
+        // charges, target order, and growth or shrinkage between scans.
+        #[test]
+        fn fresh_limit_matches_review_and_filesystem_snapshots(
+            writes in proptest::collection::vec(0_usize..9, 1..6),
+            allowed_blocks in 0_u64..12,
+            reverse in proptest::bool::ANY,
+        ) {
+            let temp = tempfile::tempdir().expect("fixture");
+            let root = temp.path();
+            std::fs::create_dir(root.join("a")).expect("directory");
+            std::fs::create_dir(root.join("b")).expect("directory");
+            let original = root.join("a/artifact");
+            std::fs::write(&original, vec![b'x'; 16_384]).expect("source");
+            std::fs::hard_link(&original, root.join("b/alias"))
+                .expect("hardlink");
+            let paths = vec![root.join("a"), root.join("b")];
+            let reviewed = oracle_bytes(&paths);
+            // Deliberately charge the reviewed allocation to the target
+            // measured second, modelling a different parallel walk order.
+            let mut targets: Vec<_> = paths.iter().map(|path| Target {
+                path: path.clone(), bytes: 0, is_dir: true, hidden: false,
+            }).collect();
+            if reverse { targets.reverse(); }
+            targets[1].bytes = reviewed;
+            let ceilings = Ceilings::default();
+            let capacity = allowed_blocks * 4096 * 20;
+            let volume = |_: &Path| Ok(("fixture".into(), capacity.max(1)));
+            for blocks in writes {
+                std::fs::write(&original, vec![b'x'; blocks * 4096])
+                    .expect("write");
+                let current = oracle_bytes(&paths);
+                proptest::prop_assert_eq!(
+                    ceilings.check_fresh_with(
+                        &targets, &crate::scan::ScanOptions::default(), volume
+                    ).is_ok(),
+                    reviewed.max(current) <= capacity / 20,
+                    "reviewed={}, current={}, capacity={}",
+                    reviewed, current, capacity
+                );
+            }
+        }
     }
 
     fn target(path: &str, bytes: u64) -> Target {
