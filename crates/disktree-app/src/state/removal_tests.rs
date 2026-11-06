@@ -10,6 +10,8 @@ use proptest::test_runner::{TestCaseResult, TestRunner};
 
 use super::*;
 
+const MIB: u64 = 1024 * 1024;
+
 #[derive(Clone, Debug)]
 enum Command {
     Remove(usize),
@@ -32,9 +34,18 @@ impl Model {
         let mut paths = vec![root.to_path_buf()];
         let mut own = vec![0];
         for (index, &(parent, bytes)) in entries.iter().enumerate() {
-            let path = paths[parent % paths.len()].join(format!("n{index}"));
+            let name = if index == 0 {
+                ".cache".into()
+            } else {
+                format!("n{index}")
+            };
+            let path = paths[parent % paths.len()].join(name);
             std::fs::create_dir(&path).unwrap();
-            std::fs::write(path.join("payload"), vec![b'x'; bytes as usize])
+            // Sparse files reach the insight threshold without allocating
+            // hundreds of MiB for each apparent-size model case.
+            std::fs::File::create(path.join("payload"))
+                .unwrap()
+                .set_len(bytes)
                 .unwrap();
             paths.push(path);
             own.push(bytes);
@@ -148,6 +159,28 @@ impl Model {
                 target.path
             );
         }
+        let cache = &self.paths[1];
+        let scanned = self.bytes(cache, false);
+        let remaining = scanned - self.bytes(cache, true);
+        // Eligibility uses the scanned 64 MiB threshold. An eligible cache
+        // remains an insight below that threshold until the next scan.
+        let expected: Vec<_> =
+            (self.live[1] && scanned >= 64 * MIB && remaining > 0)
+                .then(|| (cache.clone(), remaining))
+                .into_iter()
+                .collect();
+        let insights: Vec<_> = app
+            .insights
+            .iter()
+            .map(|candidate| {
+                (app.path_at(&candidate.crumbs).unwrap(), candidate.bytes)
+            })
+            .collect();
+        prop_assert_eq!(
+            insights,
+            expected,
+            "insights count live scanned bytes"
+        );
         Ok(())
     }
 
@@ -232,6 +265,16 @@ fn run(
             app.close_volumes(cx);
             app.awaiting_root = false;
             app.tree = Some(Arc::new(tree));
+            app.refresh_insights();
+            // Keep apparent-size accounting independent of the host disk's
+            // capacity; this model does not exercise the removal limit.
+            app.disk_probe = |_| {
+                Ok(crate::mark_guard::Disk {
+                    key: "model".into(),
+                    capacity: 1 << 40,
+                    name: "model".into(),
+                })
+            };
             app.removal_settings_dir = None;
             app.power_settings_path = None;
             app
@@ -271,12 +314,36 @@ fn removals_and_marks_follow_the_scanned_file_model(
     runner
         .run(
             &(
-                prop::collection::vec((0_usize..16, 0_u64..4097), 3..12),
+                prop::collection::vec(
+                    (0_usize..16, (0_u64..97).prop_map(|mib| mib * MIB)),
+                    3..12,
+                ),
                 commands,
             ),
             |(entries, commands)| run(&entries, &commands, cx),
         )
         .expect("removed bytes equal the scanned files removed exactly once");
+}
+
+#[gpui_kit::test]
+fn nested_removals_discount_insights_from_the_scanned_size(
+    cx: &gpui_kit::TestAppContext,
+) {
+    // .cache = 100 MiB, b = 60 MiB, c = 20 MiB. The insight must show
+    // 40 MiB after removing c then b, just like a mark of .cache.
+    run(
+        &[(0, 40 * MIB), (1, 40 * MIB), (2, 20 * MIB)],
+        &[
+            Command::Remove(2),
+            Command::Remove(1),
+            Command::Mark(0),
+            Command::Unmark(0),
+            Command::Metric,
+            Command::Rescan,
+        ],
+        cx,
+    )
+    .unwrap();
 }
 
 #[gpui_kit::test]

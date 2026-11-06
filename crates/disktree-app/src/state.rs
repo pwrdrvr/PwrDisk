@@ -4045,7 +4045,9 @@ impl Disktree {
             self.removed.toggle(target, style);
             self.removed.absorb(&path, style);
         }
-        self.forget_removed_insights();
+        // Existing candidates may already be discounted by earlier removals.
+        // Rebuild from the scan before applying the cumulative ledger once.
+        self.refresh_insights();
     }
 
     /// Whether `path` was removed since the scan, itself or with a
