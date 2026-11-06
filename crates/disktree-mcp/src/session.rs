@@ -1082,11 +1082,12 @@ impl Session {
         self.found_local(request)
     }
 
-    fn found_local(&self, request: &FindRequest) -> Result<FoundList, String> {
-        let scope: Vec<(PathBuf, Node<'_>)> = if let Some(path) = &request.path
-        {
-            let located = self.locate(path)?;
-            vec![(located.path, located.node)]
+    fn find_scope(
+        &self,
+        path: Option<&Path>,
+    ) -> Result<Vec<Located<'_>>, String> {
+        if let Some(path) = path {
+            Ok(vec![self.locate(path)?])
         } else {
             if self.scans.is_empty() {
                 return Err("Nothing is scanned yet. Call pwrdisk_scan first."
@@ -1094,7 +1095,8 @@ impl Session {
             }
             // A scan inside another one holds the same entries again; the
             // outer scan already counts them.
-            self.scans
+            Ok(self
+                .scans
                 .iter()
                 .filter(|scan| {
                     !self.scans.iter().any(|outer| {
@@ -1102,12 +1104,20 @@ impl Session {
                             && scan.root.starts_with(&outer.root)
                     })
                 })
-                .map(|scan| (scan.root.clone(), scan.tree.root()))
-                .collect()
-        };
+                .map(|scan| Located {
+                    scan,
+                    path: scan.root.clone(),
+                    node: scan.tree.root(),
+                    crumbs: Vec::new(),
+                })
+                .collect())
+        }
+    }
+
+    fn found_local(&self, request: &FindRequest) -> Result<FoundList, String> {
         let mut all = FoundList::default();
-        for (path, node) in &scope {
-            let found = request.results(path, *node)?;
+        for located in self.find_scope(request.path.as_deref())? {
+            let found = request.results(&located.path, located.node)?;
             all.matches.extend(found.matches);
             all.count += found.count;
             all.bytes += found.bytes;
@@ -1149,29 +1159,85 @@ impl Session {
         Ok(Some((link, state)))
     }
 
-    fn outputs_call(
+    /// Keep the snapshot that produced each match. Looking up its path later
+    /// could select an overlapping scan with different measurements/options.
+    fn output_matches(
         &self,
         source: &mut Option<(Link, State)>,
-        request: &Request,
-    ) -> Result<Response, String> {
-        if let Some((link, _)) = source {
-            return link.call(request).map_err(|e| e.to_string());
+        request: &FindRequest,
+    ) -> Result<OutputMatches, String> {
+        use crate::outputs::ScanContext;
+        let mut all = OutputMatches::default();
+        let scopes = if let Some((link, state)) = source {
+            let found = match link
+                .call(&Request::Find(request.clone()))
+                .map_err(|e| e.to_string())?
+            {
+                Response::Found(found) => found,
+                Response::Error { message } => return Err(message),
+                other => return Err(unexpected(&other)),
+            };
+            vec![(found, ScanContext::try_from(&*state)?)]
+        } else {
+            self.find_scope(request.path.as_deref())?
+                .into_iter()
+                .map(|located| {
+                    Ok((
+                        request.results(&located.path, located.node)?,
+                        ScanContext::from(located.scan),
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?
+        };
+        let mut count = 0;
+        for (found, context) in scopes {
+            count += found.count;
+            all.matches.extend(found.matches.into_iter().map(|found| {
+                OutputMatch {
+                    found,
+                    context: context.clone(),
+                }
+            }));
         }
-        match request {
-            Request::Find(request) => {
-                self.found_local(request).map(Response::Found)
+        all.matches
+            .sort_by_key(|item| std::cmp::Reverse(item.found.entry.bytes));
+        all.matches.truncate(request.limit);
+        all.truncated = count > all.matches.len();
+        Ok(all)
+    }
+
+    fn output_listing(
+        &self,
+        source: &mut Option<(Link, State)>,
+        path: &Path,
+    ) -> Result<(Listing, crate::outputs::ScanContext), String> {
+        use crate::outputs::ScanContext;
+        if let Some((link, state)) = source {
+            match link
+                .call(&Request::Ls {
+                    path: path.into(),
+                    limit: 0,
+                })
+                .map_err(|e| e.to_string())?
+            {
+                Response::Listing(listing) => {
+                    Ok((listing, ScanContext::try_from(&*state)?))
+                }
+                Response::Error { message } => Err(message),
+                other => Err(unexpected(&other)),
             }
-            Request::Ls { path, limit } => {
-                let found = self.locate(path)?;
-                Ok(Response::Listing(Listing::of(
+        } else {
+            let found = self.locate(path)?;
+            Ok((
+                Listing::of(
                     &found.scan.root,
                     found.scan.tree.root().bytes,
                     &found.path,
                     found.node,
-                    *limit,
-                )))
-            }
-            _ => Err("Unsupported output read request".into()),
+                    0,
+                ),
+                ScanContext::from(found.scan),
+            ))
         }
     }
 
@@ -1188,21 +1254,18 @@ impl Session {
         for (name, kind) in
             [(".rustc_info.json", "file"), (".fingerprint", "dir")]
         {
-            let request = Request::Find(FindRequest {
+            let request = FindRequest {
                 path: path.map(Path::to_path_buf),
                 kind: kind.into(),
                 name: Some(name.into()),
                 limit: MARKER_LIMIT,
                 ..FindRequest::default()
-            });
-            let Response::Found(found) = self.outputs_call(source, &request)?
-            else {
-                return Err(
-                    "Cargo discovery could not read the scanned tree".into()
-                );
             };
-            truncated |= found.count > found.matches.len();
+            let found = self.output_matches(source, &request)?;
+            truncated |= found.truncated;
             for item in found.matches {
+                let boundary = path.unwrap_or(&item.context.root);
+                let item = item.found;
                 if item.entry.name != name || item.entry.removed {
                     continue;
                 }
@@ -1210,15 +1273,14 @@ impl Session {
                     continue;
                 };
                 if kind == "file" {
-                    roots.entry(parent.into()).or_default();
+                    if parent.starts_with(boundary) {
+                        roots.entry(parent.into()).or_default();
+                    }
                 } else {
                     // Native and cross-compilation profiles; metadata, not
                     // a profile/triple spelling, decides which root is real.
                     for root in parent.ancestors().skip(1).take(2) {
-                        if path
-                            .as_ref()
-                            .is_none_or(|scope| root.starts_with(scope))
-                        {
+                        if root.starts_with(boundary) {
                             roots
                                 .entry(root.into())
                                 .or_default()
@@ -1232,8 +1294,6 @@ impl Session {
     }
 
     fn checked_output(
-        &self,
-        source: Option<&(Link, State)>,
         candidate: &crate::outputs::Candidate,
         deadline: Instant,
     ) -> Result<crate::outputs::OutputRow, String> {
@@ -1283,24 +1343,15 @@ impl Session {
             candidate.output_type,
             tracking,
         );
-        if let Some((_, state)) = source {
-            let tree = state.tree.as_ref().ok_or("No completed window scan")?;
-            output.scan_root.clone_from(&state.root);
-            output.scanned_at = tree.scanned_at;
-            output.apparent_size = tree.apparent_size;
-            output.scan_unreadable = tree.unreadable;
-            output.scan_hidden_included = tree.include_hidden;
-        } else {
-            let scan = self.locate(path)?.scan;
-            output.scan_root.clone_from(&scan.root);
-            output.scan_depth_limit_known = true;
-            output.scan_one_filesystem = Some(scan.options.one_filesystem);
-            output.scanned_at = scan.at;
-            output.apparent_size = scan.options.apparent_size;
-            output.scan_unreadable = scan.unreadable;
-            output.scan_hidden_included = scan.options.include_hidden;
-            output.scan_max_depth = scan.options.max_depth;
-        }
+        let context = &candidate.context;
+        output.scan_root.clone_from(&context.root);
+        output.scanned_at = context.scanned_at;
+        output.apparent_size = context.apparent_size;
+        output.scan_unreadable = context.unreadable;
+        output.scan_hidden_included = context.include_hidden;
+        output.scan_max_depth = context.max_depth;
+        output.scan_depth_limit_known = context.depth_limit_known;
+        output.scan_one_filesystem = context.one_filesystem;
         Ok(output)
     }
 
@@ -1310,34 +1361,9 @@ impl Session {
     ) -> Vec<crate::outputs::ScanContext> {
         use crate::outputs::ScanContext;
         if let Some((_, state)) = source {
-            return state
-                .tree
-                .iter()
-                .map(|tree| ScanContext {
-                    root: state.root.clone(),
-                    scanned_at: tree.scanned_at,
-                    apparent_size: tree.apparent_size,
-                    unreadable: tree.unreadable,
-                    include_hidden: tree.include_hidden,
-                    max_depth: None,
-                    depth_limit_known: false,
-                    one_filesystem: None,
-                })
-                .collect();
+            return ScanContext::try_from(state).into_iter().collect();
         }
-        self.scans
-            .iter()
-            .map(|scan| ScanContext {
-                root: scan.root.clone(),
-                scanned_at: scan.at,
-                apparent_size: scan.options.apparent_size,
-                unreadable: scan.unreadable,
-                include_hidden: scan.options.include_hidden,
-                max_depth: scan.options.max_depth,
-                depth_limit_known: true,
-                one_filesystem: Some(scan.options.one_filesystem),
-            })
-            .collect()
+        self.scans.iter().map(ScanContext::from).collect()
     }
 
     fn output_candidates(
@@ -1348,7 +1374,7 @@ impl Session {
         use crate::outputs::{Candidate, MARKER_LIMIT, OutputType};
         let path =
             params.path.as_ref().map(|p| self.absolute(p)).transpose()?;
-        let request = Request::Find(FindRequest {
+        let request = FindRequest {
             path: path.clone(),
             kind: "dir".into(),
             output_roots: true,
@@ -1360,28 +1386,26 @@ impl Session {
             name: params.name.clone(),
             limit: MARKER_LIMIT,
             ..FindRequest::default()
-        });
+        };
         let generic = params.minimum_evidence
             < crate::outputs::Strength::Metadata
             && (params.types.is_empty()
                 || params.types.iter().any(|t| *t != OutputType::Cargo));
         let found = if generic {
-            match self.outputs_call(source, &request)? {
-                Response::Found(found) => found,
-                Response::Error { message } => return Err(message),
-                other => return Err(unexpected(&other)),
-            }
+            self.output_matches(source, &request)?
         } else {
-            FoundList::default()
+            OutputMatches::default()
         };
-        let mut truncated = found.count > found.matches.len();
+        let mut truncated = found.truncated;
         let mut candidates: Vec<_> = found
             .matches
             .into_iter()
-            .filter_map(|f| {
+            .filter_map(|item| {
+                let f = item.found;
                 OutputType::of(&f.entry, &f.path).map(|output_type| Candidate {
                     path: f.path,
                     entry: f.entry,
+                    context: item.context,
                     output_type,
                     cargo_profiles: None,
                 })
@@ -1399,20 +1423,14 @@ impl Session {
             for (path, profiles) in
                 cargo.into_iter().take(crate::outputs::ROOT_LIMIT)
             {
-                if let Response::Listing(listing) = self.outputs_call(
-                    source,
-                    &Request::Ls {
-                        path: path.clone(),
-                        limit: 0,
-                    },
-                )? {
-                    candidates.push(Candidate {
-                        path,
-                        entry: listing.entry,
-                        output_type: OutputType::Cargo,
-                        cargo_profiles: Some(profiles),
-                    });
-                }
+                let (listing, context) = self.output_listing(source, &path)?;
+                candidates.push(Candidate {
+                    path,
+                    entry: listing.entry,
+                    context,
+                    output_type: OutputType::Cargo,
+                    cargo_profiles: Some(profiles),
+                });
             }
         }
         Ok((candidates, truncated))
@@ -1508,7 +1526,7 @@ impl Session {
                 break;
             }
             report.inspected_roots += 1;
-            match self.checked_output(source.as_ref(), &candidate, deadline) {
+            match Self::checked_output(&candidate, deadline) {
                 Ok(output) => report.outputs.push(output),
                 Err(reason) => report.excluded.push(Excluded {
                     path: candidate.path,
@@ -2889,6 +2907,17 @@ fn worth_listing(volume: &disktree_core::space::Volume) -> bool {
 }
 
 /// Where a path landed in a scan held here.
+struct OutputMatch {
+    found: disktree_link::Found,
+    context: crate::outputs::ScanContext,
+}
+
+#[derive(Default)]
+struct OutputMatches {
+    matches: Vec<OutputMatch>,
+    truncated: bool,
+}
+
 struct Located<'a> {
     scan: &'a Scan,
     path: PathBuf,
@@ -3422,6 +3451,193 @@ mod tests {
     fn cargo_json(text: &str) -> serde_json::Value {
         serde_json::from_str(text.split_once('\n').expect("JSON response").1)
             .expect("inventory JSON")
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn cargo_inference_stays_inside_each_completed_scan() {
+        use crate::outputs::{OutputType, Params};
+        for name in ["target", "invented-output"] {
+            for cross in [false, true] {
+                let temp = tempfile::tempdir().expect("fixture");
+                let output =
+                    temp.path().canonicalize().expect("root").join(name);
+                cargo_fixture(&output, 100_000);
+                if cross {
+                    std::fs::create_dir(output.join("invented-triple"))
+                        .expect("triple");
+                    std::fs::rename(
+                        output.join("debug"),
+                        output.join("invented-triple/debug"),
+                    )
+                    .expect("cross profile");
+                }
+                let profile = output.join(if cross {
+                    "invented-triple/debug"
+                } else {
+                    "debug"
+                });
+                for root in [&output, &profile] {
+                    let socket_dir = tempfile::tempdir().expect("socket");
+                    let socket = endpoint(socket_dir.path());
+                    let mut session = Session::detached(socket.clone(), None);
+                    scanned(&mut session, root);
+                    for linked in [false, true] {
+                        let _window =
+                            linked.then(|| FakeWindow::open(&socket, root));
+                        // With one completed scan, omitting its explicit
+                        // scope must produce the same roots and exclusions.
+                        let scoped = cargo_json(
+                            &session
+                                .find_outputs(&Params {
+                                    path: Some(root.clone()),
+                                    types: vec![OutputType::Cargo],
+                                    ..Params::default()
+                                })
+                                .expect("explicit scan scope"),
+                        );
+                        let implicit = cargo_json(
+                            &session
+                                .find_outputs(&Params {
+                                    types: vec![OutputType::Cargo],
+                                    ..Params::default()
+                                })
+                                .expect("implicit scope is the completed scan"),
+                        );
+                        for key in [
+                            "matching_roots",
+                            "matching_listed_bytes",
+                            "excluded",
+                        ] {
+                            assert_eq!(
+                                implicit[key], scoped[key],
+                                "{name}, cross={cross}, linked={linked}"
+                            );
+                        }
+                        for key in ["outputs", "excluded"] {
+                            for row in implicit[key].as_array().expect("rows") {
+                                assert!(
+                                    Path::new(
+                                        row["path"].as_str().expect("path")
+                                    )
+                                    .starts_with(root)
+                                );
+                            }
+                        }
+                        assert_eq!(
+                            implicit["metadata_verified_roots"],
+                            u64::from(root == &output)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_output_scans_match_their_single_snapshot_oracles() {
+        use crate::outputs::{OutputType, Params};
+        for outer_apparent in [false, true] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let root = temp.path().canonicalize().expect("root");
+            let modules = root.join("project/node_modules");
+            let blob = modules.join("pkg/blob");
+            std::fs::create_dir_all(blob.parent().expect("parent"))
+                .expect("directories");
+            std::fs::write(&blob, b"x").expect("old bytes");
+            std::fs::File::options()
+                .write(true)
+                .open(&blob)
+                .expect("blob")
+                .set_times(
+                    std::fs::FileTimes::new().set_modified(
+                        UNIX_EPOCH + Duration::from_secs(100_000),
+                    ),
+                )
+                .expect("old file time");
+            let mut outer = unlinked(&root);
+            let mut scan = run_scan(
+                root.clone(),
+                ScanOptions {
+                    apparent_size: outer_apparent,
+                    include_hidden: false,
+                    max_depth: Some(6),
+                    one_filesystem: false,
+                    ..ScanOptions::default()
+                },
+            )
+            .expect("outer scan");
+            scan.at = 1_600_000_000;
+            scan.unreadable = 3;
+            outer.store_scan(scan);
+            std::fs::write(&blob, vec![b'y'; 131_071]).expect("new bytes");
+            let mut inner = unlinked(&root);
+            let mut scan = run_scan(
+                modules.clone(),
+                ScanOptions {
+                    apparent_size: !outer_apparent,
+                    ..ScanOptions::default()
+                },
+            )
+            .expect("inner scan");
+            scan.at = 1_700_000_000;
+            scan.unreadable = 7;
+            inner.store_scan(scan);
+            let mut oracles = Vec::new();
+            for scoped in [false, true] {
+                for min_bytes in [None, Some(2), Some(65_536)] {
+                    for older_than_days in [None, Some(30)] {
+                        let params = Params {
+                            path: scoped.then(|| modules.clone()),
+                            types: vec![OutputType::NodeModules],
+                            min_bytes,
+                            older_than_days,
+                            ..Params::default()
+                        };
+                        let reference = if scoped { &inner } else { &outer };
+                        let report = cargo_json(
+                            &reference
+                                .find_outputs(&params)
+                                .expect("single snapshot oracle"),
+                        );
+                        oracles.push((params, report));
+                    }
+                }
+            }
+            outer.scans.extend(inner.scans);
+            for (params, expected) in oracles {
+                let actual = cargo_json(
+                    &outer
+                        .find_outputs(&params)
+                        .expect("overlapping snapshots"),
+                );
+                for key in
+                    ["matching_roots", "matching_listed_bytes", "by_type"]
+                {
+                    assert_eq!(actual[key], expected[key], "{params:?}");
+                }
+                let rows = |report: &serde_json::Value| {
+                    report["outputs"]
+                        .as_array()
+                        .expect("rows")
+                        .iter()
+                        .map(|row| {
+                            let mut row = row.clone();
+                            row.as_object_mut()
+                                .expect("row")
+                                .remove("evidence_checked_at");
+                            // Derived wall-clock age can cross a day while
+                            // comparing snapshots; file mtime stays exact.
+                            row.as_object_mut()
+                                .expect("row")
+                                .remove("age_days");
+                            row
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(rows(&actual), rows(&expected), "{params:?}");
+            }
+        }
     }
 
     #[test]

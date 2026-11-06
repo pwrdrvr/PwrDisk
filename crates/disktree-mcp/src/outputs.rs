@@ -238,6 +238,8 @@ pub struct Params {
 pub struct Candidate {
     pub path: PathBuf,
     pub entry: Entry,
+    /// Measurements, filtering and context all belong to this snapshot.
+    pub context: ScanContext,
     pub output_type: OutputType,
     pub cargo_profiles: Option<Vec<PathBuf>>,
 }
@@ -289,7 +291,7 @@ pub struct Excluded {
     pub reason: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ScanContext {
     pub root: PathBuf,
     pub scanned_at: i64,
@@ -299,6 +301,39 @@ pub struct ScanContext {
     pub max_depth: Option<usize>,
     pub depth_limit_known: bool,
     pub one_filesystem: Option<bool>,
+}
+
+impl From<&crate::session::Scan> for ScanContext {
+    fn from(scan: &crate::session::Scan) -> Self {
+        Self {
+            root: scan.root.clone(),
+            scanned_at: scan.at,
+            apparent_size: scan.options.apparent_size,
+            unreadable: scan.unreadable,
+            include_hidden: scan.options.include_hidden,
+            max_depth: scan.options.max_depth,
+            depth_limit_known: true,
+            one_filesystem: Some(scan.options.one_filesystem),
+        }
+    }
+}
+
+impl TryFrom<&disktree_link::State> for ScanContext {
+    type Error = String;
+
+    fn try_from(state: &disktree_link::State) -> Result<Self, Self::Error> {
+        let tree = state.tree.as_ref().ok_or("No completed window scan")?;
+        Ok(Self {
+            root: state.root.clone(),
+            scanned_at: tree.scanned_at,
+            apparent_size: tree.apparent_size,
+            unreadable: tree.unreadable,
+            include_hidden: tree.include_hidden,
+            max_depth: None,
+            depth_limit_known: false,
+            one_filesystem: None,
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]

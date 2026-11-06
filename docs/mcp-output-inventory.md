@@ -94,6 +94,14 @@ Use `next_offset` to fetch all matching rows; rescans and live changes can
 alter subsequent pages. Unknown linked-window depth/mount settings remain
 explicitly unavailable. Scan context is returned even with zero matches.
 
+Standalone discovery without `path` searches the outermost retained scans
+once; an explicit path uses the innermost covering scan. Each row retains
+the measurements, timestamp, root and options of its originating snapshot.
+A newer nested scan does not relabel an older outer-scan measurement. Scope
+the query to use that nested snapshot, or rescan the enclosing root. Cargo
+inference stops at the originating scan and any explicit scope; a narrow
+scan never probes unscanned ancestors for output identity.
+
 Use `pwrdisk_estimate` with the full path list and `pwrdisk_retention` for each
 volume. Listed allocation includes shared/repeated APFS clone allocation and
 is not guaranteed recovered space. Independent reclaim estimates are not
