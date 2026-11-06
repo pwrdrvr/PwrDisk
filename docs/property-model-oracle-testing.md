@@ -73,14 +73,17 @@ failure (min/median/max over 20 seeds).
 | #87 → #88 | Unbounded `git status` probes, then a cut probe that left `git-lfs` running. #88 fixed #87's cut 95 minutes later. | Model; oracle with `kill -0` | Runs 1/1/2; 5 of 5 runs |
 | #31 | Mount sources printed as `My\040Share`. The mount *point* half was fixed earlier by a separate commit. | Property: decode(encode(x)) == x | Runs 1/1/3 |
 
-Still on `main` when this was written, found by running the same tests
-against it: a scan root spelled through a symlink (`/var`,
-`/Volumes/Macintosh HD`, `/tmp`) gets past the system-tree, profile and
-mount guards, and crosses into a disk mounted inside it. The MCP tests
-mark files under `/var/folders/…`, which the guards refuse under its real
-name, `/private/var/folders/…`. They pass because of the bug. The same
-run found an APFS reclaim estimate that promises 4 MiB where deleting frees
-2 MiB, and marks that forget an earlier removal inside them.
+The same oracle found that a scan root spelled through a symlink (`/var`,
+`/Volumes/Macintosh HD`, `/tmp`) bypassed the removal guards for system
+trees, profiles and nested mounts. Those guards now judge resolved parents
+against the resolved scan root too. Identity-based properties reproduce
+the bypass; removal and reclaim-planning fixtures use legitimate scratch
+space instead of relying on `/var/folders` disguising protected live state
+under `/private/var/folders`. See [protected paths](protected-paths.md).
+
+The original run also found a scan crossing into a disk mounted inside a
+linked root, an APFS reclaim estimate that promises 4 MiB where deleting
+frees 2 MiB, and marks that forget an earlier removal inside them.
 
 ## When to write one
 

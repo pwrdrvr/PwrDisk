@@ -1,0 +1,11 @@
+{
+  "size": [1440, 900],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "setup", "state": {"type": "system_folders"}},
+    {"op": "setup", "state": {"type": "select", "path": "Applications"}},
+    {"op": "capture", "name": "applications.png"},
+    {"op": "setup", "state": {"type": "select", "path": "Applications/PwrDraw.app"}},
+    {"op": "capture", "name": "individual-app.png"}
+  ]
+}

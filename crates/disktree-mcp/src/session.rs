@@ -2605,6 +2605,12 @@ mod tests {
     /// A small tree on disk: a cache, a build directory, a checkout with a
     /// large file, and a stray download.
     fn fixture() -> tempfile::TempDir {
+        // The default macOS temp directory contains protected live app
+        // state; a linked scan root must not bypass that protection.
+        #[cfg(target_os = "macos")]
+        let temp =
+            tempfile::tempdir_in("/private/tmp").expect("scratch fixture");
+        #[cfg(not(target_os = "macos"))]
         let temp = tempfile::TempDir::new().expect("tempdir");
         for (path, bytes) in [
             (".cache/pip/blob.bin", 400_000_usize),
