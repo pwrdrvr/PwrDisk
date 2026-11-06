@@ -156,6 +156,13 @@ a cache, and a scan starting directly at the invented `private/tmp` folder.
 An optional second argument selects the before revision. Both scans stay
 inside the same owned Fixtures image and stop at Review without removal.
 
+`bash scripts/screenshots/classification-precedence.sh target/pr-shots/precedence`
+compares narrow scans below a Python cache's temporary folder and below a
+macOS store lookalike inside Git. An optional second argument selects the
+before revision. Both scans use the owned Fixtures image. The temporary
+case stops at Review; the protected-store case stays in Explore without
+marking a path or bypassing a guard.
+
 `bash scripts/screenshots/protected-folders.sh target/pr-shots/protected`
 compares the Applications folder and an individual invented app. Its
 `system_folders` setup retains the scanned fixture tree and fixture disk

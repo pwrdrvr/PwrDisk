@@ -134,6 +134,83 @@ fn temporary_names_override_an_inherited_regenerable_hint() {
     }
 }
 
+/// The broad scan is an independent traversal oracle for every narrower
+/// root, including category-filtered searches used by MCP and the link.
+fn ownership_across_roots(
+    owner: &str,
+    descendants: &[String],
+    expected: Category,
+    reclaim: Option<Reclaim>,
+) {
+    let fixture = tempfile::tempdir().expect("fixture");
+    let relative = format!("{owner}/{}", descendants.join("/"));
+    put(fixture.path(), &format!("{relative}/payload"));
+    let broad = scan(fixture.path(), ScanOptions::default()).expect("scan");
+    let leaf = named(&broad, &relative);
+    assert_eq!((leaf.category, leaf.reclaim), (expected, reclaim));
+    let mut relative = owner.to_owned();
+    for next in std::iter::once(None).chain(descendants.iter().map(Some)) {
+        if let Some(next) = next {
+            relative.push('/');
+            relative.push_str(next);
+        }
+        let path = fixture.path().join(&relative);
+        let narrow = scan(&path, ScanOptions::default()).expect("narrow");
+        let subtree = named(&broad, &relative);
+        same_subtree(subtree, narrow.root());
+        let filter = crate::query::Filter {
+            kind: crate::query::Kind::File,
+            category: Some(expected),
+            ..crate::query::Filter::default()
+        };
+        let broad_hits = crate::query::find(&path, subtree, &filter, 100);
+        let narrow_hits =
+            crate::query::find(&path, narrow.root(), &filter, 100);
+        let paths = |hits: crate::query::Found<'_>| {
+            hits.matches
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(paths(narrow_hits), paths(broad_hits));
+        let canonical = path.canonicalize().expect("real path");
+        let resolved = scan(&canonical, ScanOptions::default()).expect("real");
+        same_subtree(subtree, resolved.root());
+        let mut remote = Tree::copy_of(subtree);
+        let remote_path =
+            PathStyle::Posix.join(Path::new("/fixture"), &relative);
+        classify_at(&mut remote, &remote_path, PathStyle::Posix);
+        same_subtree(subtree, remote.root());
+    }
+}
+
+#[test]
+fn temporary_inside_pip_keeps_its_hint_when_the_scan_narrows() {
+    ownership_across_roots(
+        ".cache/pip",
+        &["tmp".into(), "session".into()],
+        Category::Temporary,
+        Some(Reclaim::Temporary),
+    );
+}
+
+#[test]
+fn git_and_vm_ownership_enclose_macos_store_lookalikes() {
+    for (owner, expected) in [
+        ("repo/.git", Category::Git),
+        ("guest.utm", Category::VirtualMachine),
+    ] {
+        for store in [".fseventsd", ".Spotlight-V100"] {
+            ownership_across_roots(
+                owner,
+                &[store.into(), "session".into()],
+                expected,
+                None,
+            );
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 32,
@@ -159,5 +236,42 @@ proptest! {
         ])),
     ) {
         context_across_roots(container, expected, &names, protected);
+    }
+
+    #[test]
+    fn nearer_hints_inside_artifacts_agree_across_scan_roots(
+        owner in prop::sample::select(vec![
+            ".cache/pip", ".cache/uv", ".gradle/caches",
+            ".cache/sccache", ".cache/ms-playwright",
+            ".pnpm-store", ".cache/pnpm/store",
+        ]),
+        mut names in prop::collection::vec(prop_oneof![
+            "session-[a-z]{1,6}", Just("Documents".to_owned()),
+            Just(".cache".to_owned()), Just("DiagOutputDir".to_owned()),
+            Just(".next".to_owned()),
+        ], 0..8),
+        temporary in prop::sample::select(vec!["tmp", ".tmp", "Temp", "CrashDumps"]),
+    ) {
+        names.extend([temporary.into(), "session".into()]);
+        ownership_across_roots(
+            owner, &names, Category::Temporary, Some(Reclaim::Temporary),
+        );
+    }
+
+    #[test]
+    fn the_first_protected_owner_wins_at_every_scan_root(
+        (owner, expected) in prop::sample::select(vec![
+            ("repo/.git", Category::Git),
+            ("guest.utm", Category::VirtualMachine),
+            (".fseventsd", Category::FilesystemEvents),
+            (".Spotlight-V100", Category::Spotlight),
+        ]),
+        inner in prop::sample::select(vec![
+            ".git", "guest.utm", ".fseventsd", ".Spotlight-V100",
+        ]),
+        mut names in prop::collection::vec("session-[a-z]{1,6}", 0..8),
+    ) {
+        names.extend([inner.into(), "cache".into(), "tmp".into(), "session".into()]);
+        ownership_across_roots(owner, &names, expected, None);
     }
 }

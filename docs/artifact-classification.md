@@ -55,7 +55,11 @@ already deleted or recoverable. A narrow scan retains temporary and trash
 context from its full path, with Git, VM and protected macOS store ownership
 taking precedence. A directory's own cleanup hint wins over an inherited
 one: `.cache/tmp/session` is temporary, rather than being described as
-regenerable solely because of `.cache` above it. Supported-owner cleanup
+regenerable solely because of `.cache` above it, including inside a recognized
+Python cache such as `.cache/pip/tmp/session`. Scan-root context follows
+the same artifact boundaries and name hints as child traversal. The first
+enclosing Git, VM or macOS service store keeps its ownership, even when an
+internal folder uses another store's name. Supported-owner cleanup
 recognition is independent of these display hints.
 
 `pwrdisk_find` accepts every category shown in the legend, plus `other`.
