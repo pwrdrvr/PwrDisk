@@ -89,6 +89,9 @@ pub struct Plan {
     pub blocked: Vec<Blocked>,
     /// The scanned root the targets were judged against.
     pub root: PathBuf,
+    /// The scan's captured measurement configuration. The worker retains
+    /// its accounting parameters and completes any filtered traversal.
+    pub scan_options: crate::scan::ScanOptions,
     /// Bytes the targets free on `root`'s volume; see [`Self::reclaim`].
     reclaim: u64,
     /// Bytes the targets free on other volumes; see [`Self::foreign`].
@@ -1538,7 +1541,7 @@ fn start(
             {
                 let fresh = self::plan(&plan.targets, &plan.root);
                 let checked = if fresh.blocked.is_empty() {
-                    limit.check_fresh(&plan.targets)
+                    limit.check_fresh(&plan.targets, &plan.scan_options)
                 } else {
                     Err("Removal guards changed before preflight; nothing was removed".into())
                 };

@@ -6823,6 +6823,30 @@ fn a_cargo_build_is_an_ordinary_removal(cx: &mut TestAppContext) {
 /// each item is, and stays on Done, every item checked off, rather than
 /// only the names of what already went.
 #[gpui_kit::test]
+fn removal_plan_captures_the_scan_accounting_options(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_paths(&view, cx, &[temp.path().join("junk")]);
+    update(&view, cx, |app, _| {
+        app.options.apparent_size = true;
+        app.options.apfs_clone_metadata = false;
+        app.options.dedup_hardlinks = false;
+        app.options.threads.max_threads = 2;
+        let captured = app.selection_plan();
+        assert_eq!(
+            serde_json::to_value(&captured.scan_options).expect("plan"),
+            serde_json::to_value(&app.options).expect("scan"),
+        );
+        app.options = ScanOptions::default();
+        assert!(captured.scan_options.apparent_size);
+        assert!(!captured.scan_options.apfs_clone_metadata);
+        assert!(!captured.scan_options.dedup_hardlinks);
+        assert_eq!(captured.scan_options.threads.max_threads, 2);
+    });
+}
+
+#[gpui_kit::test]
 fn the_removal_list_stays_on_screen_from_start_to_done(
     cx: &mut TestAppContext,
 ) {

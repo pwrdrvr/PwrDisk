@@ -3028,6 +3028,7 @@ impl Disktree {
             return selection;
         }
         let mut plan = plan(self.marks.items(), &self.root_path);
+        plan.scan_options = self.options.clone();
         if let Some(tree) = &self.tree {
             let mut cached = self.accounting.borrow_mut();
             if !cached.tree.ptr_eq(&Arc::downgrade(tree))

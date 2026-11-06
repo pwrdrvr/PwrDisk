@@ -109,17 +109,24 @@ impl Ceilings {
     pub(crate) fn check_fresh(
         &self,
         targets: &[Target],
+        options: &crate::scan::ScanOptions,
     ) -> Result<Vec<Budget>, String> {
-        self.check_fresh_with(targets, volume_of)
+        self.check_fresh_with(targets, options, volume_of)
     }
 
     fn check_fresh_with(
         &self,
         targets: &[Target],
+        options: &crate::scan::ScanOptions,
         mut volume: impl FnMut(&Path) -> Result<(String, u64), String>,
     ) -> Result<Vec<Budget>, String> {
         self.check_with(targets, &mut volume)?;
-        self.check_with(&measured(targets)?, volume)
+        let measurement = Measurement::new(options);
+        let fresh = targets
+            .iter()
+            .map(|target| measurement.target(target))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.check_with(&fresh, volume)
     }
 
     /// [`Self::check`] with the volume of each target given, as `volume`
@@ -242,7 +249,7 @@ pub fn volume_entry(path: &Path) -> Result<&Path, String> {
 /// can move between targets on a second walk; taking a per-target maximum
 /// would count both the old and new owner of the same allocation.
 pub(crate) fn measured(targets: &[Target]) -> Result<Vec<Target>, String> {
-    let mut measurement = Measurement::default();
+    let measurement = Measurement::default();
     targets
         .iter()
         .map(|target| measurement.target(target))
@@ -250,14 +257,26 @@ pub(crate) fn measured(targets: &[Target]) -> Result<Vec<Target>, String> {
 }
 
 /// A cleanup can refuse an unreadable step alone while retaining one set
-/// of identities across all the steps it can measure.
-#[derive(Default)]
+/// of identities across all the steps it can measure. All accounting lives
+/// in the scanner; this wrapper only checks the removal target's type.
 pub(crate) struct Measurement {
-    seen: rustc_hash::FxHashSet<(u64, u64)>,
+    scan: crate::scan::SelectionScan,
+}
+
+impl Default for Measurement {
+    fn default() -> Self {
+        Self::new(&crate::scan::ScanOptions::default())
+    }
 }
 
 impl Measurement {
-    pub(crate) fn target(&mut self, target: &Target) -> Result<Target, String> {
+    pub(crate) fn new(options: &crate::scan::ScanOptions) -> Self {
+        Self {
+            scan: crate::scan::SelectionScan::new(options.for_removal()),
+        }
+    }
+
+    pub(crate) fn target(&self, target: &Target) -> Result<Target, String> {
         let meta =
             std::fs::symlink_metadata(&target.path).map_err(|error| {
                 format!("Cannot re-measure {}: {error}", target.path.display())
@@ -268,94 +287,77 @@ impl Measurement {
                 target.path.display()
             ));
         }
-        let bytes = if meta.is_dir() {
-            let tree = crate::scan::scan(
-                &target.path,
-                crate::scan::ScanOptions {
-                    dedup_hardlinks: false,
-                    apfs_clone_metadata: false,
-                    ..crate::scan::ScanOptions::default()
-                },
-            )
+        let tree = self
+            .scan
+            .scan(&target.path)
             .map_err(|error| format!("Cannot re-measure removal: {error}"))?;
-            // Check before inserting any identities: an unreadable cleanup
-            // step must not take the charge from another accepted step.
-            if tree.root().read_error {
-                return Err(
-                    "Cannot enforce removal limit: part of the selection \
-                     is unreadable"
-                        .into(),
-                );
-            }
-            let mut bytes = 0_u64;
-            let mut nodes = vec![tree.root()];
-            while let Some(node) = nodes.pop() {
-                if node.is_dir() {
-                    nodes.extend(node.children());
-                } else if node.identity().is_none_or(|id| self.seen.insert(id))
-                {
-                    bytes = bytes
-                        .checked_add(node.bytes)
-                        .ok_or("Removal size overflow")?;
-                }
-            }
-            bytes
-        } else {
-            #[cfg(windows)]
-            let bytes = crate::windows::allocated_size(&target.path).map_err(
-                |error| {
-                    format!(
-                        "Cannot re-measure {}: {error}",
-                        target.path.display()
-                    )
-                },
-            )?;
-            #[cfg(not(windows))]
-            let bytes = crate::scan::measure(&meta, false);
-            if entry_identity(&target.path, &meta)
-                .is_none_or(|id| self.seen.insert(id))
-            {
-                bytes
-            } else {
-                0
-            }
-        };
         Ok(Target {
-            bytes,
+            bytes: tree.root().bytes,
             ..target.clone()
         })
     }
 }
 
-#[cfg(unix)]
-fn entry_identity(
-    _path: &Path,
-    meta: &std::fs::Metadata,
-) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt as _;
-    // Match the directory walk, which only tracks multiply named files.
-    (meta.nlink() > 1).then(|| (meta.dev(), meta.ino()))
-}
-
-#[cfg(windows)]
-fn entry_identity(path: &Path, meta: &std::fs::Metadata) -> Option<(u64, u64)> {
-    // The Windows identity API follows links; removal never does.
-    (!meta.is_symlink())
-        .then(|| crate::windows::identity(path))
-        .flatten()
-}
-
-#[cfg(not(any(unix, windows)))]
-fn entry_identity(
-    _path: &Path,
-    _meta: &std::fs::Metadata,
-) -> Option<(u64, u64)> {
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    mod apfs;
+
+    #[cfg(unix)]
+    #[test]
+    fn recheck_retains_the_scan_size_and_hardlink_parameters() {
+        let temp = tempfile::tempdir().expect("fixture");
+        for name in ["a", "b"] {
+            std::fs::create_dir(temp.path().join(name)).expect("directory");
+        }
+        let original = temp.path().join("a/original");
+        std::fs::write(&original, vec![b'x'; 8192]).expect("file");
+        std::fs::hard_link(&original, temp.path().join("b/alias"))
+            .expect("hardlink");
+        std::fs::File::create(temp.path().join("b/sparse"))
+            .expect("sparse")
+            .set_len(1024 * 1024)
+            .expect("length");
+        for apparent_size in [false, true] {
+            for dedup_hardlinks in [false, true] {
+                for apfs_clone_metadata in [false, true] {
+                    let options = crate::scan::ScanOptions {
+                        apparent_size,
+                        apfs_clone_metadata,
+                        dedup_hardlinks,
+                        ..crate::scan::ScanOptions::default()
+                    };
+                    let tree = crate::scan::scan(temp.path(), options.clone())
+                        .expect("scan");
+                    let recheck = Measurement::new(&options);
+                    let fresh: u64 = tree
+                        .root()
+                        .children()
+                        .iter()
+                        .map(|n| {
+                            recheck
+                                .target(&Target {
+                                    path: temp.path().join(n.name()),
+                                    bytes: n.bytes,
+                                    is_dir: true,
+                                    hidden: false,
+                                })
+                                .expect("recheck")
+                                .bytes
+                        })
+                        .sum();
+                    assert_eq!(
+                        fresh,
+                        tree.root().bytes,
+                        "apparent={apparent_size}, dedup={dedup_hardlinks}, \
+                         clones={apfs_clone_metadata}"
+                    );
+                }
+            }
+        }
+    }
 
     #[cfg(any(unix, windows))]
     fn oracle_bytes(paths: &[std::path::PathBuf]) -> u64 {
@@ -527,7 +529,9 @@ mod tests {
                     .expect("write");
                 let current = oracle_bytes(&paths);
                 proptest::prop_assert_eq!(
-                    ceilings.check_fresh_with(&targets, volume).is_ok(),
+                    ceilings.check_fresh_with(
+                        &targets, &crate::scan::ScanOptions::default(), volume
+                    ).is_ok(),
                     reviewed.max(current) <= capacity / 20,
                     "reviewed={}, current={}, capacity={}",
                     reviewed, current, capacity
