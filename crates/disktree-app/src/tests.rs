@@ -79,8 +79,17 @@ fn init(cx: &mut gpui_kit::App) {
 ///
 /// The hidden directory holds the largest file, which is both the common case
 /// in a home directory and the one the ranking has to get right.
+fn scratch() -> tempfile::TempDir {
+    // The default macOS temp directory is protected live application
+    // state. Removal fixtures must exercise a supported scratch location.
+    #[cfg(target_os = "macos")]
+    return tempfile::tempdir_in("/private/tmp").expect("scratch fixture");
+    #[cfg(not(target_os = "macos"))]
+    tempfile::TempDir::new().expect("scratch fixture")
+}
+
 fn fixture() -> tempfile::TempDir {
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = scratch();
     let root = temp.path();
     for (path, bytes) in [
         ("keep/notes.txt", 1_000_usize),
@@ -5125,7 +5134,7 @@ fn queue_budget_view(
 ) -> (tempfile::TempDir, Entity<Disktree>, &mut Window) {
     use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
 
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = scratch();
     let root_path = temp.path().to_path_buf();
     let mut tree = Draft::directory("root");
     let mut parent = Draft::directory("container");
@@ -6357,7 +6366,7 @@ fn accessible_file_pages_reach_every_entry_and_share_safe_marks(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = scratch();
     for i in 0..235 {
         std::fs::write(
             temp.path().join(format!("Résumé 日本語-{i:03}.txt")),
@@ -6428,7 +6437,7 @@ fn accessible_file_navigation_uses_absolute_paths_and_filter(
 }
 
 fn paginated_fixture(count: usize) -> tempfile::TempDir {
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = scratch();
     for index in 0..count {
         let prefix = if index < 150 { "match" } else { "other" };
         std::fs::write(
