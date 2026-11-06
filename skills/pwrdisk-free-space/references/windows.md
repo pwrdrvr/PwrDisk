@@ -66,6 +66,12 @@ guards of its resolved location, including system trees, profiles and
 nested mounted folders. A selected link itself does not authorize deleting
 its destination.
 
+The profiles folder comes from Windows (`FOLDERID_UserProfiles`). If it is
+a junction, both its configured name and its resolved location protect the
+folder and every profile directly inside it. For example, redirecting
+`C:\Users` to `D:\Profiles` does not make `D:\Profiles\other` removable.
+Contents inside a profile remain subject to the other guards.
+
 ## Never propose
 
 - **WinSxS, the component store, and installers' caches** under Windows:
@@ -112,6 +118,17 @@ refusal, increase the setting or split batches to evade it. A window
 refuses a mark that would take the list past the limit, and marks made
 without one are checked when they reach it: only the person can mark past
 it, in the window. Say so, and let them decide.
+
+The worker counts hardlinked allocation once across the complete selection,
+including aliases in different marked folders. Scan and recheck use the
+same entry measurement and aggregation code, retaining the scan's size,
+hardlink and clone-metadata parameters. The recheck includes hidden/deep
+contents, never follows links, and stays on the target's volume regardless
+of display filters. It checks the reviewed and
+fresh totals separately on each volume; it never adds two scans' different
+hardlink charge assignments. A preflight refusal removes no selected paths.
+Observed is the signed volume free-space change, including other activity,
+not evidence that this attempt deleted files.
 
 MCP removal also requires interactive confirmation from the client (form
 elicitation). An agent-supplied confirmation value does not establish human

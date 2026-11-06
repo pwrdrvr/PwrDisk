@@ -75,21 +75,18 @@ fn init(cx: &mut gpui_kit::App) {
     Theme::tokyo_night().apply(cx);
 }
 
+// macOS's default TMPDIR is protected system state under /private/var.
+fn removable_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+        .expect("removable fixture")
+}
+
 /// A small tree on disk: two directories, a nested file, and a hidden one.
 ///
 /// The hidden directory holds the largest file, which is both the common case
 /// in a home directory and the one the ranking has to get right.
-fn scratch() -> tempfile::TempDir {
-    // The default macOS temp directory is protected live application
-    // state. Removal fixtures must exercise a supported scratch location.
-    #[cfg(target_os = "macos")]
-    return tempfile::tempdir_in("/private/tmp").expect("scratch fixture");
-    #[cfg(not(target_os = "macos"))]
-    tempfile::TempDir::new().expect("scratch fixture")
-}
-
 fn fixture() -> tempfile::TempDir {
-    let temp = scratch();
+    let temp = removable_tempdir();
     let root = temp.path();
     for (path, bytes) in [
         ("keep/notes.txt", 1_000_usize),
@@ -2103,7 +2100,7 @@ fn settings_safety_reads_the_limit_once_and_shows_a_saved_pick(
 /// Three checkouts side by side: each a worktree's `.git` file and some
 /// data, largest first, so the first is selected when the window opens.
 fn checkouts() -> tempfile::TempDir {
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     for (name, bytes) in
         [("alpha", 300_000), ("beta", 200_000), ("gamma", 100_000)]
     {
@@ -2781,9 +2778,8 @@ fn enter_in_the_focused_volume_picker_scans_the_selected_root(
 ) {
     cx.update(init);
     let temp = fixture();
-    // Accepting a local root canonicalizes it, and the temporary directory
-    // is behind a link on macOS (/var -> /private/var) and a short 8.3 name
-    // on Windows runners, so compare against the resolved path.
+    // Accepting a local root canonicalizes it; the checkout itself can
+    // have another spelling, so compare against the resolved path.
     let target = dunce::canonicalize(temp.path().join("junk")).unwrap();
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, _| {
@@ -4274,7 +4270,7 @@ fn switching_the_metric_keeps_the_directory_and_the_selection(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path();
     // Largest by size, but fewest files: the two swap places.
     std::fs::create_dir_all(root.join("big")).expect("mkdir");
@@ -4324,7 +4320,7 @@ fn toggling_the_metric_reorders_without_copying_the_tree(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path();
     std::fs::create_dir_all(root.join("big")).expect("mkdir");
     std::fs::write(root.join("big/one.bin"), vec![b'x'; 500_000])
@@ -4494,7 +4490,7 @@ fn mouse_side_buttons_go_back_and_forward(cx: &mut TestAppContext) {
 #[test]
 fn restart_arguments_parse_back_to_the_same_scan() {
     use disktree_core::tree::Metric;
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path().join("a folder");
     std::fs::create_dir(&root).expect("mkdir");
     let root = dunce::canonicalize(&root).expect("canonical root");
@@ -4851,7 +4847,7 @@ fn marked_window_resolution_budget(cx: &mut TestAppContext) {
 
     cx.update(init);
     let mut measure = |count| {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = removable_tempdir();
         let root_path = temp.path().to_path_buf();
         let mut tree = Draft::directory("root");
         for index in 0..count {
@@ -5032,7 +5028,7 @@ fn marked_interaction_timings(cx: &mut TestAppContext) {
     }
 
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     // One broad directory, kept fixed while only the number of marks grows.
     // Each marked folder contains a file: descendants still make one mark.
     for index in 0..1025 {
@@ -5134,7 +5130,7 @@ fn queue_budget_view(
 ) -> (tempfile::TempDir, Entity<Disktree>, &mut Window) {
     use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
 
-    let temp = scratch();
+    let temp = removable_tempdir();
     let root_path = temp.path().to_path_buf();
     let mut tree = Draft::directory("root");
     let mut parent = Draft::directory("container");
@@ -6366,7 +6362,7 @@ fn accessible_file_pages_reach_every_entry_and_share_safe_marks(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = scratch();
+    let temp = removable_tempdir();
     for i in 0..235 {
         std::fs::write(
             temp.path().join(format!("Résumé 日本語-{i:03}.txt")),
@@ -6437,7 +6433,7 @@ fn accessible_file_navigation_uses_absolute_paths_and_filter(
 }
 
 fn paginated_fixture(count: usize) -> tempfile::TempDir {
-    let temp = scratch();
+    let temp = removable_tempdir();
     for index in 0..count {
         let prefix = if index < 150 { "match" } else { "other" };
         std::fs::write(
@@ -6644,12 +6640,18 @@ fn status_review_cancelled_widening_does_not_hide_the_active_screen(
         app.widen_to(temp.path().to_path_buf(), cx);
         app.cancel_scan(cx);
         app.open_review(cx);
-        for (screen, phase) in [
-            (Screen::Review, "Review marked paths"),
-            (Screen::Running, "Removal running"),
-            (Screen::Done, "Removal finished"),
+        for (screen, checked, phase) in [
+            (Screen::Review, false, "Review marked paths"),
+            (
+                Screen::Running,
+                false,
+                "Checking selection; nothing removed yet",
+            ),
+            (Screen::Running, true, "Removal running"),
+            (Screen::Done, false, "Removal finished"),
         ] {
             app.screen = screen;
+            app.run_checked = checked;
             let label = app.accessibility_status();
             assert!(label.starts_with(phase), "{label}");
             assert!(label.contains("Previous scan cancelled"), "{label}");
@@ -6817,6 +6819,30 @@ fn a_cargo_build_is_an_ordinary_removal(cx: &mut TestAppContext) {
 /// each item is, and stays on Done, every item checked off, rather than
 /// only the names of what already went.
 #[gpui_kit::test]
+fn removal_plan_captures_the_scan_accounting_options(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_paths(&view, cx, &[temp.path().join("junk")]);
+    update(&view, cx, |app, _| {
+        app.options.apparent_size = true;
+        app.options.apfs_clone_metadata = false;
+        app.options.dedup_hardlinks = false;
+        app.options.threads.max_threads = 2;
+        let captured = app.selection_plan();
+        assert_eq!(
+            serde_json::to_value(&captured.scan_options).expect("plan"),
+            serde_json::to_value(&app.options).expect("scan"),
+        );
+        app.options = ScanOptions::default();
+        assert!(captured.scan_options.apparent_size);
+        assert!(!captured.scan_options.apfs_clone_metadata);
+        assert!(!captured.scan_options.dedup_hardlinks);
+        assert_eq!(captured.scan_options.threads.max_threads, 2);
+    });
+}
+
+#[gpui_kit::test]
 fn the_removal_list_stays_on_screen_from_start_to_done(
     cx: &mut TestAppContext,
 ) {
@@ -6847,8 +6873,10 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
         app.run_epoch
     });
     draw(cx);
-    // Nothing is reported until the poll: both are listed, waiting, and
-    // the first is the one in hand.
+    // Until the worker reports Start, every row waits and no row claims
+    // to be removing anything. The current index is only the next target.
+    assert!(cx.debug_bounds("run-checking").is_some());
+    assert!(cx.debug_bounds("run-progress").is_none());
     assert!(cx.debug_bounds("run-list").is_some());
     assert!(cx.debug_bounds("run-row-0").is_some());
     assert!(cx.debug_bounds("run-row-1").is_some());
@@ -6989,6 +7017,7 @@ fn the_removal_list_follows_the_item_in_hand_like_the_live_log(
                 .collect(),
         );
         app.screen = Screen::Running;
+        app.run_checked = true;
         cx.notify();
     });
     draw(cx);
@@ -7511,7 +7540,7 @@ fn a_large_directory_keeps_zero_weight_files_reachable_in_bounded_pages(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     for index in 0..50_000 {
         std::fs::write(temp.path().join(format!("entry-{index:05}.txt")), [])
             .expect("empty fixture file");
@@ -8588,6 +8617,7 @@ fn the_follow_pill_hides_the_row_under_it(cx: &mut TestAppContext) {
                 .collect(),
         );
         app.screen = Screen::Running;
+        app.run_checked = true;
         cx.notify();
     });
     draw(cx);

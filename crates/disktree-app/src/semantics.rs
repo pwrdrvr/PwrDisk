@@ -69,6 +69,9 @@ impl crate::state::Disktree {
                 }
             }
             Screen::Review => "Review marked paths",
+            Screen::Running if !self.run_checked => {
+                "Checking selection; nothing removed yet"
+            }
             Screen::Running => "Removal running",
             Screen::Done => "Removal finished",
         };

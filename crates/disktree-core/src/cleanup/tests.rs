@@ -56,6 +56,64 @@ fn raw_worker_refusal_does_not_inspect_later_marks() {
     assert!(results[1].is_ok(), "Review checks the unrelated mark too");
 }
 
+#[cfg(unix)]
+#[test]
+fn raw_inspection_accepts_descendants_beyond_path_max() {
+    let tree = crate::test_tree::DeepTree::new();
+    let fixture = Fixture::new();
+    let targets = [target(&tree.selected)];
+    check_raw_with(&targets, &fixture.env).expect("worker inspection");
+    assert_eq!(
+        inspect_raw_with(&targets, &fixture.env, MAX_PREFLIGHT_ENTRIES),
+        [Ok(())],
+        "Review uses the same inspection"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn raw_inspection_recognizes_relocated_caches_beyond_path_max() {
+    use rustix::fs::{Mode, OFlags, mkdirat, openat};
+
+    let tree = crate::test_tree::DeepTree::new();
+    let fixture = Fixture::new();
+    mkdirat(&tree.dir, "wheels-v5", Mode::RWXU).expect("uv bucket");
+    let tag = openat(
+        &tree.dir,
+        "CACHEDIR.TAG",
+        OFlags::WRONLY | OFlags::CREATE | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    )
+    .expect("uv cache tag");
+    drop(tag);
+    let targets = [target(&tree.selected)];
+    for result in [
+        check_raw_with(&targets, &fixture.env),
+        inspect_raw_with(&targets, &fixture.env, MAX_PREFLIGHT_ENTRIES)
+            .remove(0),
+    ] {
+        let reason = result.expect_err("cache remains protected");
+        assert!(reason.contains("uv"), "{reason}");
+        assert!(reason.contains("Cache cleanup"), "{reason}");
+        assert!(
+            reason.contains(&*tree.deepest.to_string_lossy()),
+            "{reason}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn raw_inspection_does_not_follow_deep_directory_links() {
+    let tree = crate::test_tree::DeepTree::new();
+    let fixture = Fixture::new();
+    let outside = fixture.dir("outside/_cacache");
+    rustix::fs::symlinkat(&outside, &tree.dir, "link").expect("outside link");
+    check_raw_with(&[target(&tree.selected)], &fixture.env)
+        .expect("the linked cache is not inside the selection");
+    assert!(outside.join("payload").exists());
+}
+
 // These tests deliberately create live processes named uv. Serialize them
 // so one fixture cannot trip another fixture's active-owner guard.
 #[cfg(unix)]
@@ -775,13 +833,16 @@ fn owner_worker_applies_confirmed_ceilings_only_to_the_named_volume() {
     let approved = Ceilings::from(Limit::default())
         .raise(volume, Limit::new(10).expect("10%"));
     let completed = collect(&spawn_cleanup(prepared, approved));
-    assert!(completed.iter().any(|event| matches!(
-        event,
-        RemovalEvent::Item {
-            outcome: Ok(()),
-            ..
-        }
-    )));
+    assert!(
+        completed.iter().any(|event| matches!(
+            event,
+            RemovalEvent::Item {
+                outcome: Ok(()),
+                ..
+            }
+        )),
+        "{completed:#?}"
+    );
     assert!(fixture.env.home.join("invocation").exists());
     assert!(
         cache.join("payload").exists(),

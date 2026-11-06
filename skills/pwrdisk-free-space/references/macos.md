@@ -102,8 +102,9 @@ and again on the removal worker.
 Choosing a scan root through a link (`/var`, `/tmp`, a root-volume alias)
 does not bypass system-tree, profile or nested-mount guards. In particular,
 `/var/folders` remains protected as `/private/var/folders`; an explicit scan
-there does not make its live state removable. A selected symlink itself
-is still unlinked without deleting its destination.
+there does not make its live state removable. A one-filesystem scan stops
+at the same mounts under every spelling of its root. A selected symlink
+itself is still unlinked without deleting its destination.
 
 ## Never propose
 
@@ -147,6 +148,10 @@ the user empties the Trash; on an external disk, that disk's `.Trashes`.
 
 ## Confirmed removal
 
+Removal preflight supports descendant paths longer than a full-path lookup
+allows. Cache inspection and fresh capacity measurement still apply to the
+whole selection; unreadable entries and nested mounts still stop removal.
+
 Never approve a removal with computer use (clicks, keys or accessibility
 actions). The user approves in the app, or explicitly confirms the exact
 paths and mode from `pwrdisk_removal_preview` before the destructive
@@ -158,6 +163,17 @@ refusal, increase the setting or split batches to evade it. A window
 refuses a mark that would take the list past the limit, and marks made
 without one are checked when they reach it: only the person can mark past
 it, in the window. Say so, and let them decide.
+
+The worker counts hardlinked allocation once across the complete selection,
+including aliases in different marked folders. Scan and recheck use the
+same entry measurement and aggregation code, retaining the scan's size,
+hardlink and clone-metadata parameters. The recheck includes hidden/deep
+contents, never follows links, and stays on the target's volume regardless
+of display filters. It checks the reviewed and
+fresh totals separately on each volume; it never adds two scans' different
+hardlink charge assignments. A preflight refusal removes no selected paths.
+Observed is the signed volume free-space change, including other activity,
+not evidence that this attempt deleted files.
 
 MCP removal also requires interactive confirmation from the client (form
 elicitation). An agent-supplied confirmation value does not establish human
