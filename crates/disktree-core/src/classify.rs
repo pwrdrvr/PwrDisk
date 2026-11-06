@@ -42,6 +42,8 @@ pub enum Category {
     Spotlight,
     /// VM/container disks and state; detection never suggests raw removal.
     VirtualMachine,
+    /// Temporary locations; their contents may still be needed or unique.
+    Temporary,
     /// Nothing recognisable.
     #[default]
     Other,
@@ -49,7 +51,7 @@ pub enum Category {
 
 impl Category {
     /// The categories the legend lists, in its order.
-    pub const LEGEND: [Self; 11] = [
+    pub const LEGEND: [Self; 12] = [
         Self::Code,
         Self::AgentScratch,
         Self::Toolchain,
@@ -58,6 +60,7 @@ impl Category {
         Self::Media,
         Self::Documents,
         Self::Cache,
+        Self::Temporary,
         Self::FilesystemEvents,
         Self::Spotlight,
         Self::VirtualMachine,
@@ -74,6 +77,7 @@ impl Category {
             Self::Media => "media",
             Self::Documents => "documents",
             Self::Cache => "cache",
+            Self::Temporary => "temporary",
             Self::FilesystemEvents => "fsevents",
             Self::Spotlight => "spotlight",
             Self::VirtualMachine => "virtual machines",
@@ -100,6 +104,7 @@ impl Category {
             Self::Media => "Media",
             Self::Documents => "Documents",
             Self::Cache => "Cache",
+            Self::Temporary => "Temporary",
             Self::FilesystemEvents => "FSEvents history",
             Self::Spotlight => "Spotlight index",
             Self::VirtualMachine => "Virtual machines",
@@ -124,7 +129,7 @@ pub enum Reclaim {
     Reinstallable,
     /// Already deleted, still on disk.
     Trash,
-    /// Scratch space meant to be thrown away.
+    /// Temporary files; their name alone does not establish disposability.
     Temporary,
 }
 
@@ -211,13 +216,16 @@ pub fn category_of_name(name: &str) -> Option<Category> {
         }
         "documents" | "desktop" | "downloads" | "books" | "notes"
         | "obsidian" | "public" | "templates" => Category::Documents,
+        // Temporary ancestry is a location hint, not evidence of a cache.
+        // Keep that distinction even if protected contents clear reclaim.
+        "tmp" | ".tmp" | "temp" | "crashdumps" => Category::Temporary,
         ".cache" | "cache" | "caches" | ".ccache" | ".sccache" | "_cacache"
-        | "__pycache__" | "node_modules" | "trash" | ".trash" | "tmp"
-        | ".tmp" | "deriveddata" | "ios devicesupport"
+        | "__pycache__" | "node_modules" | "trash" | ".trash"
+        | "deriveddata" | "ios devicesupport"
         | "watchos devicesupport"
         // Windows: see `reclaim_of`.
-        | "temp" | "$recycle.bin" | "npm-cache" | "v3-cache" | "inetcache"
-        | "d3dscache" | "dxcache" | "glcache" | "crashdumps" => Category::Cache,
+        | "$recycle.bin" | "npm-cache" | "v3-cache" | "inetcache"
+        | "d3dscache" | "dxcache" | "glcache" => Category::Cache,
         _ => return None,
     };
     Some(category)
@@ -929,7 +937,12 @@ mod tests {
                 Some(reclaim),
                 "{name}"
             );
-            assert_eq!(category_of_name(name), Some(Category::Cache), "{name}");
+            let category = if reclaim == Reclaim::Temporary {
+                Category::Temporary
+            } else {
+                Category::Cache
+            };
+            assert_eq!(category_of_name(name), Some(category), "{name}");
         }
         for name in [
             "OneDrive - Contoso",
@@ -1008,7 +1021,7 @@ mod tests {
         };
         // A file directly in the root takes a kind from its name, but
         // never a reclaim reason; deeper, a file only inherits.
-        assert_eq!(kind(&["tmp"]), (Category::Cache, None));
+        assert_eq!(kind(&["tmp"]), (Category::Temporary, None));
         assert_eq!(kind(&["README"]), (Category::Other, None));
         assert_eq!(kind(&["plain", "tmp"]), (Category::Other, None));
         assert_eq!(kind(&["bare"]), (Category::Git, None));

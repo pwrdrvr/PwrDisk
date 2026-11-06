@@ -221,6 +221,12 @@ fn setup(
                     }
                 }
                 State::Review => app.open_review(cx),
+                State::PermanentReview => {
+                    // Reproduce the selected mode without confirming removal.
+                    app.removal_mode =
+                        disktree_core::removal::RemovalMode::Permanent;
+                    app.open_review(cx);
+                }
                 State::CleanupReview => {
                     // Proposals only: an empty search path prevents any
                     // installed CLI, proxy or config from being probed.

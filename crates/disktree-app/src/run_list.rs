@@ -230,6 +230,132 @@ pub fn elide_middle(text: &str, separator: char, budget: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use disktree_core::scan::{ScanOptions, scan};
+    use proptest::prelude::*;
+
+    /// Temporary ancestry describes a location, not a known cache. This
+    /// remains true when protected contents clear the reclaim hint and
+    /// Review falls back to the category, at any intermediate depth.
+    fn temporary_labels(
+        container: &str,
+        names: &[String],
+        protected: Option<&str>,
+    ) {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let mut path = fixture.path().join("private").join(container);
+        for name in names {
+            path.push(name);
+        }
+        std::fs::create_dir_all(&path).expect("temporary contents");
+        std::fs::write(path.join("notes"), "potentially unique work")
+            .expect("notes");
+        if let Some(name) = protected {
+            let store = path.join(name).join("cache/tmp");
+            std::fs::create_dir_all(&store).expect("protected contents");
+            std::fs::write(store.join("payload"), "owner-managed data")
+                .expect("store payload");
+        }
+        let tree = scan(fixture.path(), ScanOptions::default()).expect("scan");
+        let mut node = tree
+            .root()
+            .child_named("private")
+            .expect("private")
+            .child_named(container)
+            .expect("temporary container");
+        assert_eq!(node.category.name(), "temporary");
+        for name in names {
+            node = node.child_named(name).expect("descendant");
+            assert_eq!(node.category.name(), "temporary");
+            assert_eq!(kind(node.category, node.reclaim), Some("temporary"));
+            if protected.is_some() {
+                assert_eq!(node.reclaim, None);
+            }
+        }
+        let notes = node.child_named("notes").expect("notes");
+        assert_eq!(kind(notes.category, notes.reclaim), Some("temporary"));
+        if let Some(name) = protected {
+            let expected = match name {
+                ".git" => Category::Git,
+                ".fseventsd" => Category::FilesystemEvents,
+                ".Spotlight-V100" => Category::Spotlight,
+                _ => Category::VirtualMachine,
+            };
+            let store = node.child_named(name).expect("protected store");
+            let internal = store
+                .child_named("cache")
+                .expect("cache")
+                .child_named("tmp")
+                .expect("tmp");
+            for child in [store, internal] {
+                assert_eq!(child.category, expected);
+                assert_eq!(child.reclaim, None);
+                assert_eq!(
+                    kind(child.category, child.reclaim),
+                    Some(expected.name())
+                );
+            }
+        }
+        assert!(
+            disktree_core::cleanup::inspection_reason(&path).is_none(),
+            "temporary ancestry alone does not route to owner cleanup"
+        );
+    }
+
+    #[test]
+    fn claude_under_private_tmp_is_temporary_even_with_git_contents() {
+        temporary_labels("tmp", &["claude-501".into()], Some(".git"));
+    }
+
+    #[test]
+    fn an_unknown_temporary_descendant_is_not_a_cache() {
+        temporary_labels("tmp", &["session-a".into()], None);
+    }
+
+    #[test]
+    fn descriptive_labels_leave_supported_owner_cleanup_routing_intact() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        for (relative, category, owned) in [
+            ("private/tmp/claude-501", Category::Temporary, false),
+            (".claude/experiments", Category::AgentScratch, false),
+            ("private/tmp/_cacache", Category::Cache, true),
+        ] {
+            let path = fixture.path().join(relative);
+            std::fs::create_dir_all(&path).expect("contents");
+            std::fs::write(path.join("payload"), "invented data")
+                .expect("payload");
+            let tree =
+                scan(fixture.path(), ScanOptions::default()).expect("scan");
+            let mut node = tree.root();
+            for name in relative.split('/') {
+                node = node.child_named(name).expect("descendant");
+            }
+            assert_eq!(node.category, category, "{relative}");
+            assert_eq!(
+                disktree_core::cleanup::inspection_reason(&path).is_some(),
+                owned,
+                "{relative}"
+            );
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 32,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn temporary_ancestry_never_labels_unknown_contents_as_cache(
+            container in prop::sample::select(vec!["tmp", ".tmp", "temp", "Temp", "TMP"]),
+            names in prop::collection::vec("session-[a-z]{1,8}", 1..5),
+            protected in prop::option::of(prop::sample::select(vec![
+                ".git", ".fseventsd", ".Spotlight-V100", "guest.utm",
+            ])),
+        ) {
+            temporary_labels(container, &names, protected);
+        }
+    }
 
     fn item(path: &str, bytes: u64, private: Option<u64>) -> Item {
         Item {

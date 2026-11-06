@@ -128,6 +128,9 @@ confirm removal. Never use clicks to approve removal, open the source
 chooser, launch external apps or run owner commands. Scenarios are trusted
 developer input, not a sandbox for arbitrary app interactions.
 
+`permanent_review` opens Review with Permanent selected without confirming
+removal, for pictures of that mode independent of the host's Trash backend.
+
 `cleanup_review` opens the marked fixture paths' cache cleanup proposals
 with an empty CLI search path. It never probes installed owners or chooses
 an action; every path stays on Skip. Environment hints for a screenshot
@@ -136,6 +139,12 @@ must point only into the contrived fixture image.
 `scripts/screenshots/owner-cleanup.sh target/pr-shots/owner-cleanup` builds
 before/after pictures for pnpm's separate metadata/dlx cache. It adds only
 invented data to the owned Fixtures image and sets its XDG cache hint there.
+
+`bash scripts/screenshots/temporary-labels.sh target/pr-shots/temporary`
+compares Review's inherited temporary and agent scratch labels. Its invented
+`private/tmp/claude-501` and sibling folders contain Git history so Review
+uses the category after the reclaim hint is cleared. It never confirms
+removal or uses a real temporary directory's contents.
 
 `bash scripts/screenshots/protected-folders.sh target/pr-shots/protected`
 compares the Applications folder and an individual invented app. Its
