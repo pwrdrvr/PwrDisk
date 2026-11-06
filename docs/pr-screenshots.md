@@ -146,6 +146,12 @@ compares Review's inherited temporary and agent scratch labels. Its invented
 uses the category after the reclaim hint is cleared. It never confirms
 removal or uses a real temporary directory's contents.
 
+`bash scripts/screenshots/classification-context.sh target/pr-shots/context`
+compares diagnostic logs, Trash containing Git history, temporary data below
+a cache, and a scan starting directly at the invented `private/tmp` folder.
+An optional second argument selects the before revision. Both scans stay
+inside the same owned Fixtures image and stop at Review without removal.
+
 `bash scripts/screenshots/protected-folders.sh target/pr-shots/protected`
 compares the Applications folder and an individual invented app. Its
 `system_folders` setup retains the scanned fixture tree and fixture disk

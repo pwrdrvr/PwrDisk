@@ -220,6 +220,7 @@ impl Detection {
             match self.kind {
                 Artifact::GitRepo => Category::Git,
                 Artifact::Worktree => Category::AgentScratch,
+                Artifact::DiagLogs => Category::DiagnosticLogs,
                 _ => Category::Cache,
             }
         }

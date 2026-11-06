@@ -318,6 +318,9 @@ mod tests {
             ("private/tmp/claude-501", Category::Temporary, false),
             (".claude/experiments", Category::AgentScratch, false),
             ("private/tmp/_cacache", Category::Cache, true),
+            (".cache/tmp/_cacache", Category::Cache, true),
+            (".cache/DiagOutputDir", Category::DiagnosticLogs, false),
+            (".Trash/kept", Category::Trash, false),
         ] {
             let path = fixture.path().join(relative);
             std::fs::create_dir_all(&path).expect("contents");
@@ -335,6 +338,32 @@ mod tests {
                 owned,
                 "{relative}"
             );
+        }
+    }
+
+    #[test]
+    fn review_badges_describe_logs_trash_and_temporary_contents() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        for relative in [
+            ".cache/DiagOutputDir/session",
+            ".Trash/kept/.git/objects",
+            ".cache/tmp/session",
+        ] {
+            let path = fixture.path().join(relative);
+            std::fs::create_dir_all(&path).expect("contrived contents");
+            std::fs::write(path.join("payload"), "invented data")
+                .expect("payload");
+        }
+        let tree = scan(fixture.path(), ScanOptions::default()).expect("scan");
+        for (relative, expected) in [
+            (".cache/DiagOutputDir", "diagnostic logs"),
+            (".Trash/kept", "trash"),
+            (".cache/tmp/session", "temporary"),
+        ] {
+            let node = relative.split('/').fold(tree.root(), |node, name| {
+                node.child_named(name).expect("contrived child")
+            });
+            assert_eq!(kind(node.category, node.reclaim), Some(expected));
         }
     }
 

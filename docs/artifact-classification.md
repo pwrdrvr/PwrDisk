@@ -49,6 +49,20 @@ Git metadata, worktree conventions and diagnostic logs are detections.
 Git ownership still applies when a scan starts inside `.git`, including
 repositories stored within dependencies or caches.
 
+Temporary locations, trash locations and diagnostic logs have distinct
+display categories. These labels do not establish that data is disposable,
+already deleted or recoverable. A narrow scan retains temporary and trash
+context from its full path, with Git, VM and protected macOS store ownership
+taking precedence. A directory's own cleanup hint wins over an inherited
+one: `.cache/tmp/session` is temporary, rather than being described as
+regenerable solely because of `.cache` above it. Supported-owner cleanup
+recognition is independent of these display hints.
+
+`pwrdisk_find` accepts every category shown in the legend, plus `other`.
+Use lowercase names with hyphens for spaces, such as `diagnostic-logs`,
+`agent-scratch` and `virtual-machines`; `temporary`, `trash`, `fsevents`
+and `spotlight` are also available.
+
 The boundary is the recognized subtree, never a parent inferred from it.
 For example, `target/debug/deps` is Rust output and `target/scala-3.3` is
 JVM output. Neither labels all of `target`, even beside `Cargo.toml`.

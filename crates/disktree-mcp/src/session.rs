@@ -260,6 +260,10 @@ pub enum CategoryName {
     Documents,
     Cache,
     Temporary,
+    DiagnosticLogs,
+    Trash,
+    Fsevents,
+    Spotlight,
     VirtualMachines,
     Other,
 }
@@ -276,6 +280,10 @@ impl From<CategoryName> for Category {
             CategoryName::Documents => Self::Documents,
             CategoryName::Cache => Self::Cache,
             CategoryName::Temporary => Self::Temporary,
+            CategoryName::DiagnosticLogs => Self::DiagnosticLogs,
+            CategoryName::Trash => Self::Trash,
+            CategoryName::Fsevents => Self::FilesystemEvents,
+            CategoryName::Spotlight => Self::Spotlight,
             CategoryName::VirtualMachines => Self::VirtualMachine,
             CategoryName::Other => Self::Other,
         }
@@ -2852,6 +2860,41 @@ mod tests {
             })
             .expect_err("outside");
         assert!(outside.contains("outside the scanned roots"), "{outside}");
+    }
+
+    #[test]
+    fn every_core_category_survives_json_and_query_filtering() {
+        use disktree_core::tree::NodeKind;
+
+        let mut root = Draft::directory("fixture");
+        for category in Category::LEGEND.into_iter().chain([Category::Other]) {
+            let mut leaf = Draft::entry(
+                format!("item-{}", category.name().replace(' ', "-")),
+                NodeKind::File,
+                1024,
+            );
+            leaf.category = category;
+            root.children.push(leaf);
+        }
+        let tree = Tree::from(root);
+        for category in Category::LEGEND.into_iter().chain([Category::Other]) {
+            let params: FindParams =
+                serde_json::from_value(serde_json::json!({
+                    "category": category.name().replace(' ', "-"),
+                    "kind": "file"
+                }))
+                .expect("every reported kind is a parameter");
+            let filter = params.request(None, 0).filter().expect("filter");
+            assert_eq!(filter.category, Some(category));
+            let found = query::find(
+                Path::new("fixture"),
+                tree.root(),
+                &filter,
+                MAX_LIMIT,
+            );
+            assert_eq!(found.count, 1);
+            assert_eq!(found.matches[0].1.category, category);
+        }
     }
 
     #[test]

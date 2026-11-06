@@ -665,19 +665,8 @@ mod tests {
         let categories = find.input_schema["$defs"]["CategoryName"]["enum"]
             .as_array()
             .expect("category enum");
-        for category in [
-            Category::Code,
-            Category::AgentScratch,
-            Category::Toolchain,
-            Category::Synced,
-            Category::Git,
-            Category::Media,
-            Category::Documents,
-            Category::Cache,
-            Category::Temporary,
-            Category::VirtualMachine,
-            Category::Other,
-        ] {
+        assert_eq!(categories.len(), Category::LEGEND.len() + 1);
+        for category in Category::LEGEND.into_iter().chain([Category::Other]) {
             let name = category.name().replace(' ', "-");
             assert!(
                 categories.contains(&serde_json::json!(name)),

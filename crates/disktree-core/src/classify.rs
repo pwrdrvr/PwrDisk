@@ -17,6 +17,10 @@ use crate::artifact::Roots;
 use crate::path_style::PathStyle;
 use crate::tree::{Block, Node, Tree};
 
+#[cfg(test)]
+#[path = "classify/context_tests.rs"]
+mod context_tests;
+
 /// A kind of data, for colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Category {
@@ -44,6 +48,10 @@ pub enum Category {
     VirtualMachine,
     /// Temporary locations; their contents may still be needed or unique.
     Temporary,
+    /// Diagnostic records that may still be needed or actively written.
+    DiagnosticLogs,
+    /// Locations named as trash; the name does not prove recoverability.
+    Trash,
     /// Nothing recognisable.
     #[default]
     Other,
@@ -51,7 +59,7 @@ pub enum Category {
 
 impl Category {
     /// The categories the legend lists, in its order.
-    pub const LEGEND: [Self; 12] = [
+    pub const LEGEND: [Self; 14] = [
         Self::Code,
         Self::AgentScratch,
         Self::Toolchain,
@@ -61,6 +69,8 @@ impl Category {
         Self::Documents,
         Self::Cache,
         Self::Temporary,
+        Self::DiagnosticLogs,
+        Self::Trash,
         Self::FilesystemEvents,
         Self::Spotlight,
         Self::VirtualMachine,
@@ -78,6 +88,8 @@ impl Category {
             Self::Documents => "documents",
             Self::Cache => "cache",
             Self::Temporary => "temporary",
+            Self::DiagnosticLogs => "diagnostic logs",
+            Self::Trash => "trash",
             Self::FilesystemEvents => "fsevents",
             Self::Spotlight => "spotlight",
             Self::VirtualMachine => "virtual machines",
@@ -105,6 +117,8 @@ impl Category {
             Self::Documents => "Documents",
             Self::Cache => "Cache",
             Self::Temporary => "Temporary",
+            Self::DiagnosticLogs => "Diagnostic logs",
+            Self::Trash => "Trash",
             Self::FilesystemEvents => "FSEvents history",
             Self::Spotlight => "Spotlight index",
             Self::VirtualMachine => "Virtual machines",
@@ -127,7 +141,7 @@ pub enum Reclaim {
     BuildOutput,
     /// Installed dependencies beside their manifest.
     Reinstallable,
-    /// Already deleted, still on disk.
+    /// Contents of a trash-named location; recovery is not established.
     Trash,
     /// Temporary files; their name alone does not establish disposability.
     Temporary,
@@ -219,12 +233,13 @@ pub fn category_of_name(name: &str) -> Option<Category> {
         // Temporary ancestry is a location hint, not evidence of a cache.
         // Keep that distinction even if protected contents clear reclaim.
         "tmp" | ".tmp" | "temp" | "crashdumps" => Category::Temporary,
+        "trash" | ".trash" | "$recycle.bin" => Category::Trash,
         ".cache" | "cache" | "caches" | ".ccache" | ".sccache" | "_cacache"
-        | "__pycache__" | "node_modules" | "trash" | ".trash"
+        | "__pycache__" | "node_modules"
         | "deriveddata" | "ios devicesupport"
         | "watchos devicesupport"
         // Windows: see `reclaim_of`.
-        | "$recycle.bin" | "npm-cache" | "v3-cache" | "inetcache"
+        | "npm-cache" | "v3-cache" | "inetcache"
         | "d3dscache" | "dxcache" | "glcache" => Category::Cache,
         _ => return None,
     };
@@ -288,8 +303,11 @@ pub fn classify_at(tree: &mut Tree, path: &Path, style: PathStyle) {
     let root = tree.root();
     // Protected stores win over any cache identity inferred from a parent
     // above this scan root. Narrow scans retain the same ownership rules.
-    let own = category_of_name(root.name())
-        .filter(|category| {
+    let own = style
+        .names(path)
+        .iter()
+        .filter_map(|name| category_of_name(name))
+        .find(|category| {
             matches!(category, Category::FilesystemEvents | Category::Spotlight)
         })
         .map(|category| (category, None))
@@ -303,7 +321,8 @@ pub fn classify_at(tree: &mut Tree, path: &Path, style: PathStyle) {
         .or_else(|| {
             is_pnpm_store(root)
                 .then_some((Category::Toolchain, Some(Reclaim::PackageStore)))
-        });
+        })
+        .or_else(|| descriptive_context(path, style));
     tree.par_top_down(
         |facts, mut block| {
             if let Some((category, reclaim)) = own {
@@ -332,6 +351,30 @@ pub fn classify_at(tree: &mut Tree, path: &Path, style: PathStyle) {
             }
         },
     );
+}
+
+/// Preserve temporary/trash context even when its defining directory lies
+/// above the scan root. Closer names refine that context as in a broad
+/// scan. This is only a display hint; verified ownership takes precedence.
+fn descriptive_context(
+    path: &Path,
+    style: PathStyle,
+) -> Option<(Category, Option<Reclaim>)> {
+    let mut context: Option<(Category, Option<Reclaim>)> = None;
+    for name in style.names(path) {
+        let own = category_of_name(&name);
+        if context.is_none()
+            && !matches!(own, Some(Category::Temporary | Category::Trash))
+        {
+            continue;
+        }
+        let (parent, inherited) = context.unwrap_or_default();
+        context = Some((
+            own.unwrap_or(parent),
+            reclaim_of(&name, parent, |_| false).or(inherited),
+        ));
+    }
+    context
 }
 
 /// The children of a root that is nothing in particular: each takes only
@@ -429,8 +472,10 @@ fn kind_of(
     ) {
         None
     } else {
-        reclaim
-            .or_else(|| reclaim_of(child.name, category, has_sibling))
+        // A specific temporary/trash hint must not become "regenerable"
+        // solely because a more distant directory was named cache.
+        reclaim_of(child.name, category, has_sibling)
+            .or(reclaim)
             .or_else(|| stores.is_pnpm(id).then_some(Reclaim::PackageStore))
     };
     (child_category, child_reclaim)
@@ -939,6 +984,8 @@ mod tests {
             );
             let category = if reclaim == Reclaim::Temporary {
                 Category::Temporary
+            } else if reclaim == Reclaim::Trash {
+                Category::Trash
             } else {
                 Category::Cache
             };
