@@ -12,6 +12,50 @@ mod candidates;
 mod playwright;
 mod properties;
 
+// Observe target dispatch without turning a disk-speed measurement into a test.
+thread_local! {
+    static RAW_TARGETS: std::cell::RefCell<Option<Vec<PathBuf>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn record_raw_target(path: &Path) {
+    RAW_TARGETS.with_borrow_mut(|targets| {
+        if let Some(targets) = targets {
+            targets.push(path.to_owned());
+        }
+    });
+}
+
+fn trace_raw_targets<T>(check: impl FnOnce() -> T) -> (T, Vec<PathBuf>) {
+    RAW_TARGETS.with_borrow_mut(|targets| *targets = Some(Vec::new()));
+    let result = check();
+    let targets = RAW_TARGETS.with_borrow_mut(Option::take).expect("trace");
+    (result, targets)
+}
+
+/// Worker refusal is terminal, whereas Review still needs each mark's result.
+#[test]
+fn raw_worker_refusal_does_not_inspect_later_marks() {
+    let fixture = Fixture::new();
+    let cache = fixture.dir("project/_cacache");
+    let sibling = fixture.dir("unrelated/large-tree");
+    let targets = [target(&cache), target(&sibling)];
+    let (result, visited) =
+        trace_raw_targets(|| check_raw_with(&targets, &fixture.env));
+    assert!(result.is_err());
+    assert_eq!(
+        visited.as_slice(),
+        std::slice::from_ref(&cache),
+        "a refusal ends the worker check"
+    );
+    let (results, visited) = trace_raw_targets(|| {
+        inspect_raw_with(&targets, &fixture.env, MAX_PREFLIGHT_ENTRIES)
+    });
+    assert_eq!(visited, [cache, sibling]);
+    assert!(results[0].is_err());
+    assert!(results[1].is_ok(), "Review checks the unrelated mark too");
+}
+
 // These tests deliberately create live processes named uv. Serialize them
 // so one fixture cannot trip another fixture's active-owner guard.
 #[cfg(unix)]

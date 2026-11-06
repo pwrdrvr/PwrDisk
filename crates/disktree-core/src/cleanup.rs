@@ -35,29 +35,74 @@ pub fn check_raw(targets: &[Target]) -> Result<(), String> {
     check_raw_with(targets, &Environment::current()?)
 }
 
-#[allow(
-    clippy::unnecessary_debug_formatting,
-    reason = "Quote paths and expose controls in safety refusals"
-)]
+/// The same bounded inspection, with a result for each mark.
+///
+/// Review keeps these results until its scan or selection changes. The entry
+/// budget is shared by the whole selection, as on the removal worker.
+pub fn inspect_raw(targets: &[Target]) -> Vec<Result<(), String>> {
+    match Environment::current() {
+        Ok(environment) => {
+            inspect_raw_with(targets, &environment, MAX_PREFLIGHT_ENTRIES)
+        }
+        Err(reason) => vec![Err(reason); targets.len()],
+    }
+}
+
 fn check_raw_with(
     targets: &[Target],
     environment: &Environment,
 ) -> Result<(), String> {
-    for target in targets {
-        if let Some(reason) =
-            recognize::inspection_with(&target.path, environment)
-        {
-            return Err(format!("{:?}: {reason}", target.path));
-        }
-    }
+    // A worker refuses the entire run on the first error, so later marks
+    // must not be walked while preparing a refusal it already knows.
+    raw_inspections_with(targets, environment, MAX_PREFLIGHT_ENTRIES).collect()
+}
+
+fn inspect_raw_with(
+    targets: &[Target],
+    environment: &Environment,
+    maximum: usize,
+) -> Vec<Result<(), String>> {
+    raw_inspections_with(targets, environment, maximum).collect()
+}
+
+fn raw_inspections_with<'a>(
+    targets: &'a [Target],
+    environment: &'a Environment,
+    maximum: usize,
+) -> impl Iterator<Item = Result<(), String>> + 'a {
     let roots = recognize::roots(environment);
-    let mut pending: Vec<_> =
-        targets.iter().map(|target| target.path.clone()).collect();
     let mut visited = 0;
+    targets.iter().map(move |target| {
+        inspect_raw_target(target, environment, &roots, &mut visited, maximum)
+    })
+}
+
+#[allow(
+    clippy::unnecessary_debug_formatting,
+    reason = "Quote paths and expose controls in safety refusals"
+)]
+fn inspect_raw_target(
+    target: &Target,
+    environment: &Environment,
+    roots: &[(Owner, PathBuf)],
+    visited: &mut usize,
+    maximum: usize,
+) -> Result<(), String> {
+    #[cfg(test)]
+    tests::record_raw_target(&target.path);
+    if let Some(reason) = recognize::inspection_with(&target.path, environment)
+    {
+        return Err(format!("{:?}: {reason}", target.path));
+    }
+    let bound = || {
+        "Raw removal inspection exceeded its bound; inspect a smaller selection"
+            .to_owned()
+    };
+    let mut pending = vec![target.path.clone()];
     while let Some(path) = pending.pop() {
-        visited += 1;
-        if visited > MAX_PREFLIGHT_ENTRIES {
-            return Err("Raw removal inspection exceeded its bound; inspect a smaller selection".into());
+        *visited += 1;
+        if *visited > maximum {
+            return Err(bound());
         }
         let meta = match std::fs::symlink_metadata(&path) {
             Ok(meta) => meta,
@@ -67,7 +112,7 @@ fn check_raw_with(
             Err(error) => return Err(error.to_string()),
         };
         if meta.is_dir() {
-            if let Some(owner) = recognize::cleanable_root(&path, &roots) {
+            if let Some(owner) = recognize::cleanable_root(&path, roots) {
                 return Err(format!(
                     "{path:?}: the {} inside can be cleaned with `{}`; choose Cache cleanup for it",
                     owner.label(),
@@ -77,8 +122,11 @@ fn check_raw_with(
             for entry in
                 std::fs::read_dir(&path).map_err(|error| error.to_string())?
             {
-                if visited + pending.len() >= MAX_PREFLIGHT_ENTRIES {
-                    return Err("Raw removal inspection exceeded its bound; inspect a smaller selection".into());
+                if *visited + pending.len() >= maximum {
+                    // Discarding this mark's queued paths must not give a
+                    // later mark a fresh budget after the selection hit it.
+                    *visited = maximum + 1;
+                    return Err(bound());
                 }
                 pending.push(entry.map_err(|error| error.to_string())?.path());
             }
