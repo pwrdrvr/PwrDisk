@@ -477,6 +477,27 @@ impl WalkContext {
 
         let kind = match listing {
             Listing::Symlink => {
+                // The listing can still measure a link whose full path is
+                // too long for lstat. Never ask its destination for facts.
+                #[cfg(unix)]
+                if !self.options.follow_links {
+                    return match entry.facts(
+                        dir,
+                        self.options.apparent_size,
+                        self,
+                    ) {
+                        Ok(facts) => self.leaf(
+                            entry.take_name(),
+                            NodeKind::Symlink,
+                            facts,
+                        ),
+                        Err(error) => {
+                            self.progress
+                                .record_error(&entry.entry_path(dir), &error);
+                            Classified::Unreadable
+                        }
+                    };
+                }
                 let path = entry.entry_path(dir);
                 return self.classify_symlink(&path, entry.take_name());
             }
@@ -756,8 +777,10 @@ struct Named {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 impl Listed for Named {
-    fn entry_path(&self, _dir: &Path) -> PathBuf {
-        self.entry.path()
+    fn entry_path(&self, dir: &Path) -> PathBuf {
+        // A Linux listing may have been opened through its descriptor;
+        // display, boundary checks and tree paths keep the logical spelling.
+        dir.join(self.entry.file_name())
     }
 
     fn name(&self) -> &str {
@@ -924,7 +947,7 @@ fn list(
     _clone_flags: bool,
     _listed_dirs: bool,
 ) -> io::Result<impl Iterator<Item = io::Result<Named>>> {
-    let entries = fs::read_dir(path)?;
+    let entries = read_directory(path)?;
     Ok(entries.map(|entry| {
         entry.map(|entry| Named {
             name: entry.file_name().into_string().map_or_else(
@@ -934,6 +957,46 @@ fn list(
             entry,
         })
     }))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn read_directory(path: &Path) -> io::Result<fs::ReadDir> {
+    let result = fs::read_dir(path);
+    #[cfg(target_os = "linux")]
+    if result.as_ref().is_err_and(|error| {
+        error.raw_os_error()
+            == Some(rustix::io::Errno::NAMETOOLONG.raw_os_error())
+    }) {
+        use std::os::fd::AsRawFd as _;
+        let dir = open_directory(path)?;
+        // ReadDir owns the opened stream; its DirEntries retain that stream
+        // and stat relative to it after this temporary descriptor is closed.
+        return fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+    }
+    result
+}
+
+/// Keep ordinary listings to one open. Only paths beyond `PATH_MAX` need
+/// component-relative opens; both scan and recheck use this same reader.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn open_directory(path: &Path) -> io::Result<std::os::fd::OwnedFd> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    match open(path, flags, Mode::empty()) {
+        Ok(dir) => Ok(dir),
+        Err(rustix::io::Errno::NAMETOOLONG) => {
+            let mut dir = None;
+            for component in path.components() {
+                dir = Some(if let Some(parent) = &dir {
+                    openat(parent, component.as_os_str(), flags, Mode::empty())?
+                } else {
+                    open(component.as_os_str(), flags, Mode::empty())?
+                });
+            }
+            dir.ok_or_else(|| io::Error::other("No directory components"))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(target_os = "macos")]

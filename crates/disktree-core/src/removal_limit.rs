@@ -306,6 +306,148 @@ impl Measurement {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn measured_directory(path: &Path) -> Result<u64, String> {
+        measured(&[Target {
+            path: path.to_path_buf(),
+            bytes: 0,
+            is_dir: true,
+            hidden: false,
+        }])
+        .map(|fresh| fresh[0].bytes)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preflight_measures_descendants_beyond_path_max() {
+        let tree = crate::test_tree::DeepTree::new();
+        let targets = [Target {
+            path: tree.selected.clone(),
+            bytes: 1,
+            is_dir: true,
+            hidden: false,
+        }];
+        let fresh = measured(&targets).expect("measure deep hidden payload");
+        assert!(fresh[0].bytes >= 16_384, "{}", fresh[0].bytes);
+        assert!(
+            Limit::default()
+                .check_with(&fresh, |_| Ok(("fixture".into(), 100_000)))
+                .is_err(),
+            "deep growth must still enforce the capacity limit"
+        );
+        assert!(tree.selected.exists(), "measurement is read-only");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preflight_counts_hardlinks_and_link_allocations_without_following() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let temp = tempfile::tempdir().expect("fixture");
+        let selected = temp.path().join("selected");
+        std::fs::create_dir(&selected).expect("directory");
+        let file = selected.join(".hidden");
+        std::fs::write(&file, [b'x'; 16_384]).expect("file");
+        std::fs::hard_link(&file, selected.join("duplicate"))
+            .expect("hardlink");
+        let outside = temp.path().join("keep");
+        std::fs::write(&outside, vec![b'y'; 32_768]).expect("outside file");
+        let link = selected.join("link");
+        std::os::unix::fs::symlink(&outside, &link).expect("outside link");
+        let expected =
+            std::fs::metadata(&file).expect("file allocation").blocks() * 512
+                + std::fs::symlink_metadata(&link)
+                    .expect("link allocation")
+                    .blocks()
+                    * 512;
+        assert_eq!(
+            measured_directory(&selected).expect("measurement"),
+            expected
+        );
+        assert!(outside.exists(), "measurement is read-only");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preflight_refuses_unreadable_deep_directories() {
+        use rustix::fs::{Mode, OFlags, fchmod, openat};
+
+        let tree = crate::test_tree::DeepTree::new();
+        fchmod(&tree.dir, Mode::empty()).expect("lock deep directory");
+        // A privileged test runner may still read mode-000 directories.
+        let unreadable = openat(
+            &tree.dir,
+            c".",
+            OFlags::RDONLY | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .is_err();
+        let result = measured_directory(&tree.selected);
+        fchmod(&tree.dir, Mode::RWXU).expect("restore fixture permissions");
+        if unreadable {
+            assert!(result.is_err(), "an incomplete measure cannot authorize");
+        }
+        assert!(tree.selected.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deep_scan_and_recheck_preserve_accounting_parameters() {
+        use rustix::fs::{AtFlags, linkat, statat, symlinkat};
+
+        let tree = crate::test_tree::DeepTree::new();
+        linkat(
+            &tree.dir,
+            c".payload",
+            &tree.dir,
+            c"alias",
+            AtFlags::empty(),
+        )
+        .expect("deep hardlink");
+        symlinkat(&tree.selected, &tree.dir, c"link").expect("deep symlink");
+        let file = statat(&tree.dir, c".payload", AtFlags::SYMLINK_NOFOLLOW)
+            .expect("file oracle");
+        let link = statat(&tree.dir, c"link", AtFlags::SYMLINK_NOFOLLOW)
+            .expect("link oracle");
+        let targets = [Target {
+            path: tree.selected.clone(),
+            bytes: 0,
+            is_dir: true,
+            hidden: false,
+        }];
+        for apparent_size in [false, true] {
+            let size = |stat: &rustix::fs::Stat| {
+                if apparent_size {
+                    stat.st_size.max(0) as u64
+                } else {
+                    (stat.st_blocks.max(0) as u64) * 512
+                }
+            };
+            for dedup_hardlinks in [false, true] {
+                let options = crate::scan::ScanOptions {
+                    apparent_size,
+                    dedup_hardlinks,
+                    ..crate::scan::ScanOptions::default()
+                };
+                // The link points at the selected root: following it would
+                // revisit the tree instead of charging the link itself.
+                let expected = size(&file)
+                    * if dedup_hardlinks { 1 } else { 2 }
+                    + size(&link);
+                let scan = crate::scan::scan(&tree.selected, options.clone())
+                    .expect("deep scan");
+                assert!(!scan.root().read_error);
+                assert_eq!(scan.root().bytes, expected, "scan oracle");
+                let recheck = Measurement::new(&options, &targets);
+                assert_eq!(
+                    recheck.target(&targets[0]).expect("deep recheck").bytes,
+                    expected,
+                    "recheck oracle"
+                );
+            }
+        }
+    }
+
     #[cfg(target_os = "macos")]
     mod apfs;
 

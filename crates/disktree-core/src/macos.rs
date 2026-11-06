@@ -22,7 +22,7 @@ use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+use rustix::fs::{AtFlags, FileType};
 
 use crate::sharing::CloneInfo;
 
@@ -444,11 +444,7 @@ pub fn read_dir(dir: &Path, clones: Clones) -> io::Result<ReadDir> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(dir.to_path_buf());
     }
-    let fd = rustix::fs::open(
-        dir,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
+    let fd = crate::scan::open_directory(dir)?;
     let buffer = SPARE
         .with_borrow_mut(Option::take)
         .unwrap_or_else(|| vec![0; BUFFER_BYTES / 8].into_boxed_slice());
