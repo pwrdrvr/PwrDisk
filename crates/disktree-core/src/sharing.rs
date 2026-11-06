@@ -119,15 +119,23 @@ impl Allocation {
 }
 
 impl CloneInfo {
-    const fn incomplete(self) -> bool {
+    const fn metadata_incomplete(self) -> bool {
         self.device == 0
             || self.id == 0
             || self.references == 0
             || self.private_bytes.is_none()
+    }
+
+    const fn incomplete(self) -> bool {
+        self.metadata_incomplete()
             // A modified clone can still share extents with another ID;
             // its sole reference does not describe those relationships.
-            || (self.references == 1
-                && matches!(self.private_bytes, Some(private) if private < self.data_bytes))
+            || self.extents_uncertain()
+    }
+
+    const fn extents_uncertain(self) -> bool {
+        self.references == 1
+            && matches!(self.private_bytes, Some(private) if private < self.data_bytes)
     }
 }
 
@@ -158,7 +166,7 @@ impl DuplicateSummary {
         self.incomplete |= node
             .allocation()
             .and_then(|allocation| allocation.clone)
-            .is_some_and(CloneInfo::incomplete);
+            .is_some_and(CloneInfo::metadata_incomplete);
         if let Some((key, group)) = own(node, &mut self.summary) {
             join(
                 &mut self.groups,

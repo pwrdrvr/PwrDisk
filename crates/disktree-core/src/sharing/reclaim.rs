@@ -80,6 +80,7 @@ pub(super) struct Accumulator {
     links: FxHashMap<(u64, u64), Links>,
     limit: usize,
     incomplete: bool,
+    extents_uncertain: bool,
 }
 
 impl Accumulator {
@@ -100,6 +101,7 @@ impl Accumulator {
             upper: self.base.upper.saturating_add(self.credit.upper),
             partial: self.base.partial
                 || self.incomplete
+                || self.extents_uncertain
                 || self.uncertain_groups > 0,
         }
     }
@@ -165,7 +167,9 @@ impl Accumulator {
         let info = allocation.clone;
         // Missing clone facts may widen the bounds but cannot prove group
         // completeness. Keep that limitation when crossing the window link.
-        self.incomplete |= info.is_some_and(CloneInfo::incomplete);
+        self.incomplete |= info.is_some_and(CloneInfo::metadata_incomplete);
+        self.extents_uncertain |=
+            info.is_some_and(CloneInfo::extents_uncertain);
         let private = info.map_or(allocation.bytes, |info| {
             info.private_bytes.unwrap_or(0).min(allocation.bytes)
         });
@@ -238,6 +242,7 @@ impl Accumulator {
         self.base.upper = self.base.upper.saturating_add(other.base.upper);
         self.base.partial |= other.base.partial;
         self.incomplete |= other.incomplete;
+        self.extents_uncertain |= other.extents_uncertain;
         for (key, group) in other.groups {
             work();
             self.join(key, group);
@@ -362,6 +367,11 @@ impl Selected {
 
     pub const fn estimate(&self) -> Estimate {
         self.0.estimate()
+    }
+
+    /// Known allocation metadata can still leave extent relationships unknown.
+    pub const fn metadata_complete(&self) -> bool {
+        !self.0.base.partial && !self.0.incomplete
     }
 
     /// Disjoint alternatives and their combined union use the same engine.
@@ -825,8 +835,12 @@ mod observation_tests {
             let first = observations[0];
             let partial = observations.iter().any(|info| *info != first)
                 || observations.len() as u64 > first.links;
-            let forward = estimate(trees.iter().map(Tree::root));
-            let reverse = estimate(trees.iter().rev().map(Tree::root));
+            let forward = Selected::new(trees.iter().map(Tree::root));
+            let reverse = Selected::new(trees.iter().rev().map(Tree::root));
+            prop_assert_eq!(forward.metadata_complete(), !partial);
+            prop_assert_eq!(reverse.metadata_complete(), !partial);
+            let forward = forward.estimate();
+            let reverse = reverse.estimate();
             prop_assert_eq!(forward.partial, partial);
             prop_assert_eq!(reverse.partial, partial);
             prop_assert_eq!(forward, reverse);

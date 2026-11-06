@@ -40,6 +40,9 @@ use serde::Deserialize;
 
 use crate::report::{age, children, clone_summary, describe, display, matches};
 
+#[cfg(all(test, target_os = "macos"))]
+mod ranking_tests;
+
 /// The measurement context survives a window scan being reused by an agent.
 fn scan_context(tree: &TreeSummary) -> String {
     format!(

@@ -135,6 +135,8 @@ pub struct Report {
     pub reclaim: Option<Bounds>,
     pub volume: VolumeAllocation,
     pub peers: Option<Peers>,
+    /// Observed allocation metadata is complete. Unknown shared-extent
+    /// relationships widen `reclaim` without invalidating measured private bytes.
     pub metadata_complete: bool,
     pub scan_complete: bool,
     pub limitations: Vec<String>,
@@ -241,7 +243,7 @@ pub fn estimate(
         limitations.push("Physical bounds and private/shared allocation are unavailable: apparent sizes or APFS clone metadata disabled/unsupported. Use an allocated-size scan with clone collection on macOS.".into());
     }
     if measured.partial || duplicates.is_none() || context.limited() {
-        limitations.push("Incomplete scan or allocation metadata: bounds cover observed entries only; omitted entries and unknown sharing can change the result.".into());
+        limitations.push("Incomplete scan, allocation metadata or shared-extent relationships: bounds cover observed entries only; omitted entries and unknown sharing can change the result.".into());
     }
     let peers = if peer_limit == 0 || !physical {
         None
@@ -275,7 +277,8 @@ pub fn estimate(
         reclaim: physical.then_some(measured.into()),
         volume,
         metadata_complete: physical
-            && !measured.partial
+            && !context.limited()
+            && accounting.metadata_complete()
             && duplicates.is_some(),
         scan_complete: !context.limited(),
         context,
