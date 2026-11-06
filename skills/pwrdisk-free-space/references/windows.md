@@ -56,6 +56,11 @@ are protected at every drive root, not just the system drive. Their
 contents stay protected; use Windows' supported tools. Review and the
 removal worker enforce these guards too.
 
+UNC shares can expose an arbitrary directory rather than a volume root.
+An ordinary `Recovery` or `Boot` folder inside `\\nas\backups` (including
+the verbatim `\\?\UNC\nas\backups` spelling) is not reserved by the
+drive-root metadata rule. It remains subject to the other removal guards.
+
 An explicit scan root reached through a link or junction retains the
 guards of its resolved location, including system trees, profiles and
 nested mounted folders. A selected link itself does not authorize deleting

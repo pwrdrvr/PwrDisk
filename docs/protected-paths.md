@@ -59,7 +59,10 @@ At every drive root, these entries and their contents are protected:
 `Config.Msi`, `bootmgr`, `pagefile.sys`, `hiberfil.sys`, and `swapfile.sys`.
 Case and verbatim drive prefixes do not change the verdict. A similarly
 named user folder such as `D:\Documents\Recovery` is not reserved by this
-rule.
+rule. UNC shares can expose arbitrary directories, so names such as
+`\\nas\backups\Recovery` and `\\nas\backups\Boot` are not reserved by
+this drive-root rule. This also applies to verbatim UNC paths; other
+removal guards still apply.
 
 ## Other guards
 

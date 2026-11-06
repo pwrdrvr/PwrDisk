@@ -616,7 +616,7 @@ const SYSTEM_TOOLS: &str = "use Settings, or the program's own uninstaller";
 /// never system, wherever it lives, and neither is what is inside the
 /// scratch space of [`SCRATCH_TREES`].
 fn system_tree(key: &Path, home: Option<&Path>) -> Option<&'static str> {
-    // These belong to every Windows volume, including data drives. Test
+    // These belong to every Windows drive, including data drives. Test
     // them before the home exception: a profile may be at a drive's root.
     if let Some(tree) = volume_system_tree(key) {
         return Some(tree);
@@ -639,7 +639,8 @@ fn system_tree(key: &Path, home: Option<&Path>) -> Option<&'static str> {
 #[cfg(windows)]
 fn volume_system_tree(key: &Path) -> Option<&'static str> {
     let mut parts = key.components();
-    if !matches!(parts.next(), Some(Component::Prefix(_)))
+    if !matches!(parts.next(), Some(Component::Prefix(prefix))
+        if is_volume_drive(prefix.kind()))
         || parts.next() != Some(Component::RootDir)
     {
         return None;
@@ -660,6 +661,15 @@ fn volume_system_tree(key: &Path) -> Option<&'static str> {
         "swapfile.sys" => Some("swapfile.sys"),
         _ => None,
     }
+}
+
+#[cfg(any(windows, test))]
+const fn is_volume_drive(prefix: std::path::Prefix<'_>) -> bool {
+    // A UNC share can expose any directory, not necessarily a volume root.
+    matches!(
+        prefix,
+        std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)
+    )
 }
 
 #[cfg(not(windows))]
@@ -2348,6 +2358,49 @@ mod tests {
                 &root.join("Documents").join(&folder))), None);
         }
 
+        /// A share exposes an arbitrary directory. Only a drive prefix
+        /// establishes the root where volume metadata names are reserved.
+        #[test]
+        fn volume_metadata_requires_a_drive_prefix(
+            drive in any::<bool>(),
+            verbatim in any::<bool>(),
+            letter in b'A'..=b'Z',
+            server in "[a-z]{1,16}",
+            share in "[a-z]{1,16}",
+        ) {
+            use std::ffi::OsStr;
+            use std::path::Prefix;
+            let prefix = match (drive, verbatim) {
+                (true, false) => Prefix::Disk(letter),
+                (true, true) => Prefix::VerbatimDisk(letter),
+                (false, false) => Prefix::UNC(OsStr::new(&server), OsStr::new(&share)),
+                (false, true) => Prefix::VerbatimUNC(OsStr::new(&server), OsStr::new(&share)),
+            };
+            prop_assert_eq!(is_volume_drive(prefix), drive);
+        }
+
+        #[test]
+        #[cfg(windows)]
+        fn windows_share_contents_are_not_volume_metadata(
+            server in "[a-z]{1,16}",
+            share in "[a-z]{1,16}",
+            folder in proptest::sample::select(vec![
+                "System Volume Information", "$Recycle.Bin", "Recovery",
+                "Boot", "EFI", "Config.Msi", "bootmgr", "pagefile.sys",
+                "hiberfil.sys", "swapfile.sys",
+            ]),
+            upper in any::<bool>(),
+            verbatim in any::<bool>(),
+            child in proptest::option::of("[a-z]{1,12}"),
+        ) {
+            let root = PathBuf::from(if verbatim {
+                format!(r"\\?\UNC\{server}\{share}\")
+            } else { format!(r"\\{server}\{share}\") });
+            let mut path = root.join(if upper { folder.to_uppercase() } else { folder.to_owned() });
+            if let Some(child) = child { path.push(child); }
+            prop_assert_eq!(volume_system_tree(&guard_key(&path)), None);
+        }
+
         /// Filesystem identity is the oracle: a scan through a symlink
         /// to / must protect the same Applications directory as a direct
         /// scan. Only links inside the fixture are created.
@@ -2374,6 +2427,31 @@ mod tests {
                 fs::canonicalize(root).ok().as_deref(), None,
                 &MountTable::default());
             prop_assert!(reason.is_some(), "{}", path.display());
+        }
+    }
+
+    #[test]
+    fn a_backup_share_does_not_establish_a_volume_root() {
+        use std::ffi::OsStr;
+        use std::path::Prefix;
+        let server = OsStr::new("nas");
+        let share = OsStr::new("backups");
+        assert!(!is_volume_drive(Prefix::UNC(server, share)));
+        assert!(!is_volume_drive(Prefix::VerbatimUNC(server, share)));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn unc_backup_folders_are_not_volume_metadata() {
+        for root in [r"\\nas\backups", r"\\?\UNC\nas\backups"] {
+            for path in [r"Recovery", r"BOOT", r"Recovery\archive", r"Boot\old"]
+            {
+                assert_eq!(
+                    volume_system_tree(&guard_key(&Path::new(root).join(path))),
+                    None,
+                    "{root}\\{path}",
+                );
+            }
         }
     }
 
