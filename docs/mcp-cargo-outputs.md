@@ -45,6 +45,10 @@ triples. A returned root needs:
 - No Git-tracked contents when inside a Git worktree. An unavailable or
   timed-out tracking check excludes the root.
 
+For a two-level cross-target profile, the root must have its own compiler
+metadata. A generic tag on an enclosing workspace cannot absorb a nested
+Cargo output directory and count its source files as output.
+
 The query never runs Cargo or a cleanup command. Git uses a read-only
 pathspec check with optional writes and the fsmonitor hook disabled. Linked
 Git, VM, FSEvents and Spotlight ownership, unreadable roots, and roots removed

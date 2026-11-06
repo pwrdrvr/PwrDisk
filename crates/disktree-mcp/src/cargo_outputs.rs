@@ -203,7 +203,12 @@ pub fn evidence(root: &Path, profiles: &[PathBuf]) -> Option<Evidence> {
     }
     for profile in profiles.iter().take(16) {
         let relative = profile.strip_prefix(root).ok()?;
-        if !(1..=2).contains(&relative.components().count())
+        let depth = relative.components().count();
+        // A generic tag cannot establish which enclosing directory owns a
+        // two-level layout: it may be a workspace wrapping target/profile.
+        // The root's own compiler metadata anchors cross-target profiles.
+        if !(1..=2).contains(&depth)
+            || (depth == 2 && !evidence.rustc_info)
             || !real_ancestors(profile)
             || !directory(&profile.join("deps"))
             || !directory(&profile.join(".fingerprint"))
@@ -398,6 +403,47 @@ mod tests {
                     "name={name}, independent signals={bits:04b}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn generic_wrapper_tags_do_not_promote_enclosing_source_bytes() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let temp = temp.path().canonicalize().expect("root");
+        // A generic cache tag belongs to many tools. For every output name,
+        // its ancestor is still a wrapper, even with genuine Cargo beneath.
+        for name in ["target", "custom-output", "build-dir", "cross-output"] {
+            let wrapper = temp.join(name);
+            let output = wrapper.join(name);
+            let profile = fixture(&output, 15);
+            fs::write(wrapper.join("CACHEDIR.TAG"), TAG).expect("generic tag");
+            fs::write(wrapper.join("keep.rs"), "// unique source")
+                .expect("source");
+            assert!(
+                evidence(&output, std::slice::from_ref(&profile)).is_some()
+            );
+            assert!(
+                evidence(&wrapper, &[profile]).is_none(),
+                "a tag on {wrapper:?} must not absorb Cargo at {output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cross_target_profiles_are_anchored_by_root_compiler_metadata() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        for triple in
+            ["aarch64-apple-darwin", "x86_64-pc-windows-msvc", "custom"]
+        {
+            let output = root.join(triple);
+            let profile = fixture(&output.join(triple), 15);
+            fs::write(
+                output.join(".rustc_info.json"),
+                r#"{"rustc_fingerprint":7,"outputs":{},"successes":{}}"#,
+            )
+            .expect("root compiler metadata");
+            assert!(evidence(&output, &[profile]).is_some());
         }
     }
 
