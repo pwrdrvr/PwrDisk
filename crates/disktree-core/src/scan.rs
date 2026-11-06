@@ -29,7 +29,7 @@ use std::thread;
 
 use rayon::Scope;
 use rayon::prelude::*;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::scan_threads::{Admission, ControllerGuard, ScanThreads};
 use crate::tree::{
@@ -300,6 +300,7 @@ impl ScanHandle {
             visited_dirs: Mutex::new(FxHashSet::default()),
             accounted: Arc::new(Seen::new()),
             require_complete: false,
+            leaves: None,
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
@@ -342,7 +343,7 @@ impl ScanHandle {
 
 /// Walk `root` and return the aggregated tree. Blocking.
 pub fn scan(root: &Path, options: ScanOptions) -> io::Result<Tree> {
-    scan_accounted(root, options, Arc::new(Seen::new()), false)
+    scan_accounted(root, options, Arc::new(Seen::new()), false, None)
 }
 
 /// The scanner and removal recheck share entry measurement, options and
@@ -350,13 +351,18 @@ pub fn scan(root: &Path, options: ScanOptions) -> io::Result<Tree> {
 pub(crate) struct SelectionScan {
     options: ScanOptions,
     accounted: Arc<Seen>,
+    leaves: Arc<LeafListings>,
 }
 
 impl SelectionScan {
-    pub(crate) fn new(options: ScanOptions) -> Self {
+    pub(crate) fn new(
+        options: ScanOptions,
+        leaves: impl IntoIterator<Item = PathBuf>,
+    ) -> Self {
         Self {
             options,
             accounted: Arc::new(Seen::new()),
+            leaves: Arc::new(LeafListings::new(leaves)),
         }
     }
 
@@ -366,6 +372,7 @@ impl SelectionScan {
             self.options.clone(),
             Arc::clone(&self.accounted),
             true,
+            Some(Arc::clone(&self.leaves)),
         )
     }
 }
@@ -375,6 +382,7 @@ fn scan_accounted(
     options: ScanOptions,
     accounted: Arc<Seen>,
     require_complete: bool,
+    leaves: Option<Arc<LeafListings>>,
 ) -> io::Result<Tree> {
     let progress = Arc::new(ScanProgress::default());
     let context = Arc::new(WalkContext {
@@ -389,6 +397,7 @@ fn scan_accounted(
         visited_dirs: Mutex::new(FxHashSet::default()),
         accounted,
         require_complete,
+        leaves,
         volume: OnceLock::new(),
         #[cfg(target_os = "macos")]
         clone_cache: crate::clone_cache::Cache::default(),
@@ -421,6 +430,8 @@ struct WalkContext {
     accounted: Arc<Seen>,
     /// Incomplete rechecks must not consume identities from later targets.
     require_complete: bool,
+    /// Raw metadata is cached only for this selection's explicit leaves.
+    leaves: Option<Arc<LeafListings>>,
     /// Serial number of the root's volume, on Windows, for a walk that
     /// cannot leave it: every listing takes it instead of asking. See
     /// [`crate::windows::walk_volume`].
@@ -1190,68 +1201,200 @@ fn scan_on_pool(
     finish_tree(tree, canonical, context, pool)
 }
 
-/// Measure an explicit leaf through the walk's normal listing/classifier.
-/// Listing its parent stops at that entry and never descends into siblings.
+#[cfg(all(test, unix))]
+pub(crate) mod leaf_work {
+    use std::cell::Cell;
+    thread_local! {
+        static WORK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    }
+    pub fn reset() {
+        WORK.set((0, 0));
+    }
+    pub fn opened() {
+        WORK.set((WORK.get().0 + 1, WORK.get().1));
+    }
+    pub fn entry() {
+        WORK.set((WORK.get().0, WORK.get().1 + 1));
+    }
+    pub fn snapshot() -> (usize, usize) {
+        WORK.get()
+    }
+}
+
+/// Only selected leaves are retained, regardless of how many unselected
+/// siblings share their parents. This cache never survives an operation.
+struct LeafListings {
+    wanted: FxHashMap<PathBuf, FxHashSet<PathBuf>>,
+    parents: Mutex<FxHashMap<PathBuf, io::Result<ParentLeaves>>>,
+}
+
+type ParentLeaves = FxHashMap<PathBuf, io::Result<Leaf>>;
+
+impl LeafListings {
+    fn new(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        let mut wanted = FxHashMap::<PathBuf, FxHashSet<PathBuf>>::default();
+        for path in paths {
+            if let Some(parent) = path.parent() {
+                wanted.entry(parent.to_path_buf()).or_default().insert(path);
+            }
+        }
+        Self {
+            wanted,
+            parents: Mutex::default(),
+        }
+    }
+
+    fn leaf(&self, path: &Path, context: &WalkContext) -> io::Result<Leaf> {
+        let parent =
+            path.parent().ok_or_else(|| io::Error::other("No parent"))?;
+        let wanted = self
+            .wanted
+            .get(parent)
+            .ok_or_else(|| io::Error::other("Unregistered selected leaf"))?;
+        let mut parents = lock(&self.parents);
+        let listed = parents
+            .entry(parent.to_path_buf())
+            .or_insert_with(|| selected_leaves(parent, wanted, context));
+        let result = match listed {
+            Ok(leaves) => leaves.get(path).map_or_else(
+                || {
+                    Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "Selected entry disappeared",
+                    ))
+                },
+                copy_leaf,
+            ),
+            Err(error) => Err(copy_error(error)),
+        };
+        drop(parents);
+        result
+    }
+}
+
+fn copy_error(error: &io::Error) -> io::Error {
+    io::Error::new(error.kind(), error.to_string())
+}
+
+fn copy_leaf(leaf: &io::Result<Leaf>) -> io::Result<Leaf> {
+    leaf.as_ref().cloned().map_err(copy_error)
+}
+
+/// Read metadata through the walk's normal listing/classifier, once per
+/// parent. Alias spellings need at most one more pass, indexed by identity.
+fn selected_leaves(
+    parent: &Path,
+    wanted: &FxHashSet<PathBuf>,
+    context: &WalkContext,
+) -> io::Result<ParentLeaves> {
+    let mut leaves = ParentLeaves::default();
+    for entry in leaf_listing(parent, context)? {
+        let mut entry = entry?;
+        let path = entry.entry_path(parent);
+        if wanted.contains(&path) {
+            leaves.insert(path, selected_leaf(parent, &mut entry, context));
+        }
+    }
+    let aliases: FxHashMap<_, _> = wanted
+        .iter()
+        .filter(|path| !leaves.contains_key(*path))
+        .filter_map(|path| leaf_key(path).map(|key| (path, key)))
+        .collect();
+    if !aliases.is_empty() {
+        let keys: FxHashSet<_> = aliases.values().collect();
+        let mut found = FxHashMap::default();
+        for entry in leaf_listing(parent, context)? {
+            let mut entry = entry?;
+            let Some(key) = leaf_key(&entry.entry_path(parent)) else {
+                continue;
+            };
+            if keys.contains(&key) && !found.contains_key(&key) {
+                found.insert(key, selected_leaf(parent, &mut entry, context));
+                if found.len() == keys.len() {
+                    break;
+                }
+            }
+        }
+        for (path, key) in aliases {
+            if let Some(leaf) = found.get(&key) {
+                leaves.insert(path.clone(), copy_leaf(leaf));
+            }
+        }
+    }
+    Ok(leaves)
+}
+
+fn leaf_listing(
+    parent: &Path,
+    context: &WalkContext,
+) -> io::Result<impl Iterator<Item = io::Result<impl Listed>>> {
+    let clones =
+        context.options.apfs_clone_metadata && !context.options.apparent_size;
+    #[cfg(all(test, unix))]
+    leaf_work::opened();
+    Ok(list(parent, None, clones, true, false)?.inspect(|_| {
+        #[cfg(all(test, unix))]
+        leaf_work::entry();
+    }))
+}
+
+fn selected_leaf(
+    parent: &Path,
+    entry: &mut impl Listed,
+    context: &WalkContext,
+) -> io::Result<Leaf> {
+    match context.classify(parent, entry) {
+        Classified::Entry(leaf) => Ok(leaf),
+        _ => Err(io::Error::other("Cannot measure selected entry")),
+    }
+}
+
+/// Raw cached leaves acquire their hardlink charge only when accepted.
+/// A refused target must never consume an identity from a later target.
 fn scan_entry(
     path: &Path,
     context: &WalkContext,
     pool: &rayon::ThreadPool,
 ) -> io::Result<Tree> {
-    let parent = path.parent().ok_or_else(|| io::Error::other("No parent"))?;
-    let clones =
-        context.options.apfs_clone_metadata && !context.options.apparent_size;
-    // Exact spelling is the common path and requires no per-sibling stat.
-    // Only an alternate case/Unicode spelling needs an identity search.
-    for aliases in [false, true] {
-        for entry in list(parent, None, clones, true, false)? {
-            let mut entry = entry?;
-            let candidate = entry.entry_path(parent);
-            let matches = if aliases {
-                same_entry(&candidate, path)
-            } else {
-                candidate == path
-            };
-            if !matches {
-                continue;
-            }
-            let Classified::Entry(leaf) = context.classify(parent, &mut entry)
-            else {
-                return Err(io::Error::other("Cannot measure selected entry"));
-            };
-            let tree = Tree::build(|builder| {
-                builder.leaf(&leaf.name, leaf.facts, leaf.allocation)
-            });
-            return finish_tree(tree, path, context, pool);
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "Selected entry disappeared",
-    ))
+    let listings = context
+        .leaves
+        .as_ref()
+        .ok_or_else(|| io::Error::other("Missing selected leaf listing"))?;
+    let leaf = listings.leaf(path, context)?;
+    let tree = Tree::build(|builder| {
+        builder.leaf(&leaf.name, leaf.facts, leaf.allocation)
+    });
+    finish_tree(tree, path, context, pool)
 }
 
-/// A case or Unicode alias on a case-insensitive filesystem still names
-/// the same leaf. Never resolve a symlink's destination for this comparison.
-fn same_entry(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
+#[cfg(unix)]
+type LeafKey = (u64, u64);
+#[cfg(not(unix))]
+type LeafKey = PathBuf;
+
+/// Alternate case/Unicode spellings name the same filesystem entry.
+/// Never resolve a symlink's destination for this comparison.
+#[cfg_attr(
+    not(unix),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "Unix identity lookup can fail; keep one cross-platform API"
+    )
+)]
+fn leaf_key(path: &Path) -> Option<LeafKey> {
     #[cfg(unix)]
     {
-        let identity = |path| {
-            fs::symlink_metadata(path)
-                .ok()
-                .and_then(|meta| file_identity(&meta))
-        };
-        identity(left).is_some_and(|id| identity(right) == Some(id))
+        fs::symlink_metadata(path)
+            .ok()
+            .and_then(|meta| file_identity(&meta))
     }
     #[cfg(windows)]
     {
-        crate::windows::guard_key(left) == crate::windows::guard_key(right)
+        Some(crate::windows::guard_key(path))
     }
     #[cfg(not(any(unix, windows)))]
     {
-        false
+        Some(path.to_path_buf())
     }
 }
 
@@ -1700,6 +1843,7 @@ fn leaf_node(
 }
 
 /// A leaf as the listing found it, before it goes into the tree.
+#[derive(Clone)]
 struct Leaf {
     name: Box<str>,
     facts: crate::tree::Facts,
@@ -2041,6 +2185,7 @@ mod tests {
             visited_dirs: Mutex::new(FxHashSet::default()),
             accounted: Arc::new(Seen::new()),
             require_complete: false,
+            leaves: None,
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
@@ -2186,6 +2331,7 @@ mod tests {
             visited_dirs: Mutex::new(FxHashSet::default()),
             accounted: Arc::new(Seen::new()),
             require_complete: false,
+            leaves: None,
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
@@ -2500,6 +2646,7 @@ mod tests {
             visited_dirs: Mutex::new(FxHashSet::default()),
             accounted: Arc::new(Seen::new()),
             require_complete: false,
+            leaves: None,
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),

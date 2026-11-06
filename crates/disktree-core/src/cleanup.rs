@@ -1679,8 +1679,10 @@ impl Approved {
         let mut refusals = vec![None; self.plan.targets.len()];
         let mut measured = Vec::new();
         let mut listed = Vec::new();
-        let measurement =
-            crate::removal_limit::Measurement::new(&self.plan.scan_options);
+        let measurement = crate::removal_limit::Measurement::new(
+            &self.plan.scan_options,
+            &self.plan.targets,
+        );
         for (index, target) in self.plan.targets.iter().enumerate() {
             match measurement.target(target) {
                 Ok(fresh) => {

@@ -121,7 +121,7 @@ impl Ceilings {
         mut volume: impl FnMut(&Path) -> Result<(String, u64), String>,
     ) -> Result<Vec<Budget>, String> {
         self.check_with(targets, &mut volume)?;
-        let measurement = Measurement::new(options);
+        let measurement = Measurement::new(options, targets);
         let fresh = targets
             .iter()
             .map(|target| measurement.target(target))
@@ -249,7 +249,8 @@ pub fn volume_entry(path: &Path) -> Result<&Path, String> {
 /// can move between targets on a second walk; taking a per-target maximum
 /// would count both the old and new owner of the same allocation.
 pub(crate) fn measured(targets: &[Target]) -> Result<Vec<Target>, String> {
-    let measurement = Measurement::default();
+    let measurement =
+        Measurement::new(&crate::scan::ScanOptions::default(), targets);
     targets
         .iter()
         .map(|target| measurement.target(target))
@@ -263,16 +264,19 @@ pub(crate) struct Measurement {
     scan: crate::scan::SelectionScan,
 }
 
-impl Default for Measurement {
-    fn default() -> Self {
-        Self::new(&crate::scan::ScanOptions::default())
-    }
-}
-
 impl Measurement {
-    pub(crate) fn new(options: &crate::scan::ScanOptions) -> Self {
+    pub(crate) fn new(
+        options: &crate::scan::ScanOptions,
+        targets: &[Target],
+    ) -> Self {
         Self {
-            scan: crate::scan::SelectionScan::new(options.for_removal()),
+            scan: crate::scan::SelectionScan::new(
+                options.for_removal(),
+                targets
+                    .iter()
+                    .filter(|target| !target.is_dir)
+                    .map(|target| target.path.clone()),
+            ),
         }
     }
 
@@ -306,6 +310,115 @@ mod tests {
     mod apfs;
 
     #[cfg(unix)]
+    fn assert_sibling_work(
+        parents: usize,
+        siblings: usize,
+        reverse: bool,
+        sparse: bool,
+    ) {
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut targets = Vec::new();
+        let source = temp.path().join("parent0/file0");
+        for parent in 0..parents {
+            let dir = temp.path().join(format!("parent{parent}"));
+            std::fs::create_dir(&dir).expect("directory");
+            for file in 0..siblings {
+                let path = dir.join(format!("file{file}"));
+                if (parent != 0 || file != 0) && file % 3 == 0 {
+                    std::fs::hard_link(&source, &path).expect("hardlink");
+                } else {
+                    std::fs::write(&path, vec![b'x'; 8192]).expect("file");
+                }
+                if !sparse || (file + parent) % 2 == 1 {
+                    targets.push(Target {
+                        path,
+                        bytes: 0,
+                        is_dir: false,
+                        hidden: false,
+                    });
+                }
+            }
+        }
+        if reverse {
+            targets.reverse();
+        }
+        let expected = oracle_bytes(
+            &targets
+                .iter()
+                .map(|target| target.path.clone())
+                .collect::<Vec<_>>(),
+        );
+        let measurement =
+            Measurement::new(&crate::scan::ScanOptions::default(), &targets);
+        crate::scan::leaf_work::reset();
+        let actual: u64 = targets
+            .iter()
+            .map(|target| {
+                measurement.target(target).expect("measurement").bytes
+            })
+            .sum();
+        let (opens, entries) = crate::scan::leaf_work::snapshot();
+        assert_eq!(actual, expected, "shared hardlink identity set");
+        assert!(
+            opens <= parents,
+            "{opens} parent listings for {parents} parents"
+        );
+        assert!(
+            entries <= parents * siblings,
+            "{entries} entries for {} parent entries",
+            parents * siblings
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_siblings_enumerate_their_parent_once() {
+        assert_sibling_work(1, 2, false, false);
+    }
+
+    #[test]
+    fn leaf_listings_are_fresh_for_each_selection() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("file");
+        let targets = [Target {
+            path: path.clone(),
+            bytes: 0,
+            is_dir: false,
+            hidden: false,
+        }];
+        let options = crate::scan::ScanOptions {
+            apparent_size: true,
+            ..crate::scan::ScanOptions::default()
+        };
+        for size in [1, 8192, 0, 4096] {
+            std::fs::write(&path, vec![b'x'; size]).expect("resize");
+            let recheck = Measurement::new(&options, &targets);
+            assert_eq!(
+                recheck.target(&targets[0]).expect("fresh listing").bytes,
+                std::fs::symlink_metadata(&path).expect("size oracle").len(),
+                "a new selection must observe changes since the last one"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 32, failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+        // Work is linear in the parent entries, regardless of mark order;
+        // accounting still agrees with the filesystem identity union.
+        #[test]
+        fn leaf_selection_work_is_linear_in_parent_entries(
+            parents in 1_usize..4, siblings in 2_usize..16,
+            reverse in proptest::bool::ANY, sparse in proptest::bool::ANY,
+        ) {
+            assert_sibling_work(parents, siblings, reverse, sparse);
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
     fn recheck_retains_the_scan_size_and_hardlink_parameters() {
         let temp = tempfile::tempdir().expect("fixture");
@@ -331,21 +444,22 @@ mod tests {
                     };
                     let tree = crate::scan::scan(temp.path(), options.clone())
                         .expect("scan");
-                    let recheck = Measurement::new(&options);
-                    let fresh: u64 = tree
+                    let targets: Vec<_> = tree
                         .root()
                         .children()
                         .iter()
-                        .map(|n| {
-                            recheck
-                                .target(&Target {
-                                    path: temp.path().join(n.name()),
-                                    bytes: n.bytes,
-                                    is_dir: true,
-                                    hidden: false,
-                                })
-                                .expect("recheck")
-                                .bytes
+                        .map(|node| Target {
+                            path: temp.path().join(node.name()),
+                            bytes: node.bytes,
+                            is_dir: true,
+                            hidden: false,
+                        })
+                        .collect();
+                    let recheck = Measurement::new(&options, &targets);
+                    let fresh: u64 = targets
+                        .iter()
+                        .map(|target| {
+                            recheck.target(target).expect("recheck").bytes
                         })
                         .sum();
                     assert_eq!(

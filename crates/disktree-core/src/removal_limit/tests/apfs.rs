@@ -82,7 +82,6 @@ fn compare(clones: bool, hardlinks: bool, blocks: usize) {
                     "fixture must be a real APFS clone group"
                 );
             }
-            let recheck = Measurement::new(&options);
             // Split the selection into one directory and individual files,
             // so the recheck must use the same bulk entry measurement too.
             let mut targets = vec![Target {
@@ -99,6 +98,7 @@ fn compare(clones: bool, hardlinks: bool, blocks: usize) {
                     hidden: false,
                 });
             }
+            let recheck = Measurement::new(&options, &targets);
             let fresh: u64 = targets
                 .iter()
                 .map(|target| recheck.target(target).expect("recheck").bytes)
@@ -140,17 +140,51 @@ fn individual_file_rechecks_preserve_filesystem_aliases() {
             .expect("identity oracle");
         let alias = fs::symlink_metadata(&path).expect("alias");
         assert_eq!((meta.dev(), meta.ino()), (alias.dev(), alias.ino()));
-        let recheck = Measurement::new(&ScanOptions::default());
-        let measured = recheck
-            .target(&Target {
-                path,
+        let target = Target {
+            path,
+            bytes: 0,
+            is_dir: false,
+            hidden: false,
+        };
+        let recheck = Measurement::new(
+            &ScanOptions::default(),
+            std::slice::from_ref(&target),
+        );
+        let measured = recheck.target(&target).expect("alias recheck");
+        assert_eq!(measured.bytes, meta.blocks() * 512);
+    }
+}
+
+#[test]
+fn sibling_aliases_share_one_identity_lookup_pass() {
+    let temp = tempfile::tempdir().expect("APFS fixture");
+    let mut targets = Vec::new();
+    for index in 0..12 {
+        let original = temp.path().join(format!("café{index}"));
+        fs::write(&original, vec![b'x'; 8192]).expect("file");
+        let alias = temp.path().join(format!("CAFÉ{index}"));
+        // Case-sensitive APFS does not expose alternate case spellings.
+        if fs::symlink_metadata(&alias).is_ok() {
+            targets.push(Target {
+                path: alias,
                 bytes: 0,
                 is_dir: false,
                 hidden: false,
-            })
-            .expect("alias recheck");
-        assert_eq!(measured.bytes, meta.blocks() * 512);
+            });
+        }
     }
+    let paths: Vec<_> = targets.iter().map(|t| t.path.clone()).collect();
+    let expected = oracle_bytes(&paths);
+    let recheck = Measurement::new(&ScanOptions::default(), &targets);
+    crate::scan::leaf_work::reset();
+    let actual: u64 = targets
+        .iter()
+        .map(|target| recheck.target(target).expect("alias recheck").bytes)
+        .sum();
+    let (opens, entries) = crate::scan::leaf_work::snapshot();
+    assert_eq!(actual, expected);
+    assert!(opens <= 2, "{opens} listings for one parent");
+    assert!(entries <= 24, "{entries} entries for 12 siblings");
 }
 
 proptest! {
