@@ -1359,6 +1359,7 @@ fn home_trash_dir() -> Option<PathBuf> {
 #[derive(Clone, Debug)]
 pub enum RemovalEvent {
     Cleanup(crate::cleanup::Report),
+    /// Batch preflight passed; the worker is starting target dispatch.
     Start {
         total: usize,
     },
@@ -1537,8 +1538,7 @@ fn start(
             {
                 let fresh = self::plan(&plan.targets, &plan.root);
                 let checked = if fresh.blocked.is_empty() {
-                    crate::removal_limit::measured(&plan.targets)
-                        .and_then(|targets| limit.check(&targets))
+                    limit.check_fresh(&plan.targets)
                 } else {
                     Err("Removal guards changed before preflight; nothing was removed".into())
                 };
@@ -1579,9 +1579,6 @@ fn fail_all(
     reason: &str,
     sender: &mpsc::Sender<RemovalEvent>,
 ) {
-    let _ = sender.send(RemovalEvent::Start {
-        total: targets.len(),
-    });
     for target in targets {
         let _ = sender.send(RemovalEvent::Item {
             path: target.path.clone(),
@@ -3511,11 +3508,15 @@ mod tests {
         });
         let events: Vec<_> = std::iter::from_fn(|| handle.poll()).collect();
 
-        // Start, one failure per listed target, then the end: without
-        // `Done` the window would wait on the Removing screen for good.
-        assert_eq!(events.len(), paths.len() + 2, "{events:?}");
-        assert!(matches!(events[0], RemovalEvent::Start { total: 2 }));
-        for (event, expected) in events[1..=paths.len()].iter().zip(&paths) {
+        // No Start: dispatch never began. One failure per target and
+        // Done still let the window finish the attempt.
+        assert_eq!(events.len(), paths.len() + 1, "{events:?}");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, RemovalEvent::Start { .. }))
+        );
+        for (event, expected) in events[..paths.len()].iter().zip(&paths) {
             match event {
                 RemovalEvent::Item {
                     path,
@@ -4010,6 +4011,56 @@ mod tests {
         assert_eq!(done, Some((0, 2)));
         for path in paths {
             assert!(path.exists());
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 32, failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        // The lifecycle may reach dispatch only after batch admission.
+        // Either refusal path must end with one failure per target, no
+        // Start, and byte-identical files according to the filesystem.
+        #[test]
+        fn a_refused_attempt_never_announces_target_dispatch(
+            contents in proptest::collection::vec(1_usize..8192, 1..6),
+            cannot_spawn in proptest::bool::ANY,
+        ) {
+            let temp = scratch();
+            let targets: Vec<_> = contents.iter().enumerate().map(|(i, &size)| {
+                let path = temp.path().join(format!("artifact-{i}"));
+                fs::write(&path, vec![b'x'; size]).expect("fixture");
+                Target { path, bytes: u64::MAX / 8,
+                    is_dir: false, hidden: false }
+            }).collect();
+            let planned = plan(&targets, temp.path());
+            proptest::prop_assert_eq!(planned.targets.len(), targets.len());
+            let handle = start(planned, RemovalMode::Permanent,
+                Some(crate::removal_limit::Ceilings::default()), None, |work| {
+                    if cannot_spawn {
+                        Err(io::Error::other("fixture spawn refusal"))
+                    } else { work(); Ok(()) }
+                });
+            let events: Vec<_> = std::iter::from_fn(|| handle.poll()).collect();
+            proptest::prop_assert!(!events.iter().any(|event|
+                matches!(event, RemovalEvent::Start { .. })),
+                "dispatch never started");
+            proptest::prop_assert_eq!(events.len(), targets.len() + 1);
+            for (target, &size) in targets.iter().zip(&contents) {
+                proptest::prop_assert_eq!(
+                    fs::read(&target.path).expect("untouched"),
+                    vec![b'x'; size]);
+                proptest::prop_assert!(events.iter().any(|event|
+                    matches!(event, RemovalEvent::Item {
+                        path, outcome: Err(_), ..
+                    } if path == &target.path)), "each target failed");
+            }
+            proptest::prop_assert!(matches!(events.last(),
+                Some(RemovalEvent::Done { removed: 0, bytes: 0, failed })
+                    if *failed == targets.len()),
+                "terminal counts match refusal");
         }
     }
 }

@@ -509,6 +509,8 @@ pub struct Disktree {
     /// Free bytes on the scanned volume as the latest run started, for
     /// what it has freed so far.
     pub run_free_before: Option<u64>,
+    /// The worker has finished the batch preflight and may touch targets.
+    pub run_checked: bool,
     pub space: Option<SpaceInfo>,
     /// Free space before the removal, for the honest "what did it actually
     /// free" number rather than the sum of what was marked.
@@ -819,6 +821,7 @@ impl Disktree {
             run_list: crate::run_list::RunList::default(),
             run_scroll: gpui_kit::UniformListScrollHandle::new(),
             run_free_before: None,
+            run_checked: false,
             space,
             space_baseline: None,
             rescan_after_removal: false,
@@ -3773,6 +3776,7 @@ impl Disktree {
         self.track_agent_removal();
         self.run_scroll = gpui_kit::UniformListScrollHandle::new();
         self.run_free_before = before.map(|space| space.available);
+        self.run_checked = false;
         self.cleanup_results.clear();
         self.cleanup_actions =
             cleanup.as_ref().map_or_else(Vec::new, |approved| {
@@ -3845,7 +3849,7 @@ impl Disktree {
                 }
                 // The list was built from the plan, so it already holds
                 // the total the worker announces.
-                RemovalEvent::Start { .. } => {}
+                RemovalEvent::Start { .. } => self.run_checked = true,
                 RemovalEvent::Item { path, outcome, .. } => {
                     if self.run_list.settle(&path, &outcome).is_some() {
                         self.scroll_to_focus();
