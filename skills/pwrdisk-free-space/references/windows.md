@@ -43,11 +43,28 @@ SSH servers are not supported.
 
 `pwrdisk_mark` keeps these back and says why: `Windows`, `Program Files`,
 `Program Files (x86)`, `ProgramData`, `System Volume Information`,
-`$Recycle.Bin`, `Recovery`, `Boot`, `bootmgr`, `pagefile.sys`,
+`$Recycle.Bin`, `Recovery`, `Boot`, `EFI`, `Config.Msi`, `bootmgr`, `pagefile.sys`,
 `hiberfil.sys`, `swapfile.sys`, every user profile directly under
 `C:\Users`, the home directory and anything holding it, mount points, and
 names Windows would misread (trailing dots or spaces, device names such as
 `NUL` or `COM1`, a colon).
+
+Windows, Program Files and ProgramData are also located through Windows'
+Known Folder API, so redirected installation locations remain protected.
+Volume metadata, recovery, boot, installer rollback and memory-file entries
+are protected at every drive root, not just the system drive. Their
+contents stay protected; use Windows' supported tools. Review and the
+removal worker enforce these guards too.
+
+UNC shares can expose an arbitrary directory rather than a volume root.
+An ordinary `Recovery` or `Boot` folder inside `\\nas\backups` (including
+the verbatim `\\?\UNC\nas\backups` spelling) is not reserved by the
+drive-root metadata rule. It remains subject to the other removal guards.
+
+An explicit scan root reached through a link or junction retains the
+guards of its resolved location, including system trees, profiles and
+nested mounted folders. A selected link itself does not authorize deleting
+its destination.
 
 ## Never propose
 

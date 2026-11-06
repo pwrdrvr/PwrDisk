@@ -40,11 +40,25 @@ would read it.
 
 `pwrdisk_mark` keeps these back and says why: `/bin`, `/boot`, `/dev`,
 `/etc`, `/lib*`, `/proc`, `/run` (except removable media under it), `/sbin`,
-`/sys`, `/usr`, `/var/lib`, `/efi`, `/nix/store`, `/gnu/store`, Homebrew's
+`/sys`, `/usr`, `/var/lib`, `/var/db`, `/var/spool`, `/var/mail`, `/var/run`,
+`/var/lock`, `/efi`, `/nix/store`, `/gnu/store`, Homebrew's
 `/home/linuxbrew/.linuxbrew`, the home directory and anything holding it,
 `/home` and every account's folder in it (another user's home,
 `/home/linuxbrew`; what is inside one may be proposed), the same under
 `/var/home` where `/home` links there, and mount points.
+
+Shared containers themselves also stay refused: `/tmp`, `/var`, `/var/tmp`,
+`/var/cache`, `/var/log`, `/var/backups`, `/var/local`, `/var/opt`, `/opt`,
+`/srv`, `/mnt`, `/media`, `/lost+found`, `/nix`, `/gnu` and `/root` (the root
+account's home, outside `/home`). This rule protects
+the folder, not every child. Inspect and agree individual leftovers under
+the existing guards; never remove an entire shared folder. Linked scan
+roots do not bypass this container rule. Review and the removal worker
+enforce it too.
+
+System trees, profiles and nested mounts retain their guards when the
+explicit scan root is reached through a symlink. A selected symlink itself
+is unlinked without deleting its destination; it cannot redirect removal.
 
 ## Never propose
 

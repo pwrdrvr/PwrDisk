@@ -91,13 +91,20 @@ guard refusal for the folder. Look inside it with `pwrdisk_ls`, propose
 entries the user recognizes as their own leftovers, and leave files a
 running program may still use. Do not bypass the guard.
 
-These rules use the real path even when the scan root was entered through
-a symlink or a volume alias such as `/Volumes/Macintosh HD`. For example,
-`/var/folders` is still protected `/private/var/folders`, and an aliased
-`/Users/Shared` is still an account folder. Directories containing a nested
-mount stay refused through aliases too; a one-filesystem scan stops at the
-same mounts under every spelling of its root. Marking a symlink itself
-still removes only that link.
+`/Applications`, `/Applications/Utilities` and `/Volumes` themselves are
+protected containers. They cannot be marked or removed, including through
+case variants, the Data-volume spelling or a linked scan root. Individual
+third-party apps inside `/Applications` remain eligible under the other
+guards; prefer an app's supported uninstaller when it has one. Selecting a
+folder to inspect it is still allowed. The same guards apply in Review
+and again on the removal worker.
+
+Choosing a scan root through a link (`/var`, `/tmp`, a root-volume alias)
+does not bypass system-tree, profile or nested-mount guards. In particular,
+`/var/folders` remains protected as `/private/var/folders`; an explicit scan
+there does not make its live state removable. A one-filesystem scan stops
+at the same mounts under every spelling of its root. A selected symlink
+itself is still unlinked without deleting its destination.
 
 ## Never propose
 
@@ -116,8 +123,9 @@ still removes only that link.
 - **Mail and Messages attachments, Keychains, and iPhone and iPad backups**
   (`~/Library/Application Support/MobileSync/Backup`): user data and
   secrets. Old device backups are the user's to delete from Finder.
-- **`/Applications`**: uninstall with the app's uninstaller or by dragging to
-  the Trash in Finder, which the user does.
+- **All of `/Applications` or `/Applications/Utilities`**: inspect individual
+  apps instead. Establish that the user wants to uninstall that app and
+  whether it has an uninstaller before proposing its bundle for removal.
 
 ## Usually safe, with the owning tool first
 
