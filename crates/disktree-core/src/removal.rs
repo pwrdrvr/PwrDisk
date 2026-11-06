@@ -24,6 +24,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
+#[cfg(unix)]
+mod walk;
+#[cfg(unix)]
+pub(crate) use walk::inspect;
+
 #[cfg(test)]
 thread_local! {
     static NESTING_WORK: std::cell::Cell<usize> = const {
@@ -2244,6 +2249,51 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn limited_worker_removes_descendants_beyond_path_max() {
+        let tree = crate::test_tree::DeepTree::new();
+        let root = tree.selected.parent().expect("root");
+        let planned = plan(
+            &[Target {
+                path: tree.selected.clone(),
+                bytes: 1,
+                is_dir: true,
+                hidden: false,
+            }],
+            root,
+        );
+        assert!(planned.blocked.is_empty(), "{:?}", planned.blocked);
+        let handle = spawn_limited(
+            planned,
+            RemovalMode::Permanent,
+            crate::removal_limit::Ceilings::default(),
+        );
+        loop {
+            match handle
+                .events
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("worker completes")
+            {
+                RemovalEvent::Item { outcome, .. } => {
+                    outcome.expect("deep tree removed");
+                }
+                RemovalEvent::Done {
+                    removed, failed, ..
+                } => {
+                    assert_eq!((removed, failed), (1, 0));
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(!tree.selected.exists());
+        assert_eq!(
+            fs::read(root.join("keep")).expect("unmarked sibling"),
+            b"unmarked"
+        );
+    }
 
     #[cfg(unix)]
     fn scratch() -> TempDir {

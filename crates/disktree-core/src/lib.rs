@@ -42,6 +42,8 @@ pub mod space;
 mod test_paths;
 #[cfg(test)]
 mod test_rng;
+#[cfg(all(test, unix))]
+mod test_tree;
 pub mod tree;
 pub mod treemap;
 #[cfg(windows)]

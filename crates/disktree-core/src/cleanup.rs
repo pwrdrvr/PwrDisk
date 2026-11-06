@@ -22,8 +22,7 @@ mod tests;
 
 pub use recognize::inspection_reason;
 
-// Preflight must bound queued paths as well as visited entries so one
-// enormous flat directory cannot exhaust memory before the limit is seen.
+// Shared across the selection; one huge tree must not monopolize preflight.
 const MAX_PREFLIGHT_ENTRIES: usize = 2_000_000;
 
 /// Keep caches PwrDisk can clean from the recursive remover.
@@ -94,6 +93,46 @@ fn inspect_raw_target(
     {
         return Err(format!("{:?}: {reason}", target.path));
     }
+    inspect_raw_tree(target, roots, visited, maximum)
+}
+
+#[cfg(unix)]
+fn inspect_raw_tree(
+    target: &Target,
+    roots: &[(Owner, PathBuf)],
+    visited: &mut usize,
+    maximum: usize,
+) -> Result<(), String> {
+    crate::removal::inspect(&target.path, |path, _, dir| {
+        *visited += 1;
+        if *visited > maximum {
+            return Err("Raw removal inspection exceeded its bound; inspect a smaller selection".into());
+        }
+        if let Some(dir) = dir
+            && let Some(owner) = recognize::cleanable_root_at(path, roots, dir)?
+        {
+            return Err(format!(
+                "{}: the {} inside can be cleaned with `{}`; choose Cache cleanup for it",
+                path.display(),
+                owner.label(),
+                owner.command_label()
+            ));
+        }
+        Ok(())
+    })
+}
+
+#[cfg(not(unix))]
+#[allow(
+    clippy::unnecessary_debug_formatting,
+    reason = "Quote paths and expose controls in safety refusals"
+)]
+fn inspect_raw_tree(
+    target: &Target,
+    roots: &[(Owner, PathBuf)],
+    visited: &mut usize,
+    maximum: usize,
+) -> Result<(), String> {
     let bound = || {
         "Raw removal inspection exceeded its bound; inspect a smaller selection"
             .to_owned()
