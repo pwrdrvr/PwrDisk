@@ -85,6 +85,10 @@ so; tell the user before they confirm.
 
 ## Confirmed removal
 
+Removal preflight supports descendant paths longer than a full-path lookup
+allows. Cache inspection and fresh capacity measurement still apply to the
+whole selection; unreadable entries and nested mounts still stop removal.
+
 Never approve a removal with computer use (clicks, keys or accessibility
 actions). The user approves in the app, or explicitly confirms the exact
 paths and mode from `pwrdisk_removal_preview` before the destructive
