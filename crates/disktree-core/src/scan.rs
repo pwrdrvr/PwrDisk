@@ -28,7 +28,8 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
 
 use rayon::Scope;
-use rustc_hash::FxHashSet;
+use rayon::prelude::*;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::scan_threads::{Admission, ControllerGuard, ScanThreads};
 use crate::tree::{
@@ -70,6 +71,22 @@ pub struct ScanOptions {
     /// Directory admission for this scan; other scans have their own budget.
     #[serde(default)]
     pub threads: ScanThreads,
+}
+
+impl ScanOptions {
+    /// Removal includes every descendant and unlinks symbolic links themselves.
+    /// Keep the scan's size, hardlink, clone and scheduling parameters, while
+    /// removing display filters that could hide files the operation will touch.
+    #[must_use]
+    pub fn for_removal(&self) -> Self {
+        Self {
+            follow_links: false,
+            include_hidden: true,
+            one_filesystem: true,
+            max_depth: None,
+            ..self.clone()
+        }
+    }
 }
 
 // Existing SSH requests predate this optional local-macOS scan hint.
@@ -281,6 +298,9 @@ impl ScanHandle {
             data_services: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
+            accounted: Arc::new(Seen::new()),
+            require_complete: false,
+            leaves: None,
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
@@ -323,6 +343,47 @@ impl ScanHandle {
 
 /// Walk `root` and return the aggregated tree. Blocking.
 pub fn scan(root: &Path, options: ScanOptions) -> io::Result<Tree> {
+    scan_accounted(root, options, Arc::new(Seen::new()), false, None)
+}
+
+/// The scanner and removal recheck share entry measurement, options and
+/// aggregation. Only a selection's identity set outlives a single root.
+pub(crate) struct SelectionScan {
+    options: ScanOptions,
+    accounted: Arc<Seen>,
+    leaves: Arc<LeafListings>,
+}
+
+impl SelectionScan {
+    pub(crate) fn new(
+        options: ScanOptions,
+        leaves: impl IntoIterator<Item = PathBuf>,
+    ) -> Self {
+        Self {
+            options,
+            accounted: Arc::new(Seen::new()),
+            leaves: Arc::new(LeafListings::new(leaves)),
+        }
+    }
+
+    pub(crate) fn scan(&self, path: &Path) -> io::Result<Tree> {
+        scan_accounted(
+            path,
+            self.options.clone(),
+            Arc::clone(&self.accounted),
+            true,
+            Some(Arc::clone(&self.leaves)),
+        )
+    }
+}
+
+fn scan_accounted(
+    root: &Path,
+    options: ScanOptions,
+    accounted: Arc<Seen>,
+    require_complete: bool,
+    leaves: Option<Arc<LeafListings>>,
+) -> io::Result<Tree> {
     let progress = Arc::new(ScanProgress::default());
     let context = Arc::new(WalkContext {
         known: None,
@@ -334,6 +395,9 @@ pub fn scan(root: &Path, options: ScanOptions) -> io::Result<Tree> {
         data_services: OnceLock::new(),
         data_device: OnceLock::new(),
         visited_dirs: Mutex::new(FxHashSet::default()),
+        accounted,
+        require_complete,
+        leaves,
         volume: OnceLock::new(),
         #[cfg(target_os = "macos")]
         clone_cache: crate::clone_cache::Cache::default(),
@@ -362,6 +426,12 @@ struct WalkContext {
     data_device: OnceLock<Option<u64>>,
     /// Directories already entered, so followed symlinks cannot loop.
     visited_dirs: Mutex<FxHashSet<(u64, u64)>>,
+    /// Shared only for one complete selection, never across operations.
+    accounted: Arc<Seen>,
+    /// Incomplete rechecks must not consume identities from later targets.
+    require_complete: bool,
+    /// Raw metadata is cached only for this selection's explicit leaves.
+    leaves: Option<Arc<LeafListings>>,
     /// Serial number of the root's volume, on Windows, for a walk that
     /// cannot leave it: every listing takes it instead of asking. See
     /// [`crate::windows::walk_volume`].
@@ -407,6 +477,27 @@ impl WalkContext {
 
         let kind = match listing {
             Listing::Symlink => {
+                // The listing can still measure a link whose full path is
+                // too long for lstat. Never ask its destination for facts.
+                #[cfg(unix)]
+                if !self.options.follow_links {
+                    return match entry.facts(
+                        dir,
+                        self.options.apparent_size,
+                        self,
+                    ) {
+                        Ok(facts) => self.leaf(
+                            entry.take_name(),
+                            NodeKind::Symlink,
+                            facts,
+                        ),
+                        Err(error) => {
+                            self.progress
+                                .record_error(&entry.entry_path(dir), &error);
+                            Classified::Unreadable
+                        }
+                    };
+                }
                 let path = entry.entry_path(dir);
                 return self.classify_symlink(&path, entry.take_name());
             }
@@ -686,8 +777,10 @@ struct Named {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 impl Listed for Named {
-    fn entry_path(&self, _dir: &Path) -> PathBuf {
-        self.entry.path()
+    fn entry_path(&self, dir: &Path) -> PathBuf {
+        // A Linux listing may have been opened through its descriptor;
+        // display, boundary checks and tree paths keep the logical spelling.
+        dir.join(self.entry.file_name())
     }
 
     fn name(&self) -> &str {
@@ -854,7 +947,7 @@ fn list(
     _clone_flags: bool,
     _listed_dirs: bool,
 ) -> io::Result<impl Iterator<Item = io::Result<Named>>> {
-    let entries = fs::read_dir(path)?;
+    let entries = read_directory(path)?;
     Ok(entries.map(|entry| {
         entry.map(|entry| Named {
             name: entry.file_name().into_string().map_or_else(
@@ -864,6 +957,46 @@ fn list(
             entry,
         })
     }))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn read_directory(path: &Path) -> io::Result<fs::ReadDir> {
+    let result = fs::read_dir(path);
+    #[cfg(target_os = "linux")]
+    if result.as_ref().is_err_and(|error| {
+        error.raw_os_error()
+            == Some(rustix::io::Errno::NAMETOOLONG.raw_os_error())
+    }) {
+        use std::os::fd::AsRawFd as _;
+        let dir = open_directory(path)?;
+        // ReadDir owns the opened stream; its DirEntries retain that stream
+        // and stat relative to it after this temporary descriptor is closed.
+        return fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+    }
+    result
+}
+
+/// Keep ordinary listings to one open. Only paths beyond `PATH_MAX` need
+/// component-relative opens; both scan and recheck use this same reader.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn open_directory(path: &Path) -> io::Result<std::os::fd::OwnedFd> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    match open(path, flags, Mode::empty()) {
+        Ok(dir) => Ok(dir),
+        Err(rustix::io::Errno::NAMETOOLONG) => {
+            let mut dir = None;
+            for component in path.components() {
+                dir = Some(if let Some(parent) = &dir {
+                    openat(parent, component.as_os_str(), flags, Mode::empty())?
+                } else {
+                    open(component.as_os_str(), flags, Mode::empty())?
+                });
+            }
+            dir.ok_or_else(|| io::Error::other("No directory components"))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1026,6 +1159,9 @@ fn scan_on_pool(
     context: &Arc<WalkContext>,
     pool: &rayon::ThreadPool,
 ) -> io::Result<Tree> {
+    if context.require_complete && !fs::symlink_metadata(root)?.is_dir() {
+        return scan_entry(root, context, pool);
+    }
     let root_meta = fs::metadata(root)?;
     if !root_meta.is_dir() {
         return Err(io::Error::new(
@@ -1063,7 +1199,15 @@ fn scan_on_pool(
     if context.options.one_filesystem {
         *lock(&context.root_device) = Some(device_of(&root_meta));
         if let Some(foreign) = crate::space::mount_boundaries_for(canonical) {
-            let _ = context.foreign_mounts.set(foreign.into_iter().collect());
+            // The mount table names real paths, but entries retain the
+            // chosen root's spelling. Translate once here so checking a
+            // boundary needs no metadata that could trigger an automount.
+            let foreign = foreign
+                .iter()
+                .filter_map(|path| path.strip_prefix(canonical).ok())
+                .map(|below| root.join(below))
+                .collect();
+            let _ = context.foreign_mounts.set(foreign);
         }
     }
     // Reading the file table is far faster than any walk, where the
@@ -1082,7 +1226,7 @@ fn scan_on_pool(
                 return Err(crate::mft::cancelled());
             }
             progress.finalizing.store(true, Ordering::Relaxed);
-            let node = finish_tree(node, canonical, &context.options, pool);
+            let node = finish_tree(node, canonical, context, pool)?;
             // The reader counted every file on the volume; the tree may
             // hold fewer.
             let root = node.root();
@@ -1125,7 +1269,204 @@ fn scan_on_pool(
         })
     })?;
     context.progress.finalizing.store(true, Ordering::Relaxed);
-    Ok(finish_tree(tree, canonical, &context.options, pool))
+    finish_tree(tree, canonical, context, pool)
+}
+
+#[cfg(all(test, unix))]
+pub(crate) mod leaf_work {
+    use std::cell::Cell;
+    thread_local! {
+        static WORK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    }
+    pub fn reset() {
+        WORK.set((0, 0));
+    }
+    pub fn opened() {
+        WORK.set((WORK.get().0 + 1, WORK.get().1));
+    }
+    pub fn entry() {
+        WORK.set((WORK.get().0, WORK.get().1 + 1));
+    }
+    pub fn snapshot() -> (usize, usize) {
+        WORK.get()
+    }
+}
+
+/// Only selected leaves are retained, regardless of how many unselected
+/// siblings share their parents. This cache never survives an operation.
+struct LeafListings {
+    wanted: FxHashMap<PathBuf, FxHashSet<PathBuf>>,
+    parents: Mutex<FxHashMap<PathBuf, io::Result<ParentLeaves>>>,
+}
+
+type ParentLeaves = FxHashMap<PathBuf, io::Result<Leaf>>;
+
+impl LeafListings {
+    fn new(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        let mut wanted = FxHashMap::<PathBuf, FxHashSet<PathBuf>>::default();
+        for path in paths {
+            if let Some(parent) = path.parent() {
+                wanted.entry(parent.to_path_buf()).or_default().insert(path);
+            }
+        }
+        Self {
+            wanted,
+            parents: Mutex::default(),
+        }
+    }
+
+    fn leaf(&self, path: &Path, context: &WalkContext) -> io::Result<Leaf> {
+        let parent =
+            path.parent().ok_or_else(|| io::Error::other("No parent"))?;
+        let wanted = self
+            .wanted
+            .get(parent)
+            .ok_or_else(|| io::Error::other("Unregistered selected leaf"))?;
+        let mut parents = lock(&self.parents);
+        let listed = parents
+            .entry(parent.to_path_buf())
+            .or_insert_with(|| selected_leaves(parent, wanted, context));
+        let result = match listed {
+            Ok(leaves) => leaves.get(path).map_or_else(
+                || {
+                    Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "Selected entry disappeared",
+                    ))
+                },
+                copy_leaf,
+            ),
+            Err(error) => Err(copy_error(error)),
+        };
+        drop(parents);
+        result
+    }
+}
+
+fn copy_error(error: &io::Error) -> io::Error {
+    io::Error::new(error.kind(), error.to_string())
+}
+
+fn copy_leaf(leaf: &io::Result<Leaf>) -> io::Result<Leaf> {
+    leaf.as_ref().cloned().map_err(copy_error)
+}
+
+/// Read metadata through the walk's normal listing/classifier, once per
+/// parent. Alias spellings need at most one more pass, indexed by identity.
+fn selected_leaves(
+    parent: &Path,
+    wanted: &FxHashSet<PathBuf>,
+    context: &WalkContext,
+) -> io::Result<ParentLeaves> {
+    let mut leaves = ParentLeaves::default();
+    for entry in leaf_listing(parent, context)? {
+        let mut entry = entry?;
+        let path = entry.entry_path(parent);
+        if wanted.contains(&path) {
+            leaves.insert(path, selected_leaf(parent, &mut entry, context));
+        }
+    }
+    let aliases: FxHashMap<_, _> = wanted
+        .iter()
+        .filter(|path| !leaves.contains_key(*path))
+        .filter_map(|path| leaf_key(path).map(|key| (path, key)))
+        .collect();
+    if !aliases.is_empty() {
+        let keys: FxHashSet<_> = aliases.values().collect();
+        let mut found = FxHashMap::default();
+        for entry in leaf_listing(parent, context)? {
+            let mut entry = entry?;
+            let Some(key) = leaf_key(&entry.entry_path(parent)) else {
+                continue;
+            };
+            if keys.contains(&key) && !found.contains_key(&key) {
+                found.insert(key, selected_leaf(parent, &mut entry, context));
+                if found.len() == keys.len() {
+                    break;
+                }
+            }
+        }
+        for (path, key) in aliases {
+            if let Some(leaf) = found.get(&key) {
+                leaves.insert(path.clone(), copy_leaf(leaf));
+            }
+        }
+    }
+    Ok(leaves)
+}
+
+fn leaf_listing(
+    parent: &Path,
+    context: &WalkContext,
+) -> io::Result<impl Iterator<Item = io::Result<impl Listed>>> {
+    let clones =
+        context.options.apfs_clone_metadata && !context.options.apparent_size;
+    #[cfg(all(test, unix))]
+    leaf_work::opened();
+    Ok(list(parent, None, clones, true, false)?.inspect(|_| {
+        #[cfg(all(test, unix))]
+        leaf_work::entry();
+    }))
+}
+
+fn selected_leaf(
+    parent: &Path,
+    entry: &mut impl Listed,
+    context: &WalkContext,
+) -> io::Result<Leaf> {
+    match context.classify(parent, entry) {
+        Classified::Entry(leaf) => Ok(leaf),
+        _ => Err(io::Error::other("Cannot measure selected entry")),
+    }
+}
+
+/// Raw cached leaves acquire their hardlink charge only when accepted.
+/// A refused target must never consume an identity from a later target.
+fn scan_entry(
+    path: &Path,
+    context: &WalkContext,
+    pool: &rayon::ThreadPool,
+) -> io::Result<Tree> {
+    let listings = context
+        .leaves
+        .as_ref()
+        .ok_or_else(|| io::Error::other("Missing selected leaf listing"))?;
+    let leaf = listings.leaf(path, context)?;
+    let tree = Tree::build(|builder| {
+        builder.leaf(&leaf.name, leaf.facts, leaf.allocation)
+    });
+    finish_tree(tree, path, context, pool)
+}
+
+#[cfg(unix)]
+type LeafKey = (u64, u64);
+#[cfg(not(unix))]
+type LeafKey = PathBuf;
+
+/// Alternate case/Unicode spellings name the same filesystem entry.
+/// Never resolve a symlink's destination for this comparison.
+#[cfg_attr(
+    not(unix),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "Unix identity lookup can fail; keep one cross-platform API"
+    )
+)]
+fn leaf_key(path: &Path) -> Option<LeafKey> {
+    #[cfg(unix)]
+    {
+        fs::symlink_metadata(path)
+            .ok()
+            .and_then(|meta| file_identity(&meta))
+    }
+    #[cfg(windows)]
+    {
+        Some(crate::windows::guard_key(path))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Some(path.to_path_buf())
+    }
 }
 
 /// Walk from `root` on `pool`, leaving the finished root in `sink`.
@@ -1509,14 +1850,25 @@ fn signal_done<'h>(dir: &Arc<PendingDir<'h>>, sink: &Sink<'h>) {
 fn finish_tree(
     mut tree: Tree,
     root: &Path,
-    options: &ScanOptions,
+    context: &WalkContext,
     pool: &rayon::ThreadPool,
-) -> Tree {
+) -> io::Result<Tree> {
+    if context.require_complete
+        && pool.install(|| tree.par_nodes().any(|node| node.read_error))
+    {
+        return Err(io::Error::other(
+            "Cannot enforce removal limit: part of the selection is unreadable",
+        ));
+    }
     pool.install(|| {
-        if options.dedup_hardlinks {
-            aggregate_deduped(&mut tree, options.metric, &Seen::new());
+        if context.options.dedup_hardlinks {
+            aggregate_deduped(
+                &mut tree,
+                context.options.metric,
+                &context.accounted,
+            );
         } else {
-            aggregate(&mut tree, options.metric);
+            aggregate(&mut tree, context.options.metric);
         }
         crate::classify::classify_at(
             &mut tree,
@@ -1524,7 +1876,7 @@ fn finish_tree(
             crate::path_style::PathStyle::Native,
         );
     });
-    tree
+    Ok(tree)
 }
 
 /// A leaf. Its identity is kept only when `track` says the walk could meet
@@ -1562,6 +1914,7 @@ fn leaf_node(
 }
 
 /// A leaf as the listing found it, before it goes into the tree.
+#[derive(Clone)]
 struct Leaf {
     name: Box<str>,
     facts: crate::tree::Facts,
@@ -1711,6 +2064,9 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+#[cfg(all(test, target_os = "macos"))]
+mod path_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1806,6 +2162,59 @@ mod tests {
         assert!(!disabled.apfs_clone_metadata);
     }
 
+    #[test]
+    fn default_scan_and_recheck_have_identical_parameters() {
+        let options = ScanOptions::default();
+        assert_eq!(
+            serde_json::to_value(&options).expect("scan options"),
+            serde_json::to_value(options.for_removal()).expect("recheck")
+        );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        // Traversal must cover what removal touches. Every other parameter
+        // is captured from the original scan, rather than silently defaulted.
+        #[test]
+        fn recheck_preserves_all_accounting_and_worker_parameters(
+            apparent_size in proptest::bool::ANY,
+            clones in proptest::bool::ANY,
+            dedup in proptest::bool::ANY,
+            hidden in proptest::bool::ANY,
+            follow in proptest::bool::ANY,
+            one_volume in proptest::bool::ANY,
+            depth in proptest::option::of(0_usize..8),
+            workers in 1_usize..8,
+        ) {
+            let options = ScanOptions {
+                apparent_size, apfs_clone_metadata: clones,
+                follow_links: follow, include_hidden: hidden,
+                one_filesystem: one_volume, max_depth: depth,
+                dedup_hardlinks: dedup,
+                threads: ScanThreads { max_threads: workers,
+                    ..ScanThreads::default() },
+                ..ScanOptions::default()
+            };
+            let complete = options.for_removal();
+            proptest::prop_assert!(!complete.follow_links);
+            proptest::prop_assert!(complete.include_hidden);
+            proptest::prop_assert!(complete.one_filesystem);
+            proptest::prop_assert_eq!(complete.max_depth, None);
+            let mut original = serde_json::to_value(options).expect("options");
+            let mut recheck = serde_json::to_value(complete).expect("recheck");
+            for key in ["follow_links", "include_hidden", "one_filesystem",
+                "max_depth"] {
+                original.as_object_mut().expect("options").remove(key);
+                recheck.as_object_mut().expect("recheck").remove(key);
+            }
+            proptest::prop_assert_eq!(original, recheck);
+        }
+    }
+
     fn scan_dir(root: &Path, options: &ScanOptions) -> Tree {
         scan(root, options.clone()).expect("scan")
     }
@@ -1848,6 +2257,9 @@ mod tests {
             data_services: OnceLock::from(data),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
+            accounted: Arc::new(Seen::new()),
+            require_complete: false,
+            leaves: None,
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
@@ -1991,6 +2403,9 @@ mod tests {
             data_services: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
+            accounted: Arc::new(Seen::new()),
+            require_complete: false,
+            leaves: None,
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
@@ -2303,6 +2718,9 @@ mod tests {
             data_services: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
+            accounted: Arc::new(Seen::new()),
+            require_complete: false,
+            leaves: None,
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),

@@ -177,6 +177,9 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
    when it is a link). What is inside a profile stays
    removable. The window asks the guards before a mark is made
    (`removal::refusal`), so a refused path is never offered for marking.
+   Shared system containers (including `/Applications`) are refused as a
+   whole while eligible children remain removable; see
+   [the protected-path policy](docs/protected-paths.md) when changing guards.
 5. **Marks are keyed by absolute path**, not tree position, so they survive a
    re-scan; `Marks::refresh` re-reads their sizes and keeps missing paths
    marked at zero bytes, so they cannot claim space that is already gone.

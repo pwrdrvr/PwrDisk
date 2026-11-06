@@ -113,6 +113,7 @@ pub fn root(
         app.prepare_picker_inputs(window, cx);
     }
     if app.screen == Screen::Review {
+        app.prepare_raw_inspection(cx);
         app.prepare_over_phrase(window, cx);
     }
     app.apply_focus(window, cx);
@@ -5129,9 +5130,7 @@ fn review_button(
         .hover(move |style| style.bg(highlight.opacity(0.18)))
         .active(move |style| style.bg(highlight.opacity(0.26)))
         .on_click(cx.listener(|this, _, window, cx| {
-            this.reread_disks();
-            this.screen = Screen::Review;
-            cx.notify();
+            this.open_review(cx);
             window.focus(&this.focus, cx);
         }))
         .child(
@@ -6142,12 +6141,11 @@ fn review_summary(
         );
 
     if app.remote.is_none() {
-        let hint = app.marks.items().iter().find_map(|target| {
-            disktree_core::cleanup::inspection_reason(&target.path)
-        });
+        let hint = app.raw_inspection_hint();
         if let Some(hint) = hint {
             panel = panel.child(
                 div()
+                    .debug_selector(|| "raw-inspection".into())
                     .text_size(text::CAPTION)
                     .text_color(theme.warning)
                     .child(hint),
@@ -6559,6 +6557,9 @@ fn review_actions(
             window.focus(&this.focus, cx);
         }));
     let unavailable = plan.is_empty()
+        || (app.remote.is_none()
+            && app.removal_mode != RemovalMode::OwnerCleanup
+            && app.raw_inspection_ready().is_err())
         || (app.removal_mode == RemovalMode::Trash
             && !app.trash_backend.is_available())
         || app

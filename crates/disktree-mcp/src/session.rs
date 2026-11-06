@@ -2605,7 +2605,10 @@ mod tests {
     /// A small tree on disk: a cache, a build directory, a checkout with a
     /// large file, and a stray download.
     fn fixture() -> tempfile::TempDir {
-        let temp = tempfile::TempDir::new().expect("tempdir");
+        // macOS's default TMPDIR lives in protected /private/var/folders.
+        // Marks here must exercise removable entries, not a root alias.
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("tempdir");
         for (path, bytes) in [
             (".cache/pip/blob.bin", 400_000_usize),
             ("src/app/target/debug/app", 300_000),
@@ -4606,7 +4609,7 @@ mod tests {
         assert!(status.contains("pwrdisk_scan"), "{status}");
         let report = session.plan_report();
         for path in &paths {
-            assert!(report.contains(&path.display().to_string()), "{report}");
+            assert!(report.contains(&session.show(path)), "{report}");
         }
         assert_eq!(session.marks().len(), 2);
         assert!(session.link.is_none());
