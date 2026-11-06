@@ -1199,7 +1199,15 @@ fn scan_on_pool(
     if context.options.one_filesystem {
         *lock(&context.root_device) = Some(device_of(&root_meta));
         if let Some(foreign) = crate::space::mount_boundaries_for(canonical) {
-            let _ = context.foreign_mounts.set(foreign.into_iter().collect());
+            // The mount table names real paths, but entries retain the
+            // chosen root's spelling. Translate once here so checking a
+            // boundary needs no metadata that could trigger an automount.
+            let foreign = foreign
+                .iter()
+                .filter_map(|path| path.strip_prefix(canonical).ok())
+                .map(|below| root.join(below))
+                .collect();
+            let _ = context.foreign_mounts.set(foreign);
         }
     }
     // Reading the file table is far faster than any walk, where the
@@ -2055,6 +2063,9 @@ pub(crate) fn file_name(path: &Path) -> Box<str> {
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod path_tests;
 
 #[cfg(test)]
 mod tests {

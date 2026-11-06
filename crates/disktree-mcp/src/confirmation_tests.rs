@@ -39,7 +39,9 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
             (true, "error", false, 0, 0),  // Proxy/client lifecycle failure.
             (true, "error", false, 2, 0),  // UI completion before form error.
         ] {
-            let temp = tempfile::tempdir().expect("fixture");
+            let temp =
+                tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+                    .expect("removable fixture");
             let file = temp.path().join("candidate");
             std::fs::write(&file, b"fixture").expect("fixture data");
             #[cfg(not(windows))]

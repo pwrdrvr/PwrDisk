@@ -584,15 +584,6 @@ mod tests {
     const GB: u64 = 1_000_000_000;
     const SIZE: u64 = 12 * GB;
 
-    fn scratch() -> tempfile::TempDir {
-        // Reclaim planning uses the real removal guards. Live macOS temp
-        // state is protected, so place removable fixtures in scratch space.
-        #[cfg(target_os = "macos")]
-        return tempfile::tempdir_in("/private/tmp").expect("scratch fixture");
-        #[cfg(not(target_os = "macos"))]
-        tempfile::tempdir().expect("scratch fixture")
-    }
-
     fn clone_file(inode: u64, refs: u32, private: Option<u64>) -> Draft {
         let mut file = Draft::entry("data", NodeKind::File, SIZE);
         file.inode =
@@ -617,7 +608,8 @@ mod tests {
         refs: u32,
         private: Option<u64>,
     ) -> (tempfile::TempDir, Tree, Context) {
-        let temp = scratch();
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("removable fixture");
         let mut root = Draft::directory("root");
         for index in 1..=4 {
             let name = format!("worktree-{index}");
@@ -877,7 +869,8 @@ mod tests {
 
     #[test]
     fn peer_scope_can_find_a_known_holder_outside_the_default_parent() {
-        let temp = scratch();
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("removable fixture");
         let mut root = Draft::directory("root");
         let mut near = Draft::directory("near");
         for inode in 1..=3 {
