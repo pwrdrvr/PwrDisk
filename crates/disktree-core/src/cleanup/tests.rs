@@ -775,13 +775,16 @@ fn owner_worker_applies_confirmed_ceilings_only_to_the_named_volume() {
     let approved = Ceilings::from(Limit::default())
         .raise(volume, Limit::new(10).expect("10%"));
     let completed = collect(&spawn_cleanup(prepared, approved));
-    assert!(completed.iter().any(|event| matches!(
-        event,
-        RemovalEvent::Item {
-            outcome: Ok(()),
-            ..
-        }
-    )));
+    assert!(
+        completed.iter().any(|event| matches!(
+            event,
+            RemovalEvent::Item {
+                outcome: Ok(()),
+                ..
+            }
+        )),
+        "{completed:#?}"
+    );
     assert!(fixture.env.home.join("invocation").exists());
     assert!(
         cache.join("payload").exists(),
