@@ -3057,7 +3057,11 @@ mod tests {
     }
 
     fn typed_output_fixture() -> tempfile::TempDir {
-        let temp = tempfile::tempdir().expect("fixture");
+        // The oracle declares temporary locations inside this tree. A system
+        // /tmp or Windows Temp ancestor would supply unrelated inherited
+        // context and let an enclosing temporary root cover those locations.
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
         for path in [
             ".cache/project/target/scala-3.3/classes/blob",
             ".cache/scala-project/.gradle/caches/version/blob",
@@ -4323,6 +4327,39 @@ mod tests {
     }
 
     #[cfg(any(unix, windows))]
+    #[test]
+    fn stand_in_history_uses_the_retained_scan_clock() {
+        let fake = FakeTree {
+            protocol: VERSION,
+            root: PathBuf::from("invented"),
+            tree: Arc::new(Tree::from(Draft::directory("invented"))),
+            marks: vec![],
+            remote: None,
+            busy: false,
+            options: apparent(),
+            unreadable: 0,
+            removed: vec![],
+        };
+        // State reads expose the same recorded scan and removal events. The
+        // independent timeline catches clock reads even within one second.
+        for screen in ["explore", "review", "running", "done"] {
+            let state = fake.state(screen);
+            let scanned_at = state.tree.expect("retained tree").scanned_at;
+            let ledger = state.removals.expect("recorded removals");
+            assert_eq!(
+                ledger.cohorts[0].started,
+                scanned_at + 115,
+                "reading state must not move a historical event"
+            );
+            assert_eq!(ledger.cohorts[0].finished, scanned_at + 120);
+            assert_eq!(
+                state.removal.expect("last removal").at,
+                ledger.cohorts[0].finished
+            );
+        }
+    }
+
+    #[cfg(any(unix, windows))]
     impl FakeTree {
         fn note_removal(&self, entry: &mut disktree_link::Entry, path: &Path) {
             entry.removed =
@@ -4338,6 +4375,9 @@ mod tests {
         }
 
         fn state(&self, screen: &str) -> State {
+            // A retained fixture tree and its historical removal ledger must
+            // remain identical across reads, including second boundaries.
+            let scanned_at = 1_600_000_000;
             let targets: Vec<_> = self
                 .marks
                 .iter()
@@ -4378,7 +4418,7 @@ mod tests {
                     bytes: 700_000,
                     freed: Some(0),
                     observed: Some(-28_311_552),
-                    at: now() - 120,
+                    at: scanned_at + 120,
                     cleanup: vec![],
                 }),
                 removals: Some(disktree_link::RemovalLedger {
@@ -4389,8 +4429,8 @@ mod tests {
                         reported: 700_000,
                         private: Some(650_000),
                         observed: Some(-28_311_552),
-                        started: now() - 125,
-                        finished: now() - 120,
+                        started: scanned_at + 115,
+                        finished: scanned_at + 120,
                     }],
                     reported: 700_000,
                     private: Some(650_000),
@@ -4400,8 +4440,7 @@ mod tests {
                     bytes: self.tree.root().bytes,
                     files: self.tree.root().files,
                     dirs: u64::from(self.tree.root().dirs),
-                    // A retained fixture tree has one scan time across reads.
-                    scanned_at: 1_600_000_000,
+                    scanned_at,
                     elapsed_ms: 1_500,
                     unreadable: self.unreadable,
                     apparent_size: self.options.apparent_size,
