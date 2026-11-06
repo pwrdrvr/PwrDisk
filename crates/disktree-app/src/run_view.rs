@@ -40,6 +40,7 @@ const CAPTION_ADVANCE_EMS: f32 = 0.6;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
+    Checking,
     Running,
     Done,
 }
@@ -124,22 +125,35 @@ pub fn running(
     let theme = cx.omarchy().clone();
     let totals = app.run_list.totals();
     let settled = totals.removed + totals.failed;
+    let phase = if app.run_checked {
+        Phase::Running
+    } else {
+        Phase::Checking
+    };
     div()
         .flex()
         .flex_col()
         .flex_1()
         .min_h_0()
         .child(screen_header(
-            "Removing",
+            if phase == Phase::Checking {
+                "Checking selection"
+            } else {
+                "Removing"
+            },
             &format!(
                 "{settled} of {} \u{b7} {}",
                 totals.total,
-                mode_phrase(app.removal_mode, false)
+                if phase == Phase::Checking {
+                    "nothing removed yet"
+                } else {
+                    mode_phrase(app.removal_mode, false)
+                }
             ),
             &theme,
             cx,
         ))
-        .child(body(app, Phase::Running, &totals, toasts, window, cx))
+        .child(body(app, phase, &totals, toasts, window, cx))
         .child(screen_footer(
             dialog_footer(
                 // Linux keeps its keys in view, as review does; macOS and
@@ -166,6 +180,8 @@ pub fn running(
                         "stop-removal",
                         if app.stop_requested {
                             "Stopping\u{2026}"
+                        } else if phase == Phase::Checking {
+                            "Stop"
                         } else if app.removal_mode == RemovalMode::OwnerCleanup
                         {
                             "Cancel owner command"
@@ -221,8 +237,10 @@ pub fn done(
     if owner_cleanup && chose_skip > 0 {
         let _ = write!(subtitle, " \u{b7} {chose_skip} skipped by you");
     }
-    subtitle.push_str(" \u{b7} ");
-    subtitle.push_str(mode_phrase(app.removal_mode, true));
+    if totals.removed > 0 || owner_cleanup {
+        subtitle.push_str(" \u{b7} ");
+        subtitle.push_str(mode_phrase(app.removal_mode, true));
+    }
 
     // Rescan is offered while none runs: it is how the sharing figures
     // catch up, and nothing else on this screen starts one.
@@ -352,6 +370,10 @@ fn list_column(
         )
     } else {
         match phase {
+            Phase::Checking => {
+                "checking the complete selection before removing anything"
+                    .to_string()
+            }
             Phase::Running => "in the order they are removed".to_string(),
             Phase::Done if totals.failed == 1 => {
                 "1 could not be removed".to_string()
@@ -780,6 +802,8 @@ fn sidebar(
         });
         panel = panel.child(
             div()
+                .id("run-progress")
+                .debug_selector(|| "run-progress".into())
                 .flex()
                 .flex_col()
                 .gap(space::XS)
@@ -804,10 +828,22 @@ fn sidebar(
         panel = panel.child(rule());
     }
 
+    if phase == Phase::Checking {
+        panel = panel.child(
+            caption(
+                "Re-measuring all selected paths and checking each disk’s \
+                 limit. Nothing has been removed.",
+                theme,
+            )
+            .id("run-checking")
+            .debug_selector(|| "run-checking".into()),
+        );
+    }
+
     // The three figures. While it runs each is what has finished, against
     // what the whole run would come to.
     let of = |done: String, all: String| match phase {
-        Phase::Running => format!("{done} / {all}"),
+        Phase::Checking | Phase::Running => format!("{done} / {all}"),
         Phase::Done => done,
     };
     let latest = app.ledger.cohorts().last();
@@ -833,14 +869,7 @@ fn sidebar(
         .flex()
         .flex_col()
         .gap(space::SM)
-        .child(widgets::eyebrow(
-            if phase == Phase::Running {
-                "Freed so far"
-            } else {
-                "Freed"
-            },
-            cx,
-        ))
+        .child(widgets::eyebrow("Free-space change", cx))
         .children(observed.map(|delta| {
             let (number, unit) = widgets::split_size(&signed_bytes(delta));
             big_figure(
@@ -888,7 +917,7 @@ fn sidebar(
         ))
         .child(figure_row(
             "Observed",
-            Some("free space now, less at the start"),
+            Some("free space now minus at start; includes other activity"),
             observed.map_or_else(|| "\u{2014}".into(), signed_bytes),
             match observed {
                 Some(delta) if delta < 0 => theme.warning,
@@ -958,8 +987,20 @@ fn result_line(
 }
 
 /// What the mode means for the figures above it.
-const fn note(app: &Disktree, phase: Phase) -> &'static str {
+fn note(app: &Disktree, phase: Phase) -> &'static str {
     match (phase, app.removal_mode) {
+        (Phase::Checking, _) => {
+            "Checking the selection before any removal. Other activity can \
+             change the volume’s free space during this check."
+        }
+        (Phase::Done, mode)
+            if mode != RemovalMode::OwnerCleanup && !app.run_checked =>
+        {
+            "No selected paths were removed. The observed figure is the \
+             volume’s free-space change during this attempt, including \
+             other activity. Rescan to update the selection’s sizes before \
+             reviewing again."
+        }
         (Phase::Running, RemovalMode::Trash) => {
             "Moving to the trash. The space comes back once the trash is \
              emptied, so until then observed stays near zero."
@@ -998,7 +1039,7 @@ fn observed(app: &Disktree, phase: Phase) -> Option<i64> {
             .cohorts()
             .last()
             .and_then(crate::ledger::Cohort::observed),
-        Phase::Running => {
+        Phase::Checking | Phase::Running => {
             let before = app.run_free_before?;
             let now = app.space?.available;
             Some(now.cast_signed().saturating_sub(before.cast_signed()))

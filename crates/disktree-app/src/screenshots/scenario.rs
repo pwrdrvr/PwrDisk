@@ -53,6 +53,8 @@ pub enum State {
     PermanentReview,
     CleanupReview,
     SystemFolders,
+    RemovalCheck,
+    RemovalRefused,
     FileList,
     Help,
 }
@@ -124,6 +126,8 @@ impl Scenario {
                     | State::PermanentReview
                     | State::CleanupReview
                     | State::SystemFolders
+                    | State::RemovalCheck
+                    | State::RemovalRefused
                     | State::FileList
                     | State::Help => {}
                 },
@@ -167,6 +171,8 @@ mod tests {
             {"op": "setup", "state": {"type": "file_list"}},
             {"op": "setup", "state": {"type": "help"}},
             {"op": "setup", "state": {"type": "system_folders"}},
+            {"op": "setup", "state": {"type": "removal_check"}},
+            {"op": "setup", "state": {"type": "removal_refused"}},
             {"op": "hover", "at": [100, 200]},
             {"op": "click", "at": [100, 200]},
             {"op": "wait", "ms": 900},
@@ -174,7 +180,7 @@ mod tests {
         ]));
         let parsed = Scenario::parse(&json).expect("valid scenario");
         assert!(matches!(parsed.theme, Theme::TokyoNight));
-        assert_eq!(parsed.steps.len(), 12);
+        assert_eq!(parsed.steps.len(), 14);
         assert!(Scenario::parse(&json.replace("\"ms\"", "\"mss\"")).is_err());
         assert!(
             Scenario::parse(&json.replace("tokyo_night", "unknown")).is_err()
