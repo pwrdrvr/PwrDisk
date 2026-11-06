@@ -221,41 +221,158 @@ pub fn volume_entry(path: &Path) -> Result<&Path, String> {
 /// Re-measure on the worker before any target is touched. A scan may have
 /// hidden entries skipped, a depth limit, or sizes that have since grown.
 pub(crate) fn measured(targets: &[Target]) -> Result<Vec<Target>, String> {
-    targets.iter().map(|target| {
-        let meta = std::fs::symlink_metadata(&target.path)
-            .map_err(|error| format!("Cannot re-measure {}: {error}", target.path.display()))?;
-        if meta.is_dir() != target.is_dir {
-            return Err(format!("Target type changed: {}", target.path.display()));
-        }
-        let bytes = if meta.is_dir() {
-            let tree = crate::scan::scan(&target.path, crate::scan::ScanOptions {
-                dedup_hardlinks: false,
-                apfs_clone_metadata: false,
-                ..crate::scan::ScanOptions::default()
-            }).map_err(|error| format!("Cannot re-measure removal: {error}"))?;
-            let mut nodes = vec![tree.root()];
-            while let Some(node) = nodes.pop() {
-                if node.read_error {
-                    return Err("Cannot enforce removal limit: part of the selection is unreadable".into());
-                }
-                nodes.extend(node.children());
+    targets
+        .iter()
+        .map(|target| {
+            let meta =
+                std::fs::symlink_metadata(&target.path).map_err(|error| {
+                    format!(
+                        "Cannot re-measure {}: {error}",
+                        target.path.display()
+                    )
+                })?;
+            if meta.is_dir() != target.is_dir {
+                return Err(format!(
+                    "Target type changed: {}",
+                    target.path.display()
+                ));
             }
-            tree.root().bytes
-        } else {
-            #[cfg(windows)]
-            let bytes = crate::windows::allocated_size(&target.path)
-                .map_err(|error| format!("Cannot re-measure {}: {error}", target.path.display()))?;
-            #[cfg(not(windows))]
-            let bytes = crate::scan::measure(&meta, false);
-            bytes
-        };
-        Ok(Target { bytes: bytes.max(target.bytes), ..target.clone() })
-    }).collect()
+            let bytes = if meta.is_dir() {
+                directory_bytes(&target.path)?
+            } else {
+                #[cfg(windows)]
+                let bytes = crate::windows::allocated_size(&target.path)
+                    .map_err(|error| {
+                        format!(
+                            "Cannot re-measure {}: {error}",
+                            target.path.display()
+                        )
+                    })?;
+                #[cfg(not(windows))]
+                let bytes = crate::scan::measure(&meta, false);
+                bytes
+            };
+            Ok(Target {
+                bytes: bytes.max(target.bytes),
+                ..target.clone()
+            })
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn directory_bytes(path: &Path) -> Result<u64, String> {
+    let mut bytes = 0_u64;
+    crate::removal::inspect(path, |_, stat, dir| {
+        // Count every leaf allocation, including links themselves and
+        // hardlinks/clones in full, as the non-deduplicating scan did.
+        // Directory totals come from their leaves, not directory blocks.
+        if dir.is_none() {
+            bytes = bytes
+                .checked_add((stat.st_blocks.max(0) as u64).saturating_mul(512))
+                .ok_or("Removal size overflow")?;
+        }
+        Ok(())
+    })?;
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn directory_bytes(path: &Path) -> Result<u64, String> {
+    let tree = crate::scan::scan(
+        path,
+        crate::scan::ScanOptions {
+            dedup_hardlinks: false,
+            apfs_clone_metadata: false,
+            ..crate::scan::ScanOptions::default()
+        },
+    )
+    .map_err(|error| format!("Cannot re-measure removal: {error}"))?;
+    let mut nodes = vec![tree.root()];
+    while let Some(node) = nodes.pop() {
+        if node.read_error {
+            return Err("Cannot enforce removal limit: part of the selection is unreadable".into());
+        }
+        nodes.extend(node.children());
+    }
+    Ok(tree.root().bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn preflight_measures_descendants_beyond_path_max() {
+        let tree = crate::test_tree::DeepTree::new();
+        let targets = [Target {
+            path: tree.selected.clone(),
+            bytes: 1,
+            is_dir: true,
+            hidden: false,
+        }];
+        let fresh = measured(&targets).expect("measure deep hidden payload");
+        assert!(fresh[0].bytes >= 16_384, "{}", fresh[0].bytes);
+        assert!(
+            Limit::default()
+                .check_with(&fresh, |_| Ok(("fixture".into(), 100_000)))
+                .is_err(),
+            "deep growth must still enforce the capacity limit"
+        );
+        assert!(tree.selected.exists(), "measurement is read-only");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preflight_counts_hardlinks_and_link_allocations_without_following() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let temp = tempfile::tempdir().expect("fixture");
+        let selected = temp.path().join("selected");
+        std::fs::create_dir(&selected).expect("directory");
+        let file = selected.join(".hidden");
+        std::fs::write(&file, [b'x'; 16_384]).expect("file");
+        std::fs::hard_link(&file, selected.join("duplicate"))
+            .expect("hardlink");
+        let outside = temp.path().join("keep");
+        std::fs::write(&outside, vec![b'y'; 32_768]).expect("outside file");
+        let link = selected.join("link");
+        std::os::unix::fs::symlink(&outside, &link).expect("outside link");
+        let expected =
+            std::fs::metadata(&file).expect("file allocation").blocks()
+                * 512
+                * 2
+                + std::fs::symlink_metadata(&link)
+                    .expect("link allocation")
+                    .blocks()
+                    * 512;
+        assert_eq!(directory_bytes(&selected).expect("measurement"), expected);
+        assert!(outside.exists(), "measurement is read-only");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preflight_refuses_unreadable_deep_directories() {
+        use rustix::fs::{Mode, OFlags, fchmod, openat};
+
+        let tree = crate::test_tree::DeepTree::new();
+        fchmod(&tree.dir, Mode::empty()).expect("lock deep directory");
+        // A privileged test runner may still read mode-000 directories.
+        let unreadable = openat(
+            &tree.dir,
+            c".",
+            OFlags::RDONLY | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .is_err();
+        let result = directory_bytes(&tree.selected);
+        fchmod(&tree.dir, Mode::RWXU).expect("restore fixture permissions");
+        if unreadable {
+            assert!(result.is_err(), "an incomplete measure cannot authorize");
+        }
+        assert!(tree.selected.exists());
+    }
 
     fn target(path: &str, bytes: u64) -> Target {
         Target {
