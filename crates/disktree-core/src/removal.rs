@@ -2308,7 +2308,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     fn scratch() -> TempDir {
         // The macOS default lives in /private/var/folders, whose live
         // per-user state is protected even through the /var alias.
