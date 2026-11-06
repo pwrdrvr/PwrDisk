@@ -2466,6 +2466,17 @@ mod tests {
                 &MountTable::default());
             prop_assert!(reason.is_some(), "{}", path.display());
         }
+
+        /// A configured profiles folder can be a junction on Windows.
+        /// Resolving a scan root must protect the same directory entries.
+        #[test]
+        #[cfg(any(unix, windows))]
+        fn profile_aliases_preserve_directory_identity(
+            name in "user-[a-z]{1,12}",
+            depth in 0_usize..5,
+        ) {
+            check_profile_aliases(&name, depth);
+        }
     }
 
     #[test]
@@ -3782,34 +3793,59 @@ mod tests {
         assert_eq!(refused(Path::new("/home/nobody-is-here")), None);
     }
 
-    /// Fedora's atomic editions link /home to /var/home: a scan from
-    /// either spelling shows the homes as folders directly in it.
-    #[cfg(unix)]
-    #[test]
-    fn a_linked_home_folder_is_judged_by_both_names() {
+    /// Whole profiles are protected by identity, while directories inside
+    /// them and regular files in the container are judged separately.
+    #[cfg(any(unix, windows))]
+    fn check_profile_aliases(name: &str, depth: usize) {
         let temp = removable_tempdir();
-        // Its own real name, so the only link in play is the one made here.
         let temp = fs::canonicalize(temp.path()).expect("canonical");
-        let real = temp.join("var/home");
-        fs::create_dir_all(real.join("guest")).expect("mkdir");
-        let link = temp.join("home");
-        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let real = temp.join("Profiles");
+        let nested = (0..depth)
+            .fold(Path::new(name).join("Downloads"), |path, _| {
+                path.join("nested")
+            });
+        fs::create_dir_all(real.join(&nested)).expect("profile contents");
+        fs::write(real.join("notes.txt"), b"shared file").expect("file");
+        let link = temp.join("Users");
+        link_dir(&real, &link);
         let keys = profiles_folder_keys(&link);
-        assert_eq!(keys.len(), 2, "{keys:?}");
-        let refused = |path: &Path| {
-            profile_refusal(path, &guard_key(path), &keys).unwrap_or_default()
-        };
+        let profiles_id = identity(&real, true).expect("profiles identity");
+        assert_eq!(identity(&link, true), Some(profiles_id));
         for folder in [&link, &real] {
-            assert!(refused(folder).contains("every user"));
-            let path = folder.join("guest");
-            assert!(
-                refused(&path).contains("home folder"),
-                "{} is an account's folder",
-                path.display()
-            );
+            for relative in [
+                Path::new(""),
+                Path::new(name),
+                nested.as_path(),
+                Path::new("notes.txt"),
+            ] {
+                let path = folder.join(relative);
+                let resolved = resolved_entry(&path).expect("real parent");
+                for path in [path, resolved] {
+                    let meta = fs::symlink_metadata(&path).expect("entry");
+                    let expected = identity(&path, true) == Some(profiles_id)
+                        || (meta.is_dir()
+                            && path
+                                .parent()
+                                .and_then(|parent| identity(parent, true))
+                                == Some(profiles_id));
+                    assert_eq!(
+                        profile_refusal(&path, &guard_key(&path), &keys)
+                            .is_some(),
+                        expected,
+                        "{}: {keys:?}",
+                        path.display()
+                    );
+                }
+            }
         }
         // A real folder has one name.
         assert_eq!(profiles_folder_keys(&real).len(), 1);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn junctioned_profiles_are_protected_after_parent_resolution() {
+        check_profile_aliases("user-a", 0);
     }
 
     #[test]

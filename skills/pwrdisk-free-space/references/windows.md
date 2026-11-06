@@ -66,6 +66,12 @@ guards of its resolved location, including system trees, profiles and
 nested mounted folders. A selected link itself does not authorize deleting
 its destination.
 
+The profiles folder comes from Windows (`FOLDERID_UserProfiles`). If it is
+a junction, both its configured name and its resolved location protect the
+folder and every profile directly inside it. For example, redirecting
+`C:\Users` to `D:\Profiles` does not make `D:\Profiles\other` removable.
+Contents inside a profile remain subject to the other guards.
+
 ## Never propose
 
 - **WinSxS, the component store, and installers' caches** under Windows:
