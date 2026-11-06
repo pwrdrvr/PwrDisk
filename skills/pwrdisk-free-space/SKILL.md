@@ -40,8 +40,9 @@ marked:
 Looking is free; acting is the user's call.
 
 - **Read-only tools need no permission.** `pwrdisk_status`, `pwrdisk_ls`,
-  `pwrdisk_find`, `pwrdisk_cargo_outputs`, `pwrdisk_estimate` and a home-directory `pwrdisk_scan` only read. Say before
-  a `disk: true` scan that it walks the whole volume and can take minutes.
+  `pwrdisk_find`, `pwrdisk_find_outputs`, `pwrdisk_estimate` and a
+  home-directory `pwrdisk_scan` only read. Say before a `disk: true` scan
+  that it walks the whole volume and can take minutes.
 - **Confirm the list before `pwrdisk_mark`.** Show each candidate with its
   path, its size, what it is, and why it is safe to lose or how it comes
   back. Mark what the user agrees to, nothing more. Marking only marks, but
@@ -69,39 +70,43 @@ Looking is free; acting is the user's call.
   Trash. Wait for an explicit answer confirming this exact operation before
   calling `pwrdisk_remove`. Never manufacture user confirmation yourself.
 
-## Prefer older, large build output
+## Prefer older, large output across types
 
-For Cargo output, use `pwrdisk_cargo_outputs` rather than directories named
-`target` or the path-based Rust artifact label. It discovers custom output
-and build directories too, and checks compiler/cache metadata contents,
-Cargo fingerprint JSON, dependency structure and Git tracking. Each result
-includes the evidence paths, exact listed bytes, newest scanned file-write
-time, scan time, age and coverage limits. Use this evidence directly; do not
-repeat a filesystem walk or external identity/age checks just to corroborate
-what the tool already established. Insufficient evidence is reported as an
-exclusion; it is not proof of absence or a disposable directory.
+Use `pwrdisk_find_outputs` for typed build output, caches, dependencies and
+name-described temporary/scratch/log/trash locations. Omit type filters for
+all supported kinds. Use `types: ["cargo"]` or `types: ["scala"]` for a
+subtype, or `family: "jvm"` / `types: ["jvm"]` for Scala, Gradle, Maven and
+Coursier together. Multiple types use OR; family, category, name, minimum
+evidence, size and age filters narrow together. Results identify their type,
+family, assessment, proof strength, exact file-write time, size and limits.
 
-Start with large outputs that have not been written recently, for example
-`min_bytes: 1073741824`, `older_than_days: 30`, `order: "oldest"`. The size
-floor avoids letting many tiny old directories distract from the space goal.
-Fetch all pages with `next_offset`. Compare the complete candidate set with
-the goal, then relax the cutoff (for example 7 days, then omit
-`older_than_days`) if insufficient. Explain the expanded age range; a recent
-write can be automated and does not establish active work. Use `order:
-"largest"` when explicitly comparing size instead. Generic `pwrdisk_find`
-remains largest first and also accepts `older_than_days`.
+Distinguish `name`, `layout` and `metadata` evidence; use `minimum_evidence`
+when stronger evidence is needed. A name-described location is not a known
+cache owner or disposable data. Cargo is an internal metadata-backed detector:
+it requires compiler/fingerprint contents and dependency structure, including
+custom output roots. A target name alone never qualifies. Other types expose
+the actual name/layout evidence from the shared classifier. The report names
+metadata-capable types; absence from a metadata-only query is not proof that
+other types are absent. Use the returned evidence directly instead of repeating
+filesystem walks or external identity/age checks for facts already established.
 
-Age means the newest **file mtime in the scanned subtree**, not directory
-mtime, access time, or proof that a build is inactive. Unknown ages sort
-last and fail age filters. Identity evidence is checked live; sizes and ages
-are from the completed scan. Check the timestamps, hidden/depth/unreadable
-limits, bounded discovery/inspection flags and exclusions before claiming
-complete coverage. Rescans or concurrent changes can alter subsequent pages.
-Positive Cargo evidence establishes output presence, not that every untracked
-file is generated or safe to lose. Keep the source checkout and installed
-Rust toolchains separate. Use the full path-list estimate and retention check
-before promising recovery; listed allocation is not guaranteed freed space.
-Existing marking and removal confirmation requirements still apply.
+Start with large older candidates, for example `min_bytes: 1073741824`,
+`older_than_days: 30`, `order: "oldest"`. Fetch all pages with `next_offset`.
+If insufficient for the goal, relax the age cutoff (for example 7 days, then
+omit it) and explain the expanded range. Recent writes can be automated and
+do not establish active human work. `order: "largest"` compares sizes instead.
+Age is newest scanned **file mtime beneath the root**, not directory mtime,
+access time or proof of inactivity. Unknown ages sort last and fail age filters.
+
+Types can overlap: a generic cache location may contain Cargo or Scala output.
+Keep the typed children visible. `covered_by` identifies an enclosing match;
+`matching_listed_bytes` counts the union once. Per-type totals may overlap and
+must not be added. Pass all selected paths to the full-list estimate and check
+retention before promising recovery. Check scan settings, timestamps,
+unreadable counts, truncation and exclusions before claiming coverage, even
+when a filter returns zero rows. Identity does not prove all untracked files
+are generated or safe to lose. Existing source-checkout, supported-owner,
+marking and removal-confirmation rules still apply.
 
 ## Never
 

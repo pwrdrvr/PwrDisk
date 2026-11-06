@@ -17,7 +17,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use disktree_core::classify::Category;
 use disktree_core::insights::{Candidate, worth_a_look};
-use disktree_core::query::{self, Kind};
+#[cfg(test)]
+use disktree_core::query;
+use disktree_core::query::Kind;
 use disktree_core::removal::{
     Plan, Target, detect_trash_backend, normalize, plan,
 };
@@ -430,6 +432,7 @@ impl FindParams {
             before: self
                 .older_than_days
                 .map(|days| now - i64::from(days) * 86_400),
+            output_roots: false,
             limit: self.limit.unwrap_or(25).clamp(1, MAX_LIMIT),
         }
     }
@@ -1080,7 +1083,6 @@ impl Session {
     }
 
     fn found_local(&self, request: &FindRequest) -> Result<FoundList, String> {
-        let filter = request.filter()?;
         let scope: Vec<(PathBuf, Node<'_>)> = if let Some(path) = &request.path
         {
             let located = self.locate(path)?;
@@ -1105,12 +1107,7 @@ impl Session {
         };
         let mut all = FoundList::default();
         for (path, node) in &scope {
-            let found = FoundList::of(&query::find(
-                path,
-                *node,
-                &filter,
-                request.limit,
-            ));
+            let found = request.results(path, *node)?;
             all.matches.extend(found.matches);
             all.count += found.count;
             all.bytes += found.bytes;
@@ -1122,7 +1119,7 @@ impl Session {
     }
 
     /// Read a separate link without Hello, mark handover or navigation.
-    fn cargo_link(&self) -> Result<Option<(Link, State)>, String> {
+    fn outputs_link(&self) -> Result<Option<(Link, State)>, String> {
         let Ok(mut link) = Link::connect_at(&self.socket) else {
             if self.link.is_some() || self.window.is_some() {
                 return Err("The linked window is unavailable; reconnect before reading its tree.".into());
@@ -1144,12 +1141,15 @@ impl Session {
             return Err(disktree_link::remote_refusal(host));
         }
         if state.scanning || state.tree.is_none() {
-            return Err("Wait for a completed window scan before querying Cargo output.".into());
+            return Err(
+                "Wait for a completed window scan before querying outputs."
+                    .into(),
+            );
         }
         Ok(Some((link, state)))
     }
 
-    fn cargo_call(
+    fn outputs_call(
         &self,
         source: &mut Option<(Link, State)>,
         request: &Request,
@@ -1171,7 +1171,7 @@ impl Session {
                     *limit,
                 )))
             }
-            _ => Err("Unsupported Cargo read request".into()),
+            _ => Err("Unsupported output read request".into()),
         }
     }
 
@@ -1181,7 +1181,7 @@ impl Session {
         path: Option<&Path>,
     ) -> Result<(std::collections::BTreeMap<PathBuf, Vec<PathBuf>>, bool), String>
     {
-        use crate::cargo_outputs::MARKER_LIMIT;
+        use crate::outputs::MARKER_LIMIT;
         let mut roots =
             std::collections::BTreeMap::<PathBuf, Vec<PathBuf>>::new();
         let mut truncated = false;
@@ -1195,7 +1195,7 @@ impl Session {
                 limit: MARKER_LIMIT,
                 ..FindRequest::default()
             });
-            let Response::Found(found) = self.cargo_call(source, &request)?
+            let Response::Found(found) = self.outputs_call(source, &request)?
             else {
                 return Err(
                     "Cargo discovery could not read the scanned tree".into()
@@ -1231,15 +1231,15 @@ impl Session {
         Ok((roots, truncated))
     }
 
-    fn cargo_output(
+    fn checked_output(
         &self,
         source: Option<&(Link, State)>,
-        path: &Path,
-        entry: &disktree_link::Entry,
-        profiles: &[PathBuf],
+        candidate: &crate::outputs::Candidate,
         deadline: Instant,
-    ) -> Result<crate::cargo_outputs::Output, String> {
-        use crate::cargo_outputs;
+    ) -> Result<crate::outputs::OutputRow, String> {
+        use crate::outputs::{self, Identification};
+        let path = &candidate.path;
+        let entry = &candidate.entry;
         if entry.read_error
             || entry.removed
             || entry.removed_bytes > 0
@@ -1250,21 +1250,37 @@ impl Session {
         {
             return Err("Unreadable, removed or protected-owner context".into());
         }
-        let evidence = cargo_outputs::evidence(path, profiles).ok_or(
-            "Insufficient readable Cargo metadata (bounded inspection)",
-        )?;
-        let tracking = cargo_outputs::git_tracking(path, deadline)
+        let cargo = candidate
+            .cargo_profiles
+            .as_ref()
+            .map(|profiles| {
+                crate::cargo_outputs::evidence(path, profiles).ok_or(
+                    "Insufficient readable Cargo metadata (bounded inspection)",
+                )
+            })
+            .transpose()?;
+        let tracking = crate::outputs::git_tracking(path, deadline)
             .ok_or("Git tracking check unavailable or timed out")?;
         if tracking == "contains_tracked_files" {
             return Err(
                 "Contains Git-tracked files; mixed source/output".into()
             );
         }
-        let mut output = cargo_outputs::output(
-            path.into(),
+        let evidence = Identification {
+            strength: candidate.strength(),
+            classification: if cargo.is_some() {
+                None
+            } else {
+                entry.artifact
+            },
+            cargo,
+        };
+        let mut output = outputs::output(
+            path.clone(),
             entry,
             now(),
             evidence,
+            candidate.output_type,
             tracking,
         );
         if let Some((_, state)) = source {
@@ -1288,11 +1304,11 @@ impl Session {
         Ok(output)
     }
 
-    fn cargo_contexts(
+    fn output_contexts(
         &self,
         source: Option<&(Link, State)>,
-    ) -> Vec<crate::cargo_outputs::ScanContext> {
-        use crate::cargo_outputs::ScanContext;
+    ) -> Vec<crate::outputs::ScanContext> {
+        use crate::outputs::ScanContext;
         if let Some((_, state)) = source {
             return state
                 .tree
@@ -1324,24 +1340,160 @@ impl Session {
             .collect()
     }
 
-    pub fn cargo_outputs(
+    fn output_candidates(
         &self,
-        params: &crate::cargo_outputs::Params,
-    ) -> Result<String, String> {
-        use crate::cargo_outputs::{self, Excluded, ROOT_LIMIT, Report};
-        let mut source = self.cargo_link()?;
+        source: &mut Option<(Link, State)>,
+        params: &crate::outputs::Params,
+    ) -> Result<(Vec<crate::outputs::Candidate>, bool), String> {
+        use crate::outputs::{Candidate, MARKER_LIMIT, OutputType};
         let path =
             params.path.as_ref().map(|p| self.absolute(p)).transpose()?;
-        let (roots, discovery_truncated) =
-            self.cargo_candidates(&mut source, path.as_deref())?;
+        let request = Request::Find(FindRequest {
+            path: path.clone(),
+            kind: "dir".into(),
+            output_roots: true,
+            min_bytes: params.min_bytes.unwrap_or(0),
+            before: params
+                .older_than_days
+                .map(|d| now() - i64::from(d) * 86_400),
+            category: params.category.map(|c| Category::from(c).name().into()),
+            name: params.name.clone(),
+            limit: MARKER_LIMIT,
+            ..FindRequest::default()
+        });
+        let generic = params.minimum_evidence
+            < crate::outputs::Strength::Metadata
+            && (params.types.is_empty()
+                || params.types.iter().any(|t| *t != OutputType::Cargo));
+        let found = if generic {
+            match self.outputs_call(source, &request)? {
+                Response::Found(found) => found,
+                Response::Error { message } => return Err(message),
+                other => return Err(unexpected(&other)),
+            }
+        } else {
+            FoundList::default()
+        };
+        let mut truncated = found.count > found.matches.len();
+        let mut candidates: Vec<_> = found
+            .matches
+            .into_iter()
+            .filter_map(|f| {
+                OutputType::of(&f.entry, &f.path).map(|output_type| Candidate {
+                    path: f.path,
+                    entry: f.entry,
+                    output_type,
+                    cargo_profiles: None,
+                })
+            })
+            .collect();
+        if params
+            .family
+            .is_none_or(|f| f == crate::outputs::Family::Rust)
+            && (params.types.is_empty()
+                || params.types.iter().any(|t| t.accepts(OutputType::Cargo)))
+        {
+            let (cargo, limited) =
+                self.cargo_candidates(source, path.as_deref())?;
+            truncated |= limited || cargo.len() > crate::outputs::ROOT_LIMIT;
+            for (path, profiles) in
+                cargo.into_iter().take(crate::outputs::ROOT_LIMIT)
+            {
+                if let Response::Listing(listing) = self.outputs_call(
+                    source,
+                    &Request::Ls {
+                        path: path.clone(),
+                        limit: 0,
+                    },
+                )? {
+                    candidates.push(Candidate {
+                        path,
+                        entry: listing.entry,
+                        output_type: OutputType::Cargo,
+                        cargo_profiles: Some(profiles),
+                    });
+                }
+            }
+        }
+        Ok((candidates, truncated))
+    }
+
+    pub fn find_outputs(
+        &self,
+        params: &crate::outputs::Params,
+    ) -> Result<String, String> {
+        use crate::outputs::{self, Excluded, ROOT_LIMIT, Report};
+        let mut source = self.outputs_link()?;
+        if source.is_none() && self.scans.is_empty() {
+            return Err(
+                "Nothing is scanned yet. Call pwrdisk_scan first.".into()
+            );
+        }
+        if let Some(path) = &params.path {
+            let path = self.absolute(path)?;
+            if let Some((_, state)) = &source {
+                if !path.starts_with(&state.root) {
+                    return Err(
+                        "The requested path is outside the window tree.".into(),
+                    );
+                }
+            } else {
+                self.locate(&path)?;
+            }
+        }
+        let (mut candidates, discovery_truncated) =
+            self.output_candidates(&mut source, params)?;
+        let at = now();
+        candidates.retain(|c| {
+            outputs::passes(
+                params,
+                c.output_type,
+                &c.path,
+                c.entry.bytes,
+                (c.entry.modified > 0).then_some(c.entry.modified),
+                c.strength(),
+                at,
+            ) && params.category.is_none_or(|kind| {
+                Category::from(kind).name() == c.entry.category
+            })
+        });
+        // Apply requested priority before expensive live checks as well as
+        // pagination. A bounded query must not inspect arbitrary path order.
+        match params.order {
+            outputs::Order::Oldest => candidates.sort_by_key(|c| {
+                (
+                    if c.entry.modified > 0 {
+                        c.entry.modified
+                    } else {
+                        i64::MAX
+                    },
+                    std::cmp::Reverse(c.entry.bytes),
+                    c.path.clone(),
+                )
+            }),
+            outputs::Order::Largest => candidates.sort_by_key(|c| {
+                (
+                    std::cmp::Reverse(c.entry.bytes),
+                    if c.entry.modified > 0 {
+                        c.entry.modified
+                    } else {
+                        i64::MAX
+                    },
+                    c.path.clone(),
+                )
+            }),
+        }
         let mut report = Report {
-            scans: self.cargo_contexts(source.as_ref()),
+            scans: self.output_contexts(source.as_ref()),
             order: params.order,
-            discovered_roots: roots.len(),
+            discovered_roots: candidates.len(),
             inspected_roots: 0,
             discovery_truncated,
-            inspection_truncated: roots.len() > ROOT_LIMIT,
-            confirmed_roots: 0,
+            inspection_truncated: candidates.len() > ROOT_LIMIT,
+            candidate_roots: 0,
+            metadata_verified_roots: 0,
+            by_type: Vec::new(),
+            metadata_capable_types: vec![outputs::OutputType::Cargo],
             matching_roots: 0,
             matching_listed_bytes: 0,
             next_offset: None,
@@ -1350,38 +1502,17 @@ impl Session {
             excluded: Vec::new(),
         };
         let deadline = Instant::now() + Duration::from_secs(30);
-        for (path, profiles) in roots.into_iter().take(ROOT_LIMIT) {
+        for candidate in candidates.into_iter().take(ROOT_LIMIT) {
             if Instant::now() >= deadline {
                 report.inspection_truncated = true;
                 break;
             }
             report.inspected_roots += 1;
-            let response = self.cargo_call(
-                &mut source,
-                &Request::Ls {
-                    path: path.clone(),
-                    limit: 0,
-                },
-            )?;
-            let (result, listed_bytes) = match response {
-                Response::Listing(listing) => (
-                    self.cargo_output(
-                        source.as_ref(),
-                        &path,
-                        &listing.entry,
-                        &profiles,
-                        deadline,
-                    ),
-                    Some(listing.entry.bytes),
-                ),
-                Response::Error { message } => (Err(message), None),
-                other => return Err(unexpected(&other)),
-            };
-            match result {
+            match self.checked_output(source.as_ref(), &candidate, deadline) {
                 Ok(output) => report.outputs.push(output),
                 Err(reason) => report.excluded.push(Excluded {
-                    path,
-                    listed_bytes,
+                    path: candidate.path,
+                    listed_bytes: Some(candidate.entry.bytes),
                     reason,
                 }),
             }
@@ -1389,9 +1520,9 @@ impl Session {
         if let Some((link, before)) = &mut source {
             let after =
                 link.call(&Request::State).map_err(|e| e.to_string())?;
-            if !matches!(after, Response::State(after)
-                if !after.scanning && after.root == before.root && after.tree == before.tree
-                    && after.removals == before.removals)
+            if !matches!(after, Response::State(after) if !after.scanning
+                && after.root == before.root && after.tree == before.tree
+                && after.removals == before.removals)
             {
                 return Err(
                     "The window tree changed during discovery; query again."
@@ -1399,11 +1530,11 @@ impl Session {
                 );
             }
         }
-        let report = cargo_outputs::finish(report, params, now());
+        let report = outputs::finish(report, params, at);
         let json =
             serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
         Ok(format!(
-            "Read-only Cargo identity inventory; byte values are listed allocation unless apparent_size=true. last_modified is the newest scanned file mtime beneath each root, not directory mtime, last access or proof of inactivity. Identity evidence was checked live at evidence_checked_at. Unknown ages sort last and never pass an age filter. Results are non-overlapping roots; matching totals precede pagination. Check discovery/inspection truncation, scan limits (including scans with zero matches) and exclusions before claiming coverage. Only the largest 25 exclusions are shown; their sizes can overlap confirmed roots and each other, so never sum them. Unknown linked-window depth/mount options are explicitly unavailable. A skipped or partial scan cannot prove absence. Bounded metadata checks can miss older/new Cargo formats, empty remnants or separated final artifacts. Evidence establishes Cargo output presence, not that every untracked file is generated, that a build is inactive, or permission to remove. Do not promise recovered space from listed bytes: use pwrdisk_estimate for the full selection and pwrdisk_retention for each volume. Start with min_bytes and older_than_days; relax the age cutoff if insufficient, keeping recent output for explicit discussion.\n{json}"
+            "Read-only typed output candidates. Name hints, recognized layouts and live metadata verification are distinct; none establishes disposability or inactivity. Cargo always requires compiler/fingerprint metadata, never a target name. jvm includes scala, gradle, maven and coursier; rust includes cargo and cargo-registry. Unknown locations retain descriptive types without asserting a known owner. last_modified is newest scanned file mtime below the root, not directory mtime or last access. Matching totals precede pagination. Different types can overlap: covered_by names an enclosing match, matching_listed_bytes counts the union once, and per-type summaries must not be added across types. Byte values are listed allocation unless apparent_size=true. Check scan settings/unreadable counts even with zero matches, discovery/inspection truncation and exclusions before claiming completeness. Only the largest 25 exclusions are shown; their sizes can overlap. Metadata formats and bounds can miss genuine output. Use pwrdisk_estimate on the full path list and pwrdisk_retention before promising recovery. Start with older large candidates, then relax the age cutoff if insufficient.\n{json}"
         ))
     }
 
@@ -2925,6 +3056,337 @@ mod tests {
         temp
     }
 
+    fn typed_output_fixture() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("fixture");
+        for path in [
+            ".cache/project/target/scala-3.3/classes/blob",
+            ".cache/scala-project/.gradle/caches/version/blob",
+            ".cache/.m2/repository/org/demo/blob",
+            ".cache/coursier/blob",
+            ".cache/pip/tmp/session/blob",
+            "js/node_modules/package/blob",
+            "js/node_modules/package/target/scala-2.13/classes/org/invented/deep/nested/leaf/blob",
+            "frontend/.next/cache/blob",
+            ".cargo/registry/index/blob",
+            "ordinary/target/notes.txt",
+            "private/tmp/claude-501/blob",
+            "private/tmp/recent-agent/blob",
+            "repo/.git/node_modules/unique",
+            "guest.utm/node_modules/unique",
+            ".fseventsd/node_modules/unique",
+            ".Spotlight-V100/node_modules/unique",
+        ] {
+            let file = temp.path().join(path);
+            std::fs::create_dir_all(file.parent().expect("parent"))
+                .expect("mkdir");
+            std::fs::write(file, b"invented payload").expect("payload");
+        }
+        std::fs::File::options()
+            .write(true)
+            .open(temp.path().join("private/tmp/claude-501/blob"))
+            .expect("old scratch")
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(UNIX_EPOCH + Duration::from_secs(100_000)),
+            )
+            .expect("scratch age");
+        cargo_fixture(&temp.path().join(".cache/custom-rust"), 100_000);
+        temp
+    }
+
+    #[test]
+    fn generic_output_queries_match_the_family_and_subtype_oracle() {
+        use crate::outputs::{OutputType as T, Params, Strength};
+        use std::collections::BTreeSet;
+        let temp = typed_output_fixture();
+        let root = temp.path().canonicalize().expect("root");
+        let expected = [
+            (".cache/project/target/scala-3.3", T::Scala),
+            (".cache/scala-project/.gradle/caches", T::Gradle),
+            (".cache/.m2/repository", T::Maven),
+            (".cache/coursier", T::Coursier),
+            (".cache/pip", T::Python),
+            (".cache/pip/tmp", T::Temporary),
+            (".cache/custom-rust", T::Cargo),
+            (".cargo/registry", T::CargoRegistry),
+            ("js/node_modules", T::NodeModules),
+            ("js/node_modules/package/target/scala-2.13", T::Scala),
+            ("frontend/.next", T::Frontend),
+            (".cache", T::CacheLocation),
+            ("private/tmp", T::Temporary),
+        ];
+        let mut session = unlinked(&root);
+        scanned(&mut session, &root);
+        let all = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    limit: Some(200),
+                    ..Params::default()
+                })
+                .expect("all types"),
+        );
+        let paths = |r: &serde_json::Value| {
+            r["outputs"]
+                .as_array()
+                .expect("outputs")
+                .iter()
+                .map(|o| PathBuf::from(o["path"].as_str().expect("path")))
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            paths(&all),
+            expected.iter().map(|(p, _)| root.join(p)).collect()
+        );
+        assert!(
+            all["outputs"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .any(|o| !o["covered_by"].is_null())
+        );
+        for selector in [
+            T::Cargo,
+            T::Scala,
+            T::Jvm,
+            T::Rust,
+            T::Javascript,
+            T::Python,
+            T::Temporary,
+        ] {
+            let report = cargo_json(
+                &session
+                    .find_outputs(&Params {
+                        types: vec![selector],
+                        limit: Some(200),
+                        ..Params::default()
+                    })
+                    .expect("typed query"),
+            );
+            let wanted: BTreeSet<_> = expected
+                .iter()
+                .filter(|(_, kind)| {
+                    *kind == selector
+                        || match selector {
+                            T::Jvm => {
+                                [T::Scala, T::Gradle, T::Maven, T::Coursier]
+                                    .contains(kind)
+                            }
+                            T::Rust => {
+                                [T::Cargo, T::CargoRegistry].contains(kind)
+                            }
+                            T::Javascript => {
+                                [T::NodeModules, T::Frontend].contains(kind)
+                            }
+                            _ => false,
+                        }
+                })
+                .map(|(p, _)| root.join(p))
+                .collect();
+            assert_eq!(paths(&report), wanted, "{selector:?}");
+        }
+        let family = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    family: Some(crate::outputs::Family::Jvm),
+                    ..Params::default()
+                })
+                .expect("family query"),
+        );
+        assert_eq!(
+            paths(&family),
+            expected
+                .iter()
+                .filter(|(_, kind)| [
+                    T::Scala,
+                    T::Gradle,
+                    T::Maven,
+                    T::Coursier
+                ]
+                .contains(kind))
+                .map(|(p, _)| root.join(p))
+                .collect()
+        );
+        let old_scratch = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    types: vec![T::Temporary],
+                    older_than_days: Some(30),
+                    ..Params::default()
+                })
+                .expect("older scratch beneath a fresh temporary parent"),
+        );
+        assert_eq!(
+            paths(&old_scratch),
+            BTreeSet::from([root.join("private/tmp/claude-501")])
+        );
+        assert_eq!(old_scratch["outputs"][0]["evidence"]["strength"], "name");
+        let metadata = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    minimum_evidence: Strength::Metadata,
+                    ..Params::default()
+                })
+                .expect("metadata query"),
+        );
+        assert_eq!(
+            paths(&metadata),
+            BTreeSet::from([root.join(".cache/custom-rust")])
+        );
+        let scala_name = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    name: Some("SCALA".into()),
+                    ..Params::default()
+                })
+                .expect("name filter"),
+        );
+        assert_eq!(
+            paths(&scala_name),
+            BTreeSet::from([
+                root.join(".cache/project/target/scala-3.3"),
+                root.join(".cache/scala-project"),
+                root.join("js/node_modules/package/target/scala-2.13")
+            ])
+        );
+        let named_project = scala_name["outputs"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|row| {
+                row["path"].as_str()
+                    == root.join(".cache/scala-project").to_str()
+            })
+            .expect("matching cache location");
+        assert_eq!(named_project["output_type"], "cache-location");
+        assert_eq!(named_project["evidence"]["strength"], "name");
+        assert!(session.marks().is_empty());
+    }
+
+    #[test]
+    fn narrowing_an_output_query_preserves_nearer_hints_and_subtypes() {
+        use crate::outputs::{OutputType as T, Params};
+        let temp = typed_output_fixture();
+        let root = temp.path().canonicalize().expect("root");
+        let mut session = unlinked(&root);
+        scanned(&mut session, &root);
+        for (path, wanted) in [
+            (".cache/project/target/scala-3.3/classes", T::Scala),
+            (".cache/pip/tmp/session", T::Temporary),
+            (
+                "js/node_modules/package/target/scala-2.13/classes/org/invented/deep/nested/leaf",
+                T::Scala,
+            ),
+            (".cache/scala-project/.gradle/caches/version", T::Gradle),
+            (".cache/.m2/repository/org/demo", T::Maven),
+        ] {
+            let path = root.join(path);
+            let scoped = cargo_json(
+                &session
+                    .find_outputs(&Params {
+                        path: Some(path.clone()),
+                        types: vec![wanted],
+                        ..Params::default()
+                    })
+                    .expect("scoped query"),
+            );
+            let row = &scoped["outputs"][0];
+            assert_eq!(
+                row["path"],
+                path.to_string_lossy().as_ref(),
+                "{scoped}"
+            );
+            assert_eq!(
+                row["output_type"],
+                serde_json::to_value(wanted).expect("kind")
+            );
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn generic_output_inventory_agrees_with_the_link_and_keeps_both_carts() {
+        use crate::outputs::Params;
+        let temp = typed_output_fixture();
+        let root = temp.path().canonicalize().expect("root");
+        let socket = endpoint(&root);
+        let mut session = Session::detached(socket.clone(), None);
+        scanned(&mut session, &root);
+        let params = Params {
+            limit: Some(200),
+            ..Params::default()
+        };
+        let own = cargo_json(&session.find_outputs(&params).expect("local"));
+        let window = FakeWindow::open(&socket, &root);
+        let kept = Target {
+            path: root.join("ordinary"),
+            bytes: 1,
+            is_dir: true,
+            hidden: false,
+        };
+        session.marks.push(kept.clone());
+        let linked =
+            cargo_json(&session.find_outputs(&params).expect("linked"));
+        let identity = |r: &serde_json::Value| {
+            r["outputs"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .map(|o| {
+                    (
+                        o["path"].clone(),
+                        o["output_type"].clone(),
+                        o["evidence"]["strength"].clone(),
+                        o["listed_bytes"].clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(identity(&own), identity(&linked));
+        assert_eq!(
+            own["matching_listed_bytes"],
+            linked["matching_listed_bytes"]
+        );
+        assert_eq!(session.marks(), [kept]);
+        assert!(session.link.is_none() && session.window.is_none());
+        assert!(window.marks().is_empty());
+        assert!(window.asked().iter().all(|r| matches!(
+            r,
+            Request::State | Request::Find(_) | Request::Ls { .. }
+        )));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn output_inventory_refuses_peers_that_cannot_express_output_boundaries() {
+        use crate::outputs::Params;
+        let temp = typed_output_fixture();
+        let root = temp.path().canonicalize().expect("root");
+        let scan = run_scan(root.clone(), apparent()).expect("scan");
+        let socket = endpoint(&root);
+        let window = FakeWindow::with_tree(
+            &socket,
+            FakeTree {
+                protocol: VERSION - 1,
+                root,
+                tree: Arc::clone(&scan.tree),
+                marks: vec![],
+                remote: None,
+                busy: false,
+                options: scan.options.clone(),
+                unreadable: 0,
+                removed: Vec::new(),
+            },
+        );
+        let mut session = Session::detached(socket, None);
+        session.store_scan(scan);
+        let error = session
+            .find_outputs(&Params::default())
+            .expect_err("an older peer cannot silently ignore output_roots");
+        assert!(error.contains("restart/reconnect"), "{error}");
+        assert!(matches!(window.asked().as_slice(), [Request::State]));
+        assert!(session.link.is_none() && session.window.is_none());
+    }
+
     fn cargo_fixture(root: &Path, modified: u64) {
         let crate_dir = root.join("debug/.fingerprint/demo-0123456789abcdef");
         std::fs::create_dir_all(&crate_dir).expect("crate dir");
@@ -2960,7 +3422,7 @@ mod tests {
 
     #[test]
     fn cargo_inventory_matches_filesystem_evidence_not_target_names() {
-        use crate::cargo_outputs::Params;
+        use crate::outputs::{OutputType, Params};
         let temp = tempfile::tempdir().expect("fixture");
         let root = temp.path().canonicalize().expect("root");
         let old = root.join("custom-output");
@@ -2978,10 +3440,13 @@ mod tests {
         let mut session = unlinked(&root);
         scanned(&mut session, &root);
         let text = session
-            .cargo_outputs(&Params::default())
+            .find_outputs(&Params {
+                types: vec![OutputType::Cargo],
+                ..Params::default()
+            })
             .expect("inventory");
         let report = cargo_json(&text);
-        assert_eq!(report["confirmed_roots"], 2, "{text}");
+        assert_eq!(report["metadata_verified_roots"], 2, "{text}");
         assert_eq!(
             report["outputs"][0]["path"],
             old.to_string_lossy().as_ref()
@@ -2996,13 +3461,14 @@ mod tests {
         assert!(report["excluded_count"].as_u64().expect("excluded") > 0);
         let scoped = cargo_json(
             &session
-                .cargo_outputs(&Params {
+                .find_outputs(&Params {
                     path: Some(root.join("project")),
+                    types: vec![OutputType::Cargo],
                     ..Params::default()
                 })
                 .expect("scoped"),
         );
-        assert_eq!(scoped["confirmed_roots"], 1);
+        assert_eq!(scoped["metadata_verified_roots"], 1);
         assert_eq!(
             scoped["outputs"][0]["path"],
             new.to_string_lossy().as_ref()
@@ -3012,7 +3478,7 @@ mod tests {
 
     #[test]
     fn cargo_empty_results_preserve_scan_limits_and_protected_owners() {
-        use crate::cargo_outputs::Params;
+        use crate::outputs::{OutputType, Params};
         let temp = tempfile::tempdir().expect("fixture");
         let root = temp.path().canonicalize().expect("root");
         for owner in ["repo/.git", "guest.utm", ".fseventsd", ".Spotlight-V100"]
@@ -3025,10 +3491,13 @@ mod tests {
         session.store_scan(scan);
         let report = cargo_json(
             &session
-                .cargo_outputs(&Params::default())
+                .find_outputs(&Params {
+                    types: vec![OutputType::Cargo],
+                    ..Params::default()
+                })
                 .expect("inventory"),
         );
-        assert_eq!(report["confirmed_roots"], 0, "{report}");
+        assert_eq!(report["metadata_verified_roots"], 0, "{report}");
         assert_eq!(report["scans"][0]["unreadable"], 3);
         assert_eq!(report["scans"][0]["include_hidden"], true);
         assert!(report["excluded_count"].as_u64().expect("excluded") >= 4);
@@ -3037,7 +3506,7 @@ mod tests {
     #[cfg(any(unix, windows))]
     #[test]
     fn cargo_inventory_has_the_same_identity_on_the_link_without_any_writes() {
-        use crate::cargo_outputs::Params;
+        use crate::outputs::{OutputType, Params};
         let temp = tempfile::tempdir().expect("fixture");
         let root = temp.path().canonicalize().expect("root");
         cargo_fixture(&root.join("invented-output"), 100_000);
@@ -3045,7 +3514,12 @@ mod tests {
         let mut session = Session::detached(socket.clone(), None);
         scanned(&mut session, &root);
         let own = cargo_json(
-            &session.cargo_outputs(&Params::default()).expect("local"),
+            &session
+                .find_outputs(&Params {
+                    types: vec![OutputType::Cargo],
+                    ..Params::default()
+                })
+                .expect("local"),
         );
         let window = FakeWindow::open(&socket, &root);
         let kept = Target {
@@ -3056,9 +3530,17 @@ mod tests {
         };
         session.marks.push(kept.clone());
         let linked = cargo_json(
-            &session.cargo_outputs(&Params::default()).expect("linked"),
+            &session
+                .find_outputs(&Params {
+                    types: vec![OutputType::Cargo],
+                    ..Params::default()
+                })
+                .expect("linked"),
         );
-        assert_eq!(own["confirmed_roots"], linked["confirmed_roots"]);
+        assert_eq!(
+            own["metadata_verified_roots"],
+            linked["metadata_verified_roots"]
+        );
         for field in [
             "path",
             "listed_bytes",
@@ -3918,7 +4400,8 @@ mod tests {
                     bytes: self.tree.root().bytes,
                     files: self.tree.root().files,
                     dirs: u64::from(self.tree.root().dirs),
-                    scanned_at: now() - 30,
+                    // A retained fixture tree has one scan time across reads.
+                    scanned_at: 1_600_000_000,
                     elapsed_ms: 1_500,
                     unreadable: self.unreadable,
                     apparent_size: self.options.apparent_size,
@@ -3976,17 +4459,12 @@ mod tests {
                     Response::Listing(listing)
                 }
                 Request::Find(request) => {
-                    let filter = match request.filter() {
-                        Ok(filter) => filter,
-                        Err(message) => return Response::error(message),
-                    };
-                    let found = query::find(
-                        &self.root,
-                        self.tree.root(),
-                        &filter,
-                        request.limit,
-                    );
-                    let mut found = FoundList::of(&found);
+                    let found =
+                        match request.results(&self.root, self.tree.root()) {
+                            Ok(found) => found,
+                            Err(message) => return Response::error(message),
+                        };
+                    let mut found = found;
                     for item in &mut found.matches {
                         self.note_removal(&mut item.entry, &item.path);
                     }

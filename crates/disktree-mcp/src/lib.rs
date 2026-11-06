@@ -13,6 +13,7 @@
 //! protocol around it.
 
 mod cargo_outputs;
+mod outputs;
 pub mod report;
 mod retention;
 pub mod server;
