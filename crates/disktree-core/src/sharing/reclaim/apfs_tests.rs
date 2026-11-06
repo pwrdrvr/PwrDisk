@@ -16,24 +16,16 @@ const BLOCK: usize = 4096;
 // mounts while libtest runs the named regression and property together.
 static IMAGES: Mutex<()> = Mutex::new(());
 
-// Bound the added wait for a busy APFS attachment to five seconds.
-const BUSY_RETRIES: usize = 20;
-
-#[derive(Debug)]
-struct EjectError {
-    message: String,
-    busy: bool,
-}
-
 struct Image {
     temp: Option<tempfile::TempDir>,
     mounted: bool,
     device: Option<PathBuf>,
-    eject: fn(&Path, bool) -> Result<(), EjectError>,
+    volume: Option<PathBuf>,
+    eject: fn(&Path, bool) -> Result<(), String>,
     _guard: MutexGuard<'static, ()>,
 }
 
-fn attachment_device(plist: &[u8]) -> PathBuf {
+fn attachment_devices(plist: &[u8], root: &Path) -> (PathBuf, PathBuf) {
     let source = tempfile::NamedTempFile::new().expect("attachment plist");
     fs::write(source.path(), plist).expect("attachment records");
     let output = checked(
@@ -53,68 +45,59 @@ fn attachment_device(plist: &[u8]) -> PathBuf {
     assert!(devices.next().is_none(), "one private backing image");
     let suffix = device.strip_prefix("/dev/disk").expect("disk device");
     assert!(!suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()));
-    PathBuf::from(device)
+    let mut mounted = entries
+        .iter()
+        .filter(|entry| entry["mount-point"].is_string());
+    let volume = mounted.next().expect("one mounted APFS volume");
+    assert!(
+        mounted.next().is_none(),
+        "only our private volume is mounted"
+    );
+    let mount = Path::new(volume["mount-point"].as_str().expect("mount point"));
+    assert_eq!(
+        mount.canonicalize().expect("mounted root"),
+        root.canonicalize().expect("private mount point")
+    );
+    assert_eq!(volume["volume-kind"], "apfs");
+    let volume = volume["dev-entry"].as_str().expect("volume device");
+    let suffix = volume.strip_prefix("/dev/disk").expect("APFS device");
+    let parts: [&str; 2] =
+        suffix.split_once('s').expect("APFS volume slice").into();
+    assert!(parts.iter().all(|part| {
+        !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())
+    }));
+    (PathBuf::from(device), PathBuf::from(volume))
 }
 
-fn eject(root: &Path, force: bool) -> Result<(), EjectError> {
-    let mut command = Command::new("hdiutil");
-    command.args(["detach", "-quiet"]);
+fn eject(root: &Path, force: bool) -> Result<(), String> {
     if force {
-        command.arg("-force");
+        // unmountDisk follows APFS's synthesized volumes back to this
+        // image's physical store before the backing device is ejected.
+        run(Command::new("diskutil")
+            .args(["unmountDisk", "force"])
+            .arg(root))?;
     }
-    let output = command.arg(root).output().map_err(|error| EjectError {
-        message: error.to_string(),
-        busy: false,
-    })?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(EjectError {
-            message: format!(
-                "{command:?}: {}\n{}\n{}",
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-            ),
-            // hdiutil reports EBUSY (16) while an attachment is still in use.
-            busy: output.status.code() == Some(16),
-        })
-    }
+    run(Command::new("diskutil").arg("eject").arg(root)).map(|_| ())
 }
 
-fn detach_with(
-    mut eject: impl FnMut(bool) -> Result<(), EjectError>,
-    mut pause: impl FnMut(),
-) -> Result<(), String> {
-    let Err(normal) = eject(false) else {
-        return Ok(());
-    };
-    let mut retries = 0;
-    loop {
-        let Err(forced) = eject(true) else {
-            return Ok(());
-        };
-        // Forced unmount can still leave Disk Arbitration retiring the
-        // attachment. Only EBUSY permits waiting; other failures stop now.
-        if !forced.busy || retries == BUSY_RETRIES {
-            return Err(format!(
-                "{}\nforced detach after {retries} busy waits: {}",
-                normal.message, forced.message
-            ));
-        }
-        pause();
-        retries += 1;
+fn run(command: &mut Command) -> Result<Output, String> {
+    let output = command
+        .output()
+        .map_err(|error| format!("{command:?}: {error}"))?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(format!(
+            "{command:?}: {}\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
 fn checked(command: &mut Command) -> Output {
-    let output = command.output().expect("start filesystem oracle command");
-    assert!(
-        output.status.success(),
-        "{command:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output
+    run(command).expect("filesystem oracle command")
 }
 
 impl Image {
@@ -126,6 +109,7 @@ impl Image {
             temp: Some(tempfile::tempdir().expect("private image directory")),
             mounted: false,
             device: None,
+            volume: None,
             eject,
             _guard: guard,
         };
@@ -173,6 +157,7 @@ impl Image {
         // A reattach can receive another device number. Never retain the
         // previous attachment's identity if decoding this one fails.
         self.device = None;
+        self.volume = None;
         let output = checked(
             Command::new("hdiutil")
                 .args([
@@ -186,7 +171,9 @@ impl Image {
                 .arg(self.backing()),
         );
         self.mounted = true;
-        self.device = Some(attachment_device(&output.stdout));
+        let (device, volume) = attachment_devices(&output.stdout, &self.root());
+        self.device = Some(device);
+        self.volume = Some(volume);
     }
 
     fn detach(&mut self) {
@@ -197,12 +184,13 @@ impl Image {
         let target = self.device.clone().unwrap_or_else(|| self.root());
         // A busy eject can leave APFS unmounted. Keep using the owned
         // backing device even when its mount path no longer exists.
-        detach_with(
-            |force| (self.eject)(&target, force),
-            || std::thread::sleep(std::time::Duration::from_millis(250)),
-        )?;
+        (self.eject)(&target, false).or_else(|normal| {
+            (self.eject)(&target, true)
+                .map_err(|forced| format!("{normal}\nforced detach: {forced}"))
+        })?;
         self.mounted = false;
         self.device = None;
+        self.volume = None;
         Ok(())
     }
 
@@ -212,11 +200,23 @@ impl Image {
         self.detach();
     }
 
-    fn free(&mut self) -> u64 {
+    fn free(&self) -> u64 {
         // A remount commits APFS's deferred frees and retires old checkpoints.
-        // No other process writes files on this private, unbrowsed volume.
-        self.detach();
-        self.attach();
+        // Keep the image attached: ejecting its physical store for every
+        // reading needlessly tears down the whole APFS container.
+        let volume = self.volume.as_ref().expect("attached APFS volume");
+        checked(
+            Command::new("diskutil")
+                .args(["unmount", "force"])
+                .arg(volume),
+        );
+        fs::create_dir_all(self.root()).expect("restore private mount point");
+        checked(
+            Command::new("diskutil")
+                .args(["mount", "nobrowse", "-mountPoint"])
+                .arg(self.root())
+                .arg(volume),
+        );
         let output = checked(Command::new("df").arg("-kP").arg(self.root()));
         let text = String::from_utf8(output.stdout).expect("df output");
         text.lines()
@@ -231,11 +231,8 @@ impl Image {
     }
 }
 
-fn fail_eject(_: &Path, _: bool) -> Result<(), EjectError> {
-    Err(EjectError {
-        message: "injected detach failure".into(),
-        busy: false,
-    })
+fn fail_eject(_: &Path, _: bool) -> Result<(), String> {
+    Err("injected detach failure".into())
 }
 
 #[test]
@@ -250,6 +247,7 @@ fn failed_image_cleanup_does_not_panic_or_remove_its_backing_files() {
         temp: Some(temp),
         mounted: true,
         device: None,
+        volume: None,
         eject: fail_eject,
         _guard: IMAGES
             .lock()
@@ -264,7 +262,7 @@ fn failed_image_cleanup_does_not_panic_or_remove_its_backing_files() {
     fs::remove_dir_all(retained).expect("remove the unmounted stand-in");
 }
 
-fn eject_succeeds(root: &Path, force: bool) -> Result<(), EjectError> {
+fn eject_succeeds(root: &Path, force: bool) -> Result<(), String> {
     if force {
         fail_eject(root, force)
     } else {
@@ -272,67 +270,11 @@ fn eject_succeeds(root: &Path, force: bool) -> Result<(), EjectError> {
     }
 }
 
-fn force_succeeds(root: &Path, force: bool) -> Result<(), EjectError> {
+fn force_succeeds(root: &Path, force: bool) -> Result<(), String> {
     if force {
         Ok(())
     } else {
         fail_eject(root, false)
-    }
-}
-
-fn check_busy_detach(
-    busy: usize,
-    permanent: bool,
-) -> Result<(), TestCaseError> {
-    let mut calls = Vec::new();
-    let mut waits = 0;
-    let outcome = detach_with(
-        |force| {
-            calls.push(force);
-            // The normal attempt is busy; the forced attempts follow the
-            // generated OS responses, without any real images or delays.
-            if !force || calls.len() - 2 < busy {
-                Err(EjectError {
-                    message: "device busy".into(),
-                    busy: true,
-                })
-            } else if permanent {
-                Err(EjectError {
-                    message: "permanent failure".into(),
-                    busy: false,
-                })
-            } else {
-                Ok(())
-            }
-        },
-        || waits += 1,
-    );
-    prop_assert_eq!(outcome.is_ok(), !permanent && busy <= BUSY_RETRIES);
-    prop_assert_eq!(waits, busy.min(BUSY_RETRIES));
-    prop_assert_eq!(calls.len(), 2 + busy.min(BUSY_RETRIES));
-    prop_assert_eq!(calls[0], false);
-    prop_assert!(calls[1..].iter().all(|force| *force));
-    Ok(())
-}
-
-#[test]
-fn a_busy_forced_detach_can_finish_after_the_device_settles() {
-    check_busy_detach(1, false).expect("wait for the owned image to settle");
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: 256,
-        failure_persistence: None,
-        ..ProptestConfig::default()
-    })]
-
-    #[test]
-    fn busy_detach_matches_the_bounded_recovery_model(
-        busy in 0_usize..BUSY_RETRIES + 4,
-        permanent in any::<bool>(),
-    ) {
-        check_busy_detach(busy, permanent)?;
     }
 }
 
@@ -362,6 +304,7 @@ proptest! {
             temp: Some(temp),
             mounted: true,
             device: None,
+            volume: None,
             eject,
             _guard: IMAGES.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -418,6 +361,66 @@ fn an_unmounted_volume_still_detaches_its_backing_image() {
     assert!(outcome.is_ok(), "unmounting must not lose the eject target");
 }
 
+fn check_checkpoint_without_eject(
+    checkpoints: usize,
+) -> Result<(), TestCaseError> {
+    let mut image = Image::new();
+    let device = image.device.clone();
+    let native_eject = image.eject;
+    // Measuring free space must not depend on being able to remove the
+    // backing device. Model unavailable ejection without stranding a disk.
+    image.eject = fail_eject;
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for _ in 0..checkpoints {
+                assert!(image.free() > 0, "the private volume has free space");
+                assert_eq!(image.device, device, "keep the same attachment");
+            }
+        }));
+    image.eject = native_eject;
+    image.detach();
+    drop(image);
+    prop_assert!(outcome.is_ok(), "checkpointing must not eject the image");
+    Ok(())
+}
+
+#[test]
+fn free_space_checkpoint_does_not_need_to_eject_the_image() {
+    check_checkpoint_without_eject(1).expect("remount only the APFS volume");
+}
+
+#[test]
+fn an_open_reader_does_not_prevent_private_image_cleanup() {
+    let mut image = Image::new();
+    let retained = image.backing();
+    // Keep a descriptor alive through cleanup so its fallback must unmount
+    // the APFS volume before ejecting the physical image device.
+    let reader = File::open(image.root().join(".metadata_never_index"))
+        .expect("open reader on our private volume");
+    image.detach();
+    drop(image);
+    drop(reader);
+    assert!(
+        !retained.exists(),
+        "successful cleanup removes its backing file"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 4,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn free_space_checkpoints_preserve_the_backing_attachment(
+        checkpoints in 1_usize..5,
+    ) {
+        check_checkpoint_without_eject(checkpoints)?;
+    }
+}
+
 impl Drop for Image {
     fn drop(&mut self) {
         if self.mounted
@@ -448,9 +451,9 @@ fn clone_file(source: &Path, target: &Path) {
 }
 
 fn check_deletion(
-    image: &mut Image,
+    image: &Image,
     uncertain: bool,
-) -> Result<(), TestCaseError> {
+) -> Result<u64, TestCaseError> {
     let before = image.free();
     let tree =
         scan(&image.root(), ScanOptions::default()).expect("scan volume");
@@ -485,12 +488,12 @@ fn check_deletion(
         "deletion freed {freed} bytes, cached sharing {cached:?}"
     );
     prop_assert_eq!(cached.estimate, Some(bounds[0]));
-    Ok(())
+    Ok(freed)
 }
 
 #[test]
 fn truncated_external_clone_retains_half_a_selected_clone_group() {
-    let mut image = Image::new();
+    let image = Image::new();
     let source = image.root().join("sel/A");
     random_file(&source, 4 * 1024 * 1024);
     clone_file(&source, &image.root().join("sel/B"));
@@ -502,8 +505,12 @@ fn truncated_external_clone_retains_half_a_selected_clone_group() {
         .expect("survivor")
         .set_len(2 * 1024 * 1024)
         .expect("truncate clone");
-    check_deletion(&mut image, true)
+    let freed = check_deletion(&image, true)
         .expect("lower bound survives real deletion");
+    assert!(
+        freed < 4 * 1024 * 1024,
+        "the modified survivor must still retain original blocks: {freed}"
+    );
     image.close();
 }
 
@@ -524,7 +531,7 @@ proptest! {
             (any::<bool>(), 0_u8..4, 1_u64..128), 1..6,
         ),
     ) {
-        let mut image = Image::new();
+        let image = Image::new();
         let source = image.root().join("sel/A");
         random_file(&source, blocks * BLOCK);
         clone_file(&source, &image.root().join("sel/B"));
@@ -563,7 +570,7 @@ proptest! {
         let uncertain = copies.iter().all(|(inside, operation, _)| {
             *inside || *operation != 0
         });
-        check_deletion(&mut image, uncertain)?;
+        check_deletion(&image, uncertain)?;
         image.close();
     }
 }
