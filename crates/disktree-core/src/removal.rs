@@ -324,6 +324,29 @@ fn judge(
 ) -> Option<String> {
     refuse(path, root, home, &mounts.points, &mounts.media)
         .or_else(|| linked(path, root, real_root, home))
+        .or_else(|| {
+            // A root chosen through a link is legitimate, but must not
+            // disguise protected paths or mounts. Resolve parents only: a
+            // symlink is removed itself, never its destination.
+            let real = fs::canonicalize(path.parent()?)
+                .ok()?
+                .join(path.file_name()?);
+            if guard_key(&real) == guard_key(path) {
+                return None;
+            }
+            let real_home = home.map(|home| Home {
+                key: home.real.as_ref().unwrap_or(&home.key).clone(),
+                real: home.real.clone(),
+                id: home.id,
+            });
+            refuse(
+                &real,
+                real_root?,
+                real_home.as_ref(),
+                &mounts.points,
+                &mounts.media,
+            )
+        })
 }
 
 /// Trees the operating system owns. A whole-disk scan shows them, because
@@ -336,11 +359,11 @@ fn judge(
 /// One list for every platform: a macOS tree never exists on Linux, and the
 /// other way round, so the extra entries cost nothing. On macOS `/etc`,
 /// `/var` and `/tmp` are links into `/private`, which a whole-disk scan
-/// reaches by its real name. `/Applications` is left out on purpose: moving
-/// an app to the Trash is how macOS uninstalls it, and the apps macOS ships
-/// live on the read-only system volume anyway.
+/// reaches by its real name. `/Applications` is a protected container
+/// instead: moving an individual third-party app to the Trash is how macOS
+/// uninstalls it, but removing the folder would take every app with it.
 #[cfg(not(windows))]
-const SYSTEM_TREES: [&str; 24] = [
+const SYSTEM_TREES: [&str; 29] = [
     "/bin",
     "/boot",
     "/dev",
@@ -357,6 +380,11 @@ const SYSTEM_TREES: [&str; 24] = [
     "/sys",
     "/usr",
     "/var/lib",
+    "/var/db",
+    "/var/spool",
+    "/var/mail",
+    "/var/run",
+    "/var/lock",
     "/efi",
     // Homebrew on Linux, where it lives outside every user's home.
     "/home/linuxbrew/.linuxbrew",
@@ -368,6 +396,68 @@ const SYSTEM_TREES: [&str; 24] = [
     "/opt/homebrew",
     "/Network",
 ];
+
+/// Shared containers must survive a cleanup, even when empty. Children
+/// are judged by their own guards, so this does not ban individual apps,
+/// temporary files, logs or data on removable media.
+#[cfg(not(windows))]
+const SYSTEM_CONTAINERS: [&str; 21] = [
+    "/Applications",
+    "/Applications/Utilities",
+    "/Volumes",
+    "/tmp",
+    "/private/tmp",
+    "/private/var/tmp",
+    "/var",
+    "/var/tmp",
+    "/var/cache",
+    "/var/log",
+    "/var/backups",
+    "/var/local",
+    "/var/opt",
+    "/opt",
+    "/srv",
+    // The root account's home is not a profile directly inside /home.
+    "/root",
+    "/mnt",
+    "/media",
+    "/lost+found",
+    "/nix",
+    "/gnu",
+];
+
+#[cfg(not(windows))]
+fn system_container(key: &Path) -> Option<&'static str> {
+    static KEYS: std::sync::LazyLock<Vec<(&str, PathBuf)>> =
+        std::sync::LazyLock::new(|| {
+            SYSTEM_CONTAINERS
+                .iter()
+                .flat_map(|name| {
+                    let key = guard_key(Path::new(name));
+                    // /tmp and /var/log may themselves be links. A scan
+                    // of their real parent must protect the same folder.
+                    let real = fs::canonicalize(name)
+                        .ok()
+                        .map(|real| (*name, guard_key(&real)));
+                    std::iter::once((*name, key)).chain(real)
+                })
+                .collect()
+        });
+    KEYS.iter()
+        .find(|(_, folder)| key == folder)
+        .map(|(name, _)| *name)
+}
+
+#[cfg(windows)]
+const fn system_container(_key: &Path) -> Option<&'static str> {
+    None
+}
+
+fn container_refusal(key: &Path) -> Option<String> {
+    system_container(key).map(|folder| format!(
+        "{folder} is a protected system folder; select individual items inside it"
+    ))
+}
 
 /// Scratch space inside a system tree. On macOS `/tmp` and `/var/tmp` are
 /// `/private/tmp` and `/private/var/tmp`, so the `/private` entry above would
@@ -423,13 +513,19 @@ fn windows_key(path: &Path) -> PathBuf {
 fn system_tree_keys() -> &'static [(String, PathBuf)] {
     static KEYS: std::sync::LazyLock<Vec<(String, PathBuf)>> =
         std::sync::LazyLock::new(|| {
-            system_trees()
-                .into_iter()
-                .map(|tree| {
-                    let key = guard_key(&tree);
-                    (tree.display().to_string(), key)
-                })
-                .collect()
+            let trees = system_trees();
+            let mut keys: Vec<_> = trees
+                .iter()
+                .map(|tree| (tree.display().to_string(), guard_key(tree)))
+                .collect();
+            // Preserve the original reason when a configured tree already
+            // covers the path; resolved aliases add protection elsewhere.
+            keys.extend(trees.iter().filter_map(|tree| {
+                fs::canonicalize(tree)
+                    .ok()
+                    .map(|real| (tree.display().to_string(), guard_key(&real)))
+            }));
+            keys
         });
     &KEYS
 }
@@ -479,6 +575,7 @@ fn system_trees() -> Vec<PathBuf> {
     // An empty or relative value would match too much or nothing at all.
     .filter(|tree| tree.is_absolute())
     .collect();
+    trees.extend(crate::windows::system_dirs());
     trees.extend(
         [
             "Windows",
@@ -489,6 +586,8 @@ fn system_trees() -> Vec<PathBuf> {
             "$Recycle.Bin",
             "Recovery",
             "Boot",
+            "EFI",
+            "Config.Msi",
             "bootmgr",
             // Windows' memory: turned off in Settings (`powercfg /h off` for
             // hibernation), never deleted by hand.
@@ -522,6 +621,11 @@ const SYSTEM_TOOLS: &str = "use Settings, or the program's own uninstaller";
 /// never system, wherever it lives, and neither is what is inside the
 /// scratch space of [`SCRATCH_TREES`].
 fn system_tree(key: &Path, home: Option<&Path>) -> Option<&'static str> {
+    // These belong to every Windows drive, including data drives. Test
+    // them before the home exception: a profile may be at a drive's root.
+    if let Some(tree) = volume_system_tree(key) {
+        return Some(tree);
+    }
     if home.is_some_and(|home| key.starts_with(home)) {
         return None;
     }
@@ -535,6 +639,47 @@ fn system_tree(key: &Path, home: Option<&Path>) -> Option<&'static str> {
         .iter()
         .find(|(_, tree)| key.starts_with(tree))
         .map(|(name, _)| name.as_str())
+}
+
+#[cfg(windows)]
+fn volume_system_tree(key: &Path) -> Option<&'static str> {
+    let mut parts = key.components();
+    if !matches!(parts.next(), Some(Component::Prefix(prefix))
+        if is_volume_drive(prefix.kind()))
+        || parts.next() != Some(Component::RootDir)
+    {
+        return None;
+    }
+    let Component::Normal(name) = parts.next()? else {
+        return None;
+    };
+    match name.to_str()? {
+        "system volume information" => Some("System Volume Information"),
+        "$recycle.bin" => Some("$Recycle.Bin"),
+        "recovery" => Some("Recovery"),
+        "boot" => Some("Boot"),
+        "efi" => Some("EFI"),
+        "config.msi" => Some("Config.Msi"),
+        "bootmgr" => Some("bootmgr"),
+        "pagefile.sys" => Some("pagefile.sys"),
+        "hiberfil.sys" => Some("hiberfil.sys"),
+        "swapfile.sys" => Some("swapfile.sys"),
+        _ => None,
+    }
+}
+
+#[cfg(any(windows, test))]
+const fn is_volume_drive(prefix: std::path::Prefix<'_>) -> bool {
+    // A UNC share can expose any directory, not necessarily a volume root.
+    matches!(
+        prefix,
+        std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)
+    )
+}
+
+#[cfg(not(windows))]
+const fn volume_system_tree(_key: &Path) -> Option<&'static str> {
+    None
 }
 
 /// A system tree strictly inside the path keyed `key`: removing `/opt` takes
@@ -653,6 +798,9 @@ fn refuse(
         return Some(format!(
             "it contains {system}, which is part of the system"
         ));
+    }
+    if let Some(reason) = container_refusal(&key) {
+        return Some(reason);
     }
     if mounts.contains(&key) || is_mount_point(path) {
         return Some(
@@ -942,9 +1090,8 @@ fn profiles_keys() -> &'static [PathBuf] {
     static PROFILES: std::sync::LazyLock<Vec<PathBuf>> =
         std::sync::LazyLock::new(|| {
             crate::windows::user_profiles_dir()
-                .map(|dir| guard_key(&dir))
-                .into_iter()
-                .collect()
+                .map(|dir| profiles_folder_keys(&dir))
+                .unwrap_or_default()
         });
     &PROFILES
 }
@@ -954,8 +1101,8 @@ fn profiles_keys() -> &'static [PathBuf] {
 /// home only for its own account.
 #[cfg(target_os = "macos")]
 fn profiles_keys() -> &'static [PathBuf] {
-    static PROFILES: std::sync::LazyLock<[PathBuf; 1]> =
-        std::sync::LazyLock::new(|| [guard_key(Path::new("/Users"))]);
+    static PROFILES: std::sync::LazyLock<Vec<PathBuf>> =
+        std::sync::LazyLock::new(|| profiles_folder_keys(Path::new("/Users")));
     PROFILES.as_slice()
 }
 
@@ -968,14 +1115,14 @@ fn profiles_keys() -> &'static [PathBuf] {
 #[cfg(target_os = "linux")]
 fn profiles_keys() -> &'static [PathBuf] {
     static PROFILES: std::sync::LazyLock<Vec<PathBuf>> =
-        std::sync::LazyLock::new(|| linux_profiles_keys(Path::new("/home")));
+        std::sync::LazyLock::new(|| profiles_folder_keys(Path::new("/home")));
     &PROFILES
 }
 
 /// The keys of `home` as spelled and, if a link leads elsewhere, as it
 /// really is.
-#[cfg(any(target_os = "linux", all(test, unix)))]
-fn linux_profiles_keys(home: &Path) -> Vec<PathBuf> {
+#[cfg(any(windows, target_os = "macos", target_os = "linux", all(test, unix)))]
+fn profiles_folder_keys(home: &Path) -> Vec<PathBuf> {
     let mut keys = vec![guard_key(home)];
     if let Ok(real) = fs::canonicalize(home) {
         let real = guard_key(&real);
@@ -1496,28 +1643,14 @@ fn run(
         }
         // The /run/media exception must still hold when removal starts;
         // a disk may have been unmounted since the review was displayed.
-        let reason = target
-            .path
-            .starts_with("/run/media")
-            .then(|| {
-                refuse(
-                    &target.path,
-                    &plan.root,
-                    home.as_ref(),
-                    &mounts.points,
-                    &mounts.media,
-                )
-            })
-            .flatten()
-            .or_else(|| mounted(&target.path, &mounts.points))
-            .or_else(|| {
-                linked(
-                    &target.path,
-                    &plan.root,
-                    real_root.as_deref(),
-                    home.as_ref(),
-                )
-            });
+        let reason = judge(
+            &target.path,
+            &plan.root,
+            real_root.as_deref(),
+            home.as_ref(),
+            &mounts,
+        )
+        .or_else(|| mounted(&target.path, &mounts.points));
         // Sample the scope's own volume, including when it differs from
         // the scan's meter. Its parent remains after a cache root is cleared.
         let sample = || {
@@ -2077,6 +2210,7 @@ fn deletion_date() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use tempfile::TempDir;
 
     #[cfg(unix)]
@@ -2124,6 +2258,299 @@ mod tests {
         );
     }
 
+    fn scratch() -> TempDir {
+        // The macOS default lives in /private/var/folders, whose live
+        // per-user state is protected even through the /var alias.
+        #[cfg(target_os = "macos")]
+        return tempfile::tempdir_in("/private/tmp").expect("scratch fixture");
+        #[cfg(not(target_os = "macos"))]
+        TempDir::new().expect("scratch fixture")
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        /// Shared infrastructure folders survive even when empty. Their
+        /// contents are judged separately, never by a string prefix.
+        #[test]
+        #[cfg(not(windows))]
+        fn system_containers_cannot_be_marked(
+            folder in proptest::sample::select(vec![
+                "/Applications", "/Applications/Utilities", "/Volumes",
+                "/tmp", "/var/tmp", "/var/cache", "/var/log", "/srv",
+                "/mnt", "/media", "/opt", "/var", "/var/backups",
+                "/var/local", "/var/opt", "/lost+found", "/nix", "/gnu",
+                "/root",
+            ]),
+            trailing_slash in any::<bool>(),
+        ) {
+            let path = PathBuf::from(format!("{folder}{}",
+                if trailing_slash { "/./" } else { "" }));
+            prop_assert!(refuse(&normalize(&path), Path::new("/"), None,
+                &[], &[]).is_some(), "{}", path.display());
+        }
+
+        #[test]
+        #[cfg(not(windows))]
+        fn protecting_containers_does_not_protect_every_child(
+            folder in proptest::sample::select(vec![
+                "/Applications", "/Applications/Utilities", "/tmp",
+                "/var/tmp", "/srv", "/mnt", "/media", "/Volumes",
+            ]),
+            name in "[a-z]{1,20}\\.app",
+        ) {
+            let path = Path::new(folder).join(name);
+            prop_assert_eq!(refuse(&path, Path::new("/"), None, &[], &[]), None);
+        }
+
+        /// The on-disk directory, not the configured spelling, decides
+        /// which entry an alias exposes. /var/log may resolve below
+        /// /private, and /tmp may resolve to /private/tmp.
+        #[test]
+        #[cfg(unix)]
+        fn container_aliases_match_the_filesystem_identity(
+            folder in proptest::sample::select(vec![
+                "/Applications", "/tmp", "/var/tmp", "/var/log",
+                "/var/cache", "/srv", "/mnt", "/media",
+            ]),
+        ) {
+            prop_assume!(Path::new(folder).is_dir());
+            let real = fs::canonicalize(folder).expect("real folder");
+            let parent = real.parent().expect("parent");
+            let temp = scratch();
+            let root = temp.path().join("root");
+            std::os::unix::fs::symlink(parent, &root).expect("alias");
+            let path = root.join(real.file_name().expect("name"));
+            prop_assert_eq!(identity(&path, true), identity(Path::new(folder), true));
+            prop_assert!(judge(&path, &root, Some(parent), None,
+                &MountTable::default()).is_some(), "{}", path.display());
+        }
+
+        /// An explicit linked scan root changes spelling, not ownership.
+        /// The real directory's identity is the oracle for system trees
+        /// and profile folders. No system entry is created or removed.
+        #[test]
+        #[cfg(unix)]
+        fn recursive_guards_follow_directory_identity(
+            folder in proptest::sample::select(vec![
+                "/etc", "/usr", "/var/lib", "/System", "/Library",
+                "/private/var/folders", "/Users/Shared",
+            ]),
+        ) {
+            prop_assume!(Path::new(folder).is_dir());
+            let real = fs::canonicalize(folder).expect("real folder");
+            let parent = real.parent().expect("parent");
+            let temp = scratch();
+            let root = temp.path().join("root");
+            std::os::unix::fs::symlink(parent, &root).expect("alias");
+            let path = root.join(real.file_name().expect("name"));
+            prop_assert_eq!(identity(&path, true), identity(&real, true));
+            let mounts = MountTable::default();
+            prop_assert!(judge(&real, parent, Some(parent), None, &mounts).is_some());
+            prop_assert!(judge(&path, &root, Some(parent), None, &mounts).is_some(),
+                "{} exposes {}", path.display(), real.display());
+        }
+
+        #[test]
+        #[cfg(unix)]
+        fn mounts_inside_a_linked_scan_root_keep_their_guards(
+            name in "[a-z]{1,12}",
+            select_mount in any::<bool>(),
+        ) {
+            let temp = tempfile::tempdir_in("/tmp").expect("fixture");
+            let real = fs::canonicalize(temp.path()).expect("real root");
+            let parent = real.join(&name);
+            let mount = parent.join("disk");
+            fs::create_dir_all(&mount).expect("mount fixture");
+            let root = real.join("alias");
+            std::os::unix::fs::symlink(&real, &root).expect("alias");
+            let selected = if select_mount { mount.clone() } else { parent };
+            let path = root.join(selected.strip_prefix(&real).expect("inside"));
+            let mounts = MountTable {
+                points: vec![guard_key(&mount)],
+                ..MountTable::default()
+            };
+            prop_assert_eq!(identity(&path, true), identity(&selected, true));
+            prop_assert!(judge(&selected, &real, Some(&real), None, &mounts).is_some());
+            prop_assert!(judge(&path, &root, Some(&real), None, &mounts).is_some(),
+                "{}", path.display());
+        }
+
+        /// Volume-owned data is protected on every drive, regardless of
+        /// case or the verbatim prefix, but similarly named user folders
+        /// and copies below a user folder are not reserved.
+        #[test]
+        #[cfg(windows)]
+        fn windows_volume_metadata_is_protected_on_every_drive(
+            drive in b'A'..=b'Z',
+            folder in proptest::sample::select(vec![
+                "System Volume Information", "$Recycle.Bin", "Recovery",
+                "Boot", "EFI", "Config.Msi", "bootmgr", "pagefile.sys",
+                "hiberfil.sys", "swapfile.sys",
+            ]),
+            upper in any::<bool>(),
+            verbatim in any::<bool>(),
+            child in proptest::option::of("[a-z]{1,12}"),
+        ) {
+            let folder = if upper { folder.to_uppercase() } else { folder.to_owned() };
+            let root = PathBuf::from(format!("{}{}:\\",
+                if verbatim { r"\\?\" } else { "" }, char::from(drive)));
+            let mut path = root.join(&folder);
+            if let Some(child) = child { path.push(child); }
+            prop_assert!(system_tree(&guard_key(&path), None).is_some());
+            prop_assert_eq!(volume_system_tree(&guard_key(
+                &root.join(format!("{folder}-backup")))), None);
+            prop_assert_eq!(volume_system_tree(&guard_key(
+                &root.join("Documents").join(&folder))), None);
+        }
+
+        /// A share exposes an arbitrary directory. Only a drive prefix
+        /// establishes the root where volume metadata names are reserved.
+        #[test]
+        fn volume_metadata_requires_a_drive_prefix(
+            drive in any::<bool>(),
+            verbatim in any::<bool>(),
+            letter in b'A'..=b'Z',
+            server in "[a-z]{1,16}",
+            share in "[a-z]{1,16}",
+        ) {
+            use std::ffi::OsStr;
+            use std::path::Prefix;
+            let prefix = match (drive, verbatim) {
+                (true, false) => Prefix::Disk(letter),
+                (true, true) => Prefix::VerbatimDisk(letter),
+                (false, false) => Prefix::UNC(OsStr::new(&server), OsStr::new(&share)),
+                (false, true) => Prefix::VerbatimUNC(OsStr::new(&server), OsStr::new(&share)),
+            };
+            prop_assert_eq!(is_volume_drive(prefix), drive);
+        }
+
+        #[test]
+        #[cfg(windows)]
+        fn windows_share_contents_are_not_volume_metadata(
+            server in "[a-z]{1,16}",
+            share in "[a-z]{1,16}",
+            folder in proptest::sample::select(vec![
+                "System Volume Information", "$Recycle.Bin", "Recovery",
+                "Boot", "EFI", "Config.Msi", "bootmgr", "pagefile.sys",
+                "hiberfil.sys", "swapfile.sys",
+            ]),
+            upper in any::<bool>(),
+            verbatim in any::<bool>(),
+            child in proptest::option::of("[a-z]{1,12}"),
+        ) {
+            let root = PathBuf::from(if verbatim {
+                format!(r"\\?\UNC\{server}\{share}\")
+            } else { format!(r"\\{server}\{share}\") });
+            let mut path = root.join(if upper { folder.to_uppercase() } else { folder.to_owned() });
+            if let Some(child) = child { path.push(child); }
+            prop_assert_eq!(volume_system_tree(&guard_key(&path)), None);
+        }
+
+        /// Filesystem identity is the oracle: a scan through a symlink
+        /// to / must protect the same Applications directory as a direct
+        /// scan. Only links inside the fixture are created.
+        #[test]
+        #[cfg(target_os = "macos")]
+        fn applications_protection_follows_directory_identity(
+            via_link in any::<bool>(),
+            data_volume in any::<bool>(),
+            uppercase in any::<bool>(),
+            trailing_slash in any::<bool>(),
+        ) {
+            let temp = scratch();
+            let alias = temp.path().join("root");
+            std::os::unix::fs::symlink("/", &alias).expect("root alias");
+            let root = if via_link { alias.as_path() } else { Path::new("/") };
+            let folder = if uppercase { "APPLICATIONS" } else { "Applications" };
+            let path = root.join(if data_volume {
+                format!("System/Volumes/Data/{folder}")
+            } else { folder.to_owned() });
+            let path = if trailing_slash { path.join(".") } else { path };
+            // A case-sensitive startup volume need not have this spelling.
+            prop_assume!(identity(&path, true) == identity(Path::new("/Applications"), true));
+            let reason = judge(&normalize(&path), root,
+                fs::canonicalize(root).ok().as_deref(), None,
+                &MountTable::default());
+            prop_assert!(reason.is_some(), "{}", path.display());
+        }
+    }
+
+    #[test]
+    fn a_backup_share_does_not_establish_a_volume_root() {
+        use std::ffi::OsStr;
+        use std::path::Prefix;
+        let server = OsStr::new("nas");
+        let share = OsStr::new("backups");
+        assert!(!is_volume_drive(Prefix::UNC(server, share)));
+        assert!(!is_volume_drive(Prefix::VerbatimUNC(server, share)));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn unc_backup_folders_are_not_volume_metadata() {
+        for root in [r"\\nas\backups", r"\\?\UNC\nas\backups"] {
+            for path in [r"Recovery", r"BOOT", r"Recovery\archive", r"Boot\old"]
+            {
+                assert_eq!(
+                    volume_system_tree(&guard_key(&Path::new(root).join(path))),
+                    None,
+                    "{root}\\{path}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn applications_folder_is_protected_and_individual_apps_are_removable() {
+        let root = Path::new("/");
+        assert!(
+            refuse(Path::new("/Applications"), root, None, &[], &[]).is_some()
+        );
+        let planned = plan_against(
+            &[target(Path::new("/Applications"), 1)],
+            root,
+            &MountTable::default(),
+        );
+        assert!(planned.targets.is_empty());
+        assert_eq!(planned.blocked.len(), 1);
+        for path in [
+            "/Applications/PwrDisk.app",
+            "/Applications/Utilities/ThirdParty.app",
+            "/Applications-extra/PwrDisk.app",
+        ] {
+            assert_eq!(
+                refuse(Path::new(path), root, None, &[], &[]),
+                None,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_linked_scan_root_does_not_make_etc_removable() {
+        let temp = scratch();
+        let real = fs::canonicalize("/etc").expect("system config");
+        let root = temp.path().join("root");
+        std::os::unix::fs::symlink(real.parent().expect("parent"), &root)
+            .expect("root alias");
+        let selected = root.join(real.file_name().expect("name"));
+        assert_eq!(identity(&selected, true), identity(&real, true));
+        let planned = plan_against(
+            &[target(&selected, 1)],
+            &root,
+            &MountTable::default(),
+        );
+        assert!(planned.targets.is_empty());
+        assert!(planned.blocked[0].reason.contains("part of the system"));
+    }
+
     fn target(path: &Path, bytes: u64) -> Target {
         Target {
             path: path.to_path_buf(),
@@ -2140,7 +2567,7 @@ mod tests {
     }
 
     fn tree() -> TempDir {
-        let temp = TempDir::new().expect("tempdir");
+        let temp = scratch();
         fs::create_dir_all(temp.path().join("a/b")).expect("mkdir");
         fs::write(temp.path().join("a/one.bin"), vec![b'x'; 10])
             .expect("write");
@@ -2281,7 +2708,7 @@ mod tests {
 
     #[test]
     fn removal_nesting_budget() {
-        let temp = TempDir::new().expect("tempdir");
+        let temp = scratch();
         let measure = |count| {
             let targets: Vec<_> = (0..count)
                 .map(|index| (index * 73) % count)
@@ -2310,7 +2737,7 @@ mod tests {
 
     #[test]
     fn nesting_keeps_component_boundaries_duplicates_and_output_order() {
-        let temp = TempDir::new().expect("tempdir");
+        let temp = scratch();
         let targets: Vec<_> =
             ["z", "ab", "a/deep", "a", "a", "ab/inner", "a/deeper/file"]
                 .map(|name| target(&temp.path().join(name), 1))
@@ -2339,7 +2766,7 @@ mod tests {
     #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn nesting_uses_guard_case_order_even_when_the_child_sorts_first() {
-        let temp = TempDir::new().expect("tempdir");
+        let temp = scratch();
         let parent = target(&temp.path().join("alpha"), 3);
         let child = target(&temp.path().join("ALPHA/child"), 1);
         let result = plan_against(
@@ -3007,7 +3434,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn trash_names_avoid_collisions() {
-        let temp = TempDir::new().expect("tempdir");
+        let temp = scratch();
         let (first, first_name) = unique_name(temp.path(), "notes");
         assert_eq!(first_name, "notes");
         fs::write(&first, b"x").expect("write");
@@ -3167,7 +3594,7 @@ mod tests {
     #[test]
     fn a_trash_tool_is_called_with_the_path_after_a_separator() {
         use std::os::unix::fs::PermissionsExt as _;
-        let temp = TempDir::new().expect("tempdir");
+        let temp = scratch();
         let recording = temp.path().join("argv");
         let script = temp.path().join("fake-trash-put");
         fs::write(
@@ -3196,7 +3623,7 @@ mod tests {
     #[test]
     fn a_failing_trash_tool_reports_its_stderr() {
         use std::os::unix::fs::PermissionsExt as _;
-        let temp = TempDir::new().expect("tempdir");
+        let temp = scratch();
         let script = temp.path().join("angry-trash-put");
         fs::write(&script, "#!/bin/sh\necho 'no trash here' >&2\nexit 3\n")
             .expect("write");
@@ -3337,14 +3764,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_linked_home_folder_is_judged_by_both_names() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = scratch();
         // Its own real name, so the only link in play is the one made here.
         let temp = fs::canonicalize(temp.path()).expect("canonical");
         let real = temp.join("var/home");
         fs::create_dir_all(real.join("guest")).expect("mkdir");
         let link = temp.join("home");
         std::os::unix::fs::symlink(&real, &link).expect("symlink");
-        let keys = linux_profiles_keys(&link);
+        let keys = profiles_folder_keys(&link);
         assert_eq!(keys.len(), 2, "{keys:?}");
         let refused = |path: &Path| {
             profile_refusal(path, &guard_key(path), &keys).unwrap_or_default()
@@ -3359,12 +3786,12 @@ mod tests {
             );
         }
         // A real folder has one name.
-        assert_eq!(linux_profiles_keys(&real).len(), 1);
+        assert_eq!(profiles_folder_keys(&real).len(), 1);
     }
 
     #[test]
     fn a_single_path_is_judged_as_a_plan_would() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = scratch();
         let root = temp.path();
         let inside = root.join("cache");
         fs::create_dir(&inside).expect("mkdir");
@@ -3397,7 +3824,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_profiles_are_refused() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = scratch();
         let profiles = temp.path();
         fs::create_dir_all(profiles.join(r"tobi\Downloads")).expect("mkdir");
         fs::write(profiles.join("notes.txt"), b"x").expect("write");
@@ -3432,7 +3859,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[ignore = "puts a file in this Mac's real Trash"]
     fn the_macos_trash_takes_a_file_and_leaves_a_linked_target() {
-        let temp = TempDir::new().expect("tempdir");
+        let temp = scratch();
         let file = temp.path().join("disktree-trash-check.txt");
         fs::write(&file, b"x").expect("write");
         let keep = temp.path().join("keep.txt");
@@ -3452,7 +3879,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn a_name_that_is_not_utf8_is_refused_before_the_trash_sees_it() {
         use std::os::unix::ffi::OsStrExt as _;
-        let temp = TempDir::new().expect("tempdir");
+        let temp = scratch();
         let odd = temp
             .path()
             .join(std::ffi::OsStr::from_bytes(b"not-\xff-utf8"));
