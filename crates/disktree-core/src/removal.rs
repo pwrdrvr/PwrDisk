@@ -1047,17 +1047,30 @@ static MOUNTS: std::sync::Mutex<MountCache> =
 /// empty, which is why the app primes it at start with
 /// [`prime_mount_points`].
 fn mount_points() -> Arc<MountTable> {
-    let mut cache = MOUNTS
+    cached_mount_points(&MOUNTS, std::time::Instant::now, read_mount_table)
+}
+
+// Explicit dependencies let tests change snapshots and time independently
+// of the host's mounts, without sharing the production cache.
+fn cached_mount_points(
+    cache: &'static std::sync::Mutex<MountCache>,
+    now: impl FnOnce() -> std::time::Instant,
+    read_mounts: impl FnOnce() -> MountTable + Send + 'static,
+) -> Arc<MountTable> {
+    let mut cached = cache
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let fresh = cache.read.is_some_and(|read| read.elapsed() < MOUNTS_FRESH);
-    if !fresh && !cache.refreshing {
-        cache.refreshing = true;
+    let now = now();
+    let fresh = cached
+        .read
+        .is_some_and(|read| now.saturating_duration_since(read) < MOUNTS_FRESH);
+    if !fresh && !cached.refreshing {
+        cached.refreshing = true;
         let spawned = thread::Builder::new()
             .name("disktree-mounts".into())
-            .spawn(|| {
-                let mounts = Arc::new(read_mount_table());
-                let mut cache = MOUNTS
+            .spawn(move || {
+                let mounts = Arc::new(read_mounts());
+                let mut cache = cache
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 cache.mounts = Some(mounts);
@@ -1065,10 +1078,10 @@ fn mount_points() -> Arc<MountTable> {
                 cache.refreshing = false;
             });
         if spawned.is_err() {
-            cache.refreshing = false;
+            cached.refreshing = false;
         }
     }
-    cache.mounts.clone().unwrap_or_default()
+    cached.mounts.clone().unwrap_or_default()
 }
 
 /// Start reading the mount table, so it is there by the time anything is
@@ -3186,20 +3199,86 @@ mod tests {
 
     #[test]
     fn the_mount_table_is_read_off_the_calling_thread_and_then_kept() {
-        prime_mount_points();
-        // The first read lands on its own thread; wait for it, briefly.
-        for _ in 0..500 {
-            let mounts = mount_points();
-            let again = mount_points();
-            // Disk-image tests (or the user) may change the namespace
-            // between live reads. The promise is reuse of one snapshot,
-            // including while its asynchronous replacement is in flight.
-            if !mounts.points.is_empty() && Arc::ptr_eq(&mounts, &again) {
-                return;
+        use std::sync::{Mutex, mpsc};
+        use std::time::{Duration, Instant};
+
+        // Other tests and processes can change the host's mounts. Exercise
+        // the real cache with an isolated, controlled source instead.
+        static CACHE: Mutex<MountCache> = Mutex::new(MountCache {
+            read: None,
+            mounts: None,
+            refreshing: false,
+        });
+        const WAIT: Duration = Duration::from_secs(5);
+
+        let points = Arc::new(Mutex::new(vec![PathBuf::from("root")]));
+        let read_snapshot = {
+            let points = Arc::clone(&points);
+            move || MountTable {
+                points: points.lock().expect("source").clone(),
+                ..MountTable::default()
             }
-            thread::sleep(std::time::Duration::from_millis(10));
-        }
-        panic!("no cached mount-table snapshot became available");
+        };
+        let (started, reading) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let reader = read_snapshot.clone();
+        let pending = cached_mount_points(&CACHE, Instant::now, move || {
+            started.send(thread::current().id()).expect("started");
+            blocked.recv_timeout(WAIT).expect("release reader");
+            reader()
+        });
+        assert!(pending.points.is_empty(), "the first read is still blocked");
+        assert_ne!(
+            reading.recv_timeout(WAIT).expect("reader started"),
+            thread::current().id(),
+            "the caller never reads the mount table"
+        );
+        release.send(()).expect("release reader");
+
+        let deadline = Instant::now() + WAIT;
+        let (mounts, read) = loop {
+            let cache = CACHE.lock().expect("cache");
+            if let (Some(mounts), Some(read)) = (&cache.mounts, cache.read) {
+                assert!(!cache.refreshing, "the snapshot is fully published");
+                break (Arc::clone(mounts), read);
+            }
+            drop(cache);
+            assert!(Instant::now() < deadline, "the read must finish");
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        assert_eq!(
+            mounts.points,
+            vec![PathBuf::from("root")],
+            "the background read published its snapshot"
+        );
+        points
+            .lock()
+            .expect("source")
+            .push("temporary-image".into());
+        assert_ne!(
+            mounts.points,
+            read_snapshot().points,
+            "a new mount must not invalidate an earlier snapshot"
+        );
+
+        let (reread, unexpected) = mpsc::channel();
+        // Freeze request time at publication: scheduler delays must not
+        // turn this check of a fresh cache into an expiry test.
+        let kept = cached_mount_points(
+            &CACHE,
+            || read,
+            move || {
+                reread.send(()).expect("unexpected read");
+                read_snapshot()
+            },
+        );
+        assert!(Arc::ptr_eq(&mounts, &kept), "reuse the published snapshot");
+        assert_eq!(
+            unexpected.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected),
+            "a fresh cache drops the reader without starting it"
+        );
     }
 
     #[test]
@@ -4190,7 +4269,7 @@ mod tests {
             contents in proptest::collection::vec(1_usize..8192, 1..6),
             cannot_spawn in proptest::bool::ANY,
         ) {
-            let temp = scratch();
+            let temp = removable_tempdir();
             let targets: Vec<_> = contents.iter().enumerate().map(|(i, &size)| {
                 let path = temp.path().join(format!("artifact-{i}"));
                 fs::write(&path, vec![b'x'; size]).expect("fixture");
