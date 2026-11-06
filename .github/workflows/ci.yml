@@ -37,6 +37,7 @@ jobs:
   changes:
     name: Classify Changes
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     # pulls.listFiles needs pull-requests: read; no other job gets it.
     permissions:
       contents: read
@@ -158,6 +159,7 @@ jobs:
   licenses:
     name: Check third-party licenses
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     needs: changes
     if: >-
       !cancelled() &&
@@ -193,6 +195,7 @@ jobs:
   check:
     name: Lint and test
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
@@ -220,6 +223,7 @@ jobs:
         run: cargo xtask lint
 
       - name: Test
+        timeout-minutes: 10
         run: cargo xtask test
 
   check-macos:
@@ -228,6 +232,7 @@ jobs:
     # either: gpui-kit builds GPUI with runtime shader compilation, so the
     # shaders compile when the app starts, not here.
     runs-on: macos-15
+    timeout-minutes: 30
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
@@ -244,6 +249,7 @@ jobs:
         run: cargo xtask lint
 
       - name: Test
+        timeout-minutes: 10
         run: cargo xtask test
 
       # The app bundle, signed ad hoc, and the DMG release.yml cuts the same
@@ -258,6 +264,7 @@ jobs:
     # The bundle with the Icon Composer icon: Xcode 26's actool compiles it
     # into Assets.car, and the plist names it, which the job checks.
     runs-on: macos-26
+    timeout-minutes: 20
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
@@ -281,6 +288,7 @@ jobs:
   windows:
     name: Lint and test (Windows)
     runs-on: windows-2025
+    timeout-minutes: 30
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
@@ -311,6 +319,7 @@ jobs:
         run: cargo xtask lint
 
       - name: Test
+        timeout-minutes: 18
         run: cargo xtask test
 
       # A debug build: build.rs embeds the icon in every profile, and Test
@@ -343,10 +352,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: Linux aarch64, runner: ubuntu-24.04-arm }
-          - { name: macOS x86_64, runner: macos-15-intel }
-          - { name: Windows aarch64, runner: windows-11-arm }
+          - { name: Linux aarch64, runner: ubuntu-24.04-arm, job_timeout: 15, test_timeout: 8 }
+          - { name: macOS x86_64, runner: macos-15-intel, job_timeout: 30, test_timeout: 20 }
+          - { name: Windows aarch64, runner: windows-11-arm, job_timeout: 20, test_timeout: 15 }
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.job_timeout }}
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
@@ -380,4 +390,5 @@ jobs:
       - uses: ./.github/actions/setup-rust
 
       - name: Test
+        timeout-minutes: ${{ matrix.test_timeout }}
         run: cargo xtask test
