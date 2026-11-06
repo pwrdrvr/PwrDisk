@@ -26,6 +26,7 @@ use rmcp::{
     tool_handler, tool_router,
 };
 
+use crate::cargo_outputs;
 use crate::session::{
     EstimateParams, FindParams, LsParams, PathsParams, RankParams,
     RemovalPreviewParams, RemoveParams, ScanParams, ScanPlan, Session,
@@ -46,7 +47,10 @@ Read skill://pwrdisk-free-space/SKILL.md with pwrdisk_read_skill and its \
 OS reference before choosing cleanup candidates. In PwrAgent, resource \
 reads use the exact serverNameInAgent from manage_mcp_connections \
 action=describe_thread, never the client label. Start with pwrdisk_status, then scan and explore with pwrdisk_ls and \
-pwrdisk_find. Compare explicit candidates with pwrdisk_rank; private and \
+pwrdisk_find. For Cargo use pwrdisk_cargo_outputs: positive metadata evidence, \
+oldest/largest order, minimum bytes and optional age cutoff. Start with large \
+older output, then relax age if insufficient; timestamps do not prove inactivity. \
+Compare explicit candidates with pwrdisk_rank; private and \
 reclaim_lower values are before retention, not immediate recovered space. \
 Use pwrdisk_retention on each selected volume before promising recovery; \
 snapshot presence cannot attribute exact selected-path bytes. \
@@ -297,6 +301,34 @@ impl Server {
         Parameters(params): Parameters<FindParams>,
     ) -> Result<String, String> {
         self.with(|s| s.find(&params))
+    }
+
+    /// Find Cargo output/build roots using compiler metadata contents,
+    /// Cargo fingerprint JSON and dependency structure, including custom
+    /// directory names. Rejects Git-tracked contents and reports missing
+    /// evidence and scan limitations. Oldest first by default; use `min_bytes`
+    /// and `older_than_days` to try large, older output, then relax the age
+    /// cutoff if insufficient. Age is newest scanned file mtime, not last
+    /// access or proof of inactivity. Does not establish disposability or
+    /// modify marks/navigation. Use estimate and retention before promising
+    /// recovery. Metadata formats and bounded inspection can miss outputs.
+    #[tool(
+        name = "pwrdisk_cargo_outputs",
+        annotations(
+            title = "Find evidenced Cargo output roots",
+            read_only_hint = true
+        )
+    )]
+    async fn cargo_outputs(
+        &self,
+        Parameters(params): Parameters<cargo_outputs::Params>,
+    ) -> Result<String, String> {
+        let server = self.clone();
+        tokio::task::spawn_blocking(move || {
+            server.with(|s| s.cargo_outputs(&params))
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
 
     /// Estimate removing a supplied path set without changing marks, scan
@@ -712,6 +744,49 @@ mod tests {
             }
         }
         assert_eq!(covered, resources.len(), "no resource outside a skill");
+    }
+
+    #[test]
+    fn cargo_inventory_advertises_evidence_and_age_ordering() {
+        let tools = Server::tool_router().list_all();
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == "pwrdisk_cargo_outputs")
+            .expect("Cargo ownership must not require an agent's own probes");
+        assert_eq!(
+            tool.annotations.as_ref().expect("read tool").read_only_hint,
+            Some(true)
+        );
+        let schema = serde_json::to_value(&tool.input_schema).expect("schema");
+        for key in ["older_than_days", "min_bytes", "order", "offset"] {
+            assert!(schema["properties"].get(key).is_some(), "{key}");
+        }
+        let orders = schema["$defs"]["Order"]["enum"]
+            .as_array()
+            .expect("order enum");
+        assert_eq!(orders.len(), 2);
+        for order in ["oldest", "largest"] {
+            assert!(orders.contains(&serde_json::json!(order)));
+            let params: cargo_outputs::Params = serde_json::from_value(
+                serde_json::json!({"order": order, "older_than_days": 30}),
+            )
+            .expect("advertised order deserializes");
+            assert_eq!(
+                serde_json::to_value(params.order).expect("order"),
+                order
+            );
+        }
+        for invalid in [
+            serde_json::json!({"order": "newest"}),
+            serde_json::json!({"older_than_days": -1}),
+            serde_json::json!({"offset": -1}),
+            serde_json::json!({"unrecognized_policy": true}),
+        ] {
+            assert!(
+                serde_json::from_value::<cargo_outputs::Params>(invalid)
+                    .is_err()
+            );
+        }
     }
 
     #[test]

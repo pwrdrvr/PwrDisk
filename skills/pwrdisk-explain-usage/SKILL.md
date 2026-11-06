@@ -8,8 +8,8 @@ license: MIT
 
 The user wants to understand their disk, not change it. Use only the tools
 that read: `pwrdisk_status`, `pwrdisk_scan`, `pwrdisk_ls`, `pwrdisk_find`,
-`pwrdisk_estimate`
-and, only when the user asks to see a path, `pwrdisk_show`. Do not call
+`pwrdisk_cargo_outputs`, `pwrdisk_estimate`, `pwrdisk_rank`,
+`pwrdisk_retention` and, only when the user asks to see a path, `pwrdisk_show`. Do not call
 `pwrdisk_mark`, `pwrdisk_review` or `pwrdisk_remove`, and do
 not run anything that deletes or changes settings. End with the
 explanation; offering to free space is a question you ask, not a step you
@@ -46,7 +46,14 @@ it:
    the OS, or the user's own files. `pwrdisk_find` with
    `reclaimable: true` totals classified cleanup candidates such as caches,
    build output and verified package stores, including guard refusals;
-   `kind: "file"` with `min_bytes` finds the large single files.
+   `kind: "file"` with `min_bytes` finds the large single files. For Cargo,
+   use `pwrdisk_cargo_outputs`: metadata evidence, custom output roots,
+   exact newest file-write times and coverage limits. Start with a size
+   floor and an age cutoff (for example 1 GiB and 30 days), oldest first;
+   relax the cutoff if that cannot meet the user's goal. Fetch all pages.
+   Age is scanned file mtime, not activity detection; identity does not
+   establish disposability. Use the returned evidence instead of repeating
+   external identity/age checks. Explain exclusions and incomplete coverage.
 5. **Explain.** A short table: what, where, how big, who owns it, and
    whether it comes back by itself. Say plainly where PwrDisk's number
    differs from another tool's and why: PwrDisk counts allocated blocks,

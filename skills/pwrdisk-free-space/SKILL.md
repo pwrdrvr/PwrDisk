@@ -40,7 +40,7 @@ marked:
 Looking is free; acting is the user's call.
 
 - **Read-only tools need no permission.** `pwrdisk_status`, `pwrdisk_ls`,
-  `pwrdisk_find`, `pwrdisk_estimate` and a home-directory `pwrdisk_scan` only read. Say before
+  `pwrdisk_find`, `pwrdisk_cargo_outputs`, `pwrdisk_estimate` and a home-directory `pwrdisk_scan` only read. Say before
   a `disk: true` scan that it walks the whole volume and can take minutes.
 - **Confirm the list before `pwrdisk_mark`.** Show each candidate with its
   path, its size, what it is, and why it is safe to lose or how it comes
@@ -68,6 +68,40 @@ Looking is free; acting is the user's call.
   only when emptied. Permanent deletion cannot be undone through PwrDisk or
   Trash. Wait for an explicit answer confirming this exact operation before
   calling `pwrdisk_remove`. Never manufacture user confirmation yourself.
+
+## Prefer older, large build output
+
+For Cargo output, use `pwrdisk_cargo_outputs` rather than directories named
+`target` or the path-based Rust artifact label. It discovers custom output
+and build directories too, and checks compiler/cache metadata contents,
+Cargo fingerprint JSON, dependency structure and Git tracking. Each result
+includes the evidence paths, exact listed bytes, newest scanned file-write
+time, scan time, age and coverage limits. Use this evidence directly; do not
+repeat a filesystem walk or external identity/age checks just to corroborate
+what the tool already established. Insufficient evidence is reported as an
+exclusion; it is not proof of absence or a disposable directory.
+
+Start with large outputs that have not been written recently, for example
+`min_bytes: 1073741824`, `older_than_days: 30`, `order: "oldest"`. The size
+floor avoids letting many tiny old directories distract from the space goal.
+Fetch all pages with `next_offset`. Compare the complete candidate set with
+the goal, then relax the cutoff (for example 7 days, then omit
+`older_than_days`) if insufficient. Explain the expanded age range; a recent
+write can be automated and does not establish active work. Use `order:
+"largest"` when explicitly comparing size instead. Generic `pwrdisk_find`
+remains largest first and also accepts `older_than_days`.
+
+Age means the newest **file mtime in the scanned subtree**, not directory
+mtime, access time, or proof that a build is inactive. Unknown ages sort
+last and fail age filters. Identity evidence is checked live; sizes and ages
+are from the completed scan. Check the timestamps, hidden/depth/unreadable
+limits, bounded discovery/inspection flags and exclusions before claiming
+complete coverage. Rescans or concurrent changes can alter subsequent pages.
+Positive Cargo evidence establishes output presence, not that every untracked
+file is generated or safe to lose. Keep the source checkout and installed
+Rust toolchains separate. Use the full path-list estimate and retention check
+before promising recovery; listed allocation is not guaranteed freed space.
+Existing marking and removal confirmation requirements still apply.
 
 ## Never
 

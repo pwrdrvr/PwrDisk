@@ -1076,6 +1076,10 @@ impl Session {
                 other => Err(unexpected(&other)),
             };
         }
+        self.found_local(request)
+    }
+
+    fn found_local(&self, request: &FindRequest) -> Result<FoundList, String> {
         let filter = request.filter()?;
         let scope: Vec<(PathBuf, Node<'_>)> = if let Some(path) = &request.path
         {
@@ -1115,6 +1119,292 @@ impl Session {
             .sort_by_key(|found| std::cmp::Reverse(found.entry.bytes));
         all.matches.truncate(request.limit);
         Ok(all)
+    }
+
+    /// Read a separate link without Hello, mark handover or navigation.
+    fn cargo_link(&self) -> Result<Option<(Link, State)>, String> {
+        let Ok(mut link) = Link::connect_at(&self.socket) else {
+            if self.link.is_some() || self.window.is_some() {
+                return Err("The linked window is unavailable; reconnect before reading its tree.".into());
+            }
+            return Ok(None);
+        };
+        let state =
+            match link.call(&Request::State).map_err(|e| e.to_string())? {
+                Response::State(state) => state,
+                other => return Err(unexpected(&other)),
+            };
+        if state.version != VERSION {
+            return Err(disktree_link::protocol_mismatch(
+                state.version,
+                VERSION,
+            ));
+        }
+        if let Some(host) = &state.remote {
+            return Err(disktree_link::remote_refusal(host));
+        }
+        if state.scanning || state.tree.is_none() {
+            return Err("Wait for a completed window scan before querying Cargo output.".into());
+        }
+        Ok(Some((link, state)))
+    }
+
+    fn cargo_call(
+        &self,
+        source: &mut Option<(Link, State)>,
+        request: &Request,
+    ) -> Result<Response, String> {
+        if let Some((link, _)) = source {
+            return link.call(request).map_err(|e| e.to_string());
+        }
+        match request {
+            Request::Find(request) => {
+                self.found_local(request).map(Response::Found)
+            }
+            Request::Ls { path, limit } => {
+                let found = self.locate(path)?;
+                Ok(Response::Listing(Listing::of(
+                    &found.scan.root,
+                    found.scan.tree.root().bytes,
+                    &found.path,
+                    found.node,
+                    *limit,
+                )))
+            }
+            _ => Err("Unsupported Cargo read request".into()),
+        }
+    }
+
+    fn cargo_candidates(
+        &self,
+        source: &mut Option<(Link, State)>,
+        path: Option<&Path>,
+    ) -> Result<(std::collections::BTreeMap<PathBuf, Vec<PathBuf>>, bool), String>
+    {
+        use crate::cargo_outputs::MARKER_LIMIT;
+        let mut roots =
+            std::collections::BTreeMap::<PathBuf, Vec<PathBuf>>::new();
+        let mut truncated = false;
+        for (name, kind) in
+            [(".rustc_info.json", "file"), (".fingerprint", "dir")]
+        {
+            let request = Request::Find(FindRequest {
+                path: path.map(Path::to_path_buf),
+                kind: kind.into(),
+                name: Some(name.into()),
+                limit: MARKER_LIMIT,
+                ..FindRequest::default()
+            });
+            let Response::Found(found) = self.cargo_call(source, &request)?
+            else {
+                return Err(
+                    "Cargo discovery could not read the scanned tree".into()
+                );
+            };
+            truncated |= found.count > found.matches.len();
+            for item in found.matches {
+                if item.entry.name != name || item.entry.removed {
+                    continue;
+                }
+                let Some(parent) = item.path.parent() else {
+                    continue;
+                };
+                if kind == "file" {
+                    roots.entry(parent.into()).or_default();
+                } else {
+                    // Native and cross-compilation profiles; metadata, not
+                    // a profile/triple spelling, decides which root is real.
+                    for root in parent.ancestors().skip(1).take(2) {
+                        if path
+                            .as_ref()
+                            .is_none_or(|scope| root.starts_with(scope))
+                        {
+                            roots
+                                .entry(root.into())
+                                .or_default()
+                                .push(parent.into());
+                        }
+                    }
+                }
+            }
+        }
+        Ok((roots, truncated))
+    }
+
+    fn cargo_output(
+        &self,
+        source: Option<&(Link, State)>,
+        path: &Path,
+        entry: &disktree_link::Entry,
+        profiles: &[PathBuf],
+        deadline: Instant,
+    ) -> Result<crate::cargo_outputs::Output, String> {
+        use crate::cargo_outputs;
+        if entry.read_error
+            || entry.removed
+            || entry.removed_bytes > 0
+            || matches!(
+                entry.category.as_str(),
+                "git" | "virtual machines" | "fsevents" | "spotlight"
+            )
+        {
+            return Err("Unreadable, removed or protected-owner context".into());
+        }
+        let evidence = cargo_outputs::evidence(path, profiles).ok_or(
+            "Insufficient readable Cargo metadata (bounded inspection)",
+        )?;
+        let tracking = cargo_outputs::git_tracking(path, deadline)
+            .ok_or("Git tracking check unavailable or timed out")?;
+        if tracking == "contains_tracked_files" {
+            return Err(
+                "Contains Git-tracked files; mixed source/output".into()
+            );
+        }
+        let mut output = cargo_outputs::output(
+            path.into(),
+            entry,
+            now(),
+            evidence,
+            tracking,
+        );
+        if let Some((_, state)) = source {
+            let tree = state.tree.as_ref().ok_or("No completed window scan")?;
+            output.scan_root.clone_from(&state.root);
+            output.scanned_at = tree.scanned_at;
+            output.apparent_size = tree.apparent_size;
+            output.scan_unreadable = tree.unreadable;
+            output.scan_hidden_included = tree.include_hidden;
+        } else {
+            let scan = self.locate(path)?.scan;
+            output.scan_root.clone_from(&scan.root);
+            output.scan_depth_limit_known = true;
+            output.scan_one_filesystem = Some(scan.options.one_filesystem);
+            output.scanned_at = scan.at;
+            output.apparent_size = scan.options.apparent_size;
+            output.scan_unreadable = scan.unreadable;
+            output.scan_hidden_included = scan.options.include_hidden;
+            output.scan_max_depth = scan.options.max_depth;
+        }
+        Ok(output)
+    }
+
+    fn cargo_contexts(
+        &self,
+        source: Option<&(Link, State)>,
+    ) -> Vec<crate::cargo_outputs::ScanContext> {
+        use crate::cargo_outputs::ScanContext;
+        if let Some((_, state)) = source {
+            return state
+                .tree
+                .iter()
+                .map(|tree| ScanContext {
+                    root: state.root.clone(),
+                    scanned_at: tree.scanned_at,
+                    apparent_size: tree.apparent_size,
+                    unreadable: tree.unreadable,
+                    include_hidden: tree.include_hidden,
+                    max_depth: None,
+                    depth_limit_known: false,
+                    one_filesystem: None,
+                })
+                .collect();
+        }
+        self.scans
+            .iter()
+            .map(|scan| ScanContext {
+                root: scan.root.clone(),
+                scanned_at: scan.at,
+                apparent_size: scan.options.apparent_size,
+                unreadable: scan.unreadable,
+                include_hidden: scan.options.include_hidden,
+                max_depth: scan.options.max_depth,
+                depth_limit_known: true,
+                one_filesystem: Some(scan.options.one_filesystem),
+            })
+            .collect()
+    }
+
+    pub fn cargo_outputs(
+        &self,
+        params: &crate::cargo_outputs::Params,
+    ) -> Result<String, String> {
+        use crate::cargo_outputs::{self, Excluded, ROOT_LIMIT, Report};
+        let mut source = self.cargo_link()?;
+        let path =
+            params.path.as_ref().map(|p| self.absolute(p)).transpose()?;
+        let (roots, discovery_truncated) =
+            self.cargo_candidates(&mut source, path.as_deref())?;
+        let mut report = Report {
+            scans: self.cargo_contexts(source.as_ref()),
+            order: params.order,
+            discovered_roots: roots.len(),
+            inspected_roots: 0,
+            discovery_truncated,
+            inspection_truncated: roots.len() > ROOT_LIMIT,
+            confirmed_roots: 0,
+            matching_roots: 0,
+            matching_listed_bytes: 0,
+            next_offset: None,
+            outputs: Vec::new(),
+            excluded_count: 0,
+            excluded: Vec::new(),
+        };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for (path, profiles) in roots.into_iter().take(ROOT_LIMIT) {
+            if Instant::now() >= deadline {
+                report.inspection_truncated = true;
+                break;
+            }
+            report.inspected_roots += 1;
+            let response = self.cargo_call(
+                &mut source,
+                &Request::Ls {
+                    path: path.clone(),
+                    limit: 0,
+                },
+            )?;
+            let (result, listed_bytes) = match response {
+                Response::Listing(listing) => (
+                    self.cargo_output(
+                        source.as_ref(),
+                        &path,
+                        &listing.entry,
+                        &profiles,
+                        deadline,
+                    ),
+                    Some(listing.entry.bytes),
+                ),
+                Response::Error { message } => (Err(message), None),
+                other => return Err(unexpected(&other)),
+            };
+            match result {
+                Ok(output) => report.outputs.push(output),
+                Err(reason) => report.excluded.push(Excluded {
+                    path,
+                    listed_bytes,
+                    reason,
+                }),
+            }
+        }
+        if let Some((link, before)) = &mut source {
+            let after =
+                link.call(&Request::State).map_err(|e| e.to_string())?;
+            if !matches!(after, Response::State(after)
+                if !after.scanning && after.root == before.root && after.tree == before.tree
+                    && after.removals == before.removals)
+            {
+                return Err(
+                    "The window tree changed during discovery; query again."
+                        .into(),
+                );
+            }
+        }
+        let report = cargo_outputs::finish(report, params, now());
+        let json =
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+        Ok(format!(
+            "Read-only Cargo identity inventory; byte values are listed allocation unless apparent_size=true. last_modified is the newest scanned file mtime beneath each root, not directory mtime, last access or proof of inactivity. Identity evidence was checked live at evidence_checked_at. Unknown ages sort last and never pass an age filter. Results are non-overlapping roots; matching totals precede pagination. Check discovery/inspection truncation, scan limits (including scans with zero matches) and exclusions before claiming coverage. Only the largest 25 exclusions are shown; their sizes can overlap confirmed roots and each other, so never sum them. Unknown linked-window depth/mount options are explicitly unavailable. A skipped or partial scan cannot prove absence. Bounded metadata checks can miss older/new Cargo formats, empty remnants or separated final artifacts. Evidence establishes Cargo output presence, not that every untracked file is generated, that a build is inactive, or permission to remove. Do not promise recovered space from listed bytes: use pwrdisk_estimate for the full selection and pwrdisk_retention for each volume. Start with min_bytes and older_than_days; relax the age cutoff if insufficient, keeping recent output for explicit discussion.\n{json}"
+        ))
     }
 
     /// The largest entries matching the filters, topmost matches only.
@@ -2633,6 +2923,162 @@ mod tests {
             std::fs::write(&file, vec![b'x'; bytes]).expect("write");
         }
         temp
+    }
+
+    fn cargo_fixture(root: &Path, modified: u64) {
+        let crate_dir = root.join("debug/.fingerprint/demo-0123456789abcdef");
+        std::fs::create_dir_all(&crate_dir).expect("crate dir");
+        std::fs::create_dir(root.join("debug/deps")).expect("deps");
+        for (path, data) in [
+            (
+                root.join(".rustc_info.json"),
+                r#"{"rustc_fingerprint":1,"outputs":{},"successes":{}}"#,
+            ),
+            (
+                crate_dir.join("lib-demo.json"),
+                r#"{"rustc":1,"features":"[]","target":2,"profile":3,"path":4,"deps":[]}"#,
+            ),
+        ] {
+            std::fs::write(&path, data).expect("write metadata");
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .expect("metadata")
+                .set_times(
+                    std::fs::FileTimes::new().set_modified(
+                        UNIX_EPOCH + Duration::from_secs(modified),
+                    ),
+                )
+                .expect("contrived file age");
+        }
+    }
+
+    fn cargo_json(text: &str) -> serde_json::Value {
+        serde_json::from_str(text.split_once('\n').expect("JSON response").1)
+            .expect("inventory JSON")
+    }
+
+    #[test]
+    fn cargo_inventory_matches_filesystem_evidence_not_target_names() {
+        use crate::cargo_outputs::Params;
+        let temp = tempfile::tempdir().expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let old = root.join("custom-output");
+        let new = root.join("project/target");
+        cargo_fixture(&old, 100_000);
+        cargo_fixture(&new, 200_000);
+        // Two point names alone used to be sufficient for the Rust artifact
+        // label; neither a misleading parent nor a skeleton is positive ID.
+        std::fs::create_dir_all(root.join("decoy/target/debug/deps"))
+            .expect("decoy");
+        std::fs::create_dir_all(root.join("decoy/target/debug/.fingerprint"))
+            .expect("decoy");
+        std::fs::write(root.join("decoy/target/README.md"), "user source")
+            .expect("source");
+        let mut session = unlinked(&root);
+        scanned(&mut session, &root);
+        let text = session
+            .cargo_outputs(&Params::default())
+            .expect("inventory");
+        let report = cargo_json(&text);
+        assert_eq!(report["confirmed_roots"], 2, "{text}");
+        assert_eq!(
+            report["outputs"][0]["path"],
+            old.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            report["outputs"][1]["path"],
+            new.to_string_lossy().as_ref()
+        );
+        assert_eq!(report["outputs"][0]["last_modified"], 100_000);
+        assert_eq!(report["discovery_truncated"], false);
+        assert_eq!(report["inspection_truncated"], false);
+        assert!(report["excluded_count"].as_u64().expect("excluded") > 0);
+        let scoped = cargo_json(
+            &session
+                .cargo_outputs(&Params {
+                    path: Some(root.join("project")),
+                    ..Params::default()
+                })
+                .expect("scoped"),
+        );
+        assert_eq!(scoped["confirmed_roots"], 1);
+        assert_eq!(
+            scoped["outputs"][0]["path"],
+            new.to_string_lossy().as_ref()
+        );
+        assert!(session.marks().is_empty());
+    }
+
+    #[test]
+    fn cargo_empty_results_preserve_scan_limits_and_protected_owners() {
+        use crate::cargo_outputs::Params;
+        let temp = tempfile::tempdir().expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        for owner in ["repo/.git", "guest.utm", ".fseventsd", ".Spotlight-V100"]
+        {
+            cargo_fixture(&root.join(owner).join("target"), 100_000);
+        }
+        let mut session = unlinked(&root);
+        let mut scan = run_scan(root, apparent()).expect("scan");
+        scan.unreadable = 3;
+        session.store_scan(scan);
+        let report = cargo_json(
+            &session
+                .cargo_outputs(&Params::default())
+                .expect("inventory"),
+        );
+        assert_eq!(report["confirmed_roots"], 0, "{report}");
+        assert_eq!(report["scans"][0]["unreadable"], 3);
+        assert_eq!(report["scans"][0]["include_hidden"], true);
+        assert!(report["excluded_count"].as_u64().expect("excluded") >= 4);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn cargo_inventory_has_the_same_identity_on_the_link_without_any_writes() {
+        use crate::cargo_outputs::Params;
+        let temp = tempfile::tempdir().expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        cargo_fixture(&root.join("invented-output"), 100_000);
+        let socket = endpoint(&root);
+        let mut session = Session::detached(socket.clone(), None);
+        scanned(&mut session, &root);
+        let own = cargo_json(
+            &session.cargo_outputs(&Params::default()).expect("local"),
+        );
+        let window = FakeWindow::open(&socket, &root);
+        let kept = Target {
+            path: root.join("keep"),
+            bytes: 1,
+            is_dir: true,
+            hidden: false,
+        };
+        session.marks.push(kept.clone());
+        let linked = cargo_json(
+            &session.cargo_outputs(&Params::default()).expect("linked"),
+        );
+        assert_eq!(own["confirmed_roots"], linked["confirmed_roots"]);
+        for field in [
+            "path",
+            "listed_bytes",
+            "last_modified",
+            "evidence",
+            "git_tracking",
+        ] {
+            assert_eq!(
+                own["outputs"][0][field], linked["outputs"][0][field],
+                "{field}"
+            );
+        }
+        assert_eq!(session.marks(), [kept]);
+        assert!(session.link.is_none());
+        assert!(session.window.is_none());
+        assert!(window.marks().is_empty());
+        assert!(window.asked().iter().all(|request| matches!(
+            request,
+            Request::State | Request::Ls { .. } | Request::Find(_)
+        )));
     }
 
     /// Apparent sizes, so the numbers are the bytes written, not blocks.

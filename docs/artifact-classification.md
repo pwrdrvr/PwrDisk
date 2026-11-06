@@ -83,3 +83,11 @@ its existing node size, and a bounded six-component rule window and
 operation-count tests guard classification cost. SSH paths use POSIX rules
 on every client. Existing marking, confirmation, capacity and removal
 guards apply to every assessment.
+
+For stronger Cargo identity evidence, the separate read-only MCP query
+[`pwrdisk_cargo_outputs`](mcp-cargo-outputs.md) checks live compiler/cache
+metadata contents, Cargo fingerprint JSON, dependency structure and Git
+tracking within completed scans. It includes custom output roots, exact
+scanned file-write times, oldest/largest ordering and age/size filters.
+This query does not change display classification or cleanup routing, and
+positive output evidence still does not establish disposability.
