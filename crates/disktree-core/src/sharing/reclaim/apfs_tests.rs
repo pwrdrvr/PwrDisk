@@ -16,11 +16,20 @@ const BLOCK: usize = 4096;
 // mounts while libtest runs the named regression and property together.
 static IMAGES: Mutex<()> = Mutex::new(());
 
+// Bound the added wait for a busy APFS attachment to five seconds.
+const BUSY_RETRIES: usize = 20;
+
+#[derive(Debug)]
+struct EjectError {
+    message: String,
+    busy: bool,
+}
+
 struct Image {
     temp: Option<tempfile::TempDir>,
     mounted: bool,
     device: Option<PathBuf>,
-    eject: fn(&Path, bool) -> Result<(), String>,
+    eject: fn(&Path, bool) -> Result<(), EjectError>,
     _guard: MutexGuard<'static, ()>,
 }
 
@@ -47,25 +56,54 @@ fn attachment_device(plist: &[u8]) -> PathBuf {
     PathBuf::from(device)
 }
 
-fn eject(root: &Path, force: bool) -> Result<(), String> {
+fn eject(root: &Path, force: bool) -> Result<(), EjectError> {
     let mut command = Command::new("hdiutil");
     command.args(["detach", "-quiet"]);
     if force {
         command.arg("-force");
     }
-    let output = command
-        .arg(root)
-        .output()
-        .map_err(|error| error.to_string())?;
+    let output = command.arg(root).output().map_err(|error| EjectError {
+        message: error.to_string(),
+        busy: false,
+    })?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!(
-            "{command:?}: {}\n{}\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        ))
+        Err(EjectError {
+            message: format!(
+                "{command:?}: {}\n{}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            ),
+            // hdiutil reports EBUSY (16) while an attachment is still in use.
+            busy: output.status.code() == Some(16),
+        })
+    }
+}
+
+fn detach_with(
+    mut eject: impl FnMut(bool) -> Result<(), EjectError>,
+    mut pause: impl FnMut(),
+) -> Result<(), String> {
+    let Err(normal) = eject(false) else {
+        return Ok(());
+    };
+    let mut retries = 0;
+    loop {
+        let Err(forced) = eject(true) else {
+            return Ok(());
+        };
+        // Forced unmount can still leave Disk Arbitration retiring the
+        // attachment. Only EBUSY permits waiting; other failures stop now.
+        if !forced.busy || retries == BUSY_RETRIES {
+            return Err(format!(
+                "{}\nforced detach after {retries} busy waits: {}",
+                normal.message, forced.message
+            ));
+        }
+        pause();
+        retries += 1;
     }
 }
 
@@ -157,12 +195,12 @@ impl Image {
 
     fn try_detach(&mut self) -> Result<(), String> {
         let target = self.device.clone().unwrap_or_else(|| self.root());
-        (self.eject)(&target, false).or_else(|normal| {
-            // A busy eject can leave APFS unmounted. The backing device
-            // returned by our attach still exists when the mount path does not.
-            (self.eject)(&target, true)
-                .map_err(|forced| format!("{normal}\nforced detach: {forced}"))
-        })?;
+        // A busy eject can leave APFS unmounted. Keep using the owned
+        // backing device even when its mount path no longer exists.
+        detach_with(
+            |force| (self.eject)(&target, force),
+            || std::thread::sleep(std::time::Duration::from_millis(250)),
+        )?;
         self.mounted = false;
         self.device = None;
         Ok(())
@@ -193,8 +231,11 @@ impl Image {
     }
 }
 
-fn fail_eject(_: &Path, _: bool) -> Result<(), String> {
-    Err("injected detach failure".into())
+fn fail_eject(_: &Path, _: bool) -> Result<(), EjectError> {
+    Err(EjectError {
+        message: "injected detach failure".into(),
+        busy: false,
+    })
 }
 
 #[test]
@@ -223,19 +264,75 @@ fn failed_image_cleanup_does_not_panic_or_remove_its_backing_files() {
     fs::remove_dir_all(retained).expect("remove the unmounted stand-in");
 }
 
-fn eject_succeeds(_: &Path, force: bool) -> Result<(), String> {
+fn eject_succeeds(root: &Path, force: bool) -> Result<(), EjectError> {
     if force {
-        Err("unnecessary forced retry".into())
+        fail_eject(root, force)
     } else {
         Ok(())
     }
 }
 
-fn force_succeeds(root: &Path, force: bool) -> Result<(), String> {
+fn force_succeeds(root: &Path, force: bool) -> Result<(), EjectError> {
     if force {
         Ok(())
     } else {
         fail_eject(root, false)
+    }
+}
+
+fn check_busy_detach(
+    busy: usize,
+    permanent: bool,
+) -> Result<(), TestCaseError> {
+    let mut calls = Vec::new();
+    let mut waits = 0;
+    let outcome = detach_with(
+        |force| {
+            calls.push(force);
+            // The normal attempt is busy; the forced attempts follow the
+            // generated OS responses, without any real images or delays.
+            if !force || calls.len() - 2 < busy {
+                Err(EjectError {
+                    message: "device busy".into(),
+                    busy: true,
+                })
+            } else if permanent {
+                Err(EjectError {
+                    message: "permanent failure".into(),
+                    busy: false,
+                })
+            } else {
+                Ok(())
+            }
+        },
+        || waits += 1,
+    );
+    prop_assert_eq!(outcome.is_ok(), !permanent && busy <= BUSY_RETRIES);
+    prop_assert_eq!(waits, busy.min(BUSY_RETRIES));
+    prop_assert_eq!(calls.len(), 2 + busy.min(BUSY_RETRIES));
+    prop_assert_eq!(calls[0], false);
+    prop_assert!(calls[1..].iter().all(|force| *force));
+    Ok(())
+}
+
+#[test]
+fn a_busy_forced_detach_can_finish_after_the_device_settles() {
+    check_busy_detach(1, false).expect("wait for the owned image to settle");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 256,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn busy_detach_matches_the_bounded_recovery_model(
+        busy in 0_usize..BUSY_RETRIES + 4,
+        permanent in any::<bool>(),
+    ) {
+        check_busy_detach(busy, permanent)?;
     }
 }
 
