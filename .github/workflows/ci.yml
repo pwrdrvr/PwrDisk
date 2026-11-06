@@ -152,6 +152,9 @@ jobs:
       - name: Test the classifier
         run: node --test scripts/ci/classify-changes.test.cjs
 
+      - name: Test Windows temporary storage configuration
+        run: node --test scripts/ci/windows-temp.test.cjs
+
   licenses:
     name: Check third-party licenses
     runs-on: ubuntu-24.04
@@ -284,6 +287,16 @@ jobs:
       !cancelled() &&
       (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
+      # The hosted runner's default TEMP is on C:, which can stall I/O.
+      - name: Use runner temporary storage
+        shell: pwsh
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          "TEMP=$env:TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:TMP" >> $env:GITHUB_ENV
+
       # Check out with the repository's own line endings, as on Linux.
       - run: git config --global core.autocrlf false
 
@@ -340,6 +353,16 @@ jobs:
       !cancelled() &&
       (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
+      - name: Use runner temporary storage
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          "TEMP=$env:TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:TMP" >> $env:GITHUB_ENV
+
       - if: runner.os == 'Windows'
         run: git config --global core.autocrlf false
 
