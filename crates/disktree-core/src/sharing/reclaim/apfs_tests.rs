@@ -22,29 +22,73 @@ struct Image {
     device: Option<PathBuf>,
     volume: Option<PathBuf>,
     eject: fn(&Path, bool) -> Result<(), String>,
+    attachment: fn(&Path) -> Result<Option<PathBuf>, String>,
     _guard: MutexGuard<'static, ()>,
 }
 
-fn attachment_devices(plist: &[u8], root: &Path) -> (PathBuf, PathBuf) {
-    let source = tempfile::NamedTempFile::new().expect("attachment plist");
-    fs::write(source.path(), plist).expect("attachment records");
-    let output = checked(
-        Command::new("plutil")
-            .args(["-extract", "system-entities", "json", "-o", "-"])
-            .arg(source.path()),
-    );
-    let entries: Vec<serde_json::Value> =
-        serde_json::from_slice(&output.stdout)
-            .expect("structured attachment records");
+fn plist_field(plist: &[u8], field: &str) -> Result<serde_json::Value, String> {
+    let source = tempfile::NamedTempFile::new()
+        .map_err(|error| format!("attachment plist: {error}"))?;
+    fs::write(source.path(), plist)
+        .map_err(|error| format!("attachment records: {error}"))?;
+    let output = run(Command::new("plutil")
+        .args(["-extract", field, "json", "-o", "-"])
+        .arg(source.path()))?;
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("structured attachment records: {error}"))
+}
+
+fn physical_device(entries: &[serde_json::Value]) -> Result<PathBuf, String> {
     let mut devices = entries.iter().filter_map(|entry| {
         (entry["content-hint"] == "GUID_partition_scheme")
             .then(|| entry["dev-entry"].as_str())
             .flatten()
     });
-    let device = devices.next().expect("backing image device");
-    assert!(devices.next().is_none(), "one private backing image");
-    let suffix = device.strip_prefix("/dev/disk").expect("disk device");
-    assert!(!suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()));
+    let device = devices.next().ok_or("missing backing image device")?;
+    if devices.next().is_some() {
+        return Err("multiple backing image devices".into());
+    }
+    let suffix = device.strip_prefix("/dev/disk").unwrap_or("");
+    if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("invalid backing image device: {device}"));
+    }
+    Ok(PathBuf::from(device))
+}
+
+fn attachment(backing: &Path) -> Result<Option<PathBuf>, String> {
+    let output = run(Command::new("hdiutil").args(["info", "-plist"]))?;
+    let records = plist_field(&output.stdout, "images")?;
+    let images = records.as_array().ok_or("missing image records")?;
+    let backing = backing
+        .canonicalize()
+        .map_err(|error| format!("owned backing image: {error}"))?;
+    let mut owned = None;
+    for image in images {
+        let path = image["image-path"]
+            .as_str()
+            .ok_or("missing image path in attachment records")?;
+        if Path::new(path)
+            .canonicalize()
+            .is_ok_and(|path| path == backing)
+            && owned.replace(image).is_some()
+        {
+            return Err("multiple attachments of our backing image".into());
+        }
+    }
+    let Some(image) = owned else {
+        return Ok(None);
+    };
+    let entries = image["system-entities"]
+        .as_array()
+        .ok_or("missing owned attachment devices")?;
+    physical_device(entries).map(Some)
+}
+
+fn attachment_devices(plist: &[u8], root: &Path) -> (PathBuf, PathBuf) {
+    let records = plist_field(plist, "system-entities")
+        .expect("structured attachment records");
+    let entries = records.as_array().expect("attachment devices");
+    let device = physical_device(entries).expect("backing image device");
     let mut mounted = entries
         .iter()
         .filter(|entry| entry["mount-point"].is_string());
@@ -66,16 +110,27 @@ fn attachment_devices(plist: &[u8], root: &Path) -> (PathBuf, PathBuf) {
     assert!(parts.iter().all(|part| {
         !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())
     }));
-    (PathBuf::from(device), PathBuf::from(volume))
+    (device, PathBuf::from(volume))
 }
 
 fn eject(root: &Path, force: bool) -> Result<(), String> {
     if force {
         // unmountDisk follows APFS's synthesized volumes back to this
         // image's physical store before the backing device is ejected.
-        run(Command::new("diskutil")
+        let unmount = run(Command::new("diskutil")
             .args(["unmountDisk", "force"])
-            .arg(root))?;
+            .arg(root));
+        // DiskImages owns the attachment and its helper process. Let its
+        // native detach finish cleanup after Disk Arbitration unmounts APFS;
+        // debug output preserves the reason if the device remains busy.
+        return run(Command::new("hdiutil")
+            .args(["detach", "-force", "-debug"])
+            .arg(root))
+        .map(|_| ())
+        .map_err(|detach| match unmount {
+            Ok(_) => detach,
+            Err(unmount) => format!("{unmount}\n{detach}"),
+        });
     }
     run(Command::new("diskutil").arg("eject").arg(root)).map(|_| ())
 }
@@ -111,6 +166,7 @@ impl Image {
             device: None,
             volume: None,
             eject,
+            attachment,
             _guard: guard,
         };
         checked(
@@ -181,13 +237,34 @@ impl Image {
     }
 
     fn try_detach(&mut self) -> Result<(), String> {
-        let target = self.device.clone().unwrap_or_else(|| self.root());
-        // A busy eject can leave APFS unmounted. Keep using the owned
-        // backing device even when its mount path no longer exists.
-        (self.eject)(&target, false).or_else(|normal| {
-            (self.eject)(&target, true)
-                .map_err(|forced| format!("{normal}\nforced detach: {forced}"))
-        })?;
+        // Device numbers can disappear or be reused. Resolve ownership from
+        // the backing path before each operation, including after an error:
+        // a command's exit status alone does not say whether it detached.
+        let mut failure = String::new();
+        for force in [false, true] {
+            let target = (self.attachment)(&self.backing())
+                .map_err(|error| format!("{failure}\n{error}"))?;
+            let Some(target) = target else {
+                break;
+            };
+            match (self.eject)(&target, force) {
+                Ok(()) => break,
+                Err(error) => {
+                    failure.push('\n');
+                    failure.push_str(&error);
+                    if force {
+                        let remaining = (self.attachment)(&self.backing())
+                            .map_err(|error| format!("{failure}\n{error}"))?;
+                        if let Some(device) = remaining {
+                            return Err(format!(
+                                "{failure}\nowned image still attached: {}",
+                                device.display()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         self.mounted = false;
         self.device = None;
         self.volume = None;
@@ -235,6 +312,10 @@ fn fail_eject(_: &Path, _: bool) -> Result<(), String> {
     Err("injected detach failure".into())
 }
 
+fn unknown_attachment(_: &Path) -> Result<Option<PathBuf>, String> {
+    Err("injected attachment query failure".into())
+}
+
 #[test]
 fn failed_image_cleanup_does_not_panic_or_remove_its_backing_files() {
     let temp = tempfile::tempdir().expect("cleanup fixture");
@@ -249,6 +330,7 @@ fn failed_image_cleanup_does_not_panic_or_remove_its_backing_files() {
         device: None,
         volume: None,
         eject: fail_eject,
+        attachment: |_| Ok(Some(PathBuf::from("/dev/disk999999"))),
         _guard: IMAGES
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -291,6 +373,7 @@ proptest! {
     fn image_cleanup_follows_the_unmount_result(
         normal_ok in any::<bool>(),
         forced_ok in any::<bool>(),
+        attachment_known in any::<bool>(),
         unwinding in any::<bool>(),
     ) {
         let temp = tempfile::tempdir().expect("cleanup model");
@@ -306,6 +389,9 @@ proptest! {
             device: None,
             volume: None,
             eject,
+            attachment: if attachment_known {
+                |_| Ok(Some(PathBuf::from("/dev/disk999999")))
+            } else { unknown_attachment },
             _guard: IMAGES.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         };
@@ -322,7 +408,7 @@ proptest! {
                 Some(&"original oracle failure"));
         }
         prop_assert_eq!(retained.join("oracle.sparseimage").exists(),
-            !normal_ok && !forced_ok);
+            !attachment_known || (!normal_ok && !forced_ok));
         if retained.exists() {
             fs::remove_dir_all(retained)
                 .expect("remove the unmounted stand-in");
@@ -406,6 +492,48 @@ fn an_open_reader_does_not_prevent_private_image_cleanup() {
     );
 }
 
+fn eject_then_report_failure(root: &Path, force: bool) -> Result<(), String> {
+    eject(root, force)?;
+    Err("injected error after successful device removal".into())
+}
+
+fn check_already_ejected(
+    checkpoints: usize,
+    reported_error: bool,
+) -> Result<(), TestCaseError> {
+    let mut image = Image::new();
+    for _ in 0..checkpoints {
+        image.free();
+    }
+    let backing = image.backing();
+    // Exercise completed detachment independently of command exit status,
+    // both before cleanup and during a cleanup command that reports failure.
+    if reported_error {
+        image.eject = eject_then_report_failure;
+    } else {
+        eject(image.device.as_ref().expect("attached device"), true)
+            .expect("externally eject our private image");
+    }
+    let outcome = image.try_detach();
+    drop(image);
+    if backing.exists() {
+        fs::remove_dir_all(backing.parent().expect("private directory"))
+            .expect("remove already detached backing files");
+    }
+    prop_assert!(outcome.is_ok(), "already detached image: {outcome:?}");
+    Ok(())
+}
+
+#[test]
+fn an_already_ejected_image_is_successful_cleanup() {
+    check_already_ejected(0, false).expect("detached backing image is gone");
+}
+
+#[test]
+fn a_failed_command_that_detached_the_image_is_successful_cleanup() {
+    check_already_ejected(0, true).expect("detached backing image is gone");
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 4,
@@ -418,6 +546,14 @@ proptest! {
         checkpoints in 1_usize..5,
     ) {
         check_checkpoint_without_eject(checkpoints)?;
+    }
+
+    #[test]
+    fn image_cleanup_accepts_an_already_detached_backing_image(
+        checkpoints in 0_usize..3,
+        reported_error in any::<bool>(),
+    ) {
+        check_already_ejected(checkpoints, reported_error)?;
     }
 }
 
