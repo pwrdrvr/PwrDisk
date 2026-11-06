@@ -259,6 +259,7 @@ pub enum CategoryName {
     Media,
     Documents,
     Cache,
+    Temporary,
     VirtualMachines,
     Other,
 }
@@ -274,6 +275,7 @@ impl From<CategoryName> for Category {
             CategoryName::Media => Self::Media,
             CategoryName::Documents => Self::Documents,
             CategoryName::Cache => Self::Cache,
+            CategoryName::Temporary => Self::Temporary,
             CategoryName::VirtualMachines => Self::VirtualMachine,
             CategoryName::Other => Self::Other,
         }
@@ -2850,6 +2852,39 @@ mod tests {
             })
             .expect_err("outside");
         assert!(outside.contains("outside the scanned roots"), "{outside}");
+    }
+
+    #[test]
+    fn find_accepts_temporary_category_and_excludes_other_kinds() {
+        let temp = fixture();
+        let temporary = temp.path().join("private/tmp/claude-501");
+        for path in [
+            temporary.clone(),
+            temp.path().join(".cache/claude-501"),
+            temp.path().join(".claude/claude-501"),
+        ] {
+            std::fs::create_dir_all(&path).expect("contrived directory");
+            std::fs::write(path.join("notes"), "invented data")
+                .expect("contents");
+        }
+        let params: FindParams = serde_json::from_value(serde_json::json!({
+            "category": "temporary",
+            "kind": "dir",
+            "name": "claude-501"
+        }))
+        .expect("temporary category");
+        let mut session = unlinked(temp.path());
+        scanned(&mut session, temp.path());
+        let request = params.request(None, now());
+        assert_eq!(
+            request.filter().expect("core filter").category,
+            Some(Category::Temporary)
+        );
+        let found = session.found(&request).expect("find");
+        assert_eq!(found.count, 1);
+        assert_eq!(found.matches[0].path, temporary);
+        let report = session.find(&params).expect("report");
+        assert!(report.starts_with("1 match "), "{report}");
     }
 
     #[test]
