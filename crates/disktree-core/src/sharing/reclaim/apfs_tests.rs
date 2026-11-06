@@ -1,10 +1,13 @@
 //! The filesystem, rather than clone IDs, decides what deletion frees.
 
+mod command;
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use proptest::prelude::*;
 
@@ -17,6 +20,10 @@ const APFS_CONTAINER: &str = "EF57347C-0000-11AA-AA11-00306543ECAC";
 // DiskImages serializes device setup internally. Avoid competing oracle
 // mounts while libtest runs the named regression and property together.
 static IMAGES: Mutex<()> = Mutex::new(());
+// These private-image operations normally take seconds. A wedged native
+// request must fail the oracle instead of holding every other image test.
+static COMMANDS: command::Commands =
+    command::Commands::new(Duration::from_secs(30));
 
 struct Image {
     temp: Option<tempfile::TempDir>,
@@ -161,19 +168,7 @@ fn eject(root: &Path, force: bool) -> Result<(), String> {
 }
 
 fn run(command: &mut Command) -> Result<Output, String> {
-    let output = command
-        .output()
-        .map_err(|error| format!("{command:?}: {error}"))?;
-    if output.status.success() {
-        Ok(output)
-    } else {
-        Err(format!(
-            "{command:?}: {}\n{}\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ))
-    }
+    COMMANDS.run(command)
 }
 
 fn checked(command: &mut Command) -> Output {
@@ -195,9 +190,12 @@ impl Image {
         let guard = IMAGES
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        COMMANDS.check().expect("native APFS oracle unavailable");
         let mut image = Self {
             temp: Some(tempfile::tempdir().expect("private image directory")),
-            mounted: false,
+            // Formatting and attaching can leave a partial attachment even
+            // on failure. Only an authoritative query permits file removal.
+            mounted: true,
             device: None,
             volume: None,
             eject,
@@ -257,6 +255,7 @@ impl Image {
         // previous attachment's identity if decoding this one fails.
         self.device = None;
         self.volume = None;
+        self.mounted = true;
         let output = checked(
             Command::new("hdiutil")
                 .args([
@@ -269,7 +268,6 @@ impl Image {
                 .arg(self.root())
                 .arg(self.backing()),
         );
-        self.mounted = true;
         let (device, volume) = attachment_devices(&output.stdout, &self.root());
         self.device = Some(device);
         self.volume = Some(volume);
