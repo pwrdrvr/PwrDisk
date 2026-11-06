@@ -7227,6 +7227,66 @@ fn removing_a_directory_after_part_of_it_counts_only_the_rest(
 }
 
 #[gpui_kit::test]
+fn enclosing_removal_preserves_scanned_bytes_in_marks_and_agent_reports(
+    cx: &mut TestAppContext,
+) {
+    use disktree_link::{FindRequest, Request, Response};
+
+    cx.update(init);
+    #[cfg(unix)]
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
+    #[cfg(not(unix))]
+    let temp = tempfile::tempdir().unwrap();
+    for (directory, bytes) in [("a", 40), ("a/b", 40), ("a/b/c", 20)] {
+        let path = temp.path().join(directory);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("payload"), vec![b'x'; bytes]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    remove_now(&view, cx, &["a/b/c"]);
+    remove_now(&view, cx, &["a/b"]);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Explore;
+        let a = temp.path().join("a");
+        let crumbs = app.crumbs_for_path(&a).unwrap();
+        app.toggle_mark(&crumbs, cx);
+        assert_eq!(app.marks.items()[0].bytes, 40);
+        let Response::Listing(listing) = app.answer_agent(
+            &Request::Ls {
+                path: a.clone(),
+                limit: 10,
+            },
+            cx,
+        ) else {
+            panic!("listing")
+        };
+        assert_eq!(listing.entry.removed_bytes, 60);
+        let Response::Found(found) = app.answer_agent(
+            &Request::Find(FindRequest {
+                name: Some("a".into()),
+                kind: "dir".into(),
+                limit: 10,
+                ..FindRequest::default()
+            }),
+            cx,
+        ) else {
+            panic!("search")
+        };
+        let hit = found.matches.iter().find(|hit| hit.path == a).unwrap();
+        assert_eq!(hit.entry.removed_bytes, 60);
+        // Metric changes refresh marks from the unchanged scanned tree.
+        app.toggle_metric(cx);
+        assert_eq!(app.marks.items()[0].bytes, 40);
+    });
+    draw(cx);
+    assert_eq!(
+        std::fs::read(temp.path().join("a/payload")).unwrap().len(),
+        40
+    );
+    assert!(!temp.path().join("a/b").exists());
+}
+
+#[gpui_kit::test]
 fn an_agent_listing_says_what_was_removed_since_the_scan(
     cx: &mut TestAppContext,
 ) {

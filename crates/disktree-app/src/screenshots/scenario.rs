@@ -49,6 +49,7 @@ pub enum State {
     Legend { kind: String },
     Select { path: String },
     Mark { path: String },
+    Removed { path: String },
     Review,
     CleanupReview,
     SystemFolders,
@@ -108,7 +109,9 @@ impl Scenario {
                             "unknown legend kind: {kind}"
                         );
                     }
-                    State::Select { path } | State::Mark { path } => {
+                    State::Select { path }
+                    | State::Mark { path }
+                    | State::Removed { path } => {
                         // Scenario paths are portable POSIX fixture paths;
                         // no spelling may escape the explicitly scanned root.
                         ensure!(
@@ -164,6 +167,7 @@ mod tests {
             {"op": "setup", "state": {"type": "legend", "kind": "code"}},
             {"op": "setup", "state": {"type": "select", "path": "a/b"}},
             {"op": "setup", "state": {"type": "mark", "path": ".cache"}},
+            {"op": "setup", "state": {"type": "removed", "path": "a/b"}},
             {"op": "setup", "state": {"type": "review"}},
             {"op": "setup", "state": {"type": "file_list"}},
             {"op": "setup", "state": {"type": "help"}},
@@ -177,7 +181,7 @@ mod tests {
         ]));
         let parsed = Scenario::parse(&json).expect("valid scenario");
         assert!(matches!(parsed.theme, Theme::TokyoNight));
-        assert_eq!(parsed.steps.len(), 13);
+        assert_eq!(parsed.steps.len(), 14);
         assert!(Scenario::parse(&json.replace("\"ms\"", "\"mss\"")).is_err());
         assert!(
             Scenario::parse(&json.replace("tokyo_night", "unknown")).is_err()
@@ -245,14 +249,16 @@ mod tests {
             ], 0..8)
         ) {
             let path = parts.join("/");
-            let accepted = Scenario::parse(&script(&json!([
-                {"op": "setup", "state": {"type": "select", "path": path}},
-                {"op": "capture", "name": "x.png"}
-            ]))).is_ok();
             let expected = !parts.is_empty() && parts.iter().all(|p| {
                 !p.is_empty() && p != "." && p != ".."
             });
-            prop_assert_eq!(accepted, expected);
+            for kind in ["select", "mark", "removed"] {
+                let accepted = Scenario::parse(&script(&json!([
+                    {"op": "setup", "state": {"type": kind, "path": path}},
+                    {"op": "capture", "name": "x.png"}
+                ]))).is_ok();
+                prop_assert_eq!(accepted, expected);
+            }
         }
 
         // A pointer capture requires a preceding move; waits and captures
