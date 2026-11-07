@@ -248,6 +248,12 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      # Exercise native device lifecycles before compiling the GUI graph.
+      # The full workspace gate repeats them alongside the deletion oracle.
+      - name: APFS image lifecycle
+        timeout-minutes: 10
+        run: cargo test -p disktree-core test_paths::disk_image -- --test-threads=1
+
       - name: Lint
         run: cargo xtask lint
 
@@ -399,6 +405,11 @@ jobs:
             libvulkan-dev libasound2-dev libssl-dev libzstd-dev
 
       - uses: ./.github/actions/setup-rust
+
+      - name: APFS image lifecycle
+        if: matrix.runner == 'macos-15-intel'
+        timeout-minutes: 10
+        run: cargo test -p disktree-core test_paths::disk_image -- --test-threads=1
 
       # A cold Intel build took 11 minutes before the APFS oracles started.
       # Give compilation its own deadline, preserving the execution budget.

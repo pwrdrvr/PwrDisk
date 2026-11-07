@@ -24,6 +24,10 @@ function budget(jobName, runner) {
   if (runner) assert.match(steps[testIndex],
     /timeout-minutes: \$\{\{ matrix\.test_timeout \}\}/);
   const compile = steps.slice(0, testIndex).find(step => /--no-run/.test(step));
+  const fixtureIndex = steps.findIndex(step =>
+    /cargo test -p disktree-core test_paths::disk_image\b/.test(step));
+  const fixtureLimit = fixtureIndex < 0 ? 0 : Number(
+    steps[fixtureIndex].match(/timeout-minutes: (\d+)/)?.[1]);
   if (compile && runner) {
     assert.match(compile, /if: matrix\.runner == 'macos-15-intel'/);
   }
@@ -37,16 +41,22 @@ function budget(jobName, runner) {
     /cargo build -p xtask(?:\n|$)/,
     /cargo test --workspace --no-run(?:\n|$)/,
   ].every(command => command.test(compile));
-  function completion(buildMinutes, testMinutes) {
+  function completion(buildMinutes, testMinutes, fixtureMinutes = 0) {
+    if (fixtureMinutes > fixtureLimit) return 'fixture deadline';
     const buildStep = warm ? buildMinutes : 0;
     const testStep = testMinutes + (warm ? 0 : buildMinutes);
     if (buildStep > compileLimit) return 'compile deadline';
     if (testStep > testLimit) return 'test deadline';
     // Reserve a minute for setup; the job still bounds both phases.
-    if (1 + buildMinutes + testMinutes > jobLimit) return 'job deadline';
+    if (1 + fixtureMinutes + buildMinutes + testMinutes > jobLimit) {
+      return 'job deadline';
+    }
     return 'complete';
   }
-  return {compileLimit, testLimit, jobLimit, completion};
+  return {
+    compileLimit, testLimit, jobLimit, completion, fixtureLimit,
+    isolatedFixture: fixtureIndex >= 0 && fixtureIndex < steps.indexOf(compile),
+  };
 }
 
 const intel = budget('other-architectures', 'macos-15-intel');
@@ -65,7 +75,15 @@ test('Apple silicon compilation leaves room for every test suite', () => {
 });
 
 for (const [platform, config] of [['Intel', intel], ['Apple silicon', arm]]) {
-  const {compileLimit, testLimit, jobLimit, completion} = config;
+  const {compileLimit, testLimit, jobLimit, completion, fixtureLimit} = config;
+  test(`${platform}: fixture failures surface before workspace compilation`, () => {
+    assert.ok(config.isolatedFixture);
+  });
+
+  test(`${platform}: isolated fixture and cold test gate fit the job`, () => {
+    const workload = platform === 'Intel' ? [11, 10, 4] : [4, 8, 3];
+    assert.equal(completion(...workload), 'complete');
+  });
   test(`${platform}: compilation cannot consume the last execution minute`, () => {
     assert.equal(completion(1, testLimit), 'complete');
   });
@@ -81,6 +99,7 @@ for (const [platform, config] of [['Intel', intel], ['Apple silicon', arm]]) {
   });
 
   test(`${platform}: separate phases still enforce deadlines`, () => {
+    assert.equal(completion(0, 0, fixtureLimit + 1), 'fixture deadline');
     assert.equal(completion(compileLimit + 1, 0), 'compile deadline');
     assert.equal(completion(0, testLimit + 1), 'test deadline');
     // Even individually valid phases cannot exceed the enclosing job.

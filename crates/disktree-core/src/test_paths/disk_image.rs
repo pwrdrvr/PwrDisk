@@ -19,6 +19,15 @@ static IMAGES: Mutex<()> = Mutex::new(());
 // request must fail the oracle instead of holding every other image test.
 static COMMANDS: command::Commands =
     command::Commands::new(Duration::from_secs(30));
+// Retirement can finish after deleteContainer returns. Allow three bounded
+// graceful/forced pairs for the remaining attachment to release its store.
+const RELEASE_ATTEMPTS: usize = 6;
+
+fn settle() {
+    // Let asynchronous device retirement advance before observing ownership
+    // again. Each command remains bounded by COMMANDS's separate deadline.
+    std::thread::sleep(Duration::from_millis(250));
+}
 
 pub struct Image {
     temp: Option<tempfile::TempDir>,
@@ -29,6 +38,7 @@ pub struct Image {
     eject: fn(&Path, bool) -> Result<(), String>,
     attachment: fn(&Path) -> Result<Option<PathBuf>, String>,
     retire: fn(&Path) -> Result<(), String>,
+    settle: fn(),
     _guard: MutexGuard<'static, ()>,
 }
 
@@ -233,6 +243,7 @@ impl Image {
             eject,
             attachment,
             retire: retire_container,
+            settle,
             _guard: guard,
         };
         // With an explicit layout and no -fs, hdiutil allocates only the
@@ -390,13 +401,20 @@ impl Image {
                 failure.push('\n');
                 failure.push_str(&error);
             }
+            (self.settle)();
             target = (self.attachment)(&self.backing())
                 .map_err(|error| format!("{failure}\n{error}"))?;
-            if let Some(device) = target.take() {
-                if let Err(error) = (self.eject)(&device, true) {
+            for attempt in 0..RELEASE_ATTEMPTS {
+                let Some(device) = target.take() else {
+                    break;
+                };
+                // Restart with graceful ejection after retirement; forced
+                // detach can still see EBUSY while the store is releasing.
+                if let Err(error) = (self.eject)(&device, attempt % 2 != 0) {
                     failure.push('\n');
                     failure.push_str(&error);
                 }
+                (self.settle)();
                 target = (self.attachment)(&self.backing())
                     .map_err(|error| format!("{failure}\n{error}"))?;
             }
@@ -575,6 +593,7 @@ fn check_retained_backing(eject: fn(&Path, bool) -> Result<(), String>) {
         eject,
         attachment: |_| Ok(Some(PathBuf::from("/dev/disk999999"))),
         retire: |_| Ok(()),
+        settle: || {},
         _guard: IMAGES
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -664,6 +683,7 @@ proptest! {
             retire: if retirement_ok {
                 |_| Ok(())
             } else { fail_retirement },
+            settle: || {},
             _guard: IMAGES.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         };
@@ -849,9 +869,75 @@ fn check_busy_parent_cleanup(checkpoints: usize) -> Result<(), TestCaseError> {
     Ok(())
 }
 
+fn check_delayed_release(
+    busy_observations: usize,
+) -> Result<(), TestCaseError> {
+    let temp = tempfile::tempdir().expect("delayed retirement model");
+    let backing = temp.path().join("oracle.sparseimage");
+    // Ejection is busy until retirement starts. The physical attachment
+    // remains visible for a generated number of observations afterward.
+    let mut states = vec![1, 1, 1, 2];
+    states.extend(std::iter::repeat_n(2, busy_observations));
+    states.push(0);
+    fs::write(&backing, states).expect("attachment observations");
+    let mut image = Image {
+        temp: Some(temp),
+        mount: None,
+        mounted: true,
+        device: None,
+        volume: None,
+        eject: fail_eject,
+        attachment: model_attachment,
+        retire: |_| Ok(()),
+        settle: || {},
+        _guard: IMAGES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    };
+    let outcome = image.try_detach();
+    let observed_gone = fs::read(&backing)
+        .expect("remaining model observations")
+        .is_empty();
+    drop(image);
+    let retained = backing.exists();
+    if retained {
+        fs::remove_dir_all(backing.parent().expect("model directory"))
+            .expect("remove the unmounted stand-in");
+    }
+    prop_assert!(outcome.is_ok(), "pending retirement: {outcome:?}");
+    prop_assert!(observed_gone, "cleanup must observe the completed release");
+    prop_assert!(!retained, "completed cleanup releases its backing file");
+    Ok(())
+}
+
+#[test]
+fn retirement_can_finish_after_the_first_eject_attempt() {
+    check_delayed_release(1).expect("wait for pending container retirement");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 32,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn cleanup_waits_for_pending_container_retirement(
+        busy_observations in 0_usize..6,
+    ) {
+        check_delayed_release(busy_observations)?;
+    }
+}
+
 #[test]
 fn container_cleanup_releases_a_busy_physical_store() {
     check_busy_parent_cleanup(4).expect("release APFS before its store");
+}
+
+#[test]
+fn container_cleanup_releases_a_busy_store_after_one_checkpoint() {
+    check_busy_parent_cleanup(1).expect("release the CI regression's store");
 }
 
 proptest! {
