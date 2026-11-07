@@ -7,6 +7,28 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.21.0
+
+- APFS reclaim estimates - Use measured private allocation for the reclaim
+  lower bound projected onto the disk meter. Shared clone data contributes
+  only to the possible upper bound, with a partial estimate even when every
+  known reference to a clone ID is selected. Modified clones can retain
+  shared blocks under a different ID, including outside the scanned root;
+  selecting the known group no longer promises those blocks will be freed.
+- Agent ranking - Keep measured private allocation available to MCP ranking
+  when only shared-extent relationships are uncertain. Missing metadata,
+  incomplete scans and inconsistent observations still prevent a known
+  private-byte ranking value. Tile weights and hardlink accounting stay
+  unchanged.
+- macOS preflight - Use bulk directory metadata for cache inspection to
+  reduce per-file work on large selections. Preserve deep-path support,
+  relocated-cache recognition, mount boundaries, symlink handling and
+  inspection limits; capacity remeasurement keeps the scanner's accounting.
+- Window restoration - Grow saved windows to the requested minimum size,
+  capped by the destination display, before fitting them on screen. Frames
+  saved on a scaled laptop or with a tiny size now restore at a usable size
+  when the display has room.
+
 ## v0.20.0
 
 - Output inventory - Add read-only `pwrdisk_find_outputs` for build output,
