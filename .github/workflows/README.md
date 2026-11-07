@@ -36,6 +36,15 @@ file list runs it. The workflow trigger stays unfiltered so the job always
 reports a result. A stale file fails with instructions to run
 `cargo xtask licenses` and commit `THIRD_PARTY_LICENSES`.
 
+Each CI job has a deadline, and test steps have their own so a hang does
+not consume the rest of the job's budget. In nine successful runs on
+November 6, 2026, the Intel macOS test step took 8–13 minutes, Windows
+tests at most 9, and the other test steps at most 5. Their limits allow
+roughly twice those times; Intel gets 20 minutes. One earlier Intel run
+took 46 minutes in the test step: it would now fail instead of holding up
+the check. The job limits also cover setup, builds and cache saving. Revisit
+them when runner speeds or cold-cache build times change.
+
 ### The Rust cache
 
 Every Rust job in `ci.yml`, `preview-build.yml` and `release.yml` sets up
