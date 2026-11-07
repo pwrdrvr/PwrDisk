@@ -398,7 +398,9 @@ impl Disktree {
                     == Some(&gate.ticked(self.removal_mode))
             }
             Confirm::Phrase => self.over_phrase.as_ref().is_some_and(|input| {
-                matches(&input.read(cx).value(), &self.gate_phrase(gate))
+                self.over_phrase_for.as_ref()
+                    == Some(&gate.ticked(self.removal_mode))
+                    && matches(&input.read(cx).value(), &self.gate_phrase(gate))
             }),
         }
     }
@@ -472,6 +474,11 @@ impl Disktree {
         }
         let input = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe(&input, |this, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.over_phrase_for = this
+                    .removal_gate(&this.plan())
+                    .map(|gate| gate.ticked(this.removal_mode));
+            }
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.commit(false, cx);
             }

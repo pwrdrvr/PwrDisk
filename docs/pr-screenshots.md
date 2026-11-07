@@ -137,6 +137,19 @@ must point only into the contrived fixture image.
 before/after pictures for pnpm's separate metadata/dlx cache. It adds only
 invented data to the owned Fixtures image and sets its XDG cache hint there.
 
+`bash scripts/screenshots/protected-folders.sh target/pr-shots/protected`
+compares the Applications folder and an individual invented app. Its
+`system_folders` setup retains the scanned fixture tree and fixture disk
+meter but maps paths to a logical `/`, so the real removal guards apply.
+It never scans the host's root or modifies its system folders. This hook
+requires the owned `/Volumes/Fixtures/Demo` image and is only for pictures.
+
+`removal_check` and `removal_refused` render the marked fixture paths in
+preflight and a simulated whole-selection limit refusal. They require the
+owned Fixtures image and never start a removal worker or approve deletion.
+The refusal uses a 1% fixture limit and a contrived negative free-space
+change so the zero-removal explanation is visible.
+
 Capture names are unique simple filenames: letters, digits, `_` and `-`,
 then `.png`. A scenario needs 1..256 steps and at least one capture. Each
 capture also writes `<name>.bounds.json`, with logical bounds and paths for

@@ -206,14 +206,14 @@ fn setup(
                     app.cycle_legend(ChipId::Kind(index), cx);
                 }
                 State::Select { path } | State::Mark { path } => {
+                    let path_in_tree = app.root_path.join(path);
                     let crumbs = app
-                        .crumbs_for_path(&root.join(path))
+                        .crumbs_for_path(&path_in_tree)
                         .with_context(|| format!("no fixture path: {path}"))?;
                     if matches!(state, State::Mark { .. }) {
                         app.toggle_mark(&crumbs, cx);
                         ensure!(
-                            app.marks
-                                .contains(&root.join(path), app.path_style()),
+                            app.marks.contains(&path_in_tree, app.path_style()),
                             "fixture mark was refused: {path}"
                         );
                     } else {
@@ -229,6 +229,75 @@ fn setup(
                     app.removal_mode =
                         disktree_core::removal::RemovalMode::OwnerCleanup;
                     app.prepare_cleanup(cx);
+                }
+                State::SystemFolders => {
+                    ensure!(
+                        root == Path::new("/Volumes/Fixtures/Demo"),
+                        "system folders require the contrived Fixtures image"
+                    );
+                    // Keep the scanned fixture tree and its own disk meter.
+                    // Only its logical paths change, exercising real guards
+                    // without scanning or changing any system directory.
+                    app.root_path = Path::new("/").to_path_buf();
+                }
+                State::RemovalCheck | State::RemovalRefused => {
+                    ensure!(
+                        root == Path::new("/Volumes/Fixtures/Demo"),
+                        "removal pictures require the contrived Fixtures image"
+                    );
+                    let plan = app.plan();
+                    ensure!(!plan.is_empty(), "mark fixture paths first");
+                    app.removal_mode =
+                        disktree_core::removal::RemovalMode::Permanent;
+                    app.run_list = crate::run_list::RunList::new(
+                        plan.targets
+                            .iter()
+                            .map(|target| crate::run_list::Item {
+                                target: target.clone(),
+                                category: Category::Code,
+                                reclaim: None,
+                                private: Some(target.bytes),
+                                status: crate::run_list::Status::Waiting,
+                            })
+                            .collect(),
+                    );
+                    app.run_free_before =
+                        app.space.map(|space| space.available);
+                    app.screen = crate::state::Screen::Running;
+                    if matches!(state, State::RemovalRefused) {
+                        // Render a refusal, never spawn a removal worker or
+                        // approve a confirmation. Every fixture file stays.
+                        let reason =
+                            disktree_core::removal_limit::Limit::new(1)
+                                .expect("fixture limit")
+                                .check(&plan.targets)
+                                .expect_err("fixture selection exceeds 1%");
+                        for target in &plan.targets {
+                            app.run_list
+                                .settle(&target.path, &Err(reason.clone()));
+                        }
+                        let before = app.run_free_before;
+                        let after =
+                            before.map(|n| n.saturating_sub(200 * 1024));
+                        if let (Some(space), Some(after)) =
+                            (&mut app.space, after)
+                        {
+                            space.available = after;
+                        }
+                        app.ledger.begin(app.scans_done);
+                        app.ledger.push(crate::ledger::Cohort {
+                            mode: app.removal_mode,
+                            removed: 0,
+                            failed: plan.targets.len(),
+                            reported: 0,
+                            private: Some(0),
+                            before,
+                            after,
+                            started: std::time::SystemTime::UNIX_EPOCH,
+                            finished: std::time::SystemTime::UNIX_EPOCH,
+                        });
+                        app.screen = crate::state::Screen::Done;
+                    }
                 }
                 State::FileList => app.file_list = true,
                 State::Help => app.open_help(cx),

@@ -5,6 +5,10 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
 
 ## Reading the numbers
 
+An empty directory with read permission is complete even without search
+permission. A bulk metadata permission error is cleared only when directory
+enumeration proves it empty; nonempty or unreadable contents stay incomplete.
+
 Before promising recovery, call `pwrdisk_retention` for each selected
 volume. This read-only, time-bounded check lists local Time Machine
 snapshots. It does not quantify blocks retained from the selected paths,
@@ -91,6 +95,21 @@ guard refusal for the folder. Look inside it with `pwrdisk_ls`, propose
 entries the user recognizes as their own leftovers, and leave files a
 running program may still use. Do not bypass the guard.
 
+`/Applications`, `/Applications/Utilities` and `/Volumes` themselves are
+protected containers. They cannot be marked or removed, including through
+case variants, the Data-volume spelling or a linked scan root. Individual
+third-party apps inside `/Applications` remain eligible under the other
+guards; prefer an app's supported uninstaller when it has one. Selecting a
+folder to inspect it is still allowed. The same guards apply in Review
+and again on the removal worker.
+
+Choosing a scan root through a link (`/var`, `/tmp`, a root-volume alias)
+does not bypass system-tree, profile or nested-mount guards. In particular,
+`/var/folders` remains protected as `/private/var/folders`; an explicit scan
+there does not make its live state removable. A one-filesystem scan stops
+at the same mounts under every spelling of its root. A selected symlink
+itself is still unlinked without deleting its destination.
+
 ## Never propose
 
 - **Inside a library package**: the Photos Library, Music, Apple TV, iMovie,
@@ -108,8 +127,9 @@ running program may still use. Do not bypass the guard.
 - **Mail and Messages attachments, Keychains, and iPhone and iPad backups**
   (`~/Library/Application Support/MobileSync/Backup`): user data and
   secrets. Old device backups are the user's to delete from Finder.
-- **`/Applications`**: uninstall with the app's uninstaller or by dragging to
-  the Trash in Finder, which the user does.
+- **All of `/Applications` or `/Applications/Utilities`**: inspect individual
+  apps instead. Establish that the user wants to uninstall that app and
+  whether it has an uninstaller before proposing its bundle for removal.
 
 ## Usually safe, with the owning tool first
 
@@ -132,6 +152,10 @@ the user empties the Trash; on an external disk, that disk's `.Trashes`.
 
 ## Confirmed removal
 
+Removal preflight supports descendant paths longer than a full-path lookup
+allows. Cache inspection and fresh capacity measurement still apply to the
+whole selection; unreadable entries and nested mounts still stop removal.
+
 Never approve a removal with computer use (clicks, keys or accessibility
 actions). The user approves in the app, or explicitly confirms the exact
 paths and mode from `pwrdisk_removal_preview` before the destructive
@@ -143,6 +167,17 @@ refusal, increase the setting or split batches to evade it. A window
 refuses a mark when capacity is unknown or the list would exceed the limit, and marks made
 without one are checked when they reach it: only the person can mark past
 it, in the window. Say so, and let them decide.
+
+The worker counts hardlinked allocation once across the complete selection,
+including aliases in different marked folders. Scan and recheck use the
+same entry measurement and aggregation code, retaining the scan's size,
+hardlink and clone-metadata parameters. The recheck includes hidden/deep
+contents, never follows links, and stays on the target's volume regardless
+of display filters. It checks the reviewed and
+fresh totals separately on each volume; it never adds two scans' different
+hardlink charge assignments. A preflight refusal removes no selected paths.
+Observed is the signed volume free-space change, including other activity,
+not evidence that this attempt deleted files.
 
 MCP removal also requires interactive confirmation from the client (form
 elicitation). An agent-supplied confirmation value does not establish human

@@ -22,7 +22,7 @@ use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+use rustix::fs::{AtFlags, FileType};
 
 use crate::sharing::CloneInfo;
 
@@ -444,11 +444,7 @@ pub fn read_dir(dir: &Path, clones: Clones) -> io::Result<ReadDir> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(dir.to_path_buf());
     }
-    let fd = rustix::fs::open(
-        dir,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
+    let fd = crate::scan::open_directory(dir)?;
     let buffer = SPARE
         .with_borrow_mut(Option::take)
         .unwrap_or_else(|| vec![0; BUFFER_BYTES / 8].into_boxed_slice());
@@ -562,6 +558,15 @@ impl ReadDir {
                 request.forkattr = 0;
                 continue;
             }
+            // Bulk attributes need search permission even for an empty
+            // directory. readdir does not: only a proven empty listing
+            // makes the totals complete. Nonempty or unreadable stays an
+            // error, since its entries have not been measured.
+            if error.kind() == io::ErrorKind::PermissionDenied
+                && directory_is_empty(&self.fd).unwrap_or(false)
+            {
+                return Ok(0);
+            }
             if error.kind() != io::ErrorKind::Interrupted {
                 return Err(error);
             }
@@ -625,6 +630,20 @@ impl ReadDir {
             rustix::fs::statat(&self.fd, name, AtFlags::SYMLINK_NOFOLLOW)?;
         Ok(Entry::from_stat(name, &stat))
     }
+}
+
+fn directory_is_empty(fd: &OwnedFd) -> io::Result<bool> {
+    // Duplicating the open descriptor avoids looking up `.` through a
+    // directory that may have read permission without search permission.
+    let mut entries = rustix::fs::Dir::new(rustix::io::dup(fd)?)?;
+    entries.rewind();
+    for entry in entries {
+        let entry = entry?;
+        if !matches!(entry.file_name().to_bytes(), b"." | b"..") {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn malformed() -> io::Error {

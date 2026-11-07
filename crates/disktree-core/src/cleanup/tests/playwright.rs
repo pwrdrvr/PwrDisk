@@ -431,7 +431,12 @@ fn playwright_mock_execution_is_pinned_and_never_falls_back_to_deletion() {
             owners(&prepared),
             Ceilings::from(Limit::default()),
         ));
-        assert!(events.iter().any(|event| matches!(event, RemovalEvent::Item { outcome, .. } if outcome.is_err() == fail)));
+        assert!(
+            events.iter().any(|event| matches!(event,
+                RemovalEvent::Item { outcome, .. }
+                    if outcome.is_err() == fail)),
+            "fail={fail}: {events:#?}"
+        );
         let invocation =
             std::fs::read_to_string(fixture.env.home.join("invocation"))
                 .expect("mock invocation");
