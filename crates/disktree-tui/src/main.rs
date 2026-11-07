@@ -2,6 +2,8 @@
 
 mod app;
 mod render;
+#[cfg(test)]
+mod test_support;
 mod theme;
 #[cfg(windows)]
 mod windows_console;

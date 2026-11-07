@@ -2646,7 +2646,7 @@ mod tests {
 
     #[test]
     fn narrow_list_uses_its_legend_row_for_a_fifth_entry() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = crate::test_support::fixture_dir();
         for (name, bytes) in [
             ("Media", 5000),
             ("Documents", 4000),

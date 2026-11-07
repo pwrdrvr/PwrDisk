@@ -1627,26 +1627,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    fn fixture_dir() -> tempfile::TempDir {
-        // macOS keeps its default temporary directory under `/private`,
-        // which the removal guard correctly treats as system-owned.
-        #[cfg(target_os = "macos")]
-        {
-            let home = std::env::current_dir().expect("workspace directory");
-            tempfile::Builder::new()
-                .prefix("disktree-tui-")
-                .tempdir_in(home)
-                .expect("tempdir in home")
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            // Match CLI roots: Windows may spell TEMP with an 8.3 alias,
-            // while navigating to another root expands that alias.
-            let base = canonicalize_path(&std::env::temp_dir())
-                .expect("canonical temporary directory");
-            tempfile::tempdir_in(base).expect("tempdir")
-        }
-    }
+    use crate::test_support::fixture_dir;
 
     #[test]
     fn marks_use_bytes_and_absorb_children() {
