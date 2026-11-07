@@ -32,6 +32,7 @@ struct Image {
     volume: Option<PathBuf>,
     eject: fn(&Path, bool) -> Result<(), String>,
     attachment: fn(&Path) -> Result<Option<PathBuf>, String>,
+    retire: fn(&Path) -> Result<(), String>,
     _guard: MutexGuard<'static, ()>,
 }
 
@@ -68,27 +69,33 @@ fn disk_device(device: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(device))
 }
 
-fn cleanup_device(entries: &[serde_json::Value]) -> Result<PathBuf, String> {
-    let physical = physical_device(entries)?;
+fn container_device(
+    entries: &[serde_json::Value],
+) -> Result<Option<PathBuf>, String> {
     let mut containers = entries.iter().filter_map(|entry| {
         (entry["content-hint"] == APFS_CONTAINER)
             .then(|| entry["dev-entry"].as_str())
             .flatten()
     });
     let Some(container) = containers.next() else {
-        // A partially completed detach may have retired the APFS container
-        // already. The remaining owned physical attachment still needs to go.
-        return Ok(physical);
+        return Ok(None);
     };
     if containers.next().is_some() {
         return Err("multiple owned APFS containers".into());
     }
-    // Unmounting volumes does not retire their synthesized container. Ask
-    // that container to detach before ejecting the store it holds open.
-    disk_device(container)
+    disk_device(container).map(Some)
 }
 
-fn attachment(backing: &Path) -> Result<Option<PathBuf>, String> {
+fn cleanup_device(entries: &[serde_json::Value]) -> Result<PathBuf, String> {
+    let physical = physical_device(entries)?;
+    // Unmounted containers can still hold their physical stores open.
+    // A partially completed detach can leave only the physical attachment.
+    Ok(container_device(entries)?.unwrap_or(physical))
+}
+
+fn owned_entities(
+    backing: &Path,
+) -> Result<Option<Vec<serde_json::Value>>, String> {
     let output = run(Command::new("hdiutil").args(["info", "-plist"]))?;
     let records = plist_field(&output.stdout, "images")?;
     let images = records.as_array().ok_or("missing image records")?;
@@ -114,7 +121,31 @@ fn attachment(backing: &Path) -> Result<Option<PathBuf>, String> {
     let entries = image["system-entities"]
         .as_array()
         .ok_or("missing owned attachment devices")?;
-    cleanup_device(entries).map(Some)
+    physical_device(entries)?;
+    Ok(Some(entries.clone()))
+}
+
+fn attachment(backing: &Path) -> Result<Option<PathBuf>, String> {
+    owned_entities(backing)?
+        .map(|entries| cleanup_device(&entries))
+        .transpose()
+}
+
+fn retire_container(backing: &Path) -> Result<(), String> {
+    let Some(entries) = owned_entities(backing)? else {
+        return Ok(());
+    };
+    let Some(container) = container_device(&entries)? else {
+        return Ok(());
+    };
+    // Ejection can leave an unmounted APFS container holding its store open.
+    // This filesystem is disposable after measurement. Delete only the
+    // container freshly resolved from our backing file, then detach the
+    // remaining physical image using another ownership observation.
+    run(Command::new("diskutil")
+        .args(["apfs", "deleteContainer"])
+        .arg(container))
+    .map(|_| ())
 }
 
 fn attachment_devices(plist: &[u8], root: &Path) -> (PathBuf, PathBuf) {
@@ -200,6 +231,7 @@ impl Image {
             volume: None,
             eject,
             attachment,
+            retire: retire_container,
             _guard: guard,
         };
         run(Command::new("hdiutil")
@@ -294,6 +326,22 @@ impl Image {
             target = (self.attachment)(&self.backing())
                 .map_err(|error| format!("{failure}\n{error}"))?;
         }
+        if target.is_some() {
+            if let Err(error) = (self.retire)(&self.backing()) {
+                failure.push('\n');
+                failure.push_str(&error);
+            }
+            target = (self.attachment)(&self.backing())
+                .map_err(|error| format!("{failure}\n{error}"))?;
+            if let Some(device) = target.take() {
+                if let Err(error) = (self.eject)(&device, true) {
+                    failure.push('\n');
+                    failure.push_str(&error);
+                }
+                target = (self.attachment)(&self.backing())
+                    .map_err(|error| format!("{failure}\n{error}"))?;
+            }
+        }
         if let Some(device) = target {
             // Query only the remaining owned device and our private paths.
             // In-memory cleanup models never invoke native diagnostics.
@@ -376,6 +424,10 @@ fn unknown_attachment(_: &Path) -> Result<Option<PathBuf>, String> {
     Err("injected attachment query failure".into())
 }
 
+fn fail_retirement(_: &Path) -> Result<(), String> {
+    Err("injected container retirement failure".into())
+}
+
 fn model_attachment(backing: &Path) -> Result<Option<PathBuf>, String> {
     // Each byte models one observation: gone (0), live container (1), or
     // residual physical store (2). Command status is generated separately.
@@ -406,6 +458,7 @@ fn check_retained_backing(eject: fn(&Path, bool) -> Result<(), String>) {
         volume: None,
         eject,
         attachment: |_| Ok(Some(PathBuf::from("/dev/disk999999"))),
+        retire: |_| Ok(()),
         _guard: IMAGES
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -460,6 +513,9 @@ proptest! {
         forced_ok in any::<bool>(),
         normal_detached in any::<bool>(),
         forced_detached in any::<bool>(),
+        retirement_ok in any::<bool>(),
+        retirement_detached in any::<bool>(),
+        final_detached in any::<bool>(),
         attachment_known in any::<bool>(),
         unwinding in any::<bool>(),
     ) {
@@ -468,6 +524,8 @@ proptest! {
         fs::write(retained.join("oracle.sparseimage"), [
             1, if normal_detached { 0 } else { 2 },
             if forced_detached { 0 } else { 2 },
+            if retirement_detached { 0 } else { 2 },
+            if final_detached { 0 } else { 2 },
         ])
             .expect("backing file");
         let eject: fn(&Path, bool) -> Result<(), String> =
@@ -486,6 +544,9 @@ proptest! {
             attachment: if attachment_known {
                 model_attachment
             } else { unknown_attachment },
+            retire: if retirement_ok {
+                |_| Ok(())
+            } else { fail_retirement },
             _guard: IMAGES.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         };
@@ -502,7 +563,8 @@ proptest! {
                 Some(&"original oracle failure"));
         }
         prop_assert_eq!(retained.join("oracle.sparseimage").exists(),
-            !attachment_known || (!normal_detached && !forced_detached));
+            !attachment_known || !(normal_detached || forced_detached
+                || retirement_detached || final_detached));
         if retained.exists() {
             fs::remove_dir_all(retained)
                 .expect("remove the unmounted stand-in");
@@ -632,17 +694,18 @@ fn busy_physical_store(target: &Path, force: bool) -> Result<(), String> {
     let output = run(Command::new("hdiutil").args(["info", "-plist"]))?;
     let records = plist_field(&output.stdout, "images")?;
     let images = records.as_array().ok_or("attached image records")?;
-    let parent = images.iter().any(|image| {
+    let held = images.iter().any(|image| {
         image["system-entities"].as_array().is_some_and(|entries| {
             entries.iter().any(|entry| {
                 entry["dev-entry"].as_str().map(Path::new) == Some(target)
-                    && entry["content-hint"] == "GUID_partition_scheme"
-            })
+            }) && entries
+                .iter()
+                .any(|entry| entry["content-hint"] == APFS_CONTAINER)
         })
     });
-    if parent {
-        // Model the CI failure: unmounted APFS still holds its store open.
-        // The container itself remains detachable with the native tools.
+    if held {
+        // CI refused both container and physical-store ejection after all
+        // volumes unmounted. Keep that hold until APFS retires its container.
         Err("modeled EBUSY: physical store has a live APFS container".into())
     } else {
         eject(target, force)
