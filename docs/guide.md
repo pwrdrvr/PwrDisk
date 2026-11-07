@@ -624,6 +624,15 @@ What is different from Linux:
 
 - **Free space** is what `df` reports. Finder's figure is larger: it counts
   purgeable space (caches and local snapshots macOS will clear on its own).
+  On the startup disk, the meter is labelled **APFS container**: capacity
+  minus free space includes System, Data, Preboot, Recovery and VM together.
+  A scan of `/` includes readable System and Data files, including Data-only
+  contents under `/System/Volumes/Data`; firmlink aliases there are excluded
+  using macOS's `/usr/share/firmlinks` table. Nested mounts remain excluded.
+  An unavailable firmlink table is reported as unreadable. Hover the **ⓘ**
+  beside the disk heading for the accounting scopes and units. Estimated
+  repeated clone allocation does not turn a scan into exact physical use;
+  the remaining difference is not a measurement of unreadable files.
 - **Cloned files** (copies APFS shares blocks between, as Finder's Duplicate
   makes) remain counted in full in the treemap. The scan line separately
   reports bytes in cloned files and estimated repeated data-fork allocation.

@@ -4804,6 +4804,49 @@ fn disk_section(
     cx: &Context<'_, Disktree>,
 ) -> Div {
     let device = app.device.clone().unwrap_or_default();
+    // statvfs exposes the startup container's shared free space, even
+    // though device_for names Data. Do not label it as Data-only usage.
+    let startup_container = cfg!(target_os = "macos")
+        && app.remote.is_none()
+        && (app.disk_root.as_deref() == Some(Path::new("/"))
+            || app.root_path == Path::new("/"));
+    let label = widgets::eyebrow(
+        if startup_container {
+            "APFS container ⓘ"
+        } else if app.remote.is_none() {
+            "Disk ⓘ"
+        } else {
+            "Disk"
+        },
+        cx,
+    );
+    let label = if app.remote.is_none() {
+        with_tooltip(
+            label
+                .id("disk-accounting")
+                .debug_selector(|| "disk-accounting".into()),
+            if startup_container {
+                "Disk use includes all APFS volumes: Data, System, \
+                     Preboot, Recovery and VM. The scan adds readable file \
+                     allocation under the chosen folder; APFS clones can \
+                     count shared blocks more than once. Unreadable \
+                     contents, snapshots and filesystem metadata are not \
+                     measured by that file total. Subtracting the estimated \
+                     repeated allocation does not give exact physical use. \
+                     Finder uses decimal GB; PwrDisk uses binary GiB."
+            } else {
+                "The scan adds readable file sizes under the chosen \
+                     folder. Disk use also includes files outside that \
+                     folder, unreadable contents, snapshots and filesystem \
+                     metadata. Shared blocks can be counted more than \
+                     once; apparent size measures length rather than \
+                     allocation. A file total is not exact physical use."
+            },
+        )
+        .into_any_element()
+    } else {
+        label.into_any_element()
+    };
     // The disk header doubles as the way to another volume: it opens the
     // picker, like `V` does. A plain label would hide that the scan can move.
     let header = div()
@@ -4811,7 +4854,7 @@ fn disk_section(
         .flex_row()
         .items_center()
         .gap(space::SM)
-        .child(widgets::eyebrow("Disk", cx))
+        .child(label)
         .child(
             div()
                 .text_size(text::CAPTION)

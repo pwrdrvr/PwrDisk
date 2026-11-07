@@ -51,9 +51,19 @@ separately, and do not propose worktrees just to release clone groups.
   Bounds are scan-derived, before snapshots, open files and
   later changes; even the lower estimate is not a guaranteed saving.
 - **One container, several volumes.** The System, Data, Preboot, Recovery
-  and VM volumes share one APFS container's space. A whole-disk scan of
-  `/` explains the Data volume; the rest shows as space the scan does not
-  explain. `diskutil apfs list` shows each volume's use.
+  and VM volumes share one APFS container's space. The startup disk meter
+  measures that container's use and free space, not Data alone. A scan of
+  `/` includes readable System and Data files; it excludes nested mounts
+  such as Preboot, Recovery and VM. Data-only contents under
+  `/System/Volumes/Data` are included, while destinations listed in
+  `/usr/share/firmlinks` are excluded there because the scan reaches them
+  through their normal paths. A missing or invalid firmlink table makes
+  that Data traversal unreadable, rather than silently omitting its files
+  or counting aliases twice. `diskutil apfs list` shows each volume's use.
+  Finder's startup-volume Used figure can cover System and Data together;
+  convert its decimal GB to GiB before comparing. The clone-adjusted scan
+  is still approximate: do not attribute its entire residual difference
+  to unreadable files or snapshots without measuring them.
 - **Local snapshots hold deleted data.** Time Machine and system updates
   keep APFS snapshots; space freed while one exists may not come back until
   it expires. `tmutil listlocalsnapshots /` lists them. Deleting one

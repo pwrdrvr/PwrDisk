@@ -295,7 +295,8 @@ impl ScanHandle {
             root_device: Mutex::new(None),
             foreign_mounts: OnceLock::new(),
             never_scanned: OnceLock::new(),
-            data_services: OnceLock::new(),
+            data_volume: OnceLock::new(),
+            data_error: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
             accounted: Arc::new(Seen::new()),
@@ -392,7 +393,8 @@ fn scan_accounted(
         root_device: Mutex::new(None),
         foreign_mounts: OnceLock::new(),
         never_scanned: OnceLock::new(),
-        data_services: OnceLock::new(),
+        data_volume: OnceLock::new(),
+        data_error: OnceLock::new(),
         data_device: OnceLock::new(),
         visited_dirs: Mutex::new(FxHashSet::default()),
         accounted,
@@ -421,8 +423,10 @@ struct WalkContext {
     /// Directories no scan enters, on any volume setting: see
     /// [`crate::space::never_scanned`].
     never_scanned: OnceLock<FxHashSet<PathBuf>>,
-    /// A second Data mount exposes private stores, never firmlink aliases.
-    data_services: OnceLock<PathBuf>,
+    /// A second Data mount exposes its files except firmlink aliases.
+    data_volume: OnceLock<PathBuf>,
+    /// An unreadable firmlink map must not silently hide Data-only files.
+    data_error: OnceLock<io::Error>,
     data_device: OnceLock<Option<u64>>,
     /// Directories already entered, so followed symlinks cannot loop.
     visited_dirs: Mutex<FxHashSet<(u64, u64)>>,
@@ -528,9 +532,13 @@ impl WalkContext {
         {
             return Classified::Skipped;
         }
-        if self.data_services.get() == Some(&path) {
-            // `/` presents the system volume beside Data. This one mount
-            // exception is constrained by the whitelist in `walk`.
+        if self.data_volume.get() == Some(&path) {
+            // `/` presents the system volume beside Data. Exclude only
+            // known firmlink destinations, retaining Data-only contents.
+            if let Some(error) = self.data_error.get() {
+                self.progress.record_error(&path, error);
+                return Classified::Unreadable;
+            }
             return Classified::Subdirectory {
                 path,
                 name: entry.take_name(),
@@ -566,10 +574,8 @@ impl WalkContext {
             return Classified::Known(entry.take_name());
         }
         if self.options.one_filesystem && self.foreign_mounts.get().is_none() {
-            let device = if let Some(data) = self
-                .data_services
-                .get()
-                .filter(|data| path.starts_with(data))
+            let device = if let Some(data) =
+                self.data_volume.get().filter(|data| path.starts_with(data))
             {
                 *self.data_device.get_or_init(|| {
                     fs::metadata(data).map(|meta| device_of(&meta)).ok()
@@ -1179,13 +1185,23 @@ fn scan_on_pool(
     ) {
         let _ = context.progress.volume_used.set(used);
     }
-    if let Some(data) = crate::space::data_services_only(root, canonical) {
-        let _ = context.data_services.set(data);
+    let mut never = crate::space::never_scanned(root, canonical);
+    if let Some(data) = crate::space::data_volume_below(root, canonical) {
+        match fs::read_to_string("/usr/share/firmlinks")
+            .and_then(|table| crate::space::parse_macos_firmlinks(&table))
+        {
+            Ok(aliases) => {
+                never.extend(aliases.iter().map(|alias| data.join(alias)));
+            }
+            Err(error) => {
+                let _ = context.data_error.set(error);
+            }
+        }
+        let _ = context.data_volume.set(data);
     }
-    if let Some(data) = context.data_services.get() {
+    if let Some(data) = context.data_volume.get() {
         let _ = context.progress.service_root.set(data.clone());
     }
-    let mut never = crate::space::never_scanned(root, canonical);
     // Hidden-entry and depth filters can leave an alias as the only route
     // to files. Keep every mount view when either filter is active.
     if context.options.include_hidden && context.options.max_depth.is_none() {
@@ -1673,13 +1689,6 @@ fn walk<'h>(
                 }
                 match entry {
                     Ok(mut entry) => {
-                        if context.data_services.get() == Some(&dir.path)
-                            && !crate::macos_services::is_service_name(
-                                entry.name(),
-                            )
-                        {
-                            continue;
-                        }
                         match context.classify(&dir.path, &mut entry) {
                             Classified::Subdirectory {
                                 path,
@@ -2229,8 +2238,81 @@ mod tests {
     }
 
     #[cfg(unix)]
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 24,
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        // The second Data namespace must retain every non-firmlink file,
+        // including new names and private siblings of nested firmlinks.
+        // stat supplies the allocation oracle; aliases and mounts stay out.
+        #[test]
+        fn data_only_files_match_the_allocation_oracle(
+            sizes in proptest::collection::vec(1_usize..20_000, 4),
+            name in "[a-z]{1,12}",
+        ) {
+            let temp = TempDir::new().expect("fixture");
+            let root = temp.path();
+            let data = root.join("Data");
+            let user = write(root, "Users/me/file", 1234);
+            let aliases = ["Users", "System/Library/AssetsV2"];
+            let asset = write(root, "System/Library/AssetsV2/file", 4321);
+            for (alias, original) in aliases.iter().zip([&user, &asset]) {
+                let to = data.join(alias).join("file");
+                fs::create_dir_all(to.parent().unwrap()).unwrap();
+                fs::hard_link(original, to).unwrap();
+            }
+            let mut measured = vec![user, asset];
+            for (path, size) in [
+                format!("Data/.{name}/file"),
+                format!("Data/{name}/file"),
+                "Data/System/Library/private-store/file".into(),
+                "Data/top-level-file".into(),
+            ].iter().zip(sizes) {
+                measured.push(write(root, path, size));
+            }
+            write(root, "Data/nested-mount/file", 9999);
+            let context = Arc::new(WalkContext {
+                known: None,
+                options: ScanOptions::default(),
+                progress: Arc::new(ScanProgress::default()),
+                root_device: Mutex::new(None),
+                foreign_mounts: OnceLock::from(FxHashSet::from_iter([
+                    data.clone(), data.join("nested-mount"),
+                ])),
+                never_scanned: OnceLock::from(aliases.iter()
+                    .map(|alias| data.join(alias)).collect::<FxHashSet<_>>()),
+                data_volume: OnceLock::from(data),
+                data_error: OnceLock::new(),
+                data_device: OnceLock::new(),
+                visited_dirs: Mutex::new(FxHashSet::default()),
+                accounted: Arc::new(Seen::new()),
+                require_complete: false,
+                leaves: None,
+                volume: OnceLock::new(),
+                #[cfg(target_os = "macos")]
+                clone_cache: crate::clone_cache::Cache::default(),
+            });
+            let tree = scan_blocking(root, &context).expect("scan");
+            let expected: u64 = measured.iter().map(|path| {
+                allocated_bytes(&fs::metadata(path).unwrap()).unwrap()
+            }).sum();
+            proptest::prop_assert_eq!(tree.root().bytes, expected);
+            let data = child(tree.root(), "Data");
+            proptest::prop_assert!(data.child_named("Users").is_none());
+            proptest::prop_assert!(
+                data.child_named("nested-mount").is_none()
+            );
+            proptest::prop_assert!(child(child(data, "System"), "Library")
+                .child_named("AssetsV2").is_none());
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn a_second_data_mount_counts_private_stores_without_its_user_aliases() {
+    fn a_second_data_mount_keeps_data_only_files_without_its_user_aliases() {
         let temp = TempDir::new().expect("tempdir");
         let root = temp.path();
         let ordinary = write(root, "Users/me/document", 100);
@@ -2242,19 +2324,22 @@ mod tests {
         let index = write(root, "Data/.Spotlight-V100/index", 4567);
         let duplicate = data.join(".Spotlight-V100/another-name");
         fs::hard_link(&index, &duplicate).expect("hardlink inside a store");
-        write(root, "Data/not-a-private-store/blob", 9999);
+        let other = write(root, "Data/not-a-private-store/blob", 9999);
         let context = Arc::new(WalkContext {
             known: None,
             options: ScanOptions::default(),
             progress: Arc::new(ScanProgress::default()),
             root_device: Mutex::new(None),
-            // The Data mount is an explicit boundary on modern macOS. Only
-            // its whitelisted private stores may cross it.
+            // The Data mount is an explicit boundary on modern macOS;
+            // its firmlink aliases are excluded, not its other contents.
             foreign_mounts: OnceLock::from(FxHashSet::from_iter(
                 [data.clone()],
             )),
-            never_scanned: OnceLock::new(),
-            data_services: OnceLock::from(data),
+            never_scanned: OnceLock::from(FxHashSet::from_iter([
+                data.join("Users")
+            ])),
+            data_volume: OnceLock::from(data),
+            data_error: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
             accounted: Arc::new(Seen::new()),
@@ -2270,12 +2355,49 @@ mod tests {
             allocated_bytes(&fs::metadata(path).expect("metadata"))
                 .expect("Unix allocation")
         };
-        assert_eq!(tree.bytes, size(&ordinary) + size(&history) + size(&index));
+        assert_eq!(
+            tree.bytes,
+            size(&ordinary) + size(&history) + size(&index) + size(&other)
+        );
         let data = child(tree, "Data");
-        assert_eq!(data.children().len(), 2);
+        assert_eq!(data.children().len(), 3);
         assert_eq!(child(data, ".fseventsd").bytes, size(&history));
         assert_eq!(child(data, ".Spotlight-V100").bytes, size(&index));
         assert_eq!(context.progress.snapshot().errors, 0);
+    }
+
+    #[test]
+    fn an_unknown_firmlink_map_reports_incomplete_instead_of_empty_data() {
+        let temp = TempDir::new().unwrap();
+        write(temp.path(), "Data/private/file", 1234);
+        let context = Arc::new(WalkContext {
+            known: None,
+            options: ScanOptions::default(),
+            progress: Arc::new(ScanProgress::default()),
+            root_device: Mutex::new(None),
+            foreign_mounts: OnceLock::new(),
+            never_scanned: OnceLock::new(),
+            data_volume: OnceLock::from(temp.path().join("Data")),
+            data_error: OnceLock::from(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Firmlink map is unavailable",
+            )),
+            data_device: OnceLock::new(),
+            visited_dirs: Mutex::new(FxHashSet::default()),
+            accounted: Arc::new(Seen::new()),
+            require_complete: false,
+            leaves: None,
+            volume: OnceLock::new(),
+            #[cfg(target_os = "macos")]
+            clone_cache: crate::clone_cache::Cache::default(),
+        });
+        let tree = scan_blocking(temp.path(), &context).unwrap();
+        assert!(tree.root().read_error);
+        assert_eq!(context.progress.snapshot().errors, 1);
+        assert!(
+            context.progress.snapshot().messages[0]
+                .contains("Firmlink map is unavailable")
+        );
     }
 
     #[test]
@@ -2400,7 +2522,8 @@ mod tests {
             root_device: Mutex::new(None),
             foreign_mounts: OnceLock::new(),
             never_scanned: OnceLock::new(),
-            data_services: OnceLock::new(),
+            data_volume: OnceLock::new(),
+            data_error: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
             accounted: Arc::new(Seen::new()),
@@ -2715,7 +2838,8 @@ mod tests {
             root_device: Mutex::new(None),
             foreign_mounts: OnceLock::new(),
             never_scanned: OnceLock::new(),
-            data_services: OnceLock::new(),
+            data_volume: OnceLock::new(),
+            data_error: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
             accounted: Arc::new(Seen::new()),

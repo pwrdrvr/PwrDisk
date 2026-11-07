@@ -102,6 +102,36 @@ fn fixture() -> tempfile::TempDir {
 }
 
 #[gpui_kit::test]
+fn disk_accounting_explanation_renders_for_local_sources(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    let note = cx.debug_bounds("disk-accounting").expect("accounting note");
+    cx.simulate_mouse_move(note.center(), None, gpui_kit::Modifiers::default());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    draw(cx);
+    assert!(cx.debug_bounds("app-tooltip-surface").is_some());
+    update(&view, cx, |app, cx| {
+        app.root_path = PathBuf::from("/");
+        app.disk_root = Some(PathBuf::from("/"));
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("disk-accounting").is_some());
+    update(&view, cx, |app, cx| {
+        app.remote = Some("fixture-host".into());
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("disk-accounting").is_none());
+}
+
+#[gpui_kit::test]
 fn artifact_assessments_render_and_vm_data_stays_out_of_cleanup_filters(
     cx: &mut TestAppContext,
 ) {
