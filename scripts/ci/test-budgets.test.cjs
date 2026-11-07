@@ -68,6 +68,29 @@ test('a cold Intel build leaves the execution budget intact', () => {
   assert.equal(intel.completion(11, 10), 'complete');
 });
 
+test('Intel: the enclosing job covers every valid phase budget', () => {
+  // Lifecycle, compilation and execution have independent deadlines. A
+  // valid phase must not lose its budget to time spent in earlier phases.
+  for (let fixture = 0; fixture <= intel.fixtureLimit; fixture++) {
+    for (let build = 0; build <= intel.compileLimit; build++) {
+      for (let execution = 0; execution <= intel.testLimit; execution++) {
+        assert.equal(intel.completion(build, execution, fixture), 'complete',
+          `fixture ${fixture}m, compile ${build}m, execute ${execution}m`);
+      }
+    }
+  }
+  assert.ok(intel.jobLimit >=
+    intel.fixtureLimit + intel.compileLimit + intel.testLimit + 5,
+  'leave five minutes for setup and cleanup beyond the phase deadlines');
+});
+
+test('Intel: a cold build and long APFS run leave room for feature tests', () => {
+  // Run 42415250815 passed all workspace tests, including 10m07s in core,
+  // then the 30-minute job ended during the screenshot-feature build.
+  // This workload fits each phase's deadline but exceeded that job limit.
+  assert.equal(intel.completion(14, 14, 4), 'complete');
+});
+
 test('Apple silicon compilation leaves room for every test suite', () => {
   // Run 42325538195 compiled for 3m06s, then spent 6m23s in core alone.
   // Round up compilation and allow the remaining suites another minute.
