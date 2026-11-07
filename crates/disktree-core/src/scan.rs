@@ -2692,6 +2692,54 @@ mod tests {
         assert_eq!(by_files.files, 5);
     }
 
+    #[cfg(target_os = "macos")]
+    fn empty_directory_matches_readdir(mode: u32) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let temp = TempDir::new().expect("tempdir");
+        let dir = temp.path().join("a");
+        fs::create_dir(&dir).expect("mkdir");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(mode))
+            .expect("chmod");
+        let listed = fs::read_dir(&dir)
+            .expect("read permission")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("list");
+        let tree = scan_dir(temp.path(), &options());
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+            .expect("restore");
+        assert!(listed.is_empty());
+        assert!(
+            !child(tree.root(), "a").read_error,
+            "an empty readable directory has no unknown contents: {mode:o}"
+        );
+        assert!(!tree.root().read_error, "the root's totals are complete");
+    }
+
+    #[cfg(target_os = "macos")]
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 32,
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+        #[test]
+        fn empty_readable_directories_are_complete(extra in 0_u32..0o400) {
+            empty_directory_matches_readdir(0o400 | extra);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_empty_mode_444_directory_is_complete() {
+        empty_directory_matches_readdir(0o444);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_empty_mode_400_directory_is_complete() {
+        empty_directory_matches_readdir(0o400);
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_unreadable_directory_is_recorded_not_fatal() {

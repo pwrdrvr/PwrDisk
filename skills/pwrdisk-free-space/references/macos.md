@@ -5,6 +5,10 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
 
 ## Reading the numbers
 
+An empty directory with read permission is complete even without search
+permission. A bulk metadata permission error is cleared only when directory
+enumeration proves it empty; nonempty or unreadable contents stay incomplete.
+
 Before promising recovery, call `pwrdisk_retention` for each selected
 volume. This read-only, time-bounded check lists local Time Machine
 snapshots. It does not quantify blocks retained from the selected paths,
