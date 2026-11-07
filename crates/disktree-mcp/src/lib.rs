@@ -12,6 +12,8 @@
 //! [`Session`] holds what one connected agent knows; [`server`] is the
 //! protocol around it.
 
+mod cargo_outputs;
+mod outputs;
 pub mod report;
 mod retention;
 pub mod server;

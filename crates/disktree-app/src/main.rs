@@ -44,6 +44,7 @@ mod marks;
 mod palette;
 mod placement;
 mod power;
+mod raw_inspection;
 mod run_list;
 mod run_view;
 mod safety;

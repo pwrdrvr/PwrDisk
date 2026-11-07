@@ -428,10 +428,29 @@ pub fn mount_boundaries_for(root: &Path) -> Option<Vec<PathBuf>> {
         if !output.status.success() {
             return None;
         }
+        // Data's firmlinks are another namespace for the same entries;
+        // canonicalize keeps that spelling. A mount made through /Users
+        // must also bound a scan through /System/Volumes/Data/Users.
+        let alias = root
+            .strip_prefix(MACOS_DATA_VOLUME)
+            .ok()
+            .map(|below| Path::new("/").join(below));
         Some(
             parse_macos_mounts(&String::from_utf8_lossy(&output.stdout))
                 .into_iter()
-                .filter(|point| point != root && point.starts_with(root))
+                .filter(|point| point != root)
+                .filter_map(|point| {
+                    point
+                        .strip_prefix(root)
+                        .ok()
+                        .or_else(|| {
+                            alias.as_ref().and_then(|alias| {
+                                point.strip_prefix(alias).ok()
+                            })
+                        })
+                        .filter(|below| !below.as_os_str().is_empty())
+                        .map(|below| root.join(below))
+                })
                 .collect(),
         )
     }

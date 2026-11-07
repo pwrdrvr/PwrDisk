@@ -86,13 +86,16 @@ a root. Explicit command-line paths and `--disk` still start directly;
   smallest when the row runs out of room, wait in a **+N** menu at its
   end. Setting one there moves it onto the row, where its state shows.
 - **Mosaic:** colour is the *kind* of data — code, agent scratch,
-  toolchains, synced files, git, media, documents, caches, virtual
-  machines — at one muted level, lighter with depth. A diagonal hatch is
-  a cleanup suggestion to review (caches, sync history, package stores,
-  build output), independent of colour; it never says the contents are
-  safe to lose. Top-level directories carry a strip of their colour and a
+  toolchains, synced files, git, media, documents, caches, temporary data,
+  diagnostic logs, trash, virtual machines — at one muted level, lighter
+  with depth. A diagonal hatch is a cleanup suggestion to review (caches,
+  sync history, package stores, build output), independent of colour; it
+  never says the contents are safe to lose. Top-level directories carry a
+  strip of their colour and a
   name band; deeper open directories a slim label row. In **Age** mode
-  colour is the last write instead, from this week to older.
+  colour is the last write instead, from this week to older. Temporary and
+  agent scratch labels describe the location or use, not whether the data
+  is still needed or can be recovered.
 - **Legend:** each entry is also a filter. Click it once to show only that
   kind (or age), again to hide it, and a third time to show it again.
   Kinds set to only add up ("Code" and "Cache" show both), while
@@ -500,6 +503,18 @@ may be recoverable until emptied; permanent deletion cannot be undone
 through PwrDisk. Settings > Safety sets the per-operation limit: 5% of each
 volume's capacity by default, for both UI and MCP removal. The app rechecks
 the guards and re-measures the complete selection before removing anything.
+During this check the window says **Checking selection**. Hardlinked files
+count once across all selected paths, as in the scan; both the reviewed and
+fresh volume totals must fit the confirmed limit. Scan and recheck use the
+same platform entry readers and aggregation code, with the scan's size,
+hardlink, clone-metadata and worker settings captured in the removal plan.
+A recheck completes hidden/deep traversal, stays on each target's volume,
+and never follows symbolic links, so filters cannot hide data removal would
+touch. Default scans and rechecks have identical options. If the check
+refuses the selection, no selected paths are removed. The observed
+free-space change
+includes other activity on the volume and can be negative even when nothing
+was removed.
 
 When a PwrDisk window is open, its tree is what the agent reads. `ls`,
 `find` and `scan` are answered from the mosaic on screen, a mark is

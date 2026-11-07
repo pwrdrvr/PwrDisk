@@ -454,6 +454,7 @@ pub struct Disktree {
     /// pressing its button toggles instead of reopening.
     pub export_menu_was_open: bool,
     pub removal_mode: RemovalMode,
+    pub raw_inspection: Option<crate::raw_inspection::RawInspection>,
     pub cleanup_review: Option<crate::cleanup::Review>,
     pub cleanup_results: Vec<disktree_core::cleanup::Report>,
     /// What each step of the running cleanup does, in run-list order.
@@ -505,6 +506,8 @@ pub struct Disktree {
     /// Free bytes on the scanned volume as the latest run started, for
     /// what it has freed so far.
     pub run_free_before: Option<u64>,
+    /// The worker has finished the batch preflight and may touch targets.
+    pub run_checked: bool,
     pub space: Option<SpaceInfo>,
     /// Free space before the removal, for the honest "what did it actually
     /// free" number rather than the sum of what was marked.
@@ -791,6 +794,7 @@ impl Disktree {
                 RemovalMode::Permanent
             },
             trash_backend,
+            raw_inspection: None,
             cleanup_review: None,
             cleanup_results: vec![],
             cleanup_actions: vec![],
@@ -814,6 +818,7 @@ impl Disktree {
             run_list: crate::run_list::RunList::default(),
             run_scroll: gpui_kit::UniformListScrollHandle::new(),
             run_free_before: None,
+            run_checked: false,
             space,
             space_baseline: None,
             rescan_after_removal: false,
@@ -1662,14 +1667,8 @@ impl Disktree {
         } else {
             self.reread_disks();
             self.screen = Screen::Review;
-            if self.remote.is_none()
-                && self.marks.items().iter().any(|target| {
-                    disktree_core::cleanup::inspection_reason(&target.path)
-                        .is_some()
-                })
-            {
-                self.removal_mode = RemovalMode::OwnerCleanup;
-            }
+            self.prepare_raw_inspection(cx);
+            self.route_inspected_caches(cx);
             self.focus_request = Some(FocusTarget::Root);
         }
         cx.notify();
@@ -3026,6 +3025,7 @@ impl Disktree {
             return selection;
         }
         let mut plan = plan(self.marks.items(), &self.root_path);
+        plan.scan_options = self.options.clone();
         if let Some(tree) = &self.tree {
             let mut cached = self.accounting.borrow_mut();
             if !cached.tree.ptr_eq(&Arc::downgrade(tree))
@@ -3533,6 +3533,12 @@ impl Disktree {
     /// a permanent deletion, which cannot be undone. `rescan` is Remove &
     /// rescan; without it the tree drops what went and stays.
     pub fn commit(&mut self, rescan: bool, cx: &mut Context<'_, Self>) {
+        if self.removal_mode != RemovalMode::OwnerCleanup
+            && self.remote.is_none()
+            && !self.raw_removal_reviewed(cx)
+        {
+            return;
+        }
         // A cleanup is checked, then decided, before anything else: until
         // then there is nothing to confirm.
         if self.removal_mode == RemovalMode::OwnerCleanup
@@ -3712,24 +3718,6 @@ impl Disktree {
         let plan = cleanup
             .as_ref()
             .map_or_else(|| self.plan(), |approved| approved.plan.clone());
-        if self.removal_mode != RemovalMode::OwnerCleanup
-            && let Some((target, reason)) =
-                plan.targets.iter().find_map(|target| {
-                    disktree_core::cleanup::inspection_reason(&target.path)
-                        .map(|reason| (target, reason))
-                })
-        {
-            self.say(
-                format!(
-                    "{}: {reason}. Choose Cache cleanup to decide what happens to it.",
-                    target.path.display()
-                ),
-                Status::Warning,
-                cx,
-            );
-            cx.notify();
-            return;
-        }
         if plan.is_empty() {
             self.say("nothing is marked", Status::Warning, cx);
             cx.notify();
@@ -3747,6 +3735,12 @@ impl Disktree {
                 return;
             }
         };
+        if by == Remover::Person
+            && cleanup.is_none()
+            && !self.raw_removal_reviewed(cx)
+        {
+            return;
+        }
         // This window quits once the prompt is answered yes, and quitting
         // would stop a permanent delete halfway.
         if self.restarting {
@@ -3780,6 +3774,7 @@ impl Disktree {
         self.track_agent_removal();
         self.run_scroll = gpui_kit::UniformListScrollHandle::new();
         self.run_free_before = before.map(|space| space.available);
+        self.run_checked = false;
         self.cleanup_results.clear();
         self.cleanup_actions =
             cleanup.as_ref().map_or_else(Vec::new, |approved| {
@@ -3852,7 +3847,7 @@ impl Disktree {
                 }
                 // The list was built from the plan, so it already holds
                 // the total the worker announces.
-                RemovalEvent::Start { .. } => {}
+                RemovalEvent::Start { .. } => self.run_checked = true,
                 RemovalEvent::Item { path, outcome, .. } => {
                     if self.run_list.settle(&path, &outcome).is_some() {
                         self.scroll_to_focus();
@@ -4034,17 +4029,27 @@ impl Disktree {
 
     /// Keep what a removal took, so the tree shows it as gone and it is
     /// never marked again before a scan.
-    fn note_removed(&mut self, removed: Vec<disktree_core::removal::Target>) {
+    pub(crate) fn note_removed(
+        &mut self,
+        removed: Vec<disktree_core::removal::Target>,
+    ) {
         let style = self.path_style();
-        for target in removed {
+        for mut target in removed {
             if self.was_removed(&target.path) {
                 continue;
             }
+            // The run reports only what remained. Preserve the scan's full
+            // size before absorbing records of earlier removals inside it.
+            target.bytes = target
+                .bytes
+                .saturating_add(self.removed.below(&target.path, style));
             let path = target.path.clone();
             self.removed.toggle(target, style);
             self.removed.absorb(&path, style);
         }
-        self.forget_removed_insights();
+        // Existing candidates may already be discounted by earlier removals.
+        // Rebuild from the scan before applying the cumulative ledger once.
+        self.refresh_insights();
     }
 
     /// Whether `path` was removed since the scan, itself or with a
@@ -5359,6 +5364,9 @@ impl Render for Disktree {
         crate::chrome::client_frame(&frame, root, window, &theme)
     }
 }
+
+#[cfg(test)]
+mod removal_tests;
 
 #[cfg(test)]
 mod tests {

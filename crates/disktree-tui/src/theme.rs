@@ -73,6 +73,9 @@ impl Palette {
                 base_category_color(Category::Media),
                 base_category_color(Category::Documents),
                 base_category_color(Category::Cache),
+                base_category_color(Category::Temporary),
+                base_category_color(Category::DiagnosticLogs),
+                base_category_color(Category::Trash),
                 base_category_color(Category::FilesystemEvents),
                 base_category_color(Category::Spotlight),
                 base_category_color(Category::VirtualMachine),
@@ -99,6 +102,9 @@ impl Palette {
                 Color::Rgb(118, 71, 153),
                 Color::Rgb(100, 103, 111),
                 Color::Rgb(141, 112, 36),
+                Color::Rgb(117, 124, 64),
+                Color::Rgb(146, 71, 145),
+                Color::Rgb(87, 118, 65),
                 Color::Rgb(120, 105, 150),
                 Color::Rgb(55, 115, 130),
                 Color::Rgb(69, 92, 158),
@@ -145,6 +151,9 @@ impl Palette {
             &["magenta", "color5"],
             &["light_foreground", "light_fg", "color7"],
             &["yellow", "color3"],
+            &["yellow", "color3"],
+            &["magenta", "color5"],
+            &["green", "color2"],
             &["magenta", "color5"],
             &["cyan", "color6"],
             &["blue", "color4"],
@@ -410,6 +419,9 @@ pub const fn base_category_color(category: Category) -> Color {
         Category::Media => Color::Rgb(151, 101, 194),
         Category::Documents => Color::Rgb(155, 163, 180),
         Category::Cache => Color::Rgb(197, 169, 83),
+        Category::Temporary => Color::Rgb(167, 178, 115),
+        Category::DiagnosticLogs => Color::Rgb(185, 115, 181),
+        Category::Trash => Color::Rgb(142, 166, 114),
         Category::FilesystemEvents => Color::Rgb(150, 132, 180),
         Category::Spotlight => Color::Rgb(83, 155, 175),
         Category::VirtualMachine => Color::Rgb(105, 126, 194),
@@ -464,6 +476,15 @@ pub fn shade(color: Color, factor: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_dark_palette_preserves_every_category_color() {
+        let palette = Palette::dark();
+        for category in Category::LEGEND.into_iter().chain([Category::Other]) {
+            let color = base_category_color(category);
+            assert_eq!(palette.map(color), color, "{category:?}");
+        }
+    }
 
     #[test]
     fn semantic_dark_and_light_themes_map_roles() {

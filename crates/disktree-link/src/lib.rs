@@ -48,7 +48,7 @@ pub const SUPPORTED: bool = cfg!(any(unix, windows));
 
 /// Protocol version, bumped when a message changes shape. Both sides are
 /// built from one tree, so a mismatch means an old window is still open.
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 /// Updating the GUI does not replace a process hosted by an MCP client.
 pub const RECONNECT_MCP: &str = "Updating PwrDisk's GUI does not restart its MCP server. In your MCP client, restart/reconnect the PwrDisk MCP server using `pwrdisk mcp` from the updated installation. If the GUI is outdated, quit and reopen the updated PwrDisk app.";
@@ -140,10 +140,50 @@ pub struct FindRequest {
     pub reclaimable: bool,
     pub name: Option<String>,
     pub before: Option<i64>,
+    /// Discover output boundaries without hiding nested artifact types.
+    #[serde(default)]
+    pub output_roots: bool,
     pub limit: usize,
 }
 
 impl FindRequest {
+    /// Preserve inventory boundary evidence on the wire. Ordinary listings
+    /// continue to report their existing full-path artifact assessment.
+    pub fn results(
+        &self,
+        path: &Path,
+        node: Node<'_>,
+    ) -> Result<FoundList, String> {
+        let found = self.query(path, node)?;
+        let mut list = FoundList::of(&found);
+        if self.output_roots {
+            for (row, (item_path, item)) in
+                list.matches.iter_mut().zip(&found.matches)
+            {
+                row.entry.artifact = disktree_core::artifact::output_detection(
+                    item_path,
+                    *item,
+                    item_path == path,
+                );
+            }
+        }
+        Ok(list)
+    }
+
+    /// One query implementation for the window and standalone MCP scans.
+    pub fn query<'a>(
+        &self,
+        path: &Path,
+        node: Node<'a>,
+    ) -> Result<disktree_core::query::Found<'a>, String> {
+        let filter = self.filter()?;
+        Ok(if self.output_roots {
+            disktree_core::query::find_outputs(path, node, &filter, self.limit)
+        } else {
+            disktree_core::query::find(path, node, &filter, self.limit)
+        })
+    }
+
     /// The filter this asks for, or why it cannot be one.
     pub fn filter(&self) -> Result<Filter, String> {
         let kind = Kind::named(&self.kind)

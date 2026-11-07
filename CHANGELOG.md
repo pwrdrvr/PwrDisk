@@ -7,6 +7,54 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.20.0
+
+- Output inventory - Add read-only `pwrdisk_find_outputs` for build output,
+  installed dependencies, caches and temporary, scratch, log and Trash
+  locations. Filter by type or language family, evidence, size and newest
+  file-write age; sort oldest first or largest first. Cargo output requires
+  metadata and Git tracking checks rather than a directory name alone.
+- Inventory context - Keep nested output types visible, identify enclosing
+  matches and count overlapping listed bytes once. Report evidence strength,
+  scan limitations and inspection bounds. A result identifies output rather
+  than proving it is safe to delete or promising recovered space. Linked
+  queries preserve the window's navigation, marks and removal previews.
+- Protected paths - Protect shared system containers such as /Applications
+  as a whole while eligible individual contents remain removable. Expand
+  Unix system-state and Windows installation, boot and volume-metadata
+  protections. Marking, Review and the worker share the same guards.
+- Root aliases - Apply system, home, profile and mount protections through
+  symlinked scan roots and macOS Data-volume aliases. One-filesystem scans
+  respect nested mounts under those spellings. Removing a selected symlink
+  still unlinks the entry without following its destination.
+- Deep paths - Inspect and remeasure deeply nested Unix trees without
+  failing solely because their full paths exceed the OS lookup limit.
+  Relocated-cache detection, unreadable-directory refusals, mount boundaries
+  and non-followed descendant symlinks retain their checks.
+- Capacity checks - Share the scanner's accounting with the removal
+  recheck, including hardlink de-duplication across the selection and the
+  chosen size policy. Check reviewed and fresh totals separately against
+  each disk's ceiling, avoiding double charges from changed walk order.
+  APFS clone savings remain separate from the capacity budget.
+- Preflight status - Show Checking selection before dispatching removal.
+  A refused preflight leaves rows waiting and reports that no selected
+  paths were removed. Label the signed measurement Free-space change;
+  other volume activity can make it negative.
+- Nested removals - Preserve all previously removed scanned bytes when a
+  later removal absorbs an enclosing directory. Remaining marks, MCP
+  listings and searches, and Worth a look totals now agree without double
+  discounts; each run still reports only its own removal.
+- Review inspection - Inspect marked trees for relocated supported caches
+  in the background before enabling raw-removal confirmation. Show the
+  refusal and route to Cache cleanup before the worker runs; unrelated
+  marks can still be removed after the affected mark is cleared.
+- Classification - Distinguish Temporary, Diagnostic logs and Trash from
+  caches, including scans started inside those locations. Preserve Git,
+  VM and protected-store ownership, and accept all core category filters
+  in MCP find.
+- Compatibility - The window link now uses protocol version 10. Update
+  and restart both the PwrDisk window and MCP process together.
+
 ## v0.19.0
 
 - Cleanup routing - Send paths to Cache cleanup only when PwrDisk

@@ -220,6 +220,7 @@ impl Detection {
             match self.kind {
                 Artifact::GitRepo => Category::Git,
                 Artifact::Worktree => Category::AgentScratch,
+                Artifact::DiagLogs => Category::DiagnosticLogs,
                 _ => Category::Cache,
             }
         }
@@ -261,6 +262,70 @@ pub fn assess(
         _ => detection,
     };
     detection.map(|mut d| {
+        if d.kind == Artifact::PackageCache
+            && crate::classify::is_pnpm_store(node)
+        {
+            d.evidence = Evidence::Layout;
+        }
+        d.assessed(node)
+    })
+}
+
+/// Inspect an output boundary without letting an outer tool hide its types.
+///
+/// The classifier's exclusions and layout rules remain authoritative. This
+/// inventory can expose a Scala subtree within an installed dependency tree.
+pub(crate) fn output_boundary(
+    parts: &[&str],
+    is_dir: bool,
+    excluded: &mut bool,
+) -> Option<Detection> {
+    let direct = at_boundary(parts, is_dir, excluded);
+    if *excluded || !is_dir || direct.is_some() {
+        return direct;
+    }
+    let tail = &parts[parts.len().saturating_sub(6)..];
+    // The shared matcher already searches every start position. Only a
+    // recognized outer artifact can hide a more specific boundary; skip its
+    // consumed prefix instead of retrying every suffix for ordinary sources.
+    let mut offset = 0;
+    while let Some((end, kind)) = rules::classify_parts(tail, offset) {
+        if end == tail.len() {
+            return Some(Detection::new(kind, evidence(tail)));
+        }
+        if end <= offset {
+            break;
+        }
+        offset = end;
+    }
+    None
+}
+
+/// Inventory rows report their own boundary, not an unrelated outer tool.
+///
+/// A scoped root can inherit the nearest output identity. Nearer temporary,
+/// trash and diagnostic hints remain descriptive rather than restoring a tool.
+pub fn output_detection(
+    path: &Path,
+    node: Node<'_>,
+    scoped: bool,
+) -> Option<Detection> {
+    let names = PathStyle::Native.names(path);
+    let parts: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
+    let mut excluded = excluded_tool_contents(&parts);
+    let direct = output_boundary(&parts, node.is_dir(), &mut excluded);
+    let inherited = if scoped
+        && !matches!(
+            node.category,
+            Category::Temporary | Category::Trash | Category::DiagnosticLogs
+        ) {
+        (1..parts.len())
+            .rev()
+            .find_map(|end| output_boundary(&parts[..end], true, &mut excluded))
+    } else {
+        None
+    };
+    direct.or(inherited).map(|mut d| {
         if d.kind == Artifact::PackageCache
             && crate::classify::is_pnpm_store(node)
         {
@@ -338,7 +403,7 @@ fn lowered(name: &str) -> Cow<'_, str> {
     }
 }
 
-fn excluded_tool_contents(parts: &[&str]) -> bool {
+pub(crate) fn excluded_tool_contents(parts: &[&str]) -> bool {
     parts.iter().enumerate().any(|(i, part)| {
         step();
         let Some(next) = parts.get(i + 1) else {
@@ -619,41 +684,15 @@ impl Roots {
         depth: usize,
     ) {
         step();
-        // VM ownership is propagated once; the rule window is bounded even
-        // in deeply nested dependency trees or repeated ambiguous segments.
-        let tail = &parts[parts.len().saturating_sub(6)..];
-        // Preserve tool-home exclusions after their names leave the bounded
-        // window; installed plugins/settings are not dependency caches.
-        let excluded =
-            excluded || (node.is_dir() && excluded_tool_contents(tail));
-        let machine = if node.is_dir() || possible_vm_file(node.name()) {
-            vm(tail, node.is_dir())
-        } else {
-            None
-        };
-        let detection = machine.or_else(|| {
-            if node.is_dir() && node.name().eq_ignore_ascii_case(".git") {
-                return Some(Detection::new(Artifact::GitRepo, Evidence::Name));
-            }
-            if !node.is_dir() || excluded {
-                return None;
-            }
-            if pnpm_store_end(tail) == Some(tail.len()) {
-                return Some(Detection::new(
-                    Artifact::PackageCache,
-                    evidence(tail),
-                ));
-            }
-            let (end, kind) = developer(tail)?;
-            (end == tail.len()).then(|| Detection::new(kind, evidence(tail)))
-        });
+        let mut excluded = excluded;
+        let detection = at_boundary(parts, node.is_dir(), &mut excluded);
         if let Some(detection) = detection {
             roots.insert(node, detection);
         }
         // A VM subtree is protected by its inherited category. Its files
         // need no additional overrides or path checks.
-        if machine.is_some()
-            || detection.is_some_and(|d| d.kind == Artifact::GitRepo)
+        if detection
+            .is_some_and(|d| d.kind.is_vm() || d.kind == Artifact::GitRepo)
         {
             return;
         }
@@ -676,6 +715,40 @@ impl Roots {
         }
         self.0.insert(node.id(), detection);
     }
+}
+
+/// Detect only a root ending at this boundary, rather than an artifact
+/// inherited from an earlier component. Scan-root replay and child discovery
+/// must use the same bounded rules and persistent tool-home exclusions.
+pub(crate) fn at_boundary(
+    parts: &[&str],
+    is_dir: bool,
+    excluded: &mut bool,
+) -> Option<Detection> {
+    let tail = &parts[parts.len().saturating_sub(6)..];
+    let name = tail.last()?;
+    *excluded |= is_dir && excluded_tool_contents(tail);
+    let machine = if is_dir || possible_vm_file(name) {
+        vm(tail, is_dir)
+    } else {
+        None
+    };
+    machine.or_else(|| {
+        if is_dir && name.eq_ignore_ascii_case(".git") {
+            return Some(Detection::new(Artifact::GitRepo, Evidence::Name));
+        }
+        if !is_dir || *excluded {
+            return None;
+        }
+        if pnpm_store_end(tail) == Some(tail.len()) {
+            return Some(Detection::new(
+                Artifact::PackageCache,
+                evidence(tail),
+            ));
+        }
+        let (end, kind) = developer(tail)?;
+        (end == tail.len()).then(|| Detection::new(kind, evidence(tail)))
+    })
 }
 
 #[cfg(test)]

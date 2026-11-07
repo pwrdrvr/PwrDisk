@@ -116,12 +116,18 @@ fn init(cx: &mut gpui_kit::App) {
     Theme::tokyo_night().apply(cx);
 }
 
+// macOS's default TMPDIR is protected system state under /private/var.
+fn removable_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+        .expect("removable fixture")
+}
+
 /// A small tree on disk: two directories, a nested file, and a hidden one.
 ///
 /// The hidden directory holds the largest file, which is both the common case
 /// in a home directory and the one the ranking has to get right.
 fn fixture() -> tempfile::TempDir {
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path();
     for (path, bytes) in [
         ("keep/notes.txt", 1_000_usize),
@@ -335,6 +341,12 @@ fn remote_view_over<'a>(
     let focus = view.read_with(cx, |app, _| app.focus.clone());
     cx.update(|window, cx| window.focus(&focus, cx));
     (view, cx, root)
+}
+
+/// Complete the read-only cache preflight before exercising a native run.
+fn inspect_raw(view: &Entity<Disktree>, cx: &mut Window) {
+    update(view, cx, |app, cx| app.prepare_raw_inspection(cx));
+    cx.run_until_parked();
 }
 
 fn draw(cx: &mut Window) {
@@ -2129,7 +2141,7 @@ fn settings_safety_reads_the_limit_once_and_shows_a_saved_pick(
 /// Three checkouts side by side: each a worktree's `.git` file and some
 /// data, largest first, so the first is selected when the window opens.
 fn checkouts() -> tempfile::TempDir {
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     for (name, bytes) in
         [("alpha", 300_000), ("beta", 200_000), ("gamma", 100_000)]
     {
@@ -2807,9 +2819,8 @@ fn enter_in_the_focused_volume_picker_scans_the_selected_root(
 ) {
     cx.update(init);
     let temp = fixture();
-    // Accepting a local root canonicalizes it, and the temporary directory
-    // is behind a link on macOS (/var -> /private/var) and a short 8.3 name
-    // on Windows runners, so compare against the resolved path.
+    // Accepting a local root canonicalizes it; the checkout itself can
+    // have another spelling, so compare against the resolved path.
     let target = dunce::canonicalize(temp.path().join("junk")).unwrap();
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, _| {
@@ -3556,6 +3567,7 @@ fn escape_in_the_delete_dialog_cancels(cx: &mut TestAppContext) {
         app.screen = Screen::Review;
         cx.notify();
     });
+    inspect_raw(&view, cx);
     draw(cx);
 
     press(cx, "enter");
@@ -4299,7 +4311,7 @@ fn switching_the_metric_keeps_the_directory_and_the_selection(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path();
     // Largest by size, but fewest files: the two swap places.
     std::fs::create_dir_all(root.join("big")).expect("mkdir");
@@ -4349,7 +4361,7 @@ fn toggling_the_metric_reorders_without_copying_the_tree(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path();
     std::fs::create_dir_all(root.join("big")).expect("mkdir");
     std::fs::write(root.join("big/one.bin"), vec![b'x'; 500_000])
@@ -4519,7 +4531,7 @@ fn mouse_side_buttons_go_back_and_forward(cx: &mut TestAppContext) {
 #[test]
 fn restart_arguments_parse_back_to_the_same_scan() {
     use disktree_core::tree::Metric;
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path().join("a folder");
     std::fs::create_dir(&root).expect("mkdir");
     let root = dunce::canonicalize(&root).expect("canonical root");
@@ -4876,7 +4888,7 @@ fn marked_window_resolution_budget(cx: &mut TestAppContext) {
 
     cx.update(init);
     let mut measure = |count| {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = removable_tempdir();
         let root_path = temp.path().to_path_buf();
         let mut tree = Draft::directory("root");
         for index in 0..count {
@@ -5057,7 +5069,7 @@ fn marked_interaction_timings(cx: &mut TestAppContext) {
     }
 
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     // One broad directory, kept fixed while only the number of marks grows.
     // Each marked folder contains a file: descendants still make one mark.
     for index in 0..1025 {
@@ -5159,7 +5171,7 @@ fn queue_budget_view(
 ) -> (tempfile::TempDir, Entity<Disktree>, &mut Window) {
     use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
 
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     let root_path = temp.path().to_path_buf();
     let mut tree = Draft::directory("root");
     let mut parent = Draft::directory("container");
@@ -6391,7 +6403,7 @@ fn accessible_file_pages_reach_every_entry_and_share_safe_marks(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     for i in 0..235 {
         std::fs::write(
             temp.path().join(format!("Résumé 日本語-{i:03}.txt")),
@@ -6462,7 +6474,7 @@ fn accessible_file_navigation_uses_absolute_paths_and_filter(
 }
 
 fn paginated_fixture(count: usize) -> tempfile::TempDir {
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     for index in 0..count {
         let prefix = if index < 150 { "match" } else { "other" };
         std::fs::write(
@@ -6669,12 +6681,18 @@ fn status_review_cancelled_widening_does_not_hide_the_active_screen(
         app.widen_to(temp.path().to_path_buf(), cx);
         app.cancel_scan(cx);
         app.open_review(cx);
-        for (screen, phase) in [
-            (Screen::Review, "Review marked paths"),
-            (Screen::Running, "Removal running"),
-            (Screen::Done, "Removal finished"),
+        for (screen, checked, phase) in [
+            (Screen::Review, false, "Review marked paths"),
+            (
+                Screen::Running,
+                false,
+                "Checking selection; nothing removed yet",
+            ),
+            (Screen::Running, true, "Removal running"),
+            (Screen::Done, false, "Removal finished"),
         ] {
             app.screen = screen;
+            app.run_checked = checked;
             let label = app.accessibility_status();
             assert!(label.starts_with(phase), "{label}");
             assert!(label.contains("Previous scan cancelled"), "{label}");
@@ -6696,13 +6714,16 @@ fn status_review_removal_completion_survives_its_background_rescan(
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
-    let epoch = update(&view, cx, |app, cx| {
+    update(&view, cx, |app, cx| {
         let keep = child_crumbs(app, &[], "keep");
         let notes = child_crumbs(app, &keep, "notes.txt");
         app.toggle_mark(&notes, cx);
         app.removal_mode = RemovalMode::Permanent;
         // Remove & rescan.
         app.rescan_after_removal = true;
+    });
+    inspect_raw(&view, cx);
+    let epoch = update(&view, cx, |app, cx| {
         app.begin_removal(cx);
         assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
         app.run_epoch
@@ -6734,7 +6755,7 @@ fn status_review_removal_completion_survives_its_background_rescan(
 /// Run a contrived permanent removal of `names`, each under the root, to
 /// its Done screen.
 fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
-    let epoch = update(view, cx, |app, cx| {
+    update(view, cx, |app, cx| {
         for name in names {
             let crumbs = app
                 .crumbs_for_path(&app.root_path.join(name))
@@ -6742,6 +6763,9 @@ fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
             app.toggle_mark(&crumbs, cx);
         }
         app.removal_mode = RemovalMode::Permanent;
+    });
+    inspect_raw(view, cx);
+    let epoch = update(view, cx, |app, cx| {
         app.begin_removal(cx);
         assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
         app.run_epoch
@@ -6792,7 +6816,7 @@ fn a_cargo_build_is_an_ordinary_removal(cx: &mut TestAppContext) {
         std::fs::write(file, text).unwrap();
     }
     let (view, cx) = view_over(temp.path(), cx);
-    let epoch = update(&view, cx, |app, cx| {
+    update(&view, cx, |app, cx| {
         for name in ["debug/deps", "debug/incremental"] {
             let crumbs =
                 app.crumbs_for_path(&build.join(name)).expect("in the tree");
@@ -6802,6 +6826,9 @@ fn a_cargo_build_is_an_ordinary_removal(cx: &mut TestAppContext) {
         app.open_review(cx);
         assert_eq!(app.removal_mode, before, "Review keeps the user's mode");
         app.removal_mode = RemovalMode::Permanent;
+    });
+    inspect_raw(&view, cx);
+    let epoch = update(&view, cx, |app, cx| {
         app.begin_removal(cx);
         assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
         app.run_epoch
@@ -6833,6 +6860,30 @@ fn a_cargo_build_is_an_ordinary_removal(cx: &mut TestAppContext) {
 /// each item is, and stays on Done, every item checked off, rather than
 /// only the names of what already went.
 #[gpui_kit::test]
+fn removal_plan_captures_the_scan_accounting_options(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_paths(&view, cx, &[temp.path().join("junk")]);
+    update(&view, cx, |app, _| {
+        app.options.apparent_size = true;
+        app.options.apfs_clone_metadata = false;
+        app.options.dedup_hardlinks = false;
+        app.options.threads.max_threads = 2;
+        let captured = app.selection_plan();
+        assert_eq!(
+            serde_json::to_value(&captured.scan_options).expect("plan"),
+            serde_json::to_value(&app.options).expect("scan"),
+        );
+        app.options = ScanOptions::default();
+        assert!(captured.scan_options.apparent_size);
+        assert!(!captured.scan_options.apfs_clone_metadata);
+        assert!(!captured.scan_options.dedup_hardlinks);
+        assert_eq!(captured.scan_options.threads.max_threads, 2);
+    });
+}
+
+#[gpui_kit::test]
 fn the_removal_list_stays_on_screen_from_start_to_done(
     cx: &mut TestAppContext,
 ) {
@@ -6847,7 +6898,7 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
     std::fs::rename(temp.path().join(".cache"), &build_output)
         .expect("ordinary removal fixture");
     let (view, cx) = view_over(temp.path(), cx);
-    let epoch = update(&view, cx, |app, cx| {
+    update(&view, cx, |app, cx| {
         for name in ["target/debug/deps", "junk/deeper"] {
             let crumbs = app
                 .crumbs_for_path(&app.root_path.join(name))
@@ -6855,13 +6906,18 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
             app.toggle_mark(&crumbs, cx);
         }
         app.removal_mode = RemovalMode::Permanent;
+    });
+    inspect_raw(&view, cx);
+    let epoch = update(&view, cx, |app, cx| {
         app.begin_removal(cx);
         assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
         app.run_epoch
     });
     draw(cx);
-    // Nothing is reported until the poll: both are listed, waiting, and
-    // the first is the one in hand.
+    // Until the worker reports Start, every row waits and no row claims
+    // to be removing anything. The current index is only the next target.
+    assert!(cx.debug_bounds("run-checking").is_some());
+    assert!(cx.debug_bounds("run-progress").is_none());
     assert!(cx.debug_bounds("run-list").is_some());
     assert!(cx.debug_bounds("run-row-0").is_some());
     assert!(cx.debug_bounds("run-row-1").is_some());
@@ -6921,8 +6977,9 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
 fn review_rows_shorten_deep_paths_and_say_why(cx: &mut TestAppContext) {
     cx.update(init);
     let temp = fixture();
-    let deep: PathBuf = (0..30)
-        .map(|level| format!("nested-directory-{level:02}"))
+    // Keep the descriptive badge independent of the host's temp location.
+    let deep: PathBuf = std::iter::once("tmp".to_owned())
+        .chain((0..30).map(|level| format!("nested-directory-{level:02}")))
         .collect();
     let file = temp.path().join(&deep).join("leaf.bin");
     std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
@@ -6946,9 +7003,9 @@ fn review_rows_shorten_deep_paths_and_say_why(cx: &mut TestAppContext) {
         rows[0].size.height, rows[1].size.height,
         "the deep path does not wrap: {rows:?}"
     );
-    // The cache says it is regenerable; the plain file has nothing to say.
+    // The cache is regenerable; the plain file retains its temporary location.
     assert!(cx.debug_bounds("review-kind-0").is_some(), "a kind chip");
-    assert!(cx.debug_bounds("review-kind-1").is_none());
+    assert!(cx.debug_bounds("review-kind-1").is_some(), "temporary data");
     // What each mark is was read once: a later frame walks no directory.
     crate::marks::work::reset();
     update(&view, cx, |_, cx| cx.notify());
@@ -7002,6 +7059,7 @@ fn the_removal_list_follows_the_item_in_hand_like_the_live_log(
                 .collect(),
         );
         app.screen = Screen::Running;
+        app.run_checked = true;
         cx.notify();
     });
     draw(cx);
@@ -7208,6 +7266,66 @@ fn removing_a_directory_after_part_of_it_counts_only_the_rest(
         let totals = crate::ledger::Ledger::totals(cohorts).unwrap();
         assert!(totals.private.is_none_or(|p| p <= totals.reported));
     });
+}
+
+#[gpui_kit::test]
+fn enclosing_removal_preserves_scanned_bytes_in_marks_and_agent_reports(
+    cx: &mut TestAppContext,
+) {
+    use disktree_link::{FindRequest, Request, Response};
+
+    cx.update(init);
+    #[cfg(unix)]
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
+    #[cfg(not(unix))]
+    let temp = tempfile::tempdir().unwrap();
+    for (directory, bytes) in [("a", 40), ("a/b", 40), ("a/b/c", 20)] {
+        let path = temp.path().join(directory);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("payload"), vec![b'x'; bytes]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    remove_now(&view, cx, &["a/b/c"]);
+    remove_now(&view, cx, &["a/b"]);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Explore;
+        let a = temp.path().join("a");
+        let crumbs = app.crumbs_for_path(&a).unwrap();
+        app.toggle_mark(&crumbs, cx);
+        assert_eq!(app.marks.items()[0].bytes, 40);
+        let Response::Listing(listing) = app.answer_agent(
+            &Request::Ls {
+                path: a.clone(),
+                limit: 10,
+            },
+            cx,
+        ) else {
+            panic!("listing")
+        };
+        assert_eq!(listing.entry.removed_bytes, 60);
+        let Response::Found(found) = app.answer_agent(
+            &Request::Find(FindRequest {
+                name: Some("a".into()),
+                kind: "dir".into(),
+                limit: 10,
+                ..FindRequest::default()
+            }),
+            cx,
+        ) else {
+            panic!("search")
+        };
+        let hit = found.matches.iter().find(|hit| hit.path == a).unwrap();
+        assert_eq!(hit.entry.removed_bytes, 60);
+        // Metric changes refresh marks from the unchanged scanned tree.
+        app.toggle_metric(cx);
+        assert_eq!(app.marks.items()[0].bytes, 40);
+    });
+    draw(cx);
+    assert_eq!(
+        std::fs::read(temp.path().join("a/payload")).unwrap().len(),
+        40
+    );
+    assert!(!temp.path().join("a/b").exists());
 }
 
 #[gpui_kit::test]
@@ -7524,7 +7642,7 @@ fn a_large_directory_keeps_zero_weight_files_reachable_in_bounded_pages(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     for index in 0..50_000 {
         std::fs::write(temp.path().join(format!("entry-{index:05}.txt")), [])
             .expect("empty fixture file");
@@ -7588,6 +7706,7 @@ fn focus_review_delete_cancel_enter_preserves_the_fixture(
         app.toggle_mark(&junk, cx);
         app.open_review(cx);
     });
+    inspect_raw(&view, cx);
     draw(cx);
     let cancel_tabs = if crate::chrome::Platform::current()
         == crate::chrome::Platform::Windows
@@ -8600,6 +8719,7 @@ fn the_follow_pill_hides_the_row_under_it(cx: &mut TestAppContext) {
                 .collect(),
         );
         app.screen = Screen::Running;
+        app.run_checked = true;
         cx.notify();
     });
     draw(cx);
@@ -9694,10 +9814,10 @@ fn a_legend_chip_shows_only_then_hides_its_kind(cx: &mut TestAppContext) {
         "nothing filtered"
     );
 
-    // Reclaimable, once: only `.cache`, the fixture's one regenerable tree.
-    click_on(cx, "legend-reclaimable");
+    // Cache, once: temporary neighbours have their own kind.
+    click_on(cx, "legend-kind-7");
     cx.run_until_parked();
-    let chip = read(&view, cx, |app| app.legend.get(ChipId::Reclaimable));
+    let chip = read(&view, cx, |app| app.legend.get(ChipId::Kind(7)));
     assert_eq!(chip, Chip::Only);
     let drawn = laid_out(&view, cx);
     assert!(drawn.contains(&".cache".to_string()), "{drawn:?}");
@@ -9713,7 +9833,7 @@ fn a_legend_chip_shows_only_then_hides_its_kind(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("legend-clear").is_some());
 
     // Again: hidden, so everything but `.cache`.
-    click_on(cx, "legend-reclaimable");
+    click_on(cx, "legend-kind-7");
     cx.run_until_parked();
     let drawn = laid_out(&view, cx);
     assert!(!drawn.contains(&".cache".to_string()), "{drawn:?}");
@@ -10039,7 +10159,7 @@ fn a_legend_filter_that_keeps_nothing_says_so(cx: &mut TestAppContext) {
     assert!(!read(&view, cx, |app| app.legend.is_active()));
     assert!(cx.debug_bounds("legend-empty").is_none());
 
-    // Reclaimable alone, from inside `keep`: nothing here, but `.cache`
+    // Cache alone, from inside `keep`: nothing here, but `.cache`
     // passes elsewhere.
     let keep = read(&view, cx, |app| {
         app.crumbs_for_path(&temp.path().join("keep"))
@@ -10049,7 +10169,7 @@ fn a_legend_filter_that_keeps_nothing_says_so(cx: &mut TestAppContext) {
         app.file_list = false;
         app.crumbs = keep;
         app.selected = None;
-        app.cycle_legend(ChipId::Reclaimable, cx);
+        app.cycle_legend(ChipId::Kind(7), cx);
     });
     cx.run_until_parked();
     draw(cx);
@@ -10121,7 +10241,7 @@ fn switching_the_metric_recomputes_the_legend(cx: &mut TestAppContext) {
     cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
     draw(cx);
     update(&view, cx, |app, cx| {
-        app.cycle_legend(ChipId::Reclaimable, cx);
+        app.cycle_legend(ChipId::Kind(7), cx);
     });
     cx.run_until_parked();
     assert!(read(&view, cx, |app| app.legend_matches.is_some()));
@@ -10265,6 +10385,188 @@ fn raw_inspection_prepares_off_thread_and_execution_rechecks(
     assert!(temp.path().join("keep/notes.txt").exists());
 }
 
+/// Review must agree with the worker's recursive oracle before consent.
+/// Unmarking a relocated cache must leave unrelated marks removable on
+/// every platform, including those without cleanup's Delete files option.
+#[gpui_kit::test]
+fn review_routes_relocated_cache_before_confirmation_and_removes_unrelated_mark(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let cache = temp.path().join("project/vendor/_cacache/content-v2/blob");
+    std::fs::create_dir_all(cache.parent().expect("parent")).unwrap();
+    std::fs::write(&cache, b"cache payload").unwrap();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        for name in ["project", "junk"] {
+            let crumbs = child_crumbs(app, &[], name);
+            app.toggle_mark(&crumbs, cx);
+        }
+        app.removal_mode = RemovalMode::Permanent;
+        // Differential oracle: this is the check the worker would run.
+        assert!(
+            disktree_core::cleanup::check_raw(&app.plan().targets).is_err()
+        );
+        app.open_review(cx);
+    });
+    cx.run_until_parked();
+    draw(cx);
+    read(&view, cx, |app| {
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+        assert!(!app.confirm_open, "routing precedes confirmation");
+        assert!(app.run.is_none());
+    });
+    update(&view, cx, |app, cx| {
+        // Ordinary removal is available everywhere; cleanup's Delete
+        // files additionally requires the macOS/Linux active-use check.
+        app.unmark(&app.root_path.join("project"), cx);
+        app.removal_mode = RemovalMode::Permanent;
+        app.commit(false, cx);
+        assert!(!app.confirm_open, "changed marks need a fresh inspection");
+        assert!(app.run.is_none());
+    });
+    inspect_raw(&view, cx);
+    update(&view, cx, |app, cx| {
+        app.commit(false, cx);
+        assert!(app.confirm_open, "{:?}", app.notice());
+        app.confirm_delete(cx);
+        assert_eq!(app.screen, Screen::Running);
+    });
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done);
+    read(&view, cx, |app| {
+        assert_eq!(app.run_list.totals().removed, 1);
+        assert_eq!(app.run_list.totals().failed, 0);
+    });
+    assert!(cache.exists(), "the unmarked project is preserved");
+    assert!(!temp.path().join("junk").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// Differential oracle: Review and the worker agree across names, layouts,
+/// nesting depths and ordinary build output. Pending inspection grants no
+/// confirmation, even if commit is called without the disabled button.
+#[gpui_kit::test]
+fn review_inspection_agrees_with_worker_for_relocated_layouts(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let layouts: &[(&str, &[&str])] = &[
+        ("npm", &["_cacache/content-v2/blob"]),
+        ("npx", &["_npx/package/blob"]),
+        ("playwright", &["ms-playwright/chromium/blob"]),
+        ("pip", &["cache/wheels/blob", "cache/http-v2/blob"]),
+        ("uv", &["cache/CACHEDIR.TAG", "cache/wheels-v5/blob"]),
+        ("cypress", &["cache/15.0.0/Cypress.app/blob"]),
+        ("cargo", &["target/CACHEDIR.TAG", "target/debug/deps/blob"]),
+        ("ordinary", &["node_modules/.cache/blob"]),
+    ];
+    for (depth, (name, paths)) in layouts.iter().enumerate() {
+        let nested = temp.path().join(name).join("nested/".repeat(depth));
+        for path in *paths {
+            let file = nested.join(path);
+            std::fs::create_dir_all(file.parent().expect("parent")).unwrap();
+            std::fs::write(file, b"fixture").unwrap();
+        }
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    for (name, _) in layouts {
+        let refused = update(&view, cx, |app, cx| {
+            app.clear_marks(cx);
+            let crumbs = child_crumbs(app, &[], name);
+            app.toggle_mark(&crumbs, cx);
+            let refused =
+                disktree_core::cleanup::check_raw(&app.plan().targets).is_err();
+            app.removal_mode = RemovalMode::Permanent;
+            app.open_review(cx);
+            app.commit(false, cx);
+            assert!(!app.confirm_open, "inspection is pending: {name}");
+            assert!(app.run.is_none());
+            refused
+        });
+        cx.run_until_parked();
+        draw(cx);
+        read(&view, cx, |app| {
+            assert_eq!(app.raw_inspection_ready().is_err(), refused, "{name}");
+            assert_eq!(
+                app.removal_mode == RemovalMode::OwnerCleanup,
+                refused,
+                "{name}"
+            );
+            assert!(!app.confirm_open);
+        });
+        assert_eq!(cx.debug_bounds("raw-inspection").is_some(), refused);
+    }
+}
+
+/// A result from an old selection or tree cannot change the mode, permit
+/// confirmation or authorize removal of a later selection.
+#[gpui_kit::test]
+fn review_inspection_discards_replaced_selection_and_scan(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    npm_cache(temp.path());
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let cache = child_crumbs(app, &[], ".npm");
+        app.toggle_mark(&cache, cx);
+        app.open_review(cx);
+        app.clear_marks(cx);
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+        app.removal_mode = RemovalMode::Permanent;
+        app.open_review(cx);
+    });
+    cx.run_until_parked();
+    read(&view, cx, |app| {
+        assert!(app.raw_inspection_ready().is_ok());
+        assert_eq!(app.removal_mode, RemovalMode::Permanent);
+    });
+    update(&view, cx, |app, cx| {
+        app.commit(false, cx);
+        assert!(app.confirm_open, "current selection was checked");
+        let cache = child_crumbs(app, &[], ".npm");
+        app.toggle_mark(&cache, cx);
+        app.confirm_delete(cx);
+        assert!(app.run.is_none(), "changed marks revoke confirmation");
+    });
+    cx.run_until_parked();
+    read(&view, cx, |app| {
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+        assert!(!app.confirm_open);
+    });
+    update(&view, cx, |app, _| {
+        // Same paths and marks, but a new complete scan has its own check.
+        app.tree = Some(std::sync::Arc::new(
+            scan(temp.path(), options()).expect("new scan"),
+        ));
+        assert!(app.raw_inspection_ready().is_err());
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    draw(cx);
+    cx.run_until_parked();
+    read(&view, cx, |app| {
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+        assert!(app.run.is_none());
+    });
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
 /// Exporting a cache selection cannot substitute raw deletion for its owner.
 #[gpui_kit::test]
 fn cache_exports_keep_marks_and_refuse_raw_scripts(cx: &mut TestAppContext) {
@@ -10330,6 +10632,9 @@ fn cache_review_requires_owner_preview_and_never_falls_back_to_raw_removal(
             .expect("in the tree");
         app.toggle_mark(&cache, cx);
         app.open_review(cx);
+    });
+    inspect_raw(&view, cx);
+    update(&view, cx, |app, cx| {
         assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
         // Confirm cannot execute a missing owner preview, even if reached
         // directly rather than through the disabled/preview UI.
@@ -10376,7 +10681,7 @@ fn a_cache_named_folder_is_an_ordinary_mark(cx: &mut TestAppContext) {
         std::fs::write(file, vec![b'x'; 10_000]).unwrap();
     }
     let (view, cx) = view_over(temp.path(), cx);
-    let epoch = update(&view, cx, |app, cx| {
+    update(&view, cx, |app, cx| {
         for name in [".cache", "project", "Library/Caches/com.example.app"] {
             let crumbs = app
                 .crumbs_for_path(&app.root_path.join(name))
@@ -10387,6 +10692,9 @@ fn a_cache_named_folder_is_an_ordinary_mark(cx: &mut TestAppContext) {
         app.open_review(cx);
         assert_eq!(app.removal_mode, before, "Review keeps the user's mode");
         app.removal_mode = RemovalMode::Permanent;
+    });
+    inspect_raw(&view, cx);
+    let epoch = update(&view, cx, |app, cx| {
         app.begin_removal(cx);
         assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
         app.run_epoch
@@ -11172,6 +11480,9 @@ fn cache_cleanup_view<'a>(
         let junk = child_crumbs(app, &[], "junk");
         app.toggle_mark(&junk, cx);
         app.open_review(cx);
+    });
+    inspect_raw(&view, cx);
+    read(&view, cx, |app| {
         assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
     });
     (view, cx, paths, bin)
@@ -11661,7 +11972,11 @@ fn the_only_pill_switches_kinds_and_the_tooltip_stays_clear(
     cx.run_until_parked();
     assert_eq!(read(&view, cx, |app| app.legend.get(cache)), Chip::Only);
     assert_eq!(read(&view, cx, |app| app.legend.get(code)), Chip::Shown);
-    // Code went back to "+N" and the row moved under a still pointer: no
-    // chip is taken to be under it until the pointer says so.
-    assert_eq!(read(&view, cx, |app| app.legend_hover), None);
+    // A chip may move under the pointer when Code goes back to "+N".
+    // Judge any new hover by the actual bounds, not the old row's spacing.
+    if let Some(hovered) = read(&view, cx, |app| app.legend_hover) {
+        let key = Box::leak(hovered.key().into_boxed_str());
+        let chip = cx.debug_bounds(key).expect("hovered chip is drawn");
+        assert!(chip.contains(&only.center()), "hover follows hit testing");
+    }
 }

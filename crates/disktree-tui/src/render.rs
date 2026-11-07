@@ -214,7 +214,7 @@ fn header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // have room for the mosaic, but not the desktop-length legend.
     let short: [&str; Category::LEGEND.len()] = [
         "Code", "Agent", "Tools", "Sync", "Git", "Media", "Docs", "Cache",
-        "FSE", "Idx", "VMs",
+        "Temp", "Logs", "Trash", "FSE", "Idx", "VMs",
     ];
     let (reclaim, separator) = if area.width >= 77 {
         (" / Reclaim", " ▪")
@@ -2244,6 +2244,11 @@ mod tests {
                                 "Media", "Docs", "Cache",
                             ] {
                                 assert!(legend.contains(label), "{legend}");
+                            }
+                            if width == 80 {
+                                for label in ["Temp", "Logs", "Trash"] {
+                                    assert!(legend.contains(label), "{legend}");
+                                }
                             }
                             assert!(legend.contains(if width < 77 {
                                 "Rclm"

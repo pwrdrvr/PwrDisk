@@ -49,8 +49,13 @@ pub enum State {
     Legend { kind: String },
     Select { path: String },
     Mark { path: String },
+    Removed { path: String },
     Review,
+    PermanentReview,
     CleanupReview,
+    SystemFolders,
+    RemovalCheck,
+    RemovalRefused,
     FileList,
     Help,
 }
@@ -105,7 +110,9 @@ impl Scenario {
                             "unknown legend kind: {kind}"
                         );
                     }
-                    State::Select { path } | State::Mark { path } => {
+                    State::Select { path }
+                    | State::Mark { path }
+                    | State::Removed { path } => {
                         // Scenario paths are portable POSIX fixture paths;
                         // no spelling may escape the explicitly scanned root.
                         ensure!(
@@ -119,7 +126,11 @@ impl Scenario {
                         );
                     }
                     State::Review
+                    | State::PermanentReview
                     | State::CleanupReview
+                    | State::SystemFolders
+                    | State::RemovalCheck
+                    | State::RemovalRefused
                     | State::FileList
                     | State::Help => {}
                 },
@@ -154,21 +165,27 @@ mod tests {
 
     #[test]
     fn parses_all_steps_and_rejects_mistyped_fields() {
-        let json = script(&json!([
+        let steps = json!([
             {"op": "setup", "state": {"type": "legend", "kind": "code"}},
             {"op": "setup", "state": {"type": "select", "path": "a/b"}},
             {"op": "setup", "state": {"type": "mark", "path": ".cache"}},
+            {"op": "setup", "state": {"type": "removed", "path": "a/b"}},
             {"op": "setup", "state": {"type": "review"}},
+            {"op": "setup", "state": {"type": "permanent_review"}},
             {"op": "setup", "state": {"type": "file_list"}},
             {"op": "setup", "state": {"type": "help"}},
+            {"op": "setup", "state": {"type": "system_folders"}},
+            {"op": "setup", "state": {"type": "removal_check"}},
+            {"op": "setup", "state": {"type": "removal_refused"}},
             {"op": "hover", "at": [100, 200]},
             {"op": "click", "at": [100, 200]},
             {"op": "wait", "ms": 900},
             {"op": "capture", "name": "hover.png", "pointer": true}
-        ]));
+        ]);
+        let json = script(&steps);
         let parsed = Scenario::parse(&json).expect("valid scenario");
         assert!(matches!(parsed.theme, Theme::TokyoNight));
-        assert_eq!(parsed.steps.len(), 10);
+        assert_eq!(parsed.steps.len(), steps.as_array().unwrap().len());
         assert!(Scenario::parse(&json.replace("\"ms\"", "\"mss\"")).is_err());
         assert!(
             Scenario::parse(&json.replace("tokyo_night", "unknown")).is_err()
@@ -236,14 +253,16 @@ mod tests {
             ], 0..8)
         ) {
             let path = parts.join("/");
-            let accepted = Scenario::parse(&script(&json!([
-                {"op": "setup", "state": {"type": "select", "path": path}},
-                {"op": "capture", "name": "x.png"}
-            ]))).is_ok();
             let expected = !parts.is_empty() && parts.iter().all(|p| {
                 !p.is_empty() && p != "." && p != ".."
             });
-            prop_assert_eq!(accepted, expected);
+            for kind in ["select", "mark", "removed"] {
+                let accepted = Scenario::parse(&script(&json!([
+                    {"op": "setup", "state": {"type": kind, "path": path}},
+                    {"op": "capture", "name": "x.png"}
+                ]))).is_ok();
+                prop_assert_eq!(accepted, expected);
+            }
         }
 
         // A pointer capture requires a preceding move; waits and captures
@@ -264,7 +283,11 @@ mod tests {
                 });
             }
             steps.push(json!({"op": "capture", "name": "last.png"}));
-            prop_assert_eq!(Scenario::parse(&script(&json!(steps))).is_ok(), valid);
+            let parsed = Scenario::parse(&script(&json!(steps)));
+            prop_assert_eq!(parsed.is_ok(), valid);
+            if let Ok(parsed) = parsed {
+                prop_assert_eq!(parsed.steps.len(), steps.len());
+            }
         }
     }
 }

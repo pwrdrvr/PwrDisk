@@ -70,6 +70,10 @@ def install(source, target):
                     '#[cfg(all(feature = "screenshots", not(debug_assertions)))]\n'
                     'compile_error!("screenshots require a debug build");')
     state = (target / app / "src/state.rs").read_text()
+    # The removal fixture reports success in memory, without deleting files.
+    # Expose the baseline's own accounting unchanged to the copied renderer.
+    state = state.replace("    fn note_removed(",
+                          "    pub(crate) fn note_removed(", 1)
     for name in ("new", "with_tree"):
         old = f"    #[cfg(test)]\n    pub fn {name}("
         new = ('    #[cfg(any(test, all(feature = "screenshots", '

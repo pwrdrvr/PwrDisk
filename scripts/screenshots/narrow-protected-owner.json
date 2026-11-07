@@ -1,0 +1,8 @@
+{
+  "size": [1180, 760],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "setup", "state": {"type": "file_list"}},
+    {"op": "capture", "name": "narrow-owner.png"}
+  ]
+}

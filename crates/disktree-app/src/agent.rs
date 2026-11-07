@@ -17,13 +17,12 @@ use disktree_core::path_style::PathStyle;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use disktree_core::query;
 use disktree_core::removal::{Plan, RemovalMode, Target};
 use disktree_core::tree::{Node, path_of};
 use disktree_link::{
-    FindRequest, FoundList, Incoming, Insight, Listener, Listing, Mark,
-    MarkRequest, Refused, Removal, Request, Response, ScanOptionsRequest,
-    SelectionEstimate, Space, State, TreeSummary, VERSION,
+    FindRequest, Incoming, Insight, Listener, Listing, Mark, MarkRequest,
+    Refused, Removal, Request, Response, ScanOptionsRequest, SelectionEstimate,
+    Space, State, TreeSummary, VERSION,
 };
 use gpui_kit::Context;
 
@@ -52,7 +51,6 @@ pub struct AgentLink {
     /// The last removal, for an agent that asks what was freed.
     pub last_removal: Option<Removal>,
     pub(crate) removal_preview: Option<crate::agent_removal::PreparedRemoval>,
-    pub(crate) raw_inspection: Option<crate::agent_removal::RawInspection>,
     pub(crate) removal_operation: Option<disktree_link::RemovalOperation>,
     pub(crate) removal_operation_epoch: u64,
 }
@@ -65,7 +63,6 @@ impl AgentLink {
             pending_show: None,
             last_removal: None,
             removal_preview: None,
-            raw_inspection: None,
             removal_operation: None,
             removal_operation_epoch: 0,
         }
@@ -283,8 +280,8 @@ impl Disktree {
                 }
                 if let Some(agent) = &mut self.agent {
                     agent.removal_preview = None;
-                    agent.raw_inspection = None;
                 }
+                self.raw_inspection = None;
                 self.note_agent(Some(client), "connected".to_string());
                 Response::State(self.agent_state())
             }
@@ -506,18 +503,15 @@ impl Disktree {
 
     /// The largest entries of the tree on screen matching a description.
     fn agent_find(&mut self, request: &FindRequest) -> Response {
-        let filter = match request.filter() {
-            Ok(filter) => filter,
-            Err(message) => return Response::error(message),
-        };
         let from = request
             .path
             .clone()
             .unwrap_or_else(|| self.root_path.clone());
         let mut found = match self.agent_node(&from) {
-            Ok(node) => {
-                FoundList::of(&query::find(&from, node, &filter, request.limit))
-            }
+            Ok(node) => match request.results(&from, node) {
+                Ok(found) => found,
+                Err(message) => return Response::error(message),
+            },
             Err(message) => return Response::error(message),
         };
         for item in &mut found.matches {
