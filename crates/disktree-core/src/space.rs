@@ -110,9 +110,10 @@ pub fn device_for(path: &Path) -> Option<String> {
 
 /// The device a path's filesystem is mounted from, such as
 /// `/dev/nvme0n1p2`: the mount with the longest prefix of `path` in
-/// `/proc/self/mountinfo`. `None` where that table cannot be read. Non-ASCII
-/// bytes and percent signs are percent-escaped so this string is a lossless
-/// volume key, including for sources that are not UTF-8.
+/// `/proc/self/mountinfo`. `None` where that table cannot be read.
+///
+/// Non-ASCII bytes and percent signs are percent-escaped so this string is
+/// a lossless volume key, including for sources that are not UTF-8.
 #[cfg(not(any(target_os = "macos", windows)))]
 pub fn device_for(path: &Path) -> Option<String> {
     let mounts = read_mounts(Path::new("/proc/self/mountinfo")).ok()?;
@@ -257,6 +258,7 @@ fn read_mounts(path: &Path) -> io::Result<Vec<Mount>> {
     })
 }
 
+#[cfg(any(not(windows), test))]
 fn mounts_from_views(views: &[MountView]) -> Vec<Mount> {
     let visible = visible_mount_ids(views);
     views
