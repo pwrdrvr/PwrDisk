@@ -156,6 +156,9 @@ jobs:
       - name: Test Windows temporary storage configuration
         run: node --test scripts/ci/windows-temp.test.cjs
 
+      - name: Test deadline model
+        run: node --test scripts/ci/test-budgets.test.cjs
+
   licenses:
     name: Check third-party licenses
     runs-on: ubuntu-24.04
@@ -388,6 +391,15 @@ jobs:
             libvulkan-dev libasound2-dev libssl-dev libzstd-dev
 
       - uses: ./.github/actions/setup-rust
+
+      # A cold Intel build took 11 minutes before the APFS oracles started.
+      # Give compilation its own deadline, preserving the execution budget.
+      - name: Compile Intel macOS tests
+        if: matrix.runner == 'macos-15-intel'
+        timeout-minutes: 15
+        run: |
+          cargo build -p xtask
+          cargo test --workspace --no-run
 
       - name: Test
         timeout-minutes: ${{ matrix.test_timeout }}
