@@ -4,6 +4,9 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt as _, symlink};
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "macos")]
+pub mod disk_image;
+
 pub fn id(path: &Path) -> Option<(u64, u64)> {
     fs::symlink_metadata(path)
         .ok()
@@ -43,50 +46,14 @@ pub fn spellings(path: &Path, link: &Path) -> Vec<PathBuf> {
 
 #[cfg(target_os = "macos")]
 pub struct DiskImage {
-    mount: PathBuf,
-    _image: tempfile::TempDir,
-}
-
-#[cfg(target_os = "macos")]
-fn hdiutil(args: &[&std::ffi::OsStr]) {
-    let output = std::process::Command::new("hdiutil")
-        .args(args)
-        .output()
-        .expect("hdiutil");
-    assert!(
-        output.status.success(),
-        "hdiutil {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    image: Option<disk_image::Image>,
 }
 
 #[cfg(target_os = "macos")]
 impl DiskImage {
     pub fn mount_at(mount: &Path) -> Self {
-        let image = tempfile::tempdir().expect("image directory");
-        let file = image.path().join("boundary.dmg");
-        hdiutil(&[
-            "create".as_ref(),
-            "-size".as_ref(),
-            "16m".as_ref(),
-            "-fs".as_ref(),
-            "HFS+".as_ref(),
-            "-volname".as_ref(),
-            "PwrDiskPathTest".as_ref(),
-            file.as_os_str(),
-        ]);
-        fs::create_dir_all(mount).expect("mount directory");
-        hdiutil(&[
-            "attach".as_ref(),
-            "-nobrowse".as_ref(),
-            "-noautoopen".as_ref(),
-            "-mountpoint".as_ref(),
-            mount.as_os_str(),
-            file.as_os_str(),
-        ]);
         Self {
-            mount: mount.to_path_buf(),
-            _image: image,
+            image: Some(disk_image::Image::mount_at(mount)),
         }
     }
 }
@@ -94,10 +61,13 @@ impl DiskImage {
 #[cfg(target_os = "macos")]
 impl Drop for DiskImage {
     fn drop(&mut self) {
-        hdiutil(&[
-            "detach".as_ref(),
-            "-force".as_ref(),
-            self.mount.as_os_str(),
-        ]);
+        if let Some(image) = self.image.take() {
+            if std::thread::panicking() {
+                // Its guard retains backing files if cleanup is uncertain.
+                drop(image);
+            } else {
+                image.close();
+            }
+        }
     }
 }
