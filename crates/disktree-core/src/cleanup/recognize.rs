@@ -164,32 +164,45 @@ pub(super) fn shape_owner(root: &Path) -> Option<Owner> {
 /// Every owner whose layout `root` has. A directory can match more than
 /// one, and one PwrDisk has no command for must not hide one it has.
 fn shapes(root: &Path) -> Vec<Owner> {
+    let names = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .take(32)
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name());
+    shapes_with(
+        names,
+        |path| root.join(path).is_dir(),
+        |path| root.join(path).is_file(),
+    )
+}
+
+fn shapes_with(
+    names: impl Iterator<Item = std::ffi::OsString>,
+    is_dir: impl Fn(&Path) -> bool,
+    is_file: impl Fn(&Path) -> bool,
+) -> Vec<Owner> {
     let mut found = Vec::new();
-    if root.join("wheels").is_dir()
-        && (root.join("http-v2").is_dir() || root.join("http").is_dir())
+    if is_dir(Path::new("wheels"))
+        && (is_dir(Path::new("http-v2")) || is_dir(Path::new("http")))
     {
         found.push(Owner::Pip);
     }
     // Versioned stores and binary caches can be relocated to arbitrary
-    // names. Read only a bounded immediate listing for recognition; the
-    // installed owner must still verify the exact configured root.
-    let tagged = root.join(TAG).is_file();
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return found;
-    };
-    for entry in entries.take(32).flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
+    // names. Only a bounded immediate listing is used for recognition.
+    let tagged = is_file(Path::new(TAG));
+    for name in names {
+        let path = Path::new(&name);
         let Some(name) = name.to_str() else {
             continue;
         };
-        if tagged && uv_bucket(name) && path.is_dir() {
+        if tagged && uv_bucket(name) && is_dir(path) {
             found.push(Owner::Uv);
         }
         if name.strip_prefix('v').is_some_and(|version| {
             !version.is_empty()
                 && version.bytes().all(|byte| byte.is_ascii_digit())
-        }) && path.join("files").is_dir()
+        }) && is_dir(&path.join("files"))
         {
             found.push(Owner::Pnpm);
         }
@@ -197,13 +210,66 @@ fn shapes(root: &Path) -> Vec<Owner> {
             && name
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || byte == b'.')
-            && (path.join("Cypress.app").is_dir()
-                || path.join("Cypress/Cypress").is_file())
+            && (is_dir(&path.join("Cypress.app"))
+                || is_file(&path.join("Cypress/Cypress")))
         {
             found.push(Owner::Cypress);
         }
     }
     found
+}
+
+/// Shape reads must use the same handle as traversal: a full-path lookup
+/// here would silently miss relocated caches beyond `PATH_MAX`.
+#[cfg(unix)]
+pub(super) fn cleanable_root_at(
+    directory: &Path,
+    roots: &[(Owner, PathBuf)],
+    dir: std::os::fd::BorrowedFd<'_>,
+) -> Result<Option<Owner>, String> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    use rustix::fs::{AtFlags, Dir, FileType, statat};
+
+    if let Some(owner) = roots
+        .iter()
+        .find(|(owner, root)| owner.has_cleanup() && root == directory)
+        .map(|(owner, _)| *owner)
+        .or_else(|| named_owner(directory).filter(|owner| owner.has_cleanup()))
+    {
+        return Ok(Some(owner));
+    }
+    let failure = |error| {
+        format!(
+            "Cannot inspect cache layout at {}: {error}",
+            directory.display()
+        )
+    };
+    let mut names = Vec::new();
+    for entry in Dir::read_from(dir).map_err(failure)? {
+        let entry = entry.map_err(failure)?;
+        let name = entry.file_name();
+        if name != c"." && name != c".." {
+            names.push(std::ffi::OsStr::from_bytes(name.to_bytes()).to_owned());
+            if names.len() == 32 {
+                break;
+            }
+        }
+    }
+    // Metadata probes describe the layout only; traversal itself never
+    // follows a link. Match the path-based recognition used by proposals.
+    let kind = |path: &Path| {
+        statat(dir, path, AtFlags::empty())
+            .ok()
+            .map(|stat| FileType::from_raw_mode(stat.st_mode))
+    };
+    Ok(shapes_with(
+        names.into_iter(),
+        |path| kind(path) == Some(FileType::Directory),
+        |path| kind(path) == Some(FileType::RegularFile),
+    )
+    .into_iter()
+    .find(|owner| owner.has_cleanup()))
 }
 
 /// The cleanable owner whose cache starts at `directory` by its name or

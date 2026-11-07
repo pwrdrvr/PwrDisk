@@ -22,8 +22,7 @@ mod tests;
 
 pub use recognize::inspection_reason;
 
-// Preflight must bound queued paths as well as visited entries so one
-// enormous flat directory cannot exhaust memory before the limit is seen.
+// Shared across the selection; one huge tree must not monopolize preflight.
 const MAX_PREFLIGHT_ENTRIES: usize = 2_000_000;
 
 /// Keep caches PwrDisk can clean from the recursive remover.
@@ -35,29 +34,114 @@ pub fn check_raw(targets: &[Target]) -> Result<(), String> {
     check_raw_with(targets, &Environment::current()?)
 }
 
-#[allow(
-    clippy::unnecessary_debug_formatting,
-    reason = "Quote paths and expose controls in safety refusals"
-)]
+/// The same bounded inspection, with a result for each mark.
+///
+/// Review keeps these results until its scan or selection changes. The entry
+/// budget is shared by the whole selection, as on the removal worker.
+pub fn inspect_raw(targets: &[Target]) -> Vec<Result<(), String>> {
+    match Environment::current() {
+        Ok(environment) => {
+            inspect_raw_with(targets, &environment, MAX_PREFLIGHT_ENTRIES)
+        }
+        Err(reason) => vec![Err(reason); targets.len()],
+    }
+}
+
 fn check_raw_with(
     targets: &[Target],
     environment: &Environment,
 ) -> Result<(), String> {
-    for target in targets {
-        if let Some(reason) =
-            recognize::inspection_with(&target.path, environment)
-        {
-            return Err(format!("{:?}: {reason}", target.path));
-        }
-    }
+    // A worker refuses the entire run on the first error, so later marks
+    // must not be walked while preparing a refusal it already knows.
+    raw_inspections_with(targets, environment, MAX_PREFLIGHT_ENTRIES).collect()
+}
+
+fn inspect_raw_with(
+    targets: &[Target],
+    environment: &Environment,
+    maximum: usize,
+) -> Vec<Result<(), String>> {
+    raw_inspections_with(targets, environment, maximum).collect()
+}
+
+fn raw_inspections_with<'a>(
+    targets: &'a [Target],
+    environment: &'a Environment,
+    maximum: usize,
+) -> impl Iterator<Item = Result<(), String>> + 'a {
     let roots = recognize::roots(environment);
-    let mut pending: Vec<_> =
-        targets.iter().map(|target| target.path.clone()).collect();
     let mut visited = 0;
-    while let Some(path) = pending.pop() {
-        visited += 1;
-        if visited > MAX_PREFLIGHT_ENTRIES {
+    targets.iter().map(move |target| {
+        inspect_raw_target(target, environment, &roots, &mut visited, maximum)
+    })
+}
+
+#[allow(
+    clippy::unnecessary_debug_formatting,
+    reason = "Quote paths and expose controls in safety refusals"
+)]
+fn inspect_raw_target(
+    target: &Target,
+    environment: &Environment,
+    roots: &[(Owner, PathBuf)],
+    visited: &mut usize,
+    maximum: usize,
+) -> Result<(), String> {
+    #[cfg(test)]
+    tests::record_raw_target(&target.path);
+    if let Some(reason) = recognize::inspection_with(&target.path, environment)
+    {
+        return Err(format!("{:?}: {reason}", target.path));
+    }
+    inspect_raw_tree(target, roots, visited, maximum)
+}
+
+#[cfg(unix)]
+fn inspect_raw_tree(
+    target: &Target,
+    roots: &[(Owner, PathBuf)],
+    visited: &mut usize,
+    maximum: usize,
+) -> Result<(), String> {
+    crate::removal::inspect(&target.path, |path, _, dir| {
+        *visited += 1;
+        if *visited > maximum {
             return Err("Raw removal inspection exceeded its bound; inspect a smaller selection".into());
+        }
+        if let Some(dir) = dir
+            && let Some(owner) = recognize::cleanable_root_at(path, roots, dir)?
+        {
+            return Err(format!(
+                "{}: the {} inside can be cleaned with `{}`; choose Cache cleanup for it",
+                path.display(),
+                owner.label(),
+                owner.command_label()
+            ));
+        }
+        Ok(())
+    })
+}
+
+#[cfg(not(unix))]
+#[allow(
+    clippy::unnecessary_debug_formatting,
+    reason = "Quote paths and expose controls in safety refusals"
+)]
+fn inspect_raw_tree(
+    target: &Target,
+    roots: &[(Owner, PathBuf)],
+    visited: &mut usize,
+    maximum: usize,
+) -> Result<(), String> {
+    let bound = || {
+        "Raw removal inspection exceeded its bound; inspect a smaller selection"
+            .to_owned()
+    };
+    let mut pending = vec![target.path.clone()];
+    while let Some(path) = pending.pop() {
+        *visited += 1;
+        if *visited > maximum {
+            return Err(bound());
         }
         let meta = match std::fs::symlink_metadata(&path) {
             Ok(meta) => meta,
@@ -67,7 +151,7 @@ fn check_raw_with(
             Err(error) => return Err(error.to_string()),
         };
         if meta.is_dir() {
-            if let Some(owner) = recognize::cleanable_root(&path, &roots) {
+            if let Some(owner) = recognize::cleanable_root(&path, roots) {
                 return Err(format!(
                     "{path:?}: the {} inside can be cleaned with `{}`; choose Cache cleanup for it",
                     owner.label(),
@@ -77,8 +161,11 @@ fn check_raw_with(
             for entry in
                 std::fs::read_dir(&path).map_err(|error| error.to_string())?
             {
-                if visited + pending.len() >= MAX_PREFLIGHT_ENTRIES {
-                    return Err("Raw removal inspection exceeded its bound; inspect a smaller selection".into());
+                if *visited + pending.len() >= maximum {
+                    // Discarding this mark's queued paths must not give a
+                    // later mark a fresh budget after the selection hit it.
+                    *visited = maximum + 1;
+                    return Err(bound());
                 }
                 pending.push(entry.map_err(|error| error.to_string())?.path());
             }
@@ -1630,15 +1717,24 @@ impl Approved {
     ) -> Result<Vec<Option<Issue>>, String> {
         let mut refusals = vec![None; self.plan.targets.len()];
         let mut measured = Vec::new();
+        let mut listed = Vec::new();
+        let measurement = crate::removal_limit::Measurement::new(
+            &self.plan.scan_options,
+            &self.plan.targets,
+        );
         for (index, target) in self.plan.targets.iter().enumerate() {
-            match crate::removal_limit::measured(std::slice::from_ref(target)) {
-                Ok(mut fresh) => measured.append(&mut fresh),
+            match measurement.target(target) {
+                Ok(fresh) => {
+                    measured.push(fresh);
+                    listed.push(target.clone());
+                }
                 Err(reason) => {
                     refusals[index] =
                         Some(Issue::new(Problem::Refused, reason));
                 }
             }
         }
+        limit.check(&listed)?;
         limit.check(&measured)?;
         Ok(refusals)
     }

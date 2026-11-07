@@ -255,6 +255,7 @@ pub fn read_dir(dir: &Path, volume: Option<u64>) -> io::Result<ReadDir> {
 /// Measure a single entry with the same allocation source as a directory
 /// scan. Metadata length would overcharge sparse and compressed files;
 /// listing the parent also avoids opening or following the entry itself.
+#[cfg(test)]
 pub fn allocated_size(path: &Path) -> io::Result<u64> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "Entry has no parent")
@@ -733,20 +734,37 @@ pub fn drive_letter(canonical: &Path) -> Option<char> {
 /// from Windows itself: it can be moved, so no path is assumed. `None`
 /// when Windows does not say.
 pub fn user_profiles_dir() -> Option<PathBuf> {
-    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_UserProfiles)
+}
+
+/// Shell locations can be redirected independently of the usual drive
+/// names and process environment. Protect the installed locations too.
+pub fn system_dirs() -> Vec<PathBuf> {
     use windows_sys::Win32::UI::Shell::{
-        FOLDERID_UserProfiles, SHGetKnownFolderPath,
+        FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX64,
+        FOLDERID_ProgramFilesX86, FOLDERID_System, FOLDERID_Windows,
     };
+    [
+        FOLDERID_Windows,
+        FOLDERID_System,
+        FOLDERID_ProgramData,
+        FOLDERID_ProgramFiles,
+        FOLDERID_ProgramFilesX64,
+        FOLDERID_ProgramFilesX86,
+    ]
+    .iter()
+    .filter_map(known_folder)
+    .collect()
+}
+
+fn known_folder(id: &windows_sys::core::GUID) -> Option<PathBuf> {
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::SHGetKnownFolderPath;
     let mut raw: *mut u16 = std::ptr::null_mut();
     // SAFETY: the id outlives the call, a null token means this user, and
     // `raw` receives a string the shell allocates, freed below either way.
     let result = unsafe {
-        SHGetKnownFolderPath(
-            &FOLDERID_UserProfiles,
-            0,
-            std::ptr::null_mut(),
-            &raw mut raw,
-        )
+        SHGetKnownFolderPath(id, 0, std::ptr::null_mut(), &raw mut raw)
     };
     let path = (result >= 0 && !raw.is_null()).then(|| {
         // SAFETY: on success `raw` is a NUL-terminated string, read up to

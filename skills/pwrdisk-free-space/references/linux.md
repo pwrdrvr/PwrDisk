@@ -29,9 +29,11 @@ The root chooser omits mounts at or below `/proc`, `/sys` and `/dev`,
 plus kernel pseudo filesystems including `binfmt_misc`, `bpf`, `efivarfs`
 `ramfs`, `rpc_pipefs` and `fuse.lxcfs`. Discovery reads the mount table
 without probing candidates or measuring their free space; an explicit scan
-root is still required. Non-UTF-8 mount paths preserve their bytes. If
-several mounts occupy one path, only the last, visible mount is offered;
-a hidden bind mount cannot exclude a disk mounted over it.
+root is still required. Mount paths and source identities preserve their
+raw bytes, so disks with non-UTF-8 names retain separate accounting and
+removal limits. When mounts are stacked, the parent IDs in mountinfo select
+the visible layer and exclude hidden descendants, including after a mount
+move; record order does not decide which disk is offered or scanned.
 
 ## Access
 
@@ -43,11 +45,25 @@ would read it.
 
 `pwrdisk_mark` keeps these back and says why: `/bin`, `/boot`, `/dev`,
 `/etc`, `/lib*`, `/proc`, `/run` (except removable media under it), `/sbin`,
-`/sys`, `/usr`, `/var/lib`, `/efi`, `/nix/store`, `/gnu/store`, Homebrew's
+`/sys`, `/usr`, `/var/lib`, `/var/db`, `/var/spool`, `/var/mail`, `/var/run`,
+`/var/lock`, `/efi`, `/nix/store`, `/gnu/store`, Homebrew's
 `/home/linuxbrew/.linuxbrew`, the home directory and anything holding it,
 `/home` and every account's folder in it (another user's home,
 `/home/linuxbrew`; what is inside one may be proposed), the same under
 `/var/home` where `/home` links there, and mount points.
+
+Shared containers themselves also stay refused: `/tmp`, `/var`, `/var/tmp`,
+`/var/cache`, `/var/log`, `/var/backups`, `/var/local`, `/var/opt`, `/opt`,
+`/srv`, `/mnt`, `/media`, `/lost+found`, `/nix`, `/gnu` and `/root` (the root
+account's home, outside `/home`). This rule protects
+the folder, not every child. Inspect and agree individual leftovers under
+the existing guards; never remove an entire shared folder. Linked scan
+roots do not bypass this container rule. Review and the removal worker
+enforce it too.
+
+System trees, profiles and nested mounts retain their guards when the
+explicit scan root is reached through a symlink. A selected symlink itself
+is unlinked without deleting its destination; it cannot redirect removal.
 
 ## Never propose
 
@@ -88,6 +104,10 @@ so; tell the user before they confirm.
 
 ## Confirmed removal
 
+Removal preflight supports descendant paths longer than a full-path lookup
+allows. Cache inspection and fresh capacity measurement still apply to the
+whole selection; unreadable entries and nested mounts still stop removal.
+
 Never approve a removal with computer use (clicks, keys or accessibility
 actions). The user approves in the app, or explicitly confirms the exact
 paths and mode from `pwrdisk_removal_preview` before the destructive
@@ -99,6 +119,17 @@ refusal, increase the setting or split batches to evade it. A window
 refuses a mark that would take the list past the limit, and marks made
 without one are checked when they reach it: only the person can mark past
 it, in the window. Say so, and let them decide.
+
+The worker counts hardlinked allocation once across the complete selection,
+including aliases in different marked folders. Scan and recheck use the
+same entry measurement and aggregation code, retaining the scan's size,
+hardlink and clone-metadata parameters. The recheck includes hidden/deep
+contents, never follows links, and stays on the target's volume regardless
+of display filters. It checks the reviewed and
+fresh totals separately on each volume; it never adds two scans' different
+hardlink charge assignments. A preflight refusal removes no selected paths.
+Observed is the signed volume free-space change, including other activity,
+not evidence that this attempt deleted files.
 
 MCP removal also requires interactive confirmation from the client (form
 elicitation). An agent-supplied confirmation value does not establish human
