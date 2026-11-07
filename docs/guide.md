@@ -638,8 +638,11 @@ What is different from Linux:
   The panel's marked total, the review and the permanent-delete
   confirmation estimate savings from the accepted set of marks together;
   the selection's own line says what that entry frees removed on its own,
-  which for one of several clones can be far less. Complete clone groups credit
-  shared data once; a remaining hardlink retains its file data. Unknown or
+  which for one of several clones can be far less. Complete clone groups count
+  shared data once toward possible savings, with a partial estimate: modified
+  clones with another ID, even outside the scan, may retain those blocks.
+  Only measured private bytes enter the lower bound; a remaining hardlink
+  retains its file data. Unknown or
   modified sharing and allocation outside the data fork supply a range,
   with only its lower bound used by the volume meter. Unknown private sizes
   contribute zero to that bound. Snapshots and open files can retain blocks,

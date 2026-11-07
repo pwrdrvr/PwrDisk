@@ -119,11 +119,23 @@ impl Allocation {
 }
 
 impl CloneInfo {
-    const fn incomplete(self) -> bool {
+    const fn metadata_incomplete(self) -> bool {
         self.device == 0
             || self.id == 0
             || self.references == 0
             || self.private_bytes.is_none()
+    }
+
+    const fn incomplete(self) -> bool {
+        self.metadata_incomplete()
+            // A modified clone can still share extents with another ID;
+            // its sole reference does not describe those relationships.
+            || self.extents_uncertain()
+    }
+
+    const fn extents_uncertain(self) -> bool {
+        self.references == 1
+            && matches!(self.private_bytes, Some(private) if private < self.data_bytes)
     }
 }
 
@@ -154,7 +166,7 @@ impl DuplicateSummary {
         self.incomplete |= node
             .allocation()
             .and_then(|allocation| allocation.clone)
-            .is_some_and(CloneInfo::incomplete);
+            .is_some_and(CloneInfo::metadata_incomplete);
         if let Some((key, group)) = own(node, &mut self.summary) {
             join(
                 &mut self.groups,
@@ -471,14 +483,16 @@ mod tests {
     }
 
     #[test]
-    fn selecting_a_complete_clone_group_reclaims_its_data_once() {
+    fn selecting_a_complete_clone_group_only_possibly_reclaims_its_data() {
         let mut root = Draft::directory("root");
         root.children =
             vec![clone("a", 1, 1, Some(0)), clone("b", 1, 1, Some(0))];
         let mut tree = Tree::from(root);
         aggregate(&mut tree, Metric::Bytes);
         let root = tree.root();
-        assert_eq!(root.sharing().reclaimable(root.bytes), 80);
+        assert_eq!(root.sharing().reclaimable(root.bytes), 0);
+        assert_eq!(root.sharing().possible(root.bytes), 120);
+        assert!(root.sharing().estimate.expect("estimate").partial);
     }
 
     #[test]
@@ -507,7 +521,7 @@ mod tests {
         let root = tree.root();
         assert_eq!(root.bytes, 300);
         assert_eq!(root.sharing().duplicate_bytes, 80);
-        assert_eq!(root.sharing().reclaimable(root.bytes), 140);
+        assert_eq!(root.sharing().reclaimable(root.bytes), 60);
         aggregate(&mut tree, Metric::Files);
         assert_eq!(tree.root().sharing().duplicate_bytes, 80);
     }

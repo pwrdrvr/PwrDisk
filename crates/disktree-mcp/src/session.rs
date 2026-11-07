@@ -40,6 +40,9 @@ use serde::Deserialize;
 
 use crate::report::{age, children, clone_summary, describe, display, matches};
 
+#[cfg(all(test, target_os = "macos"))]
+mod ranking_tests;
+
 /// The measurement context survives a window scan being reused by an agent.
 fn scan_context(tree: &TreeSummary) -> String {
     format!(
@@ -3901,13 +3904,10 @@ mod tests {
             .mark(&PathsParams { paths })
             .expect("mark across scans");
         let bytes = 10 * 1024 * 1024 * 1024 - 50 * 1024 * 1024;
-        let range = format!("{}–{}", human_bytes(bytes), human_bytes(bytes));
+        let range = format!("0 B–{}", human_bytes(bytes));
         assert!(report.contains(&range), "{report}");
         assert_eq!(report.matches("Selected-set reclaim estimate:").count(), 1);
-        assert!(
-            report.contains(&format!("Projects {}", human_bytes(bytes))),
-            "{report}"
-        );
+        assert!(report.contains("Projects 0 B"), "{report}");
     }
 
     #[test]
@@ -4259,10 +4259,10 @@ mod tests {
         let union =
             planning::estimate(&scan.tree, context, &copies(&root), None, 0)
                 .expect("union");
-        assert!(
-            union.reclaim.expect("union bounds").lower
-                > clone.reclaim.expect("alone bounds").upper
-        );
+        let union = union.reclaim.expect("union bounds");
+        assert_eq!(union.lower, 0);
+        assert!(union.partial);
+        assert!(union.upper > clone.reclaim.expect("alone bounds").upper);
     }
 
     /// Proposals inform; only a preview of the person's decisions can be
@@ -5280,7 +5280,7 @@ mod tests {
     }
 
     #[test]
-    fn clone_rows_split_shared_bytes_and_a_complete_group_frees_one_copy() {
+    fn clone_rows_split_shared_bytes_and_a_complete_group_has_partial_bounds() {
         let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
             .expect("fixture");
         let root = temp.path().canonicalize().expect("root");
@@ -5343,7 +5343,7 @@ mod tests {
                 paths: copies(&root),
             })
             .expect("mark all");
-        assert!(all.contains("estimate: 12 MiB\u{2013}12 MiB"), "{all}");
+        assert!(all.contains("estimate: 0 B\u{2013}12 MiB"), "{all}");
         assert!(all.contains("36 MiB of the selection is APFS clone"));
     }
 
@@ -5404,7 +5404,7 @@ mod tests {
     }
 
     #[test]
-    fn marking_a_worktree_trio_one_by_one_frees_one_copy_at_the_end() {
+    fn marking_a_worktree_trio_keeps_shared_blocks_out_of_the_lower_bound() {
         const MIB: u64 = 1024 * 1024;
         for modified in [false, true] {
             let temp =
@@ -5425,17 +5425,17 @@ mod tests {
                 assert_eq!(estimate.on_volume, estimate.lower, "{report}");
                 seen.push((estimate.lower, estimate.upper));
             }
-            // Each worktree's own 100 MiB until the last clone of the
-            // group is selected; then the shared data counts, once.
+            // Each worktree's own 100 MiB is measured; completing the ID
+            // adds only possible savings because other IDs can share blocks.
             let lower: Vec<u64> =
                 seen.iter().map(|(lower, _)| *lower).collect();
             assert_eq!(
                 lower,
-                [100 * MIB, 200 * MIB, (300 + 10_140) * MIB],
+                [100 * MIB, 200 * MIB, 300 * MIB],
                 "modified={modified}"
             );
             if !modified {
-                // Full clones beside ordinary files: exact, no range.
+                // The full group's shared data enters the upper bound once.
                 let upper: Vec<_> =
                     seen.iter().map(|(_, upper)| *upper).collect();
                 assert_eq!(

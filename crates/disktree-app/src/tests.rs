@@ -4669,17 +4669,17 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         app.toggle_mark(&[index], cx);
         let plan = app.plan();
         assert_eq!(plan.bytes(), 16 * 1024 * 1024);
-        assert_eq!(plan.reclaimable_bytes(), 8 * 1024 * 1024);
+        assert_eq!(plan.reclaimable_bytes(), 0);
         assert_eq!(plan.possible_bytes(), 8 * 1024 * 1024);
         let estimate = app.agent_state().estimate.expect("linked union");
-        assert_eq!(estimate.lower, 8 * 1024 * 1024);
-        assert_eq!(estimate.upper, Some(estimate.lower));
+        assert_eq!(estimate.lower, 0);
+        assert_eq!(estimate.upper, Some(8 * 1024 * 1024));
     });
     draw(cx);
     crate::marks::work::reset();
     read(&view, cx, |app| {
         for _ in 0..4 {
-            assert_eq!(app.plan().reclaimable_bytes(), 8 * 1024 * 1024);
+            assert_eq!(app.plan().reclaimable_bytes(), 0);
         }
     });
     assert_eq!(
@@ -9073,10 +9073,10 @@ fn aux_review_document_tab_leaves_the_title_strip(cx: &mut TestAppContext) {
 
 /// Three 10 GiB worktrees sharing all but 100 MiB each, marked one by one
 /// in the window: the meter and the review button project each one's own
-/// 100 MiB until the last clone of the group is marked, then the shared
-/// data once. Synthetic clone facts, so it runs on every system.
+/// 100 MiB. Completing the clone ID adds only possible shared savings.
+/// Synthetic clone facts, so it runs on every system.
 #[gpui_kit::test]
-fn marking_a_worktree_trio_one_by_one_frees_one_copy_at_the_end(
+fn marking_a_worktree_trio_projects_only_its_private_allocation(
     cx: &mut TestAppContext,
 ) {
     use disktree_core::sharing::{Allocation, CloneInfo};
@@ -9151,7 +9151,7 @@ fn marking_a_worktree_trio_one_by_one_frees_one_copy_at_the_end(
         [
             (100 * MIB, 100 * MIB, 100 * MIB),
             (200 * MIB, 200 * MIB, 200 * MIB),
-            (10_440 * MIB, 10_440 * MIB, 10_440 * MIB),
+            (300 * MIB, 10_440 * MIB, 300 * MIB),
         ]
     );
 }

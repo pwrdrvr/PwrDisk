@@ -1631,11 +1631,9 @@ mod clone_tests {
             assert_eq!(crate::sharing::estimate([node]).lower, 0);
         }
         assert_eq!(crate::sharing::estimate([original, clone]).lower, 0);
-        assert_eq!(
-            crate::sharing::estimate([original, alias, clone]).lower,
-            8 * 1024 * 1024
-        );
-        assert_eq!(tree.sharing().reclaimable(tree.bytes), 8 * 1024 * 1024);
+        assert_eq!(crate::sharing::estimate([original, alias, clone]).lower, 0);
+        assert_eq!(tree.sharing().reclaimable(tree.bytes), 0);
+        assert_eq!(tree.sharing().possible(tree.bytes), 8 * 1024 * 1024);
         for node in [original, alias, clone] {
             assert_ne!(
                 node.allocation()
@@ -1656,7 +1654,7 @@ mod clone_tests {
         let tree = scan(temp.path(), ScanOptions::default()).expect("scan");
         let tree = tree.root();
         assert_eq!(tree.sharing().private_bytes, 0);
-        assert_eq!(tree.sharing().reclaimable(tree.bytes), 8 * 1024 * 1024);
+        assert_eq!(tree.sharing().reclaimable(tree.bytes), 0);
         assert_eq!(tree.sharing().possible(tree.bytes), 8 * 1024 * 1024 + 4096);
         assert_eq!(tree.sharing().duplicate_bytes, 8 * 1024 * 1024);
         let clone = tree
