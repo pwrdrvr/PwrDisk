@@ -68,6 +68,21 @@ test('a cold Intel build leaves the execution budget intact', () => {
   assert.equal(intel.completion(11, 10), 'complete');
 });
 
+test('Intel phase deadlines fit inside the job', () => {
+  // Run 42395251813 spent almost 15 minutes compiling, after roughly eight
+  // minutes of setup and lifecycle checks. The job cancelled Test after
+  // 7m41s even though that step had a 20-minute allowance.
+  assert.equal(intel.completion(15, 10, 8), 'complete');
+  for (let fixture = 0; fixture <= intel.fixtureLimit; fixture++) {
+    for (let build = 1; build <= intel.compileLimit; build++) {
+      for (let execution = 1; execution <= intel.testLimit; execution++) {
+        assert.equal(intel.completion(build, execution, fixture), 'complete',
+          `fixture ${fixture}m, compile ${build}m, test ${execution}m`);
+      }
+    }
+  }
+});
+
 test('Apple silicon compilation leaves room for every test suite', () => {
   // Run 42325538195 compiled for 3m06s, then spent 6m23s in core alone.
   // Round up compilation and allow the remaining suites another minute.
