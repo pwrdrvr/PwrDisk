@@ -960,8 +960,8 @@ fn read_mount_table() -> MountTable {
     // The same table the scan reads for its volume, so a projection is
     // judged by the rule the tree itself was built under.
     let mounts = crate::space::mount_table();
-    if let Ok(table) = fs::read_to_string("/proc/self/mountinfo") {
-        let views = crate::space::parse_mountinfo(&table);
+    if let Ok(table) = fs::read("/proc/self/mountinfo") {
+        let views = crate::space::parse_mountinfo_bytes(&table);
         return MountTable {
             points: views.iter().map(|mount| guard_key(&mount.point)).collect(),
             media: media_roots(&views),
@@ -988,7 +988,7 @@ fn media_roots(mounts: &[crate::space::MountView]) -> Vec<PathBuf> {
                 // stacked views must never grant a deletion exception.
                 && mounts.iter().filter(|other| other.point == mount.point).count() == 1
                 && mount.fs_root == Path::new("/")
-                && mount.source.starts_with("/dev/")
+                && mount.source.starts_with(b"/dev/")
                 && matches!(
                     mount.fstype.as_str(),
                     "ext2"
@@ -1083,11 +1083,8 @@ pub fn prime_mount_points() {
 fn read_mount_points() -> Vec<PathBuf> {
     let points: Vec<PathBuf> = if cfg!(windows) {
         windows_mount_points()
-    } else if let Ok(table) = fs::read_to_string("/proc/self/mounts") {
-        crate::space::parse_mounts(&table)
-            .into_iter()
-            .map(|mount| mount.point)
-            .collect()
+    } else if let Some(mounts) = crate::space::mount_table() {
+        mounts.into_iter().map(|mount| mount.point).collect()
     } else if cfg!(target_os = "macos") {
         Command::new("/sbin/mount")
             .stdin(std::process::Stdio::null())
@@ -2670,6 +2667,13 @@ mod tests {
         covering.point = PathBuf::from("/run/media/user/Games");
         stacked.push(covering);
         assert!(media_roots(&stacked).is_empty(), "overmounted disk");
+        let stacked = crate::space::parse_mountinfo(
+            "1 0 8:1 / / rw - ext4 /dev/root rw\n\
+             2 1 0:20 / /run rw - tmpfs tmpfs rw\n\
+             3 2 8:2 / /run/media/user/Games rw - ext4 /dev/usb rw\n\
+             4 3 8:3 / /run/media/user/Games rw - ext4 /dev/upper rw\n",
+        );
+        assert!(media_roots(&stacked).is_empty(), "retain stack metadata");
         assert!(media_roots(&[]).is_empty());
     }
 
@@ -2679,13 +2683,12 @@ mod tests {
     #[test]
     #[ignore = "requires the isolated mount fixture"]
     fn mounted_media_and_repeated_views() {
-        let table =
-            fs::read_to_string("/proc/self/mountinfo").expect("mountinfo");
+        let table = fs::read("/proc/self/mountinfo").expect("mountinfo");
         assert!(
-            crate::space::parse_mountinfo(&table)
+            crate::space::parse_mountinfo_bytes(&table)
                 .iter()
                 .any(|mount| mount.point == Path::new("/run")
-                    && mount.source == "disktree-test-run")
+                    && mount.source == b"disktree-test-run")
         );
         let root = Path::new("/run/media/disktree-test");
         let mounts = read_mount_points();

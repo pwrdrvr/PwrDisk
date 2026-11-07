@@ -27,8 +27,13 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
 
 The root chooser omits mounts at or below `/proc`, `/sys` and `/dev`,
 plus kernel pseudo filesystems including `binfmt_misc`, `bpf`, `efivarfs`
-and `ramfs`. Discovery reads the mount table without probing candidates
-or measuring their free space; an explicit scan root is still required.
+`ramfs`, `rpc_pipefs` and `fuse.lxcfs`. Discovery reads the mount table
+without probing candidates or measuring their free space; an explicit scan
+root is still required. Mount paths and source identities preserve their
+raw bytes, so disks with non-UTF-8 names retain separate accounting and
+removal limits. When mounts are stacked, the parent IDs in mountinfo select
+the visible layer and exclude hidden descendants, including after a mount
+move; record order does not decide which disk is offered or scanned.
 
 ## Access
 
