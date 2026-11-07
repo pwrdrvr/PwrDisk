@@ -241,8 +241,16 @@ impl Image {
         // Keep every attachment and formatting stage under this guard.
         run(Command::new("hdiutil")
             .args([
-                "create", "-verbose", "-size", "128m", "-type", "SPARSE",
-                "-layout", "GPTSPUD",
+                "create",
+                "-verbose",
+                "-size",
+                "128m",
+                "-type",
+                "SPARSE",
+                "-layout",
+                "GPTSPUD",
+                "-partitionType",
+                "Apple_APFS",
             ])
             .arg(image.backing()))
         .unwrap_or_else(|error| {
@@ -295,9 +303,12 @@ impl Image {
             .expect("owned attachment")
             .expect("attached backing image");
         let physical = physical_device(&entries).expect("owned physical disk");
+        // This owned partition has never been mounted. Format it directly:
+        // diskutil's extra unmount/arbitration phase stalled on Intel CI.
+        // -w waits for the container to be published before the next stage.
         checked(
-            Command::new("diskutil")
-                .args(["apfs", "createContainer"])
+            Command::new("/sbin/newfs_apfs")
+                .args(["-C", "-w"])
                 .arg(only_child(&entries, &physical)),
         );
     }
@@ -309,11 +320,12 @@ impl Image {
         let container = container_device(&entries)
             .expect("owned container")
             .expect("created APFS container");
+        // The -nomount attachment keeps automatic mounting disabled while
+        // newfs publishes the volume. Only mount_volume chooses its path.
         checked(
-            Command::new("diskutil")
-                .args(["apfs", "addVolume"])
-                .arg(container)
-                .args(["APFS", "PwrDisk-oracle", "-nomount"]),
+            Command::new("/sbin/newfs_apfs")
+                .args(["-A", "-w", "-v", "PwrDisk-oracle"])
+                .arg(container),
         );
     }
 

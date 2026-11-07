@@ -251,8 +251,16 @@ jobs:
       - name: Lint
         run: cargo xtask lint
 
-      - name: Test
+      # Workspace compilation used three minutes of the old ten-minute
+      # test step, leaving no room after the native APFS oracles passed.
+      - name: Compile macOS tests
         timeout-minutes: 10
+        run: |
+          cargo build -p xtask
+          cargo test --workspace --no-run
+
+      - name: Test
+        timeout-minutes: 15
         run: cargo xtask test
 
       # The app bundle, signed ad hoc, and the DMG release.yml cuts the same
