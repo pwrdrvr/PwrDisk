@@ -18,7 +18,7 @@ use std::fs::Metadata;
 use std::os::unix::fs::MetadataExt as _;
 
 use std::io;
-use std::os::fd::{AsRawFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
@@ -161,6 +161,12 @@ thread_local! {
     /// The last finished listing's buffer, for the next one on this thread:
     /// a walk lists millions of directories, one at a time per thread.
     static SPARE: RefCell<Option<Box<[u64]>>> = const { RefCell::new(None) };
+
+    /// Count fallbacks in this test's thread, never other concurrent scans.
+    #[cfg(test)]
+    pub static LISTING_STATS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
 }
 
 /// What an entry is.
@@ -445,10 +451,17 @@ pub fn read_dir(dir: &Path, clones: Clones) -> io::Result<ReadDir> {
             .push(dir.to_path_buf());
     }
     let fd = crate::scan::open_directory(dir)?;
+    Ok(read_dir_from(fd, clones))
+}
+
+/// List an already opened directory, taking ownership of its handle. Removal
+/// preflight opens descendants relative to their parents without following
+/// links, including when their complete paths cannot be passed to the kernel.
+pub fn read_dir_from(fd: OwnedFd, clones: Clones) -> ReadDir {
     let buffer = SPARE
         .with_borrow_mut(Option::take)
         .unwrap_or_else(|| vec![0; BUFFER_BYTES / 8].into_boxed_slice());
-    Ok(ReadDir {
+    ReadDir {
         fd,
         buffer: Some(buffer),
         remaining: 0,
@@ -456,7 +469,7 @@ pub fn read_dir(dir: &Path, clones: Clones) -> io::Result<ReadDir> {
         done: false,
         clones,
         listed_dirs: false,
-    })
+    }
 }
 
 impl Drop for ReadDir {
@@ -506,7 +519,11 @@ impl Iterator for ReadDir {
 }
 
 impl ReadDir {
-    /// A caller that checks mounts by path can trust directory flags from
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+
+    /// A caller that checks directory boundaries itself can trust flags from
     /// the listing. Otherwise a covered mount point needs a fresh stat.
     pub(crate) const fn use_listed_directories(&mut self) {
         self.listed_dirs = true;
@@ -617,6 +634,8 @@ impl ReadDir {
     /// An entry the file system described only in part, read the ordinary
     /// way, relative to the directory already open.
     fn stat(&self, name: &[u8]) -> io::Result<Entry> {
+        #[cfg(test)]
+        LISTING_STATS.set(LISTING_STATS.get() + 1);
         let stat =
             rustix::fs::statat(&self.fd, name, AtFlags::SYMLINK_NOFOLLOW)?;
         Ok(Entry::from_stat(name, &stat))
@@ -1612,11 +1631,9 @@ mod clone_tests {
             assert_eq!(crate::sharing::estimate([node]).lower, 0);
         }
         assert_eq!(crate::sharing::estimate([original, clone]).lower, 0);
-        assert_eq!(
-            crate::sharing::estimate([original, alias, clone]).lower,
-            8 * 1024 * 1024
-        );
-        assert_eq!(tree.sharing().reclaimable(tree.bytes), 8 * 1024 * 1024);
+        assert_eq!(crate::sharing::estimate([original, alias, clone]).lower, 0);
+        assert_eq!(tree.sharing().reclaimable(tree.bytes), 0);
+        assert_eq!(tree.sharing().possible(tree.bytes), 8 * 1024 * 1024);
         for node in [original, alias, clone] {
             assert_ne!(
                 node.allocation()
@@ -1637,7 +1654,7 @@ mod clone_tests {
         let tree = scan(temp.path(), ScanOptions::default()).expect("scan");
         let tree = tree.root();
         assert_eq!(tree.sharing().private_bytes, 0);
-        assert_eq!(tree.sharing().reclaimable(tree.bytes), 8 * 1024 * 1024);
+        assert_eq!(tree.sharing().reclaimable(tree.bytes), 0);
         assert_eq!(tree.sharing().possible(tree.bytes), 8 * 1024 * 1024 + 4096);
         assert_eq!(tree.sharing().duplicate_bytes, 8 * 1024 * 1024);
         let clone = tree

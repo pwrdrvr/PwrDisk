@@ -38,9 +38,11 @@ separately, and do not propose worktrees just to release clone groups.
   bytes, or the shared part, as space a clone-backed worktree or copy will
   free. A row without the clause has no clone files.
 - **Use the selected-set reclaim bounds, not listed bytes.** PwrDisk
-  evaluates accepted marks together: a complete clone group is counted
-  once, while copies retained outside the selection keep shared blocks
-  alive. All hardlink names must be selected before their allocation can
+  evaluates accepted marks together: a complete clone ID counts shared
+  data once toward possible savings only, with a partial estimate. Modified
+  clones with another ID, even outside the scan, can retain those blocks;
+  only measured private bytes enter the lower bound. All hardlink names
+  must be selected before their allocation can
   be reclaimed. Clone groups are scoped to their physical APFS volume.
   Missing metadata widens the bounds; it does not justify projecting all
   listed bytes. Apparent-size scans and disabled clone measurements cannot

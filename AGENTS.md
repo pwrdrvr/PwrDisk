@@ -183,7 +183,8 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
    whole while eligible children remain removable; see
    [the protected-path policy](docs/protected-paths.md) when changing guards.
 5. **Marks are keyed by absolute path**, not tree position, so they survive a
-   re-scan; `Marks::refresh` re-reads their sizes and drops what is gone.
+   re-scan; `Marks::refresh` re-reads their sizes and keeps missing paths
+   marked at zero bytes, so they cannot claim space that is already gone.
 6. **The treemap is painted, not composed of elements.** Thousands of
    rectangles belong in one canvas callback; labels are shaped there too so they
    clip to their own tile.

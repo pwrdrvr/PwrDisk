@@ -49,8 +49,21 @@ November 6, 2026, the Intel macOS test step took 8–13 minutes, Windows
 tests at most 9, and the other test steps at most 5. Their limits allow
 roughly twice those times; Intel gets 20 minutes. One earlier Intel run
 took 46 minutes in the test step: it would now fail instead of holding up
-the check. The job limits also cover setup, builds and cache saving. Revisit
-them when runner speeds or cold-cache build times change.
+the check. Both macOS jobs first run the isolated APFS image fixture tests
+with a ten-minute deadline, before compiling the GUI dependency graph.
+The full test gate repeats those tests alongside the deletion oracle.
+Both macOS jobs compile workspace tests and xtask separately:
+Intel has a 15-minute compilation limit and 20-minute test gate; Apple
+silicon has 10 and 15 minutes respectively. The test gate includes
+execution, the later screenshot-feature build and script checks. Cold
+compilation took 11 minutes on Intel and 3m06s on Apple silicon. On the
+latter, core tests then took 6m23s, leaving no time in the old ten-minute
+step for the remaining suites. Counting compilation against execution
+terminated both advancing suites. The deadline model in
+`scripts/ci/test-budgets.test.cjs` checks workloads against the separate
+phase budgets and the unchanged 30-minute job limit. The job limits also
+cover setup and cache saving. Revisit them when runner speeds or cold-cache
+build times change.
 
 ### The Rust cache
 

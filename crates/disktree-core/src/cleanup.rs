@@ -103,7 +103,7 @@ fn inspect_raw_tree(
     visited: &mut usize,
     maximum: usize,
 ) -> Result<(), String> {
-    crate::removal::inspect(&target.path, |path, _, dir| {
+    crate::removal::inspect(&target.path, |path, dir| {
         *visited += 1;
         if *visited > maximum {
             return Err("Raw removal inspection exceeded its bound; inspect a smaller selection".into());

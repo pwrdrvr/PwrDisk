@@ -135,6 +135,8 @@ pub struct Report {
     pub reclaim: Option<Bounds>,
     pub volume: VolumeAllocation,
     pub peers: Option<Peers>,
+    /// Observed allocation metadata is complete. Unknown shared-extent
+    /// relationships widen `reclaim` without invalidating measured private bytes.
     pub metadata_complete: bool,
     pub scan_complete: bool,
     pub limitations: Vec<String>,
@@ -241,7 +243,7 @@ pub fn estimate(
         limitations.push("Physical bounds and private/shared allocation are unavailable: apparent sizes or APFS clone metadata disabled/unsupported. Use an allocated-size scan with clone collection on macOS.".into());
     }
     if measured.partial || duplicates.is_none() || context.limited() {
-        limitations.push("Incomplete scan or allocation metadata: bounds cover observed entries only; omitted entries and unknown sharing can change the result.".into());
+        limitations.push("Incomplete scan, allocation metadata or shared-extent relationships: bounds cover observed entries only; omitted entries and unknown sharing can change the result.".into());
     }
     let peers = if peer_limit == 0 || !physical {
         None
@@ -275,7 +277,8 @@ pub fn estimate(
         reclaim: physical.then_some(measured.into()),
         volume,
         metadata_complete: physical
-            && !measured.partial
+            && !context.limited()
+            && accounting.metadata_complete()
             && duplicates.is_some(),
         scan_complete: !context.limited(),
         context,
@@ -634,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn three_of_four_12_gb_worktrees_find_the_last_holder_and_unlock_once() {
+    fn three_of_four_worktrees_find_the_last_holder_and_possible_savings() {
         let (temp, tree, context) = fixture(4, Some(0));
         let report = estimate(
             &tree,
@@ -658,11 +661,9 @@ mod tests {
         assert_eq!(peers.candidates.len(), 1);
         let peer = &peers.candidates[0];
         assert_eq!(peer.path, temp.path().join("worktree-4"));
-        assert_eq!(
-            (peer.additional.lower, peer.additional.upper),
-            (SIZE, SIZE)
-        );
-        assert_eq!(peer.with_selection.lower, SIZE);
+        assert_eq!((peer.additional.lower, peer.additional.upper), (0, SIZE));
+        assert_eq!(peer.with_selection.lower, 0);
+        assert!(peer.with_selection.partial);
         let report =
             estimate(&tree, context, &selected(temp.path(), 4), None, 10)
                 .expect("all four");
@@ -670,7 +671,7 @@ mod tests {
         assert_eq!(report.internal_duplicate_allocation, Some(36 * GB));
         assert_eq!(
             report.reclaim.as_ref().map(|b| (b.lower, b.upper)),
-            Some((SIZE, SIZE))
+            Some((0, SIZE))
         );
         assert!(report.peers.expect("peers").candidates.is_empty());
     }
@@ -691,7 +692,7 @@ mod tests {
         assert_eq!(report.accepted.len(), 4);
         assert_eq!(report.covered.len(), 2);
         assert_eq!(report.refused.len(), 3);
-        assert_eq!(report.reclaim.expect("bounds").lower, SIZE);
+        assert_eq!(report.reclaim.expect("bounds").lower, 0);
         assert_eq!(report.internal_duplicate_allocation, Some(36 * GB));
     }
 
@@ -737,7 +738,7 @@ mod tests {
             Some((3 * GB, 36 * GB))
         );
         let peers = report.peers.expect("peers");
-        assert_eq!(peers.candidates[0].with_selection.lower, 15 * GB);
+        assert_eq!(peers.candidates[0].with_selection.lower, 4 * GB);
         assert_eq!(peers.candidates[0].with_selection.upper, 48 * GB);
         assert_eq!(peers.candidates[0].additional.lower, 0);
         assert_eq!(peers.candidates[0].additional.upper, 45 * GB);
@@ -802,7 +803,8 @@ mod tests {
         let peers = report.peers.expect("peers");
         assert_eq!(peers.known_unselected_clone_files, 1);
         assert_eq!(peers.references_not_seen_in_scan, Some(0));
-        assert_eq!(peers.candidates[0].with_selection.lower, SIZE);
+        assert_eq!(peers.candidates[0].with_selection.lower, 0);
+        assert_eq!(peers.candidates[0].with_selection.upper, SIZE);
     }
 
     #[test]
@@ -862,7 +864,7 @@ mod tests {
             peers
                 .additional_with_all_returned_peers
                 .expect("union")
-                .lower,
+                .upper,
             SIZE
         );
     }
@@ -902,7 +904,8 @@ mod tests {
             .expect("wider scope");
         let peers = report.peers.expect("peers");
         assert_eq!(peers.candidates[0].path, temp.path().join("distant"));
-        assert_eq!(peers.candidates[0].additional.lower, SIZE);
+        assert_eq!(peers.candidates[0].additional.lower, 0);
+        assert_eq!(peers.candidates[0].additional.upper, SIZE);
     }
 
     #[test]
