@@ -6,6 +6,7 @@ members = [
     "crates/disktree-link",
     "crates/disktree-mcp",
     "crates/disktree-scan",
+    "crates/disktree-tui",
     "xtask",
 ]
 
@@ -88,4 +89,3 @@ opt-level = 2
 lto = "thin"
 codegen-units = 1
 overflow-checks = true
-

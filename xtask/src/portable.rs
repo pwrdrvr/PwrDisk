@@ -37,24 +37,33 @@ pub fn build() -> Result<(), String> {
             "CARGO_TARGET_{}_LINKER",
             triple.to_uppercase().replace('-', "_")
         );
-        let status = Command::new("cargo")
-            .args([
-                "build",
-                "--release",
-                "--locked",
-                "-p",
-                "disktree-scan",
-                "--target",
-                &triple,
-            ])
-            .env(key, &linker)
-            .status()
-            .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err("static helper build failed; install targets with: \
+        let packages: &[&str] = if arch == std::env::consts::ARCH {
+            &["disktree-scan", "disktree-tui"]
+        } else {
+            &["disktree-scan"]
+        };
+        for package in packages {
+            let status = Command::new("cargo")
+                .args([
+                    "build",
+                    "--release",
+                    "--locked",
+                    "-p",
+                    package,
+                    "--target",
+                    &triple,
+                ])
+                .env(&key, &linker)
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err(
+                    "static binary build failed; install targets with: \
                  rustup target add x86_64-unknown-linux-musl \
                  aarch64-unknown-linux-musl"
-                .into());
+                        .into(),
+                );
+            }
         }
         helpers.push((
             arch.into(),
@@ -76,6 +85,18 @@ pub fn build() -> Result<(), String> {
     }
     disktree_core::payload::append(&output, &helpers)
         .map_err(|e| e.to_string())?;
+    let terminal = output.with_file_name("pwrdisk-tui");
+    let triple = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+    std::fs::copy(target.join(triple).join("release/pwrdisk-tui"), &terminal)
+        .map_err(|e| e.to_string())?;
+    let status = Command::new("strip")
+        .arg(&terminal)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err("terminal strip failed".into());
+    }
     println!("Portable app: {}", output.display());
+    println!("Static terminal: {}", terminal.display());
     Ok(())
 }

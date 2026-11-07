@@ -21,6 +21,13 @@ checkout, so that file is the only place it is written.
 
 ## ci.yml
 
+The standalone-terminal jobs build and test `disktree-tui` on Linux x64 and
+ARM64 without installing GPUI libraries. They build the static-musl
+`pwrdisk-tui`, verify it has no dynamic loader, run its help without display
+variables, and upload the executable. macOS bundles and Windows packages
+include a separate terminal executable; release verification checks it
+alongside the desktop executable.
+
 The Linux `licenses` job runs `cargo xtask licenses --check` on every push
 to `main` and on PRs changing `Cargo.lock`, any `Cargo.toml`, `licenses/**`
 or `THIRD_PARTY_LICENSES`. Changes to `ci.yml`, the `setup-rust` action or
@@ -54,9 +61,10 @@ latter, core tests then took 6m23s, leaving no time in the old ten-minute
 step for the remaining suites. Counting compilation against execution
 terminated both advancing suites. The deadline model in
 `scripts/ci/test-budgets.test.cjs` checks workloads against the separate
-phase budgets and the unchanged 30-minute job limit. The job limits also
-cover setup and cache saving. Revisit them when runner speeds or cold-cache
-build times change.
+phase budgets and the enclosing job limit. Intel gets 50 minutes so the
+10-minute fixture, 15-minute compile and 20-minute test allowances fit with
+setup and cache saving; Apple silicon keeps its 30-minute job limit. Revisit
+them when runner speeds or cold-cache build times change.
 
 ### The Rust cache
 

@@ -25,6 +25,7 @@ use std::process::{Command, Stdio};
 
 const APP: &str = "PwrDisk.app";
 const EXECUTABLE: &str = "pwrdisk";
+const TERMINAL: &str = "pwrdisk-tui";
 /// What the binary is built for at least; `LSMinimumSystemVersion` in
 /// `packaging/macos/Info.plist.in` says the same, and GPUI needs 10.15.7.
 const DEPLOYMENT_TARGET: &str = "11.0";
@@ -124,20 +125,30 @@ pub fn bundle(args: &[String]) -> Result<(), String> {
     // `CARGO_TARGET_DIR` or `build.target-dir` elsewhere would put the fresh
     // binary there and leave a stale one here to be bundled.
     let target = root.join("target");
-    let (built, arch) = if options.universal {
+    let (built, built_terminal, arch) = if options.universal {
         let mut lipo = Command::new("lipo");
         let joined = out.join(format!("{EXECUTABLE}-universal"));
         lipo.arg("-create").arg("-output").arg(&joined);
+        let mut terminal_lipo = Command::new("lipo");
+        let joined_terminal = out.join(format!("{TERMINAL}-universal"));
+        terminal_lipo
+            .arg("-create")
+            .arg("-output")
+            .arg(&joined_terminal);
         for triple in TARGETS {
             build(&root, &target, Some(triple))?;
             lipo.arg(target.join(triple).join("release").join(EXECUTABLE));
+            terminal_lipo
+                .arg(target.join(triple).join("release").join(TERMINAL));
         }
         tool(&mut lipo)?;
-        (joined, "universal")
+        tool(&mut terminal_lipo)?;
+        (joined, joined_terminal, "universal")
     } else {
         build(&root, &target, None)?;
         (
             target.join("release").join(EXECUTABLE),
+            target.join("release").join(TERMINAL),
             std::env::consts::ARCH,
         )
     };
@@ -155,10 +166,12 @@ pub fn bundle(args: &[String]) -> Result<(), String> {
             .map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
     }
 
-    let binary = macos.join(EXECUTABLE);
-    copy(&built, &binary)?;
-    // Local symbols only: the backtrace of a panic still names functions.
-    tool(Command::new("strip").arg("-x").arg(&binary))?;
+    for (source, name) in [(built, EXECUTABLE), (built_terminal, TERMINAL)] {
+        let binary = macos.join(name);
+        copy(&source, &binary)?;
+        // Local symbols only: the backtrace of a panic still names functions.
+        tool(Command::new("strip").arg("-x").arg(&binary))?;
+    }
 
     icon(
         &root.join("packaging/macos/AppIcon.svg"),
@@ -185,6 +198,8 @@ pub fn bundle(args: &[String]) -> Result<(), String> {
             .arg(contents.join("Info.plist")),
     )?;
 
+    // Nested code must be signed before the enclosing bundle seals it.
+    sign(&macos.join(TERMINAL), options.identity.as_deref())?;
     sign(&app, options.identity.as_deref())?;
     if options.app_only {
         println!("\n{}", app.display());
@@ -232,24 +247,27 @@ pub fn bundle(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// A release build of the app, for `triple` or the host.
+/// Separate builds keep the terminal's dependency graph free of GPUI.
 fn build(
     root: &Path,
     target: &Path,
     triple: Option<&str>,
 ) -> Result<(), String> {
-    let cargo = option_env!("CARGO").unwrap_or("cargo");
-    let mut command = Command::new(cargo);
-    command
-        .current_dir(root)
-        .args(["build", "--release", "--locked", "-p", "disktree-app"])
-        .arg("--target-dir")
-        .arg(target)
-        .env("MACOSX_DEPLOYMENT_TARGET", DEPLOYMENT_TARGET);
-    if let Some(triple) = triple {
-        command.args(["--target", triple]);
+    for package in ["disktree-app", "disktree-tui"] {
+        let cargo = option_env!("CARGO").unwrap_or("cargo");
+        let mut command = Command::new(cargo);
+        command
+            .current_dir(root)
+            .args(["build", "--release", "--locked", "-p", package])
+            .arg("--target-dir")
+            .arg(target)
+            .env("MACOSX_DEPLOYMENT_TARGET", DEPLOYMENT_TARGET);
+        if let Some(triple) = triple {
+            command.args(["--target", triple]);
+        }
+        tool(&mut command)?;
     }
-    tool(&mut command)
+    Ok(())
 }
 
 /// `0.12.0` from `0.12.0-pr.4`: `CFBundleShortVersionString` takes three

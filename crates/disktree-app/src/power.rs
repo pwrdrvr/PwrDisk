@@ -98,30 +98,16 @@ pub fn cpu_threads() -> usize {
     std::thread::available_parallelism().map_or(1, usize::from)
 }
 
-/// Follow each desktop's user configuration location; never write beside
-/// the executable or scanned root. No home/config location means session-only.
-fn config_base() -> Option<PathBuf> {
-    let home = std::env::home_dir();
-    if cfg!(target_os = "macos") {
-        home.map(|home| home.join("Library/Application Support"))
-    } else if cfg!(windows) {
-        std::env::var_os("APPDATA").map(PathBuf::from)
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| home.map(|home| home.join(".config")))
-    }
-}
-
 pub fn settings_path() -> Option<PathBuf> {
-    config_base().map(|base| base.join("pwrdisk/power-efficiency"))
+    disktree_core::removal_limit::settings_dir()
+        .map(|dir| dir.join("power-efficiency"))
 }
 
 /// Where disktree, which PwrDisk was forked from, kept the same setting.
 /// Read only, so someone switching over keeps their choice; never written.
 pub fn legacy_settings_path() -> Option<PathBuf> {
-    config_base().map(|base| base.join("disktree/power-efficiency"))
+    disktree_core::removal_limit::settings_dir()
+        .map(|dir| dir.with_file_name("disktree").join("power-efficiency"))
 }
 
 /// `load`, except that a missing file falls back to `legacy` when that

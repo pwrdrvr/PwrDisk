@@ -195,6 +195,49 @@ jobs:
       - name: Check notices
         run: cargo xtask licenses --check
 
+  terminal:
+    name: Standalone terminal (Linux ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: changes
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      # No desktop libraries: this package must build on a headless host.
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ matrix.arch }}-unknown-linux-musl
+      - name: Test terminal
+        run: cargo test --locked -p disktree-tui
+      - name: Build static terminal
+        env:
+          TUI_ARCH: ${{ matrix.arch }}
+        run: |
+          tui_target="$TUI_ARCH-unknown-linux-musl"
+          tui_host=$(rustc -vV | sed -n 's/^host: //p')
+          tui_sysroot=$(rustc --print sysroot)
+          tui_key=$(printf '%s' "$tui_target" | tr 'a-z-' 'A-Z_')
+          env "CARGO_TARGET_${tui_key}_LINKER=$tui_sysroot/lib/rustlib/$tui_host/bin/rust-lld" \
+            cargo build --release --locked -p disktree-tui --target "$tui_target"
+          tui_binary="target/$tui_target/release/pwrdisk-tui"
+          if readelf -l "$tui_binary" | grep -q INTERP; then
+            echo "::error::pwrdisk-tui unexpectedly needs a dynamic loader"
+            exit 1
+          fi
+          env -u DISPLAY -u WAYLAND_DISPLAY "$tui_binary" --help
+      - name: Upload standalone terminal
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pwrdisk-tui-${{ matrix.arch }}-linux
+          path: target/${{ matrix.arch }}-unknown-linux-musl/release/pwrdisk-tui
+          if-no-files-found: error
+
   check:
     name: Lint and test
     runs-on: ubuntu-24.04
@@ -228,6 +271,11 @@ jobs:
       - name: Test
         timeout-minutes: 10
         run: cargo xtask test
+
+      - name: Standalone terminal without a graphical session
+        run: |
+          cargo build --release --locked -p disktree-tui
+          env -u DISPLAY -u WAYLAND_DISPLAY target/release/pwrdisk-tui --help
 
   check-macos:
     name: Lint and test (macOS)
@@ -347,6 +395,8 @@ jobs:
         shell: pwsh
         run: |
           cargo build --locked -p disktree-app
+          cargo build --locked -p disktree-tui
+          ./target/debug/pwrdisk-tui.exe --help
           Add-Type @'
           using System;
           using System.Runtime.InteropServices;
@@ -370,7 +420,9 @@ jobs:
       matrix:
         include:
           - { name: Linux aarch64, runner: ubuntu-24.04-arm, job_timeout: 15, test_timeout: 8 }
-          - { name: macOS x86_64, runner: macos-15-intel, job_timeout: 30, test_timeout: 20 }
+          # The 10m fixture, 15m compile and 20m test deadlines need setup
+          # headroom in the enclosing job, even on a cold Intel runner.
+          - { name: macOS x86_64, runner: macos-15-intel, job_timeout: 50, test_timeout: 20 }
           - { name: Windows aarch64, runner: windows-11-arm, job_timeout: 20, test_timeout: 15 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.job_timeout }}
