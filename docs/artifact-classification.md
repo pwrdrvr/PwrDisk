@@ -83,3 +83,13 @@ its existing node size, and a bounded six-component rule window and
 operation-count tests guard classification cost. SSH paths use POSIX rules
 on every client. Existing marking, confirmation, capacity and removal
 guards apply to every assessment.
+
+The generic read-only MCP query
+[`pwrdisk_find_outputs`](mcp-output-inventory.md) discovers these boundaries
+alongside descriptive temporary/scratch locations, with family/subtype,
+evidence, size and age filters. JVM is a family containing Scala, Gradle,
+Maven and Coursier subtypes. Cargo is one internal detector with additional
+compiler/fingerprint metadata and Git-tracking checks, including custom
+output roots. Other types retain explicit name/layout evidence. Overlapping
+types remain visible while union totals count bytes once. The query does not
+change display classification, cleanup routing or removal authorization.

@@ -40,8 +40,9 @@ marked:
 Looking is free; acting is the user's call.
 
 - **Read-only tools need no permission.** `pwrdisk_status`, `pwrdisk_ls`,
-  `pwrdisk_find`, `pwrdisk_estimate` and a home-directory `pwrdisk_scan` only read. Say before
-  a `disk: true` scan that it walks the whole volume and can take minutes.
+  `pwrdisk_find`, `pwrdisk_find_outputs`, `pwrdisk_estimate` and a
+  home-directory `pwrdisk_scan` only read. Say before a `disk: true` scan
+  that it walks the whole volume and can take minutes.
 - **Confirm the list before `pwrdisk_mark`.** Show each candidate with its
   path, its size, what it is, and why it is safe to lose or how it comes
   back. Mark what the user agrees to, nothing more. Marking only marks, but
@@ -68,6 +69,44 @@ Looking is free; acting is the user's call.
   only when emptied. Permanent deletion cannot be undone through PwrDisk or
   Trash. Wait for an explicit answer confirming this exact operation before
   calling `pwrdisk_remove`. Never manufacture user confirmation yourself.
+
+## Prefer older, large output across types
+
+Use `pwrdisk_find_outputs` for typed build output, caches, dependencies and
+name-described temporary/scratch/log/trash locations. Omit type filters for
+all supported kinds. Use `types: ["cargo"]` or `types: ["scala"]` for a
+subtype, or `family: "jvm"` / `types: ["jvm"]` for Scala, Gradle, Maven and
+Coursier together. Multiple types use OR; family, category, name, minimum
+evidence, size and age filters narrow together. Results identify their type,
+family, assessment, proof strength, exact file-write time, size and limits.
+
+Distinguish `name`, `layout` and `metadata` evidence; use `minimum_evidence`
+when stronger evidence is needed. A name-described location is not a known
+cache owner or disposable data. Cargo is an internal metadata-backed detector:
+it requires compiler/fingerprint contents and dependency structure, including
+custom output roots. A target name alone never qualifies. Other types expose
+the actual name/layout evidence from the shared classifier. The report names
+metadata-capable types; absence from a metadata-only query is not proof that
+other types are absent. Use the returned evidence directly instead of repeating
+filesystem walks or external identity/age checks for facts already established.
+
+Start with large older candidates, for example `min_bytes: 1073741824`,
+`older_than_days: 30`, `order: "oldest"`. Fetch all pages with `next_offset`.
+If insufficient for the goal, relax the age cutoff (for example 7 days, then
+omit it) and explain the expanded range. Recent writes can be automated and
+do not establish active human work. `order: "largest"` compares sizes instead.
+Age is newest scanned **file mtime beneath the root**, not directory mtime,
+access time or proof of inactivity. Unknown ages sort last and fail age filters.
+
+Types can overlap: a generic cache location may contain Cargo or Scala output.
+Keep the typed children visible. `covered_by` identifies an enclosing match;
+`matching_listed_bytes` counts the union once. Per-type totals may overlap and
+must not be added. Pass all selected paths to the full-list estimate and check
+retention before promising recovery. Check scan settings, timestamps,
+unreadable counts, truncation and exclusions before claiming coverage, even
+when a filter returns zero rows. Identity does not prove all untracked files
+are generated or safe to lose. Existing source-checkout, supported-owner,
+marking and removal-confirmation rules still apply.
 
 ## Never
 

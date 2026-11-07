@@ -6,6 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
+mod outputs;
+pub use outputs::find as find_outputs;
+
 use crate::classify::Category;
 use crate::tree::{Node, NodeKind};
 

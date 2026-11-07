@@ -271,6 +271,70 @@ pub fn assess(
     })
 }
 
+/// Inspect an output boundary without letting an outer tool hide its types.
+///
+/// The classifier's exclusions and layout rules remain authoritative. This
+/// inventory can expose a Scala subtree within an installed dependency tree.
+pub(crate) fn output_boundary(
+    parts: &[&str],
+    is_dir: bool,
+    excluded: &mut bool,
+) -> Option<Detection> {
+    let direct = at_boundary(parts, is_dir, excluded);
+    if *excluded || !is_dir || direct.is_some() {
+        return direct;
+    }
+    let tail = &parts[parts.len().saturating_sub(6)..];
+    // The shared matcher already searches every start position. Only a
+    // recognized outer artifact can hide a more specific boundary; skip its
+    // consumed prefix instead of retrying every suffix for ordinary sources.
+    let mut offset = 0;
+    while let Some((end, kind)) = rules::classify_parts(tail, offset) {
+        if end == tail.len() {
+            return Some(Detection::new(kind, evidence(tail)));
+        }
+        if end <= offset {
+            break;
+        }
+        offset = end;
+    }
+    None
+}
+
+/// Inventory rows report their own boundary, not an unrelated outer tool.
+///
+/// A scoped root can inherit the nearest output identity. Nearer temporary,
+/// trash and diagnostic hints remain descriptive rather than restoring a tool.
+pub fn output_detection(
+    path: &Path,
+    node: Node<'_>,
+    scoped: bool,
+) -> Option<Detection> {
+    let names = PathStyle::Native.names(path);
+    let parts: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
+    let mut excluded = excluded_tool_contents(&parts);
+    let direct = output_boundary(&parts, node.is_dir(), &mut excluded);
+    let inherited = if scoped
+        && !matches!(
+            node.category,
+            Category::Temporary | Category::Trash | Category::DiagnosticLogs
+        ) {
+        (1..parts.len())
+            .rev()
+            .find_map(|end| output_boundary(&parts[..end], true, &mut excluded))
+    } else {
+        None
+    };
+    direct.or(inherited).map(|mut d| {
+        if d.kind == Artifact::PackageCache
+            && crate::classify::is_pnpm_store(node)
+        {
+            d.evidence = Evidence::Layout;
+        }
+        d.assessed(node)
+    })
+}
+
 fn detect_parts(parts: &[&str], is_dir: bool) -> Option<Detection> {
     if let Some(detection) = vm(parts, is_dir) {
         return Some(detection);
@@ -339,7 +403,7 @@ fn lowered(name: &str) -> Cow<'_, str> {
     }
 }
 
-fn excluded_tool_contents(parts: &[&str]) -> bool {
+pub(crate) fn excluded_tool_contents(parts: &[&str]) -> bool {
     parts.iter().enumerate().any(|(i, part)| {
         step();
         let Some(next) = parts.get(i + 1) else {
