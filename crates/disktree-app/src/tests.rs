@@ -11970,3 +11970,56 @@ fn review_phrases_follow_the_confirmed_disk_model(cx: &mut TestAppContext) {
     )
     .expect("phrase consent follows the named disk");
 }
+
+fn detached_volume_target(
+    app: &mut Disktree,
+    temp: &Path,
+) -> disktree_core::removal::Target {
+    let mut target = app
+        .target_at(&child_crumbs(app, &[], "junk"))
+        .expect("target");
+    app.root_path = temp.join("unmounted");
+    target.path = app.root_path.join("junk");
+    app.space = None;
+    assert!(app.refusal_of(&target.path).is_none());
+    target
+}
+
+#[gpui_kit::test]
+fn an_agent_cannot_mark_zero_bytes_on_an_unknown_volume(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = over_limit_view(temp.path(), cx);
+    update(&view, cx, |app, _| {
+        let mut target = detached_volume_target(app, temp.path());
+        target.bytes = 0;
+        assert!(app.agent_mark_refusal(&target).is_some());
+    });
+}
+
+#[gpui_kit::test]
+fn agent_marking_requires_a_known_capacity(cx: &mut TestAppContext) {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = over_limit_view(temp.path(), cx);
+    update(&view, cx, |app, _| {
+        let target = detached_volume_target(app, temp.path());
+        TestRunner::new(Config {
+            failure_persistence: None,
+            ..Config::default()
+        })
+        .run(&any::<u64>(), |bytes| {
+            let target = disktree_core::removal::Target {
+                bytes,
+                ..target.clone()
+            };
+            prop_assert!(app.agent_mark_refusal(&target).is_some());
+            Ok(())
+        })
+        .expect("unknown capacity fails closed for every marked size");
+    });
+}
