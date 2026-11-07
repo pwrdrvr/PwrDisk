@@ -13,9 +13,13 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::artifact::Roots;
+use crate::artifact::{self, Artifact, Roots};
 use crate::path_style::PathStyle;
 use crate::tree::{Block, Node, Tree};
+
+#[cfg(test)]
+#[path = "classify/context_tests.rs"]
+mod context_tests;
 
 /// A kind of data, for colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -42,6 +46,12 @@ pub enum Category {
     Spotlight,
     /// VM/container disks and state; detection never suggests raw removal.
     VirtualMachine,
+    /// Temporary locations; their contents may still be needed or unique.
+    Temporary,
+    /// Diagnostic records that may still be needed or actively written.
+    DiagnosticLogs,
+    /// Locations named as trash; the name does not prove recoverability.
+    Trash,
     /// Nothing recognisable.
     #[default]
     Other,
@@ -49,7 +59,7 @@ pub enum Category {
 
 impl Category {
     /// The categories the legend lists, in its order.
-    pub const LEGEND: [Self; 11] = [
+    pub const LEGEND: [Self; 14] = [
         Self::Code,
         Self::AgentScratch,
         Self::Toolchain,
@@ -58,6 +68,9 @@ impl Category {
         Self::Media,
         Self::Documents,
         Self::Cache,
+        Self::Temporary,
+        Self::DiagnosticLogs,
+        Self::Trash,
         Self::FilesystemEvents,
         Self::Spotlight,
         Self::VirtualMachine,
@@ -74,6 +87,9 @@ impl Category {
             Self::Media => "media",
             Self::Documents => "documents",
             Self::Cache => "cache",
+            Self::Temporary => "temporary",
+            Self::DiagnosticLogs => "diagnostic logs",
+            Self::Trash => "trash",
             Self::FilesystemEvents => "fsevents",
             Self::Spotlight => "spotlight",
             Self::VirtualMachine => "virtual machines",
@@ -100,6 +116,9 @@ impl Category {
             Self::Media => "Media",
             Self::Documents => "Documents",
             Self::Cache => "Cache",
+            Self::Temporary => "Temporary",
+            Self::DiagnosticLogs => "Diagnostic logs",
+            Self::Trash => "Trash",
             Self::FilesystemEvents => "FSEvents history",
             Self::Spotlight => "Spotlight index",
             Self::VirtualMachine => "Virtual machines",
@@ -122,9 +141,9 @@ pub enum Reclaim {
     BuildOutput,
     /// Installed dependencies beside their manifest.
     Reinstallable,
-    /// Already deleted, still on disk.
+    /// Contents of a trash-named location; recovery is not established.
     Trash,
-    /// Scratch space meant to be thrown away.
+    /// Temporary files; their name alone does not establish disposability.
     Temporary,
 }
 
@@ -211,13 +230,17 @@ pub fn category_of_name(name: &str) -> Option<Category> {
         }
         "documents" | "desktop" | "downloads" | "books" | "notes"
         | "obsidian" | "public" | "templates" => Category::Documents,
+        // Temporary ancestry is a location hint, not evidence of a cache.
+        // Keep that distinction even if protected contents clear reclaim.
+        "tmp" | ".tmp" | "temp" | "crashdumps" => Category::Temporary,
+        "trash" | ".trash" | "$recycle.bin" => Category::Trash,
         ".cache" | "cache" | "caches" | ".ccache" | ".sccache" | "_cacache"
-        | "__pycache__" | "node_modules" | "trash" | ".trash" | "tmp"
-        | ".tmp" | "deriveddata" | "ios devicesupport"
+        | "__pycache__" | "node_modules"
+        | "deriveddata" | "ios devicesupport"
         | "watchos devicesupport"
         // Windows: see `reclaim_of`.
-        | "temp" | "$recycle.bin" | "npm-cache" | "v3-cache" | "inetcache"
-        | "d3dscache" | "dxcache" | "glcache" | "crashdumps" => Category::Cache,
+        | "npm-cache" | "v3-cache" | "inetcache"
+        | "d3dscache" | "dxcache" | "glcache" => Category::Cache,
         _ => return None,
     };
     Some(category)
@@ -278,24 +301,7 @@ pub fn classify_at(tree: &mut Tree, path: &Path, style: PathStyle) {
     let artifacts = Roots::find(tree, path, style);
     let stores = Stores::find(tree, artifacts);
     let root = tree.root();
-    // Protected stores win over any cache identity inferred from a parent
-    // above this scan root. Narrow scans retain the same ownership rules.
-    let own = category_of_name(root.name())
-        .filter(|category| {
-            matches!(category, Category::FilesystemEvents | Category::Spotlight)
-        })
-        .map(|category| (category, None))
-        .or_else(|| stores.is_git(root.id()).then_some((Category::Git, None)))
-        .or_else(|| {
-            stores
-                .artifacts
-                .get(root.id())
-                .map(|d| (d.category(), d.reclaim()))
-        })
-        .or_else(|| {
-            is_pnpm_store(root)
-                .then_some((Category::Toolchain, Some(Reclaim::PackageStore)))
-        });
+    let own = root_context(root, path, style, &stores);
     tree.par_top_down(
         |facts, mut block| {
             if let Some((category, reclaim)) = own {
@@ -324,6 +330,91 @@ pub fn classify_at(tree: &mut Tree, path: &Path, style: PathStyle) {
             }
         },
     );
+}
+
+/// Replay path boundaries in traversal order. An enclosing protected owner
+/// persists; otherwise nearer names may refine an inherited artifact hint.
+/// Only ownership and temporary/trash locations seed context above a root.
+fn root_context(
+    root: Node<'_>,
+    path: &Path,
+    style: PathStyle,
+    stores: &Stores,
+) -> Option<(Category, Option<Reclaim>)> {
+    let names = style.names(path);
+    let parts: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
+    let root_detection = stores.artifacts.get(root.id());
+    let mut excluded = false;
+    let mut context: Option<(Category, Option<Reclaim>)> = None;
+    for end in 1..=parts.len() {
+        if context.is_some_and(|(category, _)| protected(category)) {
+            break;
+        }
+        let at_root = end == parts.len();
+        let is_dir = !at_root || root.is_dir();
+        let detection =
+            artifact::at_boundary(&parts[..end], is_dir, &mut excluded).map(
+                |d| {
+                    // A narrow scan still cannot verify a pnpm store above
+                    // its root. Preserve that conservative assessment.
+                    root_detection
+                        .filter(|owner| {
+                            d.kind == Artifact::PackageCache
+                                && owner.kind == d.kind
+                                && owner.reclaim().is_none()
+                        })
+                        .unwrap_or(d)
+                },
+            );
+        let owned = (at_root && stores.is_git(root.id()))
+            .then_some((Category::Git, None))
+            .or_else(|| detection.map(|d| (d.category(), d.reclaim())))
+            .or_else(|| {
+                (at_root && root_detection.is_none() && is_pnpm_store(root))
+                    .then_some((
+                        Category::Toolchain,
+                        Some(Reclaim::PackageStore),
+                    ))
+            });
+        if let Some(owned) = owned {
+            context = Some(owned);
+            continue;
+        }
+        if !is_dir {
+            continue;
+        }
+        let name = parts[end - 1];
+        let own = category_of_name(name);
+        if context.is_none()
+            && !own.is_some_and(|category| {
+                protected(category)
+                    || matches!(category, Category::Temporary | Category::Trash)
+            })
+        {
+            continue;
+        }
+        let (parent, inherited) = context.unwrap_or_default();
+        let category = own.unwrap_or(parent);
+        context = Some((
+            category,
+            if protected(category) {
+                None
+            } else {
+                reclaim_of(name, parent, |_| false).or(inherited)
+            },
+        ));
+    }
+    context
+}
+
+const fn protected(category: Category) -> bool {
+    matches!(
+        category,
+        Category::FilesystemEvents
+            | Category::Spotlight
+            | Category::VirtualMachine
+            | Category::Git
+    )
 }
 
 /// The children of a root that is nothing in particular: each takes only
@@ -388,13 +479,7 @@ fn kind_of(
     let child = siblings.at(index);
     // These stores belong to macOS even when an internal folder is named
     // `cache` or `tmp`; raw deletion is not an appropriate cleanup method.
-    if matches!(
-        category,
-        Category::FilesystemEvents
-            | Category::Spotlight
-            | Category::VirtualMachine
-            | Category::Git
-    ) {
+    if protected(category) {
         return (category, None);
     }
     let id = siblings.id(index);
@@ -412,17 +497,13 @@ fn kind_of(
     let child_category = category_of_name(child.name)
         .or_else(|| stores.is_git(id).then_some(Category::Git))
         .unwrap_or(category);
-    let child_reclaim = if matches!(
-        child_category,
-        Category::FilesystemEvents
-            | Category::Spotlight
-            | Category::Git
-            | Category::VirtualMachine
-    ) {
+    let child_reclaim = if protected(child_category) {
         None
     } else {
-        reclaim
-            .or_else(|| reclaim_of(child.name, category, has_sibling))
+        // A specific temporary/trash hint must not become "regenerable"
+        // solely because a more distant directory was named cache.
+        reclaim_of(child.name, category, has_sibling)
+            .or(reclaim)
             .or_else(|| stores.is_pnpm(id).then_some(Reclaim::PackageStore))
     };
     (child_category, child_reclaim)
@@ -929,7 +1010,14 @@ mod tests {
                 Some(reclaim),
                 "{name}"
             );
-            assert_eq!(category_of_name(name), Some(Category::Cache), "{name}");
+            let category = if reclaim == Reclaim::Temporary {
+                Category::Temporary
+            } else if reclaim == Reclaim::Trash {
+                Category::Trash
+            } else {
+                Category::Cache
+            };
+            assert_eq!(category_of_name(name), Some(category), "{name}");
         }
         for name in [
             "OneDrive - Contoso",
@@ -1008,7 +1096,7 @@ mod tests {
         };
         // A file directly in the root takes a kind from its name, but
         // never a reclaim reason; deeper, a file only inherits.
-        assert_eq!(kind(&["tmp"]), (Category::Cache, None));
+        assert_eq!(kind(&["tmp"]), (Category::Temporary, None));
         assert_eq!(kind(&["README"]), (Category::Other, None));
         assert_eq!(kind(&["plain", "tmp"]), (Category::Other, None));
         assert_eq!(kind(&["bare"]), (Category::Git, None));

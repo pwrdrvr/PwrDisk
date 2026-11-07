@@ -51,6 +51,7 @@ pub enum State {
     Mark { path: String },
     Removed { path: String },
     Review,
+    PermanentReview,
     CleanupReview,
     SystemFolders,
     RemovalCheck,
@@ -125,6 +126,7 @@ impl Scenario {
                         );
                     }
                     State::Review
+                    | State::PermanentReview
                     | State::CleanupReview
                     | State::SystemFolders
                     | State::RemovalCheck
@@ -163,12 +165,13 @@ mod tests {
 
     #[test]
     fn parses_all_steps_and_rejects_mistyped_fields() {
-        let json = script(&json!([
+        let steps = json!([
             {"op": "setup", "state": {"type": "legend", "kind": "code"}},
             {"op": "setup", "state": {"type": "select", "path": "a/b"}},
             {"op": "setup", "state": {"type": "mark", "path": ".cache"}},
             {"op": "setup", "state": {"type": "removed", "path": "a/b"}},
             {"op": "setup", "state": {"type": "review"}},
+            {"op": "setup", "state": {"type": "permanent_review"}},
             {"op": "setup", "state": {"type": "file_list"}},
             {"op": "setup", "state": {"type": "help"}},
             {"op": "setup", "state": {"type": "system_folders"}},
@@ -178,10 +181,11 @@ mod tests {
             {"op": "click", "at": [100, 200]},
             {"op": "wait", "ms": 900},
             {"op": "capture", "name": "hover.png", "pointer": true}
-        ]));
+        ]);
+        let json = script(&steps);
         let parsed = Scenario::parse(&json).expect("valid scenario");
         assert!(matches!(parsed.theme, Theme::TokyoNight));
-        assert_eq!(parsed.steps.len(), 14);
+        assert_eq!(parsed.steps.len(), steps.as_array().unwrap().len());
         assert!(Scenario::parse(&json.replace("\"ms\"", "\"mss\"")).is_err());
         assert!(
             Scenario::parse(&json.replace("tokyo_night", "unknown")).is_err()
@@ -279,7 +283,11 @@ mod tests {
                 });
             }
             steps.push(json!({"op": "capture", "name": "last.png"}));
-            prop_assert_eq!(Scenario::parse(&script(&json!(steps))).is_ok(), valid);
+            let parsed = Scenario::parse(&script(&json!(steps)));
+            prop_assert_eq!(parsed.is_ok(), valid);
+            if let Ok(parsed) = parsed {
+                prop_assert_eq!(parsed.steps.len(), steps.len());
+            }
         }
     }
 }

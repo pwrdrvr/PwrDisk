@@ -1,0 +1,12 @@
+{
+  "size": [1180, 760],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "setup", "state": {"type": "mark", "path": ".cache/DiagOutputDir"}},
+    {"op": "setup", "state": {"type": "mark", "path": ".Trash/kept"}},
+    {"op": "setup", "state": {"type": "mark", "path": ".cache/tmp/session"}},
+    {"op": "setup", "state": {"type": "mark", "path": ".claude/experiments"}},
+    {"op": "setup", "state": {"type": "permanent_review"}},
+    {"op": "capture", "name": "classification-context.png"}
+  ]
+}

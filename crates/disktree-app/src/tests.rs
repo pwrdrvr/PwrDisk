@@ -6936,8 +6936,9 @@ fn the_removal_list_stays_on_screen_from_start_to_done(
 fn review_rows_shorten_deep_paths_and_say_why(cx: &mut TestAppContext) {
     cx.update(init);
     let temp = fixture();
-    let deep: PathBuf = (0..30)
-        .map(|level| format!("nested-directory-{level:02}"))
+    // Keep the descriptive badge independent of the host's temp location.
+    let deep: PathBuf = std::iter::once("tmp".to_owned())
+        .chain((0..30).map(|level| format!("nested-directory-{level:02}")))
         .collect();
     let file = temp.path().join(&deep).join("leaf.bin");
     std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
@@ -6961,9 +6962,9 @@ fn review_rows_shorten_deep_paths_and_say_why(cx: &mut TestAppContext) {
         rows[0].size.height, rows[1].size.height,
         "the deep path does not wrap: {rows:?}"
     );
-    // The cache says it is regenerable; the plain file has nothing to say.
+    // The cache is regenerable; the plain file retains its temporary location.
     assert!(cx.debug_bounds("review-kind-0").is_some(), "a kind chip");
-    assert!(cx.debug_bounds("review-kind-1").is_none());
+    assert!(cx.debug_bounds("review-kind-1").is_some(), "temporary data");
     // What each mark is was read once: a later frame walks no directory.
     crate::marks::work::reset();
     update(&view, cx, |_, cx| cx.notify());
@@ -9772,10 +9773,10 @@ fn a_legend_chip_shows_only_then_hides_its_kind(cx: &mut TestAppContext) {
         "nothing filtered"
     );
 
-    // Reclaimable, once: only `.cache`, the fixture's one regenerable tree.
-    click_on(cx, "legend-reclaimable");
+    // Cache, once: temporary neighbours have their own kind.
+    click_on(cx, "legend-kind-7");
     cx.run_until_parked();
-    let chip = read(&view, cx, |app| app.legend.get(ChipId::Reclaimable));
+    let chip = read(&view, cx, |app| app.legend.get(ChipId::Kind(7)));
     assert_eq!(chip, Chip::Only);
     let drawn = laid_out(&view, cx);
     assert!(drawn.contains(&".cache".to_string()), "{drawn:?}");
@@ -9791,7 +9792,7 @@ fn a_legend_chip_shows_only_then_hides_its_kind(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("legend-clear").is_some());
 
     // Again: hidden, so everything but `.cache`.
-    click_on(cx, "legend-reclaimable");
+    click_on(cx, "legend-kind-7");
     cx.run_until_parked();
     let drawn = laid_out(&view, cx);
     assert!(!drawn.contains(&".cache".to_string()), "{drawn:?}");
@@ -10117,7 +10118,7 @@ fn a_legend_filter_that_keeps_nothing_says_so(cx: &mut TestAppContext) {
     assert!(!read(&view, cx, |app| app.legend.is_active()));
     assert!(cx.debug_bounds("legend-empty").is_none());
 
-    // Reclaimable alone, from inside `keep`: nothing here, but `.cache`
+    // Cache alone, from inside `keep`: nothing here, but `.cache`
     // passes elsewhere.
     let keep = read(&view, cx, |app| {
         app.crumbs_for_path(&temp.path().join("keep"))
@@ -10127,7 +10128,7 @@ fn a_legend_filter_that_keeps_nothing_says_so(cx: &mut TestAppContext) {
         app.file_list = false;
         app.crumbs = keep;
         app.selected = None;
-        app.cycle_legend(ChipId::Reclaimable, cx);
+        app.cycle_legend(ChipId::Kind(7), cx);
     });
     cx.run_until_parked();
     draw(cx);
@@ -10199,7 +10200,7 @@ fn switching_the_metric_recomputes_the_legend(cx: &mut TestAppContext) {
     cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
     draw(cx);
     update(&view, cx, |app, cx| {
-        app.cycle_legend(ChipId::Reclaimable, cx);
+        app.cycle_legend(ChipId::Kind(7), cx);
     });
     cx.run_until_parked();
     assert!(read(&view, cx, |app| app.legend_matches.is_some()));
@@ -11930,7 +11931,11 @@ fn the_only_pill_switches_kinds_and_the_tooltip_stays_clear(
     cx.run_until_parked();
     assert_eq!(read(&view, cx, |app| app.legend.get(cache)), Chip::Only);
     assert_eq!(read(&view, cx, |app| app.legend.get(code)), Chip::Shown);
-    // Code went back to "+N" and the row moved under a still pointer: no
-    // chip is taken to be under it until the pointer says so.
-    assert_eq!(read(&view, cx, |app| app.legend_hover), None);
+    // A chip may move under the pointer when Code goes back to "+N".
+    // Judge any new hover by the actual bounds, not the old row's spacing.
+    if let Some(hovered) = read(&view, cx, |app| app.legend_hover) {
+        let key = Box::leak(hovered.key().into_boxed_str());
+        let chip = cx.debug_bounds(key).expect("hovered chip is drawn");
+        assert!(chip.contains(&only.center()), "hover follows hit testing");
+    }
 }

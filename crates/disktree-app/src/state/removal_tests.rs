@@ -159,16 +159,7 @@ impl Model {
                 target.path
             );
         }
-        let cache = &self.paths[1];
-        let scanned = self.bytes(cache, false);
-        let remaining = scanned - self.bytes(cache, true);
-        // Eligibility uses the scanned 64 MiB threshold. An eligible cache
-        // remains an insight below that threshold until the next scan.
-        let expected: Vec<_> =
-            (self.live[1] && scanned >= 64 * MIB && remaining > 0)
-                .then(|| (cache.clone(), remaining))
-                .into_iter()
-                .collect();
+        let expected = self.insights(app.options.metric);
         let insights: Vec<_> = app
             .insights
             .iter()
@@ -182,6 +173,55 @@ impl Model {
             "insights count live scanned bytes"
         );
         Ok(())
+    }
+
+    fn insights(&self, metric: Metric) -> Vec<(PathBuf, u64)> {
+        // Every top-level directory inherits the fixture's explicit tmp
+        // context; .cache has its own hint. Findings are topmost only.
+        let mut eligible: Vec<_> = self
+            .paths
+            .iter()
+            .enumerate()
+            .filter(|&(i, path)| {
+                self.scanned[i] && path.parent() == Some(&self.paths[0])
+            })
+            .filter_map(|(i, path)| {
+                let scanned = self.bytes(path, false);
+                let files = self
+                    .paths
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, child)| {
+                        self.scanned[j] && child.starts_with(path)
+                    })
+                    .count();
+                (scanned >= 64 * MIB).then_some((i, scanned, files))
+            })
+            .collect();
+        // Rank by scanned size before discounting removals. Equal sizes
+        // retain tree order: file count in that metric, then name.
+        eligible.sort_by_key(|&(i, scanned, files)| {
+            (
+                std::cmp::Reverse(scanned),
+                std::cmp::Reverse(if metric == Metric::Files {
+                    files
+                } else {
+                    0
+                }),
+                &self.paths[i],
+            )
+        });
+        eligible.truncate(INSIGHT_LIMIT);
+        eligible
+            .into_iter()
+            .filter_map(|(i, scanned, _)| {
+                let path = &self.paths[i];
+                let remaining = scanned - self.bytes(path, true);
+                // A finding remains below the threshold until a rescan.
+                (self.live[i] && remaining > 0)
+                    .then(|| (path.clone(), remaining))
+            })
+            .collect()
     }
 
     fn step(
@@ -250,7 +290,11 @@ fn run(
     let temp = tempfile::tempdir_in("/tmp").unwrap();
     #[cfg(not(unix))]
     let temp = tempfile::tempdir().unwrap();
-    let root = dunce::canonicalize(temp.path()).unwrap();
+    // Make inherited temporary context explicit on every host, including
+    // machines whose configured temp directory has an unrelated name.
+    let root = temp.path().join("tmp");
+    std::fs::create_dir(&root).unwrap();
+    let root = dunce::canonicalize(root).unwrap();
     let mut model = Model::new(&root, entries);
     let options = ScanOptions {
         apparent_size: true,
@@ -323,6 +367,18 @@ fn removals_and_marks_follow_the_scanned_file_model(
             |(entries, commands)| run(&entries, &commands, cx),
         )
         .expect("removed bytes equal the scanned files removed exactly once");
+}
+
+#[gpui_kit::test]
+fn temporary_siblings_remain_insights_after_removing_the_cache(
+    cx: &gpui_kit::TestAppContext,
+) {
+    run(
+        &[(0, 0), (0, 64 * MIB), (0, 0)],
+        &[Command::Remove(0), Command::Metric, Command::Rescan],
+        cx,
+    )
+    .unwrap();
 }
 
 #[gpui_kit::test]

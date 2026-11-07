@@ -86,13 +86,16 @@ a root. Explicit command-line paths and `--disk` still start directly;
   smallest when the row runs out of room, wait in a **+N** menu at its
   end. Setting one there moves it onto the row, where its state shows.
 - **Mosaic:** colour is the *kind* of data — code, agent scratch,
-  toolchains, synced files, git, media, documents, caches, virtual
-  machines — at one muted level, lighter with depth. A diagonal hatch is
-  a cleanup suggestion to review (caches, sync history, package stores,
-  build output), independent of colour; it never says the contents are
-  safe to lose. Top-level directories carry a strip of their colour and a
+  toolchains, synced files, git, media, documents, caches, temporary data,
+  diagnostic logs, trash, virtual machines — at one muted level, lighter
+  with depth. A diagonal hatch is a cleanup suggestion to review (caches,
+  sync history, package stores, build output), independent of colour; it
+  never says the contents are safe to lose. Top-level directories carry a
+  strip of their colour and a
   name band; deeper open directories a slim label row. In **Age** mode
-  colour is the last write instead, from this week to older.
+  colour is the last write instead, from this week to older. Temporary and
+  agent scratch labels describe the location or use, not whether the data
+  is still needed or can be recovered.
 - **Legend:** each entry is also a filter. Click it once to show only that
   kind (or age), again to hide it, and a third time to show it again.
   Kinds set to only add up ("Code" and "Cache" show both), while

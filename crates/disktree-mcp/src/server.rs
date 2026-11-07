@@ -651,6 +651,34 @@ pub fn custom(
 mod tests {
     use super::*;
 
+    /// Every supported find kind must agree across the advertised schema,
+    /// JSON deserialization and the core classifier's category names.
+    #[test]
+    fn find_category_schema_and_requests_agree_with_core_kinds() {
+        use disktree_core::classify::Category;
+
+        let tools = Server::tool_router().list_all();
+        let find = tools
+            .iter()
+            .find(|tool| tool.name == "pwrdisk_find")
+            .expect("find");
+        let categories = find.input_schema["$defs"]["CategoryName"]["enum"]
+            .as_array()
+            .expect("category enum");
+        assert_eq!(categories.len(), Category::LEGEND.len() + 1);
+        for category in Category::LEGEND.into_iter().chain([Category::Other]) {
+            let name = category.name().replace(' ', "-");
+            assert!(
+                categories.contains(&serde_json::json!(name)),
+                "find schema must advertise {name}"
+            );
+            let params: FindParams =
+                serde_json::from_value(serde_json::json!({"category": name}))
+                    .expect("advertised category must deserialize");
+            assert_eq!(params.category.map(Category::from), Some(category));
+        }
+    }
+
     /// Every skill `skills/list` names is the one `skills/get` returns, and
     /// every file it lists is a resource that reads back with that size
     /// and digest.

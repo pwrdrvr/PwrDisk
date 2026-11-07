@@ -1,0 +1,9 @@
+{
+  "size": [1180, 760],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "setup", "state": {"type": "mark", "path": "claude-501"}},
+    {"op": "setup", "state": {"type": "permanent_review"}},
+    {"op": "capture", "name": "narrow-temporary.png"}
+  ]
+}

@@ -128,6 +128,9 @@ confirm removal. Never use clicks to approve removal, open the source
 chooser, launch external apps or run owner commands. Scenarios are trusted
 developer input, not a sandbox for arbitrary app interactions.
 
+`permanent_review` opens Review with Permanent selected without confirming
+removal, for pictures of that mode independent of the host's Trash backend.
+
 `cleanup_review` opens the marked fixture paths' cache cleanup proposals
 with an empty CLI search path. It never probes installed owners or chooses
 an action; every path stays on Skip. Environment hints for a screenshot
@@ -140,6 +143,25 @@ reports can show removal accounting before a rescan.
 `scripts/screenshots/owner-cleanup.sh target/pr-shots/owner-cleanup` builds
 before/after pictures for pnpm's separate metadata/dlx cache. It adds only
 invented data to the owned Fixtures image and sets its XDG cache hint there.
+
+`bash scripts/screenshots/temporary-labels.sh target/pr-shots/temporary`
+compares Review's inherited temporary and agent scratch labels. Its invented
+`private/tmp/claude-501` and sibling folders contain Git history so Review
+uses the category after the reclaim hint is cleared. It never confirms
+removal or uses a real temporary directory's contents.
+
+`bash scripts/screenshots/classification-context.sh target/pr-shots/context`
+compares diagnostic logs, Trash containing Git history, temporary data below
+a cache, and a scan starting directly at the invented `private/tmp` folder.
+An optional second argument selects the before revision. Both scans stay
+inside the same owned Fixtures image and stop at Review without removal.
+
+`bash scripts/screenshots/classification-precedence.sh target/pr-shots/precedence`
+compares narrow scans below a Python cache's temporary folder and below a
+macOS store lookalike inside Git. An optional second argument selects the
+before revision. Both scans use the owned Fixtures image. The temporary
+case stops at Review; the protected-store case stays in Explore without
+marking a path or bypassing a guard.
 
 `bash scripts/screenshots/protected-folders.sh target/pr-shots/protected`
 compares the Applications folder and an individual invented app. Its
