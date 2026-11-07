@@ -94,7 +94,7 @@ fn placement(
     let min_size = area.map_or(min, |area| min.min(&area.size));
     let bounds = match (saved, area) {
         (Some(frame), Some(area)) => {
-            let fitted = fit(frame.bounds(), area);
+            let fitted = fit(frame.bounds(), area, min_size);
             match frame.state {
                 State::Windowed => WindowBounds::Windowed(fitted),
                 State::Maximized => WindowBounds::Maximized(fitted),
@@ -208,10 +208,17 @@ impl Frame {
     }
 }
 
-/// `frame` cut to `area`'s size and moved, as little as it takes, inside
-/// it: a window that fitted stays exactly where it was.
-fn fit(frame: Bounds<Pixels>, area: Bounds<Pixels>) -> Bounds<Pixels> {
-    let size = frame.size.min(&area.size);
+/// Grow `frame` to the display-capped minimum, then move it inside `area`
+/// as little as it takes. A frame already meeting both bounds stays put.
+fn fit(
+    frame: Bounds<Pixels>,
+    area: Bounds<Pixels>,
+    min: Size<Pixels>,
+) -> Bounds<Pixels> {
+    let size = size(
+        frame.size.width.max(min.width).min(area.size.width),
+        frame.size.height.max(min.height).min(area.size.height),
+    );
     // `size` is no larger than `area`, so each range is never empty.
     let x = frame
         .origin
@@ -241,29 +248,103 @@ mod tests {
         rect(LAPTOP.0, LAPTOP.1, LAPTOP.2, LAPTOP.3)
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        // The saved frame must meet the minimum, capped by the display,
+        // and remain wholly visible even after the display changes.
+        #[test]
+        fn fitted_frames_meet_the_display_capped_minimum(
+            width in 1_u16..4000,
+            height in 1_u16..2400,
+            display_width in 1_u16..4000,
+            display_height in 1_u16..2400,
+            x in -4000_i16..4000,
+            y in -2400_i16..2400,
+        ) {
+            let area = rect(-100.0, 38.0,
+                f32::from(display_width), f32::from(display_height));
+            let frame = rect(f32::from(x), f32::from(y),
+                f32::from(width), f32::from(height));
+            let fitted = fit(frame, area, size(px(900.0), px(600.0)));
+            proptest::prop_assert!(fitted.size.width >=
+                px(900.0).min(area.size.width));
+            proptest::prop_assert!(fitted.size.height >=
+                px(600.0).min(area.size.height));
+            proptest::prop_assert!(area.contains(&fitted.origin));
+            proptest::prop_assert!(fitted.right() <= area.right());
+            proptest::prop_assert!(fitted.bottom() <= area.bottom());
+        }
+    }
+
+    #[test]
+    fn a_frame_saved_on_a_scaled_laptop_grows_to_the_minimum() {
+        let fitted = fit(
+            rect(0.0, 0.0, 1093.0, 574.0),
+            laptop(),
+            size(px(900.0), px(600.0)),
+        );
+        assert_eq!(fitted.size, size(px(1093.0), px(600.0)));
+    }
+
+    #[test]
+    fn a_one_pixel_saved_frame_grows_to_the_minimum() {
+        let fitted = fit(
+            rect(0.0, 0.0, 1.0, 1.0),
+            laptop(),
+            size(px(900.0), px(600.0)),
+        );
+        assert_eq!(fitted.size, size(px(900.0), px(600.0)));
+    }
+
+    #[test]
+    fn a_one_pixel_frame_fills_a_two_pixel_display() {
+        let fitted = fit(
+            rect(0.0, 0.0, 1.0, 1.0),
+            rect(-100.0, 38.0, 1.0, 2.0),
+            size(px(900.0), px(600.0)),
+        );
+        assert_eq!(fitted, rect(-100.0, 38.0, 1.0, 2.0));
+    }
+
     #[test]
     fn a_window_that_fits_stays_where_it_was() {
         let frame = rect(200.0, 100.0, 1100.0, 700.0);
-        assert_eq!(fit(frame, laptop()), frame);
+        assert_eq!(fit(frame, laptop(), size(px(900.0), px(600.0))), frame);
     }
 
     #[test]
     fn the_old_default_no_longer_hangs_off_a_laptop() {
         // 120 + 1440 ran 48 points past the right edge.
-        let fitted = fit(rect(120.0, 90.0, 1440.0, 900.0), laptop());
+        let fitted = fit(
+            rect(120.0, 90.0, 1440.0, 900.0),
+            laptop(),
+            size(px(900.0), px(600.0)),
+        );
         assert_eq!(fitted, rect(72.0, 82.0, 1440.0, 900.0));
     }
 
     #[test]
     fn a_window_from_a_larger_display_is_cut_to_this_one() {
-        let fitted = fit(rect(2400.0, 0.0, 2560.0, 1400.0), laptop());
+        let fitted = fit(
+            rect(2400.0, 0.0, 2560.0, 1400.0),
+            laptop(),
+            size(px(900.0), px(600.0)),
+        );
         assert_eq!(fitted, laptop());
     }
 
     #[test]
     fn a_window_left_off_the_top_left_comes_back() {
-        let fitted = fit(rect(-300.0, -50.0, 800.0, 600.0), laptop());
-        assert_eq!(fitted, rect(0.0, 38.0, 800.0, 600.0));
+        let fitted = fit(
+            rect(-300.0, -50.0, 800.0, 600.0),
+            laptop(),
+            size(px(900.0), px(600.0)),
+        );
+        assert_eq!(fitted, rect(0.0, 38.0, 900.0, 600.0));
     }
 
     #[test]
@@ -271,7 +352,7 @@ mod tests {
         // Windows reports a monitor left of the primary below zero.
         let left = rect(-1920.0, 0.0, 1920.0, 1040.0);
         let frame = rect(-1700.0, 80.0, 1440.0, 900.0);
-        assert_eq!(fit(frame, left), frame);
+        assert_eq!(fit(frame, left, size(px(900.0), px(600.0))), frame);
     }
 
     #[test]
