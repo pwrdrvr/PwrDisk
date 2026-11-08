@@ -812,6 +812,7 @@ impl Disktree {
                 total: space.total,
                 free: space.free,
                 available: space.available,
+                native: space.native,
             }),
             removal: self
                 .agent

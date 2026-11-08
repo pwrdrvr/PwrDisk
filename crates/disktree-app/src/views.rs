@@ -2523,7 +2523,11 @@ fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
         .flex_shrink_0()
         .text_size(text::CAPTION)
         .text_color(theme.secondary)
-        .child(div().text_color(theme.foreground).child(human_bytes(bytes)))
+        .child(
+            div()
+                .text_color(theme.foreground)
+                .child(format!("Scanned {}", human_bytes(bytes))),
+        )
         .child(format!(
             "· {} files · {} dirs",
             widgets::human_count(files),
@@ -4804,14 +4808,45 @@ fn disk_section(
     cx: &Context<'_, Disktree>,
 ) -> Div {
     let device = app.device.clone().unwrap_or_default();
-    // statvfs exposes the startup container's shared free space, even
-    // though device_for names Data. Do not label it as Data-only usage.
+    // Native startup usage covers the System/Data group; the fallback
+    // measures all volumes sharing the container's raw free pool.
     let startup_container = cfg!(target_os = "macos")
         && app.remote.is_none()
         && (app.disk_root.as_deref() == Some(Path::new("/"))
             || app.root_path == Path::new("/"));
+    let startup_group = startup_container
+        && app.space.is_some_and(|space| {
+            space.native.is_some_and(|native| native.used.is_some())
+        });
+    let used_scope = if startup_group {
+        "Used covers the startup System and Data volumes."
+    } else if startup_container {
+        "Native usage is unavailable; Used covers the whole APFS container."
+    } else {
+        "Used measures the volume, independently of the scanned folder."
+    };
+    let available_scope =
+        app.space.and_then(|space| space.purgeable()).map_or_else(
+            || "Raw free space is shown.".to_string(),
+            |purgeable| {
+                format!(
+                    "Available includes {} of purgeable space once.",
+                    human_bytes(purgeable)
+                )
+            },
+        );
+    let accounting_note = format!(
+        "{used_scope} {available_scope} Other APFS volumes share capacity, \
+         so Used + Available need not equal Total. Scanned size sums \
+         readable file allocation; clones can count shared blocks more than \
+         once. It excludes unreadable contents, snapshots and filesystem \
+         metadata. Removal projections avoid crediting already available \
+         space twice."
+    );
     let label = widgets::eyebrow(
-        if startup_container {
+        if startup_group {
+            "Startup disk ⓘ"
+        } else if startup_container {
             "APFS container ⓘ"
         } else if app.remote.is_none() {
             "Disk ⓘ"
@@ -4825,23 +4860,7 @@ fn disk_section(
             label
                 .id("disk-accounting")
                 .debug_selector(|| "disk-accounting".into()),
-            if startup_container {
-                "Disk use includes all APFS volumes: Data, System, \
-                     Preboot, Recovery and VM. The scan adds readable file \
-                     allocation under the chosen folder; APFS clones can \
-                     count shared blocks more than once. Unreadable \
-                     contents, snapshots and filesystem metadata are not \
-                     measured by that file total. Subtracting the estimated \
-                     repeated allocation does not give exact physical use. \
-                     Finder uses decimal GB; PwrDisk uses binary GiB."
-            } else {
-                "The scan adds readable file sizes under the chosen \
-                     folder. Disk use also includes files outside that \
-                     folder, unreadable contents, snapshots and filesystem \
-                     metadata. Shared blocks can be counted more than \
-                     once; apparent size measures length rather than \
-                     allocation. A file total is not exact physical use."
-            },
+            accounting_note,
         )
         .into_any_element()
     } else {
@@ -4894,10 +4913,22 @@ fn disk_section(
     let after = space_info.after_removing(reclaiming);
     let highlight = palette::highlight(theme);
     let (number, unit) =
-        widgets::split_size(&human_bytes(space_info.available));
+        widgets::split_size(&human_bytes(space_info.display_available()));
     let total = space_info.total.max(1) as f32;
-    let used_now = (space_info.used() as f32 / total).clamp(0.0, 1.0);
-    let used_after = (after.used() as f32 / total).clamp(0.0, used_now);
+    let used_now = (space_info
+        .total
+        .saturating_sub(space_info.display_available())
+        as f32
+        / total)
+        .clamp(0.0, 1.0);
+    let used_after =
+        (after.total.saturating_sub(after.display_available()) as f32 / total)
+            .clamp(0.0, used_now);
+    let availability = if space_info.purgeable().is_some() {
+        "available"
+    } else {
+        "free"
+    };
 
     section = section.child(
         div()
@@ -4907,7 +4938,7 @@ fn disk_section(
             .child(widgets::measure(
                 number,
                 text::FIGURE,
-                format!("{unit} free"),
+                format!("{unit} {availability}"),
                 text::BODY,
                 cx,
             ))
@@ -4923,8 +4954,8 @@ fn disk_section(
                         ))
                         .text_color(highlight)
                         .child(format!(
-                            "→ ≈ {} free",
-                            human_bytes(after.available)
+                            "→ ≈ {} {availability}",
+                            human_bytes(after.display_available())
                         )),
                 )
             }),
@@ -4976,7 +5007,10 @@ fn disk_section(
                 .flex_row()
                 .text_size(text::CAPTION)
                 .text_color(theme.secondary)
-                .child(format!("{} used", human_bytes(space_info.used())))
+                .child(format!(
+                    "{} used",
+                    human_bytes(space_info.display_used())
+                ))
                 .child(div().flex_1())
                 .child(format!("{} total", human_bytes(space_info.total))),
         )

@@ -2276,7 +2276,7 @@ mod tests {
             write(root, "Data/nested-mount/file", 9999);
             let context = Arc::new(WalkContext {
                 known: None,
-                options: ScanOptions::default(),
+                options: ScanOptions { dedup_hardlinks: false, ..ScanOptions::default() },
                 progress: Arc::new(ScanProgress::default()),
                 root_device: Mutex::new(None),
                 foreign_mounts: OnceLock::from(FxHashSet::from_iter([

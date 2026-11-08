@@ -25,9 +25,61 @@ pub struct SpaceInfo {
     pub free: u64,
     /// Free blocks this user may actually write; what `df -h` reports.
     pub available: u64,
+    /// Optional OS presentation counters, separate from raw removal samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<NativeSpace>,
+}
+
+/// Native volume/group usage and availability including reclaimable space.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub struct NativeSpace {
+    pub used: Option<u64>,
+    pub available: Option<u64>,
 }
 
 impl SpaceInfo {
+    /// OS volume/group usage when available; otherwise raw allocated use.
+    pub const fn display_used(&self) -> u64 {
+        match self.native {
+            Some(NativeSpace {
+                used: Some(used), ..
+            }) if used <= self.total => used,
+            _ => self.used(),
+        }
+    }
+
+    /// OS availability, already including purgeable bytes when supported.
+    pub const fn display_available(&self) -> u64 {
+        match self.native {
+            Some(NativeSpace {
+                available: Some(available),
+                ..
+            }) if available >= self.available && available <= self.total => {
+                available
+            }
+            _ => self.available,
+        }
+    }
+
+    /// Additional availability reported by the OS, never added a second time.
+    pub fn purgeable(&self) -> Option<u64> {
+        self.native?
+            .available
+            .filter(|available| {
+                *available >= self.available && *available <= self.total
+            })
+            .map(|available| available - self.available)
+    }
+
     /// Space in use, computed from `free` rather than `available` so the figure
     /// does not jump when a reserve is opened to root.
     pub const fn used(&self) -> u64 {
@@ -53,6 +105,20 @@ impl SpaceInfo {
             total: self.total,
             free,
             available,
+            native: self.native.map(|native| NativeSpace {
+                used: native
+                    .used
+                    .filter(|used| *used <= self.total)
+                    .map(|used| used.saturating_sub(bytes)),
+                // The marks might themselves be purgeable. Credit only raw
+                // free space exceeding what macOS already made available.
+                available: native
+                    .available
+                    .filter(|native| {
+                        *native >= self.available && *native <= self.total
+                    })
+                    .map(|native| native.max(available).min(self.total)),
+            }),
         }
     }
 }
@@ -94,11 +160,28 @@ pub fn space_info(path: &Path) -> io::Result<SpaceInfo> {
     } else {
         stat.f_frsize
     };
-    Ok(SpaceInfo {
+    let space = SpaceInfo {
         total: stat.f_blocks.saturating_mul(block),
         free: stat.f_bfree.saturating_mul(block),
         available: stat.f_bavail.saturating_mul(block),
-    })
+        native: None,
+    };
+    Ok(space)
+}
+
+/// OS-facing counters without changing the raw samples used by guards.
+pub fn display_space_info(path: &Path) -> io::Result<SpaceInfo> {
+    let space = space_info(path)?;
+    #[cfg(target_os = "macos")]
+    let space = SpaceInfo {
+        native: crate::macos::space_presentation(
+            path,
+            space.total,
+            space.available,
+        ),
+        ..space
+    };
+    Ok(space)
 }
 
 /// The volume a path is on, as Windows names it: `C:\`, a share, or the
@@ -1049,6 +1132,7 @@ mod tests {
             total: 1000,
             free: 100,
             available: 80,
+            native: None,
         });
         let root = Path::new("/");
         let estimate = |path, disk, space, platform| {
@@ -1252,6 +1336,7 @@ portal /run/user/1000/doc fuse.portal rw 0 0
                 total: 100,
                 free: available,
                 available,
+                native: None,
             }),
         };
         let mut volumes = vec![
@@ -1715,6 +1800,7 @@ map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
             total: 1000,
             free: 100,
             available: 100,
+            native: None,
         };
         let after = space.after_removing(50);
         assert_eq!(after.available, 150);
@@ -1725,6 +1811,103 @@ map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
         assert_eq!(capped.available, 1000);
         assert_eq!(capped.used(), 0);
         assert!((capped.used_fraction() - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn native_group_usage_excludes_other_container_volumes() {
+        // Minimal shrunk model: one purgeable byte and one auxiliary byte.
+        let space = SpaceInfo {
+            total: 2,
+            free: 0,
+            available: 0,
+            native: Some(NativeSpace {
+                used: Some(1),
+                available: Some(1),
+            }),
+        };
+        assert_eq!(space.used(), 2);
+        assert_eq!(space.display_used(), 1);
+        assert_eq!(space.display_available(), 1);
+        assert_eq!(space.after_removing(1).display_available(), 1);
+        assert_eq!(space.after_removing(2).display_available(), 2);
+    }
+
+    #[test]
+    fn invalid_native_counters_fall_back_to_raw_measurements() {
+        let raw = SpaceInfo {
+            total: 100,
+            free: 10,
+            available: 8,
+            native: None,
+        };
+        for available in [0, 7, 101, u64::MAX] {
+            let space = SpaceInfo {
+                native: Some(NativeSpace {
+                    used: Some(101),
+                    available: Some(available),
+                }),
+                ..raw
+            };
+            assert_eq!(space.display_used(), raw.used());
+            assert_eq!(space.display_available(), raw.available);
+            assert_eq!(space.purgeable(), None);
+            let after = space.after_removing(5);
+            assert_eq!(after.display_used(), after.used());
+            assert_eq!(after.display_available(), after.available);
+        }
+        let old: SpaceInfo =
+            serde_json::from_str(r#"{"total":100,"free":10,"available":8}"#)
+                .unwrap();
+        assert_eq!(old, raw);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        // OS volume/group use is an independent counter. Important-usage
+        // availability already includes purgeable allocation once; marking
+        // that same allocation cannot promise it a second time.
+        #[test]
+        fn native_display_and_projection_match_the_capacity_model(
+            raw_free in 0_u64..1_000_000,
+            purgeable in 1_u64..1_000_000,
+            auxiliary in 1_u64..1_000_000,
+            retained in 0_u64..1_000_000,
+            removal in 0_u64..4_000_000,
+        ) {
+            let total = raw_free + purgeable + auxiliary + retained;
+            let os_used = purgeable + retained;
+            let os_available = raw_free + purgeable;
+            let space = SpaceInfo {
+                total, free: raw_free, available: raw_free,
+                native: Some(NativeSpace {
+                    used: Some(os_used), available: Some(os_available),
+                }),
+            };
+            proptest::prop_assert_eq!(space.display_used(), os_used);
+            proptest::prop_assert_eq!(
+                space.display_available(), os_available
+            );
+            let after = space.after_removing(removal);
+            let expected = os_available.max(
+                (raw_free + removal).min(total)
+            );
+            proptest::prop_assert_eq!(after.display_available(), expected);
+            proptest::prop_assert_eq!(
+                after.display_used(), os_used.saturating_sub(removal)
+            );
+            // Raw counters remain the measurement used by removal guards
+            // and before/after reports, unaffected by presentation policy.
+            proptest::prop_assert_eq!(
+                after.available, (raw_free + removal).min(total)
+            );
+            proptest::prop_assert_eq!(
+                space.used(), purgeable + auxiliary + retained
+            );
+        }
     }
 
     #[test]

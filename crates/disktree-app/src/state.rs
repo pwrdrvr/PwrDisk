@@ -21,7 +21,7 @@ use disktree_core::removal::{
 };
 use disktree_core::scan::{Known, ScanHandle, ScanOptions, ScanSnapshot};
 use disktree_core::space::{
-    SpaceInfo, device_for, space_info, volume_root_for,
+    SpaceInfo, device_for, display_space_info as space_info, volume_root_for,
 };
 use disktree_core::tree::{Metric, Node, Tree, path_of};
 use disktree_core::treemap::{
@@ -2042,28 +2042,52 @@ impl Disktree {
                     })
                     .unwrap_or(Duration::from_millis(1200));
                 cx.background_executor().timer(interval).await;
-                let ok = this
+                let request = this.update(cx, |this, _| {
+                    (this.remote.is_none()
+                        && !this.awaiting_root
+                        && this.tree.is_some())
+                    .then(|| (this.root_path.clone(), this.scan_epoch))
+                });
+                let Ok(request) = request else { break };
+                let Some((path, epoch)) = request else {
+                    continue;
+                };
+                let sample_path = path.clone();
+                let fresh = cx
+                    .background_executor()
+                    .spawn(async move { space_info(&sample_path).ok() })
+                    .await;
+                if this
                     .update(cx, |this, cx| {
-                        if this.remote.is_some()
-                            || this.awaiting_root
-                            || this.tree.is_none()
-                        {
-                            return;
-                        }
-                        let path = this.root_path.clone();
-                        let fresh = space_info(&path).ok();
-                        if fresh != this.space {
-                            this.space = fresh;
-                            cx.notify();
-                        }
+                        this.apply_space_sample(&path, epoch, fresh, cx);
                     })
-                    .is_ok();
-                if !ok {
+                    .is_err()
+                {
                     break;
                 }
             }
         })
         .detach();
+    }
+
+    /// A delayed OS query belongs only to the source and scan it sampled.
+    pub(crate) fn apply_space_sample(
+        &mut self,
+        path: &Path,
+        epoch: u64,
+        fresh: Option<SpaceInfo>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.remote.is_none()
+            && !self.awaiting_root
+            && self.tree.is_some()
+            && self.root_path == path
+            && self.scan_epoch == epoch
+            && fresh != self.space
+        {
+            self.space = fresh;
+            cx.notify();
+        }
     }
 
     // ── navigation ──────────────────────────────────────────────────────

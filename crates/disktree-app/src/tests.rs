@@ -101,6 +101,51 @@ fn fixture() -> tempfile::TempDir {
     temp
 }
 
+// Exhaust the delayed-query model: any source transition invalidates the
+// result, even if the old worker completes after a newer scan has started.
+#[gpui_kit::test]
+fn delayed_space_queries_obey_the_source_epoch_model(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let sampled = temp.path().to_path_buf();
+    for transitions in 0_u8..32 {
+        update(&view, cx, |app, cx| {
+            app.root_path = if transitions & 1 == 0 {
+                sampled.clone()
+            } else {
+                sampled.join("new-source")
+            };
+            app.scan_epoch = u64::from(transitions & 2 != 0);
+            app.remote = (transitions & 4 != 0).then(|| "fixture-host".into());
+            app.awaiting_root = transitions & 8 != 0;
+            let tree =
+                (transitions & 16 != 0).then(|| app.tree.take()).flatten();
+            let old = SpaceInfo {
+                total: 100,
+                free: 10,
+                available: 10,
+                native: None,
+            };
+            let fresh = SpaceInfo {
+                free: 20,
+                available: 20,
+                ..old
+            };
+            app.space = Some(old);
+            app.apply_space_sample(&sampled, 0, Some(fresh), cx);
+            assert_eq!(
+                app.space,
+                Some(if transitions == 0 { fresh } else { old }),
+                "source transition mask {transitions}"
+            );
+            if tree.is_some() {
+                app.tree = tree;
+            }
+        });
+    }
+}
+
 #[gpui_kit::test]
 fn disk_accounting_explanation_renders_for_local_sources(
     cx: &mut TestAppContext,
@@ -246,6 +291,7 @@ fn artifact_guidance_scrolls_above_the_pinned_free_space_meter(
             total: 1000,
             free: 350,
             available: 350,
+            native: None,
         });
         cx.notify();
     });
@@ -668,6 +714,7 @@ fn indexing_keeps_free_space_visible_in_short_zoomed_windows(
             total: 1000,
             free: 350,
             available: 350,
+            native: None,
         });
     });
     for (width, height, rem) in
@@ -2853,6 +2900,7 @@ fn the_volume_picker_is_centred_and_ignores_clicks_outside(
                     total: 1_000,
                     free: 500,
                     available: 400,
+                    native: None,
                 }),
             },
             Volume {
@@ -11004,6 +11052,7 @@ fn over_limit_view<'a>(
             total: 1_000_000,
             free: 100_000,
             available: 100_000,
+            native: None,
         });
         let junk = app
             .tree()
