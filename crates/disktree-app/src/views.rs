@@ -3276,7 +3276,7 @@ fn side_panel(
         .children(privacy_line(app, theme, cx))
         .children(administrator_line(app, theme, cx))
         .children(marked_total(app, &plan, theme, cx))
-        .child(disk_section(app, &plan, theme, cx).flex_shrink_0())
+        .child(disk_section(app, &plan, compact, theme, cx).flex_shrink_0())
         .children(agent_line(app, compact, theme))
 }
 
@@ -4804,45 +4804,72 @@ fn freed_since_scan(app: &Disktree, theme: &Theme) -> Option<Div> {
 fn disk_section(
     app: &Disktree,
     plan: &Plan,
+    compact: bool,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
     let device = app.device.clone().unwrap_or_default();
-    // Native startup usage covers the System/Data group; the fallback
-    // measures all volumes sharing the container's raw free pool.
+    // The primary meter partitions capacity; native group usage is a
+    // separately labelled breakdown of that pool, never its whole use.
     let startup_container = cfg!(target_os = "macos")
         && app.remote.is_none()
         && (app.disk_root.as_deref() == Some(Path::new("/"))
             || app.root_path == Path::new("/"));
     let startup_group = startup_container
-        && app.space.is_some_and(|space| {
-            space.native.is_some_and(|native| native.used.is_some())
-        });
-    let used_scope = if startup_group {
-        "Used covers the startup System and Data volumes."
-    } else if startup_container {
-        "Native usage is unavailable; Used covers the whole APFS container."
+        && app.space.is_some_and(|space| space.native_used().is_some());
+    let used_scope = if startup_container {
+        "Used includes all APFS volumes sharing the container, plus metadata. \
+         System + Data is only the startup volume group's allocation."
     } else {
         "Used measures the volume, independently of the scanned folder."
     };
     let available_scope =
         app.space.and_then(|space| space.purgeable()).map_or_else(
-            || "Raw free space is shown.".to_string(),
+            || "Free measures blocks available to this user now.".to_string(),
             |purgeable| {
                 format!(
-                    "Available includes {} of purgeable space once.",
+                    "Free measures blocks available now. The separate macOS \
+                     estimate includes {} of reclaimable space, which is \
+                     still occupied until macOS releases it.",
                     human_bytes(purgeable)
                 )
             },
         );
-    let accounting_note = format!(
-        "{used_scope} {available_scope} Other APFS volumes share capacity, \
-         so Used + Available need not equal Total. Scanned size sums \
+    let native_breakdown = app.space.and_then(|space| {
+        space.native_used().map(|used| {
+            let scope = if startup_group {
+                "System + Data"
+            } else {
+                "volume"
+            };
+            space.display_used().checked_sub(used).map_or_else(
+                || format!("{} {scope}", human_bytes(used)),
+                |other| {
+                    format!(
+                        "{} {scope} · {} other used",
+                        human_bytes(used),
+                        human_bytes(other)
+                    )
+                },
+            )
+        })
+    });
+    let reclaimable_note =
+        app.space.and_then(widgets::reclaimable_capacity_note);
+    let mut accounting_note = format!(
+        "{used_scope} {available_scope} Used + Free equals Total before \
+         rounding. Scanned size sums \
          readable file allocation; clones can count shared blocks more than \
          once. It excludes unreadable contents, snapshots and filesystem \
-         metadata. Removal projections avoid crediting already available \
-         space twice."
+         metadata. Removal projections use raw free space; reclaimable \
+         capacity is not added to those projections."
     );
+    // Short panels reserve their height for selection and marks. Keep
+    // secondary capacity scopes reachable in the tooltip at every height.
+    for detail in [&native_breakdown, &reclaimable_note].into_iter().flatten() {
+        accounting_note.push('\n');
+        accounting_note.push_str(detail);
+    }
     let label = widgets::eyebrow(
         if startup_group {
             "Startup disk ⓘ"
@@ -4924,11 +4951,6 @@ fn disk_section(
     let used_after =
         (after.total.saturating_sub(after.display_available()) as f32 / total)
             .clamp(0.0, used_now);
-    let availability = if space_info.purgeable().is_some() {
-        "available"
-    } else {
-        "free"
-    };
 
     section = section.child(
         div()
@@ -4938,7 +4960,7 @@ fn disk_section(
             .child(widgets::measure(
                 number,
                 text::FIGURE,
-                format!("{unit} {availability}"),
+                format!("{unit} free"),
                 text::BODY,
                 cx,
             ))
@@ -4954,7 +4976,7 @@ fn disk_section(
                         ))
                         .text_color(highlight)
                         .child(format!(
-                            "→ ≈ {} {availability}",
+                            "→ ≈ {} free",
                             human_bytes(after.display_available())
                         )),
                 )
@@ -5014,6 +5036,23 @@ fn disk_section(
                 .child(div().flex_1())
                 .child(format!("{} total", human_bytes(space_info.total))),
         )
+        .when(!compact, |section| {
+            section
+                .children(native_breakdown.map(|breakdown| {
+                    div()
+                        .debug_selector(|| "disk-native-usage".into())
+                        .text_size(text::CAPTION)
+                        .text_color(theme.secondary)
+                        .child(breakdown)
+                }))
+                .children(reclaimable_note.map(|note| {
+                    div()
+                        .debug_selector(|| "disk-reclaimable".into())
+                        .text_size(text::CAPTION)
+                        .text_color(theme.secondary)
+                        .child(note)
+                }))
+        })
         .children(freed_since_scan(app, theme))
 }
 

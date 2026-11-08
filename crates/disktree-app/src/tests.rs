@@ -10876,12 +10876,38 @@ fn a_short_panel_folds_the_selection_figures(cx: &mut TestAppContext) {
         "never folds"
     );
     assert!(cx.debug_bounds("agent-line").is_none(), "idle line gone");
-    let scroll = cx.debug_bounds("side-panel-scroll").unwrap();
-    let marked = cx.debug_bounds("marked-section").unwrap();
-    assert!(
-        marked.bottom() <= scroll.bottom(),
-        "Marked in sight: {marked:?} {scroll:?}"
-    );
+    // Secondary OS counters must not take the cart's height, regardless
+    // of which optional measurements the filesystem supports.
+    for native in [
+        None,
+        Some(disktree_core::space::NativeSpace {
+            used: Some(80_000_000_000),
+            available: None,
+        }),
+        Some(disktree_core::space::NativeSpace {
+            used: Some(80_000_000_000),
+            available: Some(20_000_000_000),
+        }),
+    ] {
+        update(&view, cx, |app, cx| {
+            app.space = Some(SpaceInfo {
+                total: 100_000_000_000,
+                free: 10_000_000_000,
+                available: 10_000_000_000,
+                native,
+            });
+            cx.notify();
+        });
+        draw(cx);
+        let scroll = cx.debug_bounds("side-panel-scroll").unwrap();
+        let marked = cx.debug_bounds("marked-section").unwrap();
+        assert!(
+            marked.bottom() <= scroll.bottom(),
+            "Marked in sight: {marked:?} {scroll:?}, {native:?}"
+        );
+        assert!(cx.debug_bounds("disk-native-usage").is_none());
+        assert!(cx.debug_bounds("disk-reclaimable").is_none());
+    }
 
     // The chevron opens the grid, and it stays open for the session.
     click_on(cx, "selection-summary");
@@ -10899,6 +10925,8 @@ fn a_short_panel_folds_the_selection_figures(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("selection-summary").is_none());
     assert!(cx.debug_bounds("selection-figures").is_some());
     assert!(cx.debug_bounds("agent-line").is_some());
+    assert!(cx.debug_bounds("disk-native-usage").is_some());
+    assert!(cx.debug_bounds("disk-reclaimable").is_some());
 }
 
 /// A side panel list's header stays at the top of the list while its rows

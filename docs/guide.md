@@ -626,20 +626,24 @@ PwrDisk; the app does not request elevation or install a privileged helper.
 
 What is different from Linux:
 
-- **Available space** uses macOS's important-usage capacity, including
-  purgeable space once. If that native counter is unavailable, the meter
-  falls back to raw free space. Used is the OS volume allocation; on the
-  startup disk it includes System and Data together, as Finder does.
-  Auxiliary volumes such as Preboot, Recovery and VM share capacity but
-  are outside that Used figure, so Used + Available need not equal Total.
-  Removal guards and measured recovery still use raw free-block samples.
-  A projection never credits already available purgeable space twice.
+- **Free space** is space this user can write now. Used is the rest of
+  the same capacity, so Used + Free equals Total before rounding. On APFS
+  this includes every volume sharing the container, plus filesystem
+  metadata. The startup meter separately breaks down System + Data and
+  other used space (Preboot, Recovery, VM and other container allocation).
+  macOS's important-usage estimate is shown separately as **including
+  reclaimable space**: those bytes are still occupied until macOS releases
+  them. It can differ from Finder's Available figure and change without a
+  deletion. Removal guards, measured recovery and the free-space projection
+  use raw free-block samples; reclaimable capacity is never added to them.
   A scan of `/` includes readable System and Data files, including Data-only
   contents under `/System/Volumes/Data`; firmlink aliases there are excluded
   using macOS's `/usr/share/firmlinks` table. Nested mounts remain excluded.
   An unavailable firmlink table is reported as unreadable. Hover the **ⓘ**
-  beside the disk heading for the accounting scopes. Estimated repeated
-  clone allocation does not turn a scan into exact physical use; the
+  beside the disk heading for the accounting scopes and figures. Short
+  windows keep the secondary figures in that tooltip so marks stay visible.
+  Estimated repeated clone allocation does not turn a scan into exact
+  physical use; the
   remaining difference is not a measurement of unreadable files.
 - **Cloned files** (copies APFS shares blocks between, as Finder's Duplicate
   makes) remain counted in full in the treemap. The scan line separately

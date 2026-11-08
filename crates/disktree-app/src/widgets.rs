@@ -168,21 +168,16 @@ pub fn space_meter(space: SpaceInfo, reclaiming: u64, cx: &App) -> Div {
     let used_now = used_now.clamp(0.0, 1.0);
     let gained = gained.clamp(0.0, used_now);
 
-    let availability = if space.purgeable().is_some() {
-        "available"
-    } else {
-        "free"
-    };
     let label = if reclaiming > 0 {
         format!(
-            "{} {availability} · ≈ {} after removing {}",
+            "{} free · ≈ {} after removing {}",
             human_bytes(space.display_available()),
             human_bytes(projected.display_available()),
             human_bytes(reclaiming)
         )
     } else {
         format!(
-            "{} {availability} of {}",
+            "{} free of {}",
             human_bytes(space.display_available()),
             human_bytes(space.total)
         )
@@ -201,6 +196,12 @@ pub fn space_meter(space: SpaceInfo, reclaiming: u64, cx: &App) -> Div {
                 .text_color(theme.secondary)
                 .child(div().child(label)),
         )
+        .children(reclaimable_capacity_note(space).map(|note| {
+            div()
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(note)
+        }))
         .child(
             div()
                 .relative()
@@ -240,6 +241,16 @@ pub fn space_meter(space: SpaceInfo, reclaiming: u64, cx: &App) -> Div {
                         .bg(theme.success.opacity(0.65)),
                 ),
         )
+}
+
+/// Keep macOS's reclaimable-capacity estimate apart from actual free space.
+pub fn reclaimable_capacity_note(space: SpaceInfo) -> Option<String> {
+    space
+        .reclaimable_available()
+        .filter(|available| *available > space.available)
+        .map(|available| {
+            format!("≈ {} including reclaimable space", human_bytes(available))
+        })
 }
 
 /// A `key value` hint pair for the bottom bar.

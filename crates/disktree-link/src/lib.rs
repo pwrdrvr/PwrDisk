@@ -875,7 +875,10 @@ mod tests {
     fn native_space_is_optional_and_preserves_raw_protocol_counters() {
         let old = r#"{"total":100,"free":10,"available":8}"#;
         let raw: Space = serde_json::from_str(old).expect("old protocol");
-        assert_eq!(raw.display_used(), 90);
+        // The two reserved bytes remain physically free but unavailable to
+        // this user. Only the primary meter includes them in Used.
+        assert_eq!(raw.as_core().used(), 90);
+        assert_eq!(raw.display_used(), 92);
         assert_eq!(raw.display_available(), 8);
         let native = Space {
             native: Some(disktree_core::space::NativeSpace {
@@ -889,8 +892,11 @@ mod tests {
         assert_eq!(roundtrip, native);
         assert_eq!(roundtrip.free, 10);
         assert_eq!(roundtrip.available, 8);
-        assert_eq!(roundtrip.display_used(), 70);
-        assert_eq!(roundtrip.display_available(), 20);
+        assert_eq!(roundtrip.as_core().used(), 90);
+        assert_eq!(roundtrip.display_used(), 92);
+        assert_eq!(roundtrip.display_available(), 8);
+        assert_eq!(roundtrip.as_core().native_used(), Some(70));
+        assert_eq!(roundtrip.as_core().reclaimable_available(), Some(20));
     }
 
     #[cfg(any(unix, windows))]
