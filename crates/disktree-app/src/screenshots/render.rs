@@ -36,6 +36,9 @@ pub fn run() -> Result<()> {
     );
     // Parse everything before creating a platform or touching the scan root.
     let scenario = Scenario::parse(&std::fs::read_to_string(&args[0])?)?;
+    disktree_core::size::set_units(
+        disktree_core::size::SizeUnits::PlatformDefault,
+    );
     let root = dunce::canonicalize(&args[1]).context("fixture scan root")?;
     ensure!(root.is_dir(), "fixture root must be a directory");
     let out = Path::new(&args[2]);
@@ -76,11 +79,26 @@ fn render(scenario: &Scenario, root: &Path, out: &Path) -> Result<()> {
         })
     })?;
     let view = cx.update(|cx| handle.entity(cx))?;
-    let window = handle.into();
+    let mut window = handle.into();
     draw(&mut cx, window)?;
     let mut pointer = None;
     for step in &scenario.steps {
         match step {
+            Step::Settings => {
+                let settings =
+                    cx.open_window(size(px(width), px(height)), |_, cx| {
+                        cx.new(|cx| {
+                            let mut settings =
+                                crate::settings::SettingsWindow::new(
+                                    crate::settings::Pane::General,
+                                    cx,
+                                );
+                            settings.updates_dir = None;
+                            settings
+                        })
+                    })?;
+                window = settings.into();
+            }
             Step::Hover { at } => {
                 move_pointer(&mut cx, window, *at)?;
                 pointer = Some(*at);
@@ -198,6 +216,12 @@ fn setup(
     cx.update(|cx| {
         view.update(cx, |app, cx| {
             match state {
+                State::SizeUnits { units } => {
+                    let units = disktree_core::size::SizeUnits::parse(units)
+                        .context("unknown size units")?;
+                    disktree_core::size::set_units(units);
+                    cx.refresh_windows();
+                }
                 State::Legend { kind } => {
                     let index = Category::LEGEND
                         .iter()

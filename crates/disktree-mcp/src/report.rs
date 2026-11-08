@@ -2,7 +2,7 @@
 //!
 //! An agent reads these answers as tokens, so each is a short, aligned
 //! table with the number that matters first, rather than JSON that repeats
-//! every key on every row. Sizes are binary units, as in the window. The
+//! every key on every row. Sizes follow the saved display preference, as in the window. The
 //! rows are [`Entry`] values, so a listing reads the same whether it came
 //! from the window or from this process's own scan.
 

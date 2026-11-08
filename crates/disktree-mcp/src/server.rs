@@ -126,6 +126,7 @@ struct RetentionParams {
 #[derive(Clone)]
 pub struct Server {
     session: Arc<Mutex<Session>>,
+    follow_saved_size_units: bool,
     tool_router: ToolRouter<Self>,
     prompt_router: PromptRouter<Self>,
 }
@@ -140,9 +141,18 @@ impl Server {
     pub fn new(session: Session) -> Self {
         Self {
             session: Arc::new(Mutex::new(session)),
+            follow_saved_size_units: false,
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
         }
+    }
+
+    /// The stdio process follows the saved window preference at each request,
+    /// so an already-connected agent sees a later Settings change too.
+    #[must_use]
+    pub const fn with_saved_size_units(mut self) -> Self {
+        self.follow_saved_size_units = true;
+        self
     }
 
     /// Run `f` with the session. A poisoned lock means a tool panicked; the
@@ -150,6 +160,9 @@ impl Server {
     pub fn with<R>(&self, f: impl FnOnce(&mut Session) -> R) -> R {
         let mut session =
             self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.follow_saved_size_units {
+            disktree_core::size_preferences::initialize();
+        }
         f(&mut session)
     }
 }

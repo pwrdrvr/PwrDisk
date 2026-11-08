@@ -24,6 +24,7 @@ pub enum Theme {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Step {
+    Settings,
     Hover {
         at: [f32; 2],
     },
@@ -46,6 +47,7 @@ pub enum Step {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum State {
+    SizeUnits { units: String },
     Legend { kind: String },
     Select { path: String },
     Mark { path: String },
@@ -81,6 +83,7 @@ impl Scenario {
         let mut moved = false;
         for step in &self.steps {
             match step {
+                Step::Settings => {}
                 Step::Hover { at } | Step::Click { at } => {
                     ensure!(
                         at.iter().zip(self.size).all(|(&v, side)| {
@@ -105,6 +108,13 @@ impl Scenario {
                     );
                 }
                 Step::Setup { state } => match state {
+                    State::SizeUnits { units } => {
+                        ensure!(
+                            disktree_core::size::SizeUnits::parse(units)
+                                .is_some(),
+                            "unknown size units"
+                        );
+                    }
                     State::Legend { kind } => {
                         ensure!(
                             Category::LEGEND.iter().any(|k| k.name() == kind),
@@ -168,6 +178,8 @@ mod tests {
     #[test]
     fn parses_all_steps_and_rejects_mistyped_fields() {
         let steps = json!([
+            {"op": "settings"},
+            {"op": "setup", "state": {"type": "size_units", "units": "decimal"}},
             {"op": "setup", "state": {"type": "legend", "kind": "code"}},
             {"op": "setup", "state": {"type": "select", "path": "a/b"}},
             {"op": "setup", "state": {"type": "mark", "path": ".cache"}},
@@ -206,6 +218,7 @@ mod tests {
                 {"op": "capture", "name": "x.png"}
             ]),
             json!([{"op": "setup", "state": {"type": "delete"}}]),
+            json!([{"op": "setup", "state": {"type": "size_units", "units": "invalid"}}]),
             json!([{"op": "setup", "state": {"type": "legend", "kind": "x"}}]),
         ] {
             assert!(Scenario::parse(&script(&steps)).is_err());

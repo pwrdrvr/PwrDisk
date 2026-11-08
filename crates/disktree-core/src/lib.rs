@@ -37,6 +37,7 @@ pub mod scan_preview;
 pub mod scan_threads;
 pub mod sharing;
 pub mod size;
+pub mod size_preferences;
 pub mod space;
 #[cfg(all(test, unix))]
 mod test_paths;

@@ -33,7 +33,8 @@ pub fn serve() -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let server = server::Server::new(Session::new());
+        let server =
+            server::Server::new(Session::new()).with_saved_size_units();
         let running = server.serve(rmcp::transport::stdio()).await?;
         running.waiting().await?;
         Ok(())

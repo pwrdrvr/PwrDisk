@@ -108,6 +108,11 @@ does not update itself; download the next release.
 
 ## Using it
 
+**Settings › General › Size units** follows your platform by default:
+decimal on macOS (kB, MB, GB), binary on Windows and Linux (KiB, MiB,
+GiB). Choose **Decimal** or **Binary** to save an explicit preference for
+the window and human-readable agent reports.
+
 1. **Pick what to scan.** Choose **This computer** or an SSH host, then a
    drive or folder. Nothing is scanned until you choose.
 2. **Look around.** Click a tile, or use the arrow keys. Scroll to zoom into

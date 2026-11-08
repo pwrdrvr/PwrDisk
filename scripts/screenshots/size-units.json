@@ -1,0 +1,12 @@
+{
+  "size": [1180, 620],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "capture", "name": "platform-default.png"},
+    {"op": "setup", "state": {"type": "size_units", "units": "binary"}},
+    {"op": "capture", "name": "binary.png"},
+    {"op": "setup", "state": {"type": "size_units", "units": "platform"}},
+    {"op": "settings"},
+    {"op": "capture", "name": "settings.png"}
+  ]
+}
