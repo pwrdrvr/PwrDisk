@@ -11,6 +11,7 @@ use std::process::ExitStatus;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Attached(u8),
+    Physical(u8),
     Gone,
     Unknown,
 }
@@ -19,7 +20,20 @@ const fn state(value: u8) -> State {
     match value {
         0..=2 => State::Attached(value),
         3 => State::Gone,
+        5..=7 => State::Physical(value - 5),
         _ => State::Unknown,
+    }
+}
+
+fn physical_device(number: u8) -> PathBuf {
+    PathBuf::from(format!("/dev/disk{}", 900_000 + u32::from(number) * 2))
+}
+
+fn target(state: State, volume: bool) -> Option<PathBuf> {
+    match state {
+        State::Attached(number) => Some(device(number, volume)),
+        State::Physical(number) if !volume => Some(physical_device(number)),
+        _ => None,
     }
 }
 
@@ -53,19 +67,23 @@ impl Operations for Model {
     ) -> Result<Option<Vec<serde_json::Value>>, String> {
         assert_eq!(backing, self.backing, "query the exact backing image");
         self.observed = true;
-        let State::Attached(number) = self.current else {
+        let (State::Attached(number) | State::Physical(number)) = self.current
+        else {
             return match self.current {
                 State::Gone => Ok(None),
                 _ => Err("ownership cannot be established".into()),
             };
         };
         let container = device(number, false);
-        let physical = format!("/dev/disk{}", 900_000 + u32::from(number) * 2);
+        let physical = serde_json::json!({
+            "dev-entry": physical_device(number),
+            "content-hint": "GUID_partition_scheme",
+        });
+        if matches!(self.current, State::Physical(_)) {
+            return Ok(Some(vec![physical]));
+        }
         Ok(Some(vec![
-            serde_json::json!({
-                "dev-entry": physical,
-                "content-hint": "GUID_partition_scheme",
-            }),
+            physical,
             serde_json::json!({
                 "dev-entry": container,
                 "content-hint": super::super::APFS_CONTAINER,
@@ -86,10 +104,8 @@ impl Operations for Model {
         } else {
             let target = PathBuf::from(args.last().expect("device"));
             let volume = matches!(verb, "mount" | "unmount");
-            let owned = match self.current {
-                State::Attached(number) => target == device(number, volume),
-                _ => false,
-            };
+            let owned =
+                self::target(self.current, volume).as_ref() == Some(&target);
             if !self.observed || !owned {
                 self.violations.push(format!(
                     "{command:?} under {:?}; fresh query: {}",
@@ -151,7 +167,7 @@ fn check(
     // permits a step. Unmount failure stops a checkpoint, but forced cleanup
     // must still try detachment after another successful ownership query.
     let mut expected = Vec::new();
-    if let State::Attached(number) = states[0] {
+    if let Some(first) = target(states[0], checkpointing) {
         expected.push((
             if checkpointing {
                 "unmount"
@@ -161,14 +177,14 @@ fn check(
                 "eject"
             }
             .into(),
-            device(number, checkpointing),
+            first,
         ));
         if ((checkpointing && !errors[0]) || (!checkpointing && force))
-            && let State::Attached(next) = states[1]
+            && let Some(next) = target(states[1], checkpointing)
         {
             expected.push((
                 if checkpointing { "mount" } else { "detach" }.into(),
-                device(next, checkpointing),
+                next,
             ));
         }
     }
@@ -235,6 +251,19 @@ fn forced_detachment_uses_the_new_owned_device_number() {
 }
 
 #[test]
+fn forced_unmount_can_retire_the_container_before_detachment() {
+    check(
+        [State::Attached(0), State::Physical(0), State::Gone],
+        [false; 2],
+        false,
+        true,
+    )
+    .expect(
+        "detach the freshly observed physical store, never the old container",
+    );
+}
+
+#[test]
 fn a_disappeared_image_cannot_measure_the_mountpoints_host_volume() {
     check(
         [State::Attached(0), State::Attached(0), State::Gone],
@@ -252,7 +281,7 @@ proptest! {
 
     #[test]
     fn native_substeps_follow_current_image_ownership(
-        states in prop::array::uniform3(0_u8..5),
+        states in prop::array::uniform3(0_u8..8),
         errors in prop::array::uniform2(any::<bool>()),
         checkpointing in any::<bool>(),
         force in any::<bool>(),

@@ -38,6 +38,8 @@ pub struct Image {
     // Bookkeeping for lifecycle assertions and diagnostics, never an operand
     // for a native operation: its number can belong to another image later.
     device: Option<PathBuf>,
+    // Callbacks receive backing paths so cached identifiers cannot cross the
+    // native boundary, including in regression cleanup and injected failures.
     eject: fn(&Path, bool) -> Result<(), String>,
     attachment: fn(&Path) -> Result<Option<PathBuf>, String>,
     retire: fn(&Path) -> Result<(), String>,
