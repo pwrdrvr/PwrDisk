@@ -36,6 +36,9 @@ thread_local! {
     };
 }
 
+mod approval;
+pub use approval::ApprovalScope;
+
 /// One path the user asked to remove.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
@@ -108,9 +111,27 @@ pub struct Plan {
     reclaim_estimate: Option<u64>,
     possible_bytes: Option<u64>,
     estimate_partial: bool,
+    /// Present only for a human-approved MCP operation.
+    approval_scope: Option<ApprovalScope>,
 }
 
 impl Plan {
+    /// Carry the preview's identity binding through to the removal worker.
+    pub fn bind_approval(
+        &mut self,
+        scope: ApprovalScope,
+    ) -> Result<(), String> {
+        scope.check(self)?;
+        self.approval_scope = Some(scope);
+        Ok(())
+    }
+
+    fn check_approval(&self) -> Result<(), String> {
+        self.approval_scope
+            .as_ref()
+            .map_or(Ok(()), |scope| scope.check(self))
+    }
+
     pub fn bytes(&self) -> u64 {
         self.targets.iter().map(|target| target.bytes).sum()
     }
@@ -1554,25 +1575,35 @@ fn start(
             }
             // A cleanup admits each step on its own measurement; only the
             // capacity ceiling refuses the whole run.
-            let checked = if mode == RemovalMode::OwnerCleanup {
-                cleanup
-                    .as_ref()
-                    .ok_or_else(|| {
-                        "Cache cleanup requires approved decisions".to_string()
-                    })
-                    .and_then(|approved| {
-                        let default = crate::removal_limit::Ceilings::default();
-                        approved.admit(limit.as_ref().unwrap_or(&default))
-                    })
-            } else {
-                crate::cleanup::check_raw(&plan.targets).map(|()| vec![])
-            };
+            let scope = plan.check_approval();
+            let scope_failed = scope.is_err();
+            let checked = scope.and_then(|()| {
+                if mode == RemovalMode::OwnerCleanup {
+                    cleanup
+                        .as_ref()
+                        .ok_or_else(|| {
+                            "Cache cleanup requires approved decisions"
+                                .to_string()
+                        })
+                        .and_then(|approved| {
+                            let default =
+                                crate::removal_limit::Ceilings::default();
+                            approved.admit(limit.as_ref().unwrap_or(&default))
+                        })
+                } else {
+                    crate::cleanup::check_raw(&plan.targets).map(|()| vec![])
+                }
+            });
             let refusals = match checked {
                 Ok(refusals) => refusals,
                 Err(reason) => {
                     if let Some(approved) = &cleanup {
                         let issue = crate::cleanup::Issue::new(
-                            crate::cleanup::Problem::OverLimit,
+                            if scope_failed {
+                                crate::cleanup::Problem::Refused
+                            } else {
+                                crate::cleanup::Problem::OverLimit
+                            },
                             reason.clone(),
                         );
                         for index in 0..plan.targets.len() {
@@ -1694,7 +1725,12 @@ fn run(
             home.as_ref(),
             &mounts,
         )
-        .or_else(|| mounted(&target.path, &mounts.points));
+        .or_else(|| mounted(&target.path, &mounts.points))
+        .or_else(|| {
+            plan.approval_scope
+                .as_ref()
+                .and_then(|scope| scope.check_target(target).err())
+        });
         // Sample the scope's own volume, including when it differs from
         // the scan's meter. Its parent remains after a cache root is cleared.
         let sample = || {

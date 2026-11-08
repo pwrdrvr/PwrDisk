@@ -496,9 +496,13 @@ proposes what can go. It marks what you agree to, and marking is all it
 does by default. `pwrdisk_review` opens the marked list for you to approve;
 the agent must never approve it through computer use. For requested MCP
 removal, `pwrdisk_removal_preview` returns the exact paths and an explicit
-Trash or permanent mode. After you confirm that operation, the destructive
-`pwrdisk_remove` tool requires interactive confirmation through the MCP
-client. Clients without form elicitation use human review instead. Trash
+Trash or permanent mode. The destructive `pwrdisk_remove` tool asks you to
+confirm that exact operation through the MCP client. PwrAgent can show it
+over messaging, with Allow/Decline buttons or a per-card text reply code;
+a bare "yes" does not approve it. The card names the preview ID and expires
+with it. Tool arguments and Auto/Full Access do not supply consent.
+Clients without form elicitation use human review instead. See
+[the approval contract](mcp-approval.md) for lifecycle and client requirements. Trash
 may be recoverable until emptied; permanent deletion cannot be undone
 through PwrDisk. Settings > Safety sets the per-operation limit: 5% of each
 volume's capacity by default, for both UI and MCP removal. The app rechecks

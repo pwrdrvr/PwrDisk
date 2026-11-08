@@ -6067,6 +6067,58 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         disktree_core::removal_limit::Limit::default(),
     )
     .expect("restore fixture policy");
+    // Model: Preview -> retain original -> replace -> confirm must refuse,
+    // independently of the replacement's kind or size. The filesystem is
+    // the oracle: the replacement is still there and byte-for-byte intact.
+    {
+        use proptest::prelude::*;
+        use proptest::test_runner::{Config, TestRunner};
+        let window = std::cell::RefCell::new(&mut *cx);
+        let ask = std::cell::RefCell::new(&mut ask);
+        TestRunner::new(Config {
+            cases: 16,
+            // A broken implementation can start deleting this fixture.
+            // Shrinking must not reuse its now-running window state.
+            max_shrink_iters: 0,
+            failure_persistence: None,
+            ..Config::default()
+        })
+        .run(&(any::<bool>(), 0_usize..1024), |(directory, bytes)| {
+            let mut ask = ask.borrow_mut();
+            let mut window = window.borrow_mut();
+            let replaced = await_removal_preview(
+                &mut **ask,
+                &mut window,
+                &preview_request,
+            );
+            std::fs::rename(root.join("junk"), root.join("held-original"))
+                .expect("retain original fixture");
+            let path = if directory {
+                std::fs::create_dir(root.join("junk")).expect("replacement");
+                root.join("junk/blob.bin")
+            } else {
+                root.join("junk")
+            };
+            let data = vec![b'x'; bytes];
+            std::fs::write(&path, &data).expect("replacement data");
+            prop_assert!(
+                matches!(
+                    ask(&mut window, Request::Remove(confirmed(&replaced))),
+                    Response::Error { .. }
+                ),
+                "a replacement cannot inherit approval"
+            );
+            prop_assert_eq!(std::fs::read(&path).expect("not approved"), data);
+            std::fs::remove_file(&path).expect("owned fixture");
+            if directory {
+                std::fs::remove_dir(root.join("junk")).expect("owned fixture");
+            }
+            std::fs::rename(root.join("held-original"), root.join("junk"))
+                .expect("restore original fixture");
+            Ok(())
+        })
+        .expect("replacement never inherits human approval");
+    }
     let preview = await_removal_preview(&mut ask, cx, &preview_request);
     assert_eq!(preview.paths, [root.join("junk")]);
     assert_eq!(preview.limit_percent, 5);

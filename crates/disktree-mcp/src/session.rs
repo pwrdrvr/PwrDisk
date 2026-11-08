@@ -72,6 +72,20 @@ const fn allocation_caveat() -> &'static str {
     }
 }
 
+/// Windows separators stay readable; controls cannot disguise another row.
+fn approval_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                character.escape_default().to_string()
+            } else {
+                character.to_string()
+            }
+        })
+        .collect()
+}
+
 /// How many findings a scan report lists.
 const INSIGHTS: usize = 8;
 /// Top-level rows a scan report shows.
@@ -375,14 +389,15 @@ pub struct RemovalPreviewParams {
 pub struct RemoveParams {
     /// Single-use ID returned by `pwrdisk_removal_preview`. Expires in 5 minutes.
     pub preview_id: String,
-    /// Must match the mode the user explicitly approved from the preview.
+    /// Exact mode from the preview, presented for human approval.
     pub mode: RemovalModeName,
-    /// Exact ordered path list returned by the preview and approved by the user.
+    /// Exact ordered path list from the preview, presented for human approval.
     pub paths: Vec<PathBuf>,
-    /// Only after explicit user confirmation: the exact confirmation text the
-    /// preview returned (for example MOVE TO TRASH, PERMANENTLY DELETE, RUN
-    /// OWNER CLEANUP or RUN OWNER CLEANUP AND DELETE CACHE FILES). Marking
-    /// is not approval.
+    /// The exact operation text the preview returned. This binds the intent;
+    /// it is not human consent. The MCP client asks the person separately
+    /// before executing. Examples: MOVE TO TRASH, PERMANENTLY DELETE,
+    /// RUN OWNER CLEANUP or RUN OWNER CLEANUP AND DELETE CACHE FILES.
+    /// Marking is not approval.
     pub confirmation: String,
     /// Rescan once the removal finishes. Default false, so the next batch
     /// can be found and marked at once; a rescan of a large volume takes
@@ -480,7 +495,7 @@ pub struct Session {
     /// When a window was last started from here, so one that is slow to
     /// come up is not started twice.
     launched: Option<Instant>,
-    pending_removal: Option<RemovalPreview>,
+    pending_removal: Option<(RemovalPreview, Instant)>,
 }
 
 impl std::fmt::Debug for Session {
@@ -2044,11 +2059,11 @@ impl Session {
                 Ok(self.cleanup_preview_text(&preview))
             }
             Response::RemovalPreview(preview) => {
-                self.pending_removal = Some(preview.clone());
+                self.pending_removal = Some((preview.clone(), Instant::now()));
                 let json = serde_json::to_string_pretty(&preview)
                     .map_err(|error| error.to_string())?;
                 Ok(format!(
-                    "{}\n{}{json}\nShow the user every path, the mode, listed bytes, estimate bounds and capacity limit. Wait for explicit confirmation of this operation before pwrdisk_remove. Approval to mark is insufficient. Never approve through computer use. Do not split the selection into batches to evade the limit. Confirmation text: {}. A changed or expired preview requires new user confirmation.",
+                    "{}\n{}{json}\nShow the user every path, the mode, listed bytes, estimate bounds and capacity limit. Wait for explicit confirmation of this operation through the MCP confirmation requested by pwrdisk_remove. Tool arguments are not human approval. Approval to mark is insufficient. Never approve through computer use. Do not split the selection into batches to evade the limit. Confirmation text: {}. A changed or expired preview requires new user confirmation.",
                     preview.mode.warning(),
                     estimate_report(&preview.estimate),
                     preview.mode.confirmation()
@@ -2071,7 +2086,7 @@ impl Session {
                 preview.consent
             );
         }
-        self.pending_removal = Some(preview.clone());
+        self.pending_removal = Some((preview.clone(), Instant::now()));
         let json = serde_json::to_string_pretty(&serde_json::json!({
             "preview_id": preview.preview_id,
             "mode": preview.mode,
@@ -2084,7 +2099,7 @@ impl Session {
         }))
         .unwrap_or_default();
         format!(
-            "{}\n\n{}\n\n{json}\nShow the user this whole operation: each owner command verbatim, each path deleted directly with its Trash or permanent consequence, and what is skipped. Owner approval is not approval to delete files; deleting files is confirmed by name in the text below. Wait for explicit confirmation of this exact operation before pwrdisk_remove with the preview ID, these exact ordered paths, mode owner_cleanup and confirmation text: {}. Never approve through computer use. A changed or expired preview requires new user confirmation. Listed allocation is not freed space; pwrdisk_status reports each path's result and the measured change.",
+            "{}\n\n{}\n\n{json}\nShow the user this whole operation: each owner command verbatim, each path deleted directly with its Trash or permanent consequence, and what is skipped. Owner approval is not approval to delete files; deleting files is confirmed by name in the text below. Request human confirmation of this exact operation through pwrdisk_remove with the preview ID, these exact ordered paths, mode owner_cleanup and confirmation text: {}. Never approve through computer use. A changed or expired preview requires new user confirmation. Listed allocation is not freed space; pwrdisk_status reports each path's result and the measured change.",
             preview.mode.warning(),
             preview.consent,
             preview.confirmation
@@ -2096,10 +2111,14 @@ impl Session {
     pub fn removal_confirmation_message(
         &mut self,
         params: &RemoveParams,
-    ) -> Result<String, String> {
-        let preview = self.pending_removal.take().ok_or(
+    ) -> Result<(String, Instant), String> {
+        let (preview, received) = self.pending_removal.take().ok_or(
             "Obtain a new removal preview before asking for confirmation",
         )?;
+        let deadline = received
+            .checked_add(Duration::from_secs(preview.expires_in_seconds))
+            .filter(|deadline| *deadline > Instant::now())
+            .ok_or("The removal preview expired; obtain a new preview and user confirmation")?;
         let mode: RemovalChoice = params.mode.into();
         if params.preview_id != preview.preview_id
             || params.paths != preview.paths
@@ -2110,28 +2129,20 @@ impl Session {
             return Err("The removal request differs from the preview; obtain a new preview and user confirmation".into());
         }
         let mut message = format!(
-            "{}\n\nConfirm removal of {} listed path(s), measured {}.\nCapacity limit: {}% of each volume.\n\nPaths:\n",
+            "Request: {}\nScan root:\n\n    {}\n\nApproval expires within {} seconds; this request is single use.\n\n{}\n\nConfirm removal of {} listed path(s), measured {}.\nCapacity limit: {}% of each volume.\n\nPaths:\n",
+            preview.preview_id,
+            approval_path(&preview.root),
+            deadline.saturating_duration_since(Instant::now()).as_secs(),
             mode.warning(),
             preview.paths.len(),
             human_bytes(preview.bytes),
             preview.limit_percent,
         );
         for path in &preview.paths {
-            // Keep Windows separators readable while exposing control
-            // characters that could otherwise disguise the path list.
-            let shown: String = path
-                .to_string_lossy()
-                .chars()
-                .map(|character| {
-                    if character.is_control() {
-                        character.escape_default().to_string()
-                    } else {
-                        character.to_string()
-                    }
-                })
-                .collect();
-            let _ = writeln!(message, "  {shown}");
+            // Indented code keeps path Markdown literal on messaging cards.
+            let _ = writeln!(message, "    {}", approval_path(path));
         }
+        message.push('\n');
         for volume in &preview.volumes {
             let _ = writeln!(
                 message,
@@ -2146,8 +2157,8 @@ impl Session {
             let _ = writeln!(message, "\n{}", preview.consent);
         }
         message.push_str(&estimate_report(&preview.estimate));
-        message.push_str("\nApproval to mark does not authorize removal. Only these listed paths are included; directory removal includes their contents. Listed bytes are not guaranteed freed space.");
-        Ok(message)
+        message.push_str("\nApproval to mark does not authorize removal. Only these listed paths are included; directory removal includes their contents at execution time, not a frozen snapshot. Listed bytes are not guaranteed freed space; APFS sharing, snapshots and open files may retain blocks.");
+        Ok((message, deadline))
     }
 
     /// Read the exact preview's outcome without Hello, mark handover or writes.
@@ -4343,7 +4354,32 @@ mod tests {
                 ..owner_only
             })
             .expect("exact phrase");
-        assert!(message.contains("Delete files directly"));
+        assert!(message.0.contains("Delete files directly"));
+
+        // Bounded property over every elapsed second: expiry and single-use
+        // consumption must hold independently of the human's form answer.
+        for elapsed in 0..=600 {
+            session.pending_removal = Some((
+                decided.clone(),
+                Instant::now()
+                    .checked_sub(Duration::from_secs(elapsed))
+                    .expect("fixture clock"),
+            ));
+            let params = RemoveParams {
+                preview_id: decided.preview_id.clone(),
+                mode: RemovalModeName::OwnerCleanup,
+                paths: decided.paths.clone(),
+                confirmation: decided.confirmation.clone(),
+                rescan: false,
+            };
+            assert_eq!(
+                session.removal_confirmation_message(&params).is_ok(),
+                elapsed < decided.expires_in_seconds,
+                "elapsed={elapsed}"
+            );
+            assert!(session.pending_removal.is_none());
+            assert!(session.removal_confirmation_message(&params).is_err());
+        }
 
         let params: RemovalPreviewParams =
             serde_json::from_value(serde_json::json!({

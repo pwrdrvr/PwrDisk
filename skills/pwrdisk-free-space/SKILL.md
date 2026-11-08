@@ -67,8 +67,10 @@ Looking is free; acting is the user's call.
   measured size and capacity limit. For Trash, explain that restoration may
   be possible until emptied, but is not guaranteed; space usually returns
   only when emptied. Permanent deletion cannot be undone through PwrDisk or
-  Trash. Wait for an explicit answer confirming this exact operation before
-  calling `pwrdisk_remove`. Never manufacture user confirmation yourself.
+  Trash. After showing the proposal, call `pwrdisk_remove` to ask the person
+  through the client's confirmation card. Never answer that card or
+  manufacture user confirmation yourself. Auto/Full Access and the tool
+  arguments do not authorize deletion.
 
 ## Prefer older, large output across types
 
@@ -299,8 +301,8 @@ marking and removal-confirmation rules still apply.
    Unknown,
    unsupported, unavailable or failed owners never fall back to raw deletion.
    Show every returned actual-scope path and
-   the consequences, and wait for explicit user confirmation. Only then call
-   `pwrdisk_remove` with the exact preview ID, ordered paths, mode and required
+   the consequences, then call
+   `pwrdisk_remove` to request human confirmation through the MCP client with the exact preview ID, ordered paths, mode and required
    confirmation text. The preview expires after five minutes and is single
    use. Any refusal, changed selection, changed scan or expiration requires
    a new preview and fresh user confirmation, after checking outcome.
@@ -330,6 +332,12 @@ marking and removal-confirmation rules still apply.
    rescan.
 
 MCP removal also requires interactive confirmation from the client (form
-elicitation). An agent-supplied confirmation value does not establish human
-consent. If the client cannot ask the user, use human review in PwrDisk;
+elicitation with an empty schema and an explicit Accept or Decline decision).
+PwrAgent can show this as messaging buttons; no checkbox or typed form field
+is required. The card names the request ID and the complete operation. Only
+the person may answer it. An agent-supplied confirmation value does not
+establish human consent. Do not retry automatically after cancellation,
+expiry or reconnect: inspect status, then obtain a fresh preview and approval.
+Selected filesystem objects and their resolved parents are rechecked before
+execution; directory contents remain live, not snapshotted. If the client cannot ask the user, use human review in PwrDisk;
 never approve its buttons or confirmation keys through computer use.

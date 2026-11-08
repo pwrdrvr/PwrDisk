@@ -36,6 +36,7 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
             (true, "cancel", false, 4, 0), // Unrelated preview.
             (true, "cancel", false, 5, 0), // Different mode.
             (true, "cancel", false, 6, 0), // Different path list.
+            (true, "cancel_request", true, 0, 0), // Caller withdraws first.
             (true, "error", false, 0, 0),  // Proxy/client lifecycle failure.
             (true, "error", false, 2, 0),  // UI completion before form error.
         ] {
@@ -258,6 +259,14 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
                         assert!(message.contains("cannot be undone"));
                     }
                     assert!(message.contains("5% of each volume"));
+                    assert!(message.contains("fixture-preview"));
+                    // Messaging can submit an empty confirmation, but cannot
+                    // fill arbitrary required fields. The action is consent.
+                    let schema = &response["params"]["requestedSchema"];
+                    assert_eq!(schema["properties"], json!({}));
+                    assert!(
+                        schema["required"].as_array().is_none_or(Vec::is_empty)
+                    );
                     native_state.store(native, Ordering::SeqCst);
                     if action == "error" {
                         send(&mut output, json!({"jsonrpc":"2.0","id":response["id"],"error":{
@@ -265,14 +274,23 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
                     }})).await;
                         continue;
                     }
+                    if action == "cancel_request" {
+                        send(&mut output, json!({"jsonrpc":"2.0","method":"notifications/cancelled", "params":{"requestId":3,"reason":"fixture caller cancelled"}})).await;
+                    }
                     // This simulates the client's user response, never model input.
                     send(
                         &mut output,
                         json!({"jsonrpc":"2.0","id":response["id"],"result":{
-                            "action":action,"content":{"confirmed":confirmed}
+                            "action":if action == "cancel_request" { "accept" } else { action },"content":if confirmed { json!({}) } else { json!({"confirmed":false}) }
                         }}),
                     )
                     .await;
+                } else if action == "cancel_request"
+                    && response["method"] == "notifications/cancelled"
+                {
+                    // MCP drops the response to a cancelled tools/call. The
+                    // server must instead withdraw its outstanding host card.
+                    break;
                 } else if response["id"] == 3 {
                     assert_eq!(
                         response["result"]["isError"] == true,
@@ -310,6 +328,24 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
                             "{text}"
                         );
                     }
+                    break;
+                }
+            }
+            // Replayed tool arguments are not a new human response. Even a
+            // duplicate positive callback cannot send a second native write.
+            send(&mut output, json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
+                "name":"pwrdisk_remove","arguments":{
+                    "preview_id":"fixture-preview","mode":mode_name,"paths":[file],
+                    "confirmation":mode.confirmation()
+                }
+            }})).await;
+            loop {
+                let response = receive(&mut input).await;
+                assert_ne!(
+                    response["method"], "elicitation/create",
+                    "no replayed approval"
+                );
+                if response["id"] == 4 {
                     break;
                 }
             }

@@ -3661,7 +3661,7 @@ impl Disktree {
     /// Start the person's removal of what is marked, held to the window's
     /// limit or to the shares Review confirmed past it.
     pub fn begin_removal(&mut self, cx: &mut Context<'_, Self>) {
-        self.start_removal(Remover::Person, None, cx);
+        self.start_removal(Remover::Person, None, None, cx);
     }
 
     /// Start an agent's confirmed removal, held to the agent limit
@@ -3670,21 +3670,23 @@ impl Disktree {
     pub(crate) fn begin_agent_removal(
         &mut self,
         cleanup: Option<disktree_core::cleanup::Approved>,
+        scope: disktree_core::removal::ApprovalScope,
         cx: &mut Context<'_, Self>,
     ) {
-        self.start_removal(Remover::Agent, cleanup, cx);
+        self.start_removal(Remover::Agent, cleanup, Some(scope), cx);
     }
 
     fn start_removal(
         &mut self,
         by: Remover,
         agent_cleanup: Option<disktree_core::cleanup::Approved>,
+        scope: Option<disktree_core::removal::ApprovalScope>,
         cx: &mut Context<'_, Self>,
     ) {
         if self.remote.is_some() {
             return;
         }
-        let cleanup = if self.removal_mode == RemovalMode::OwnerCleanup {
+        let mut cleanup = if self.removal_mode == RemovalMode::OwnerCleanup {
             let approved = match by {
                 Remover::Person => self.cleanup_approved().cloned(),
                 Remover::Agent => agent_cleanup.ok_or_else(|| {
@@ -3718,9 +3720,19 @@ impl Disktree {
             cx.notify();
             return;
         }
-        let plan = cleanup
+        let mut plan = cleanup
             .as_ref()
             .map_or_else(|| self.plan(), |approved| approved.plan.clone());
+        if let Some(scope) = scope {
+            if let Err(reason) = plan.bind_approval(scope) {
+                self.say(reason, Status::Warning, cx);
+                cx.notify();
+                return;
+            }
+            if let Some(approved) = &mut cleanup {
+                approved.plan = plan.clone();
+            }
+        }
         if plan.is_empty() {
             self.say("nothing is marked", Status::Warning, cx);
             cx.notify();
