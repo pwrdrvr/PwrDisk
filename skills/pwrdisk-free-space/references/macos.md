@@ -63,9 +63,10 @@ separately, and do not propose worktrees just to release clone groups.
   later changes; even the lower estimate is not a guaranteed saving.
 - **One container, several volumes.** The System, Data, Preboot, Recovery
   and VM volumes share one APFS container's space. The startup disk meter
-  shows System + Data usage from the OS and availability from the shared
-  pool, including purgeable space. Raw container usage is a fallback when
-  native counters are unavailable. Used + Available need not equal Total. A scan of
+  shows actual free space and total capacity from the shared pool. Used is
+  Total minus Free; it includes the other volumes and metadata too. The
+  System + Data allocation and other used space are a separate breakdown,
+  not a substitute for the whole pool's Used figure. A scan of
   `/` includes readable System and Data files; it excludes nested mounts
   such as Preboot, Recovery and VM. Data-only contents under
   `/System/Volumes/Data` are included, while destinations listed in
@@ -82,11 +83,12 @@ separately, and do not propose worktrees just to release clone groups.
   it expires. `tmutil listlocalsnapshots /` lists them. Deleting one
   (`tmutil deletelocalsnapshots`) is the user's decision; give the command,
   do not run it.
-- **Purgeable is already included in Available.** PwrDisk reads the native
-  important-usage capacity and never adds purgeable bytes to it again.
-  Raw free-block counters still drive removal guards and measured recovery;
-  do not treat a changing purgeable estimate as bytes recovered by removal.
-  Projections conservatively avoid promising already available bytes twice.
+- **Reclaimable capacity is not free space.** PwrDisk shows macOS's native
+  important-usage estimate separately as including reclaimable space. It
+  already counts that space once and can differ from Finder's Available
+  figure. Actual free-block counters drive the primary meter, projections,
+  removal guards and measured recovery. Do not add reclaimable bytes to
+  those counters or treat a changing estimate as recovery from removal.
 - **Swap and the sleep image** live on the VM volume. Leave them alone.
 
 ## Privacy and access

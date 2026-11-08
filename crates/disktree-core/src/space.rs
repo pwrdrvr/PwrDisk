@@ -47,36 +47,43 @@ pub struct NativeSpace {
 }
 
 impl SpaceInfo {
-    /// OS volume/group usage when available; otherwise raw allocated use.
+    /// Capacity unavailable to this user, including any filesystem reserve.
+    /// This complements the meter's free space, even on shared APFS pools.
     pub const fn display_used(&self) -> u64 {
+        self.total.saturating_sub(self.display_available())
+    }
+
+    /// Free blocks this user can write now, without reclaiming other data.
+    pub const fn display_available(&self) -> u64 {
+        self.available
+    }
+
+    /// OS volume/group allocation, a separate scope from the capacity meter.
+    pub const fn native_used(&self) -> Option<u64> {
         match self.native {
             Some(NativeSpace {
                 used: Some(used), ..
-            }) if used <= self.total => used,
-            _ => self.used(),
+            }) if used <= self.total => Some(used),
+            _ => None,
         }
     }
 
-    /// OS availability, already including purgeable bytes when supported.
-    pub const fn display_available(&self) -> u64 {
+    /// OS capacity estimate including reclaimable data, never free space.
+    pub const fn reclaimable_available(&self) -> Option<u64> {
         match self.native {
             Some(NativeSpace {
                 available: Some(available),
                 ..
             }) if available >= self.available && available <= self.total => {
-                available
+                Some(available)
             }
-            _ => self.available,
+            _ => None,
         }
     }
 
     /// Additional availability reported by the OS, never added a second time.
     pub fn purgeable(&self) -> Option<u64> {
-        self.native?
-            .available
-            .filter(|available| {
-                *available >= self.available && *available <= self.total
-            })
+        self.reclaimable_available()
             .map(|available| available - self.available)
     }
 
@@ -1715,6 +1722,40 @@ map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
             ..proptest::test_runner::Config::default()
         })]
 
+        // A disk meter partitions physical capacity. Space macOS might
+        // reclaim and usage of just one APFS group cannot replace either
+        // side of that partition.
+        #[test]
+        fn disk_meter_partitions_capacity_without_crediting_reclaimable_space(
+            raw_free in 0_u64..1_000_000,
+            reserve in 0_u64..1_000_000,
+            purgeable in 1_u64..1_000_000,
+            auxiliary in 1_u64..1_000_000,
+            retained in 0_u64..1_000_000,
+            removal in 0_u64..4_000_000,
+        ) {
+            let total = raw_free + reserve + purgeable + auxiliary + retained;
+            let space = SpaceInfo {
+                total, free: raw_free + reserve, available: raw_free,
+                native: Some(NativeSpace {
+                    used: Some(purgeable + retained),
+                    available: Some(raw_free + purgeable),
+                }),
+            };
+            for (sample, expected_free) in [
+                (space, raw_free),
+                (space.after_removing(removal),
+                    (raw_free + removal).min(total)),
+            ] {
+                proptest::prop_assert_eq!(
+                    sample.display_available(), expected_free
+                );
+                proptest::prop_assert_eq!(
+                    sample.display_used() + sample.display_available(), total
+                );
+            }
+        }
+
         // Exclusions must be exactly the destinations, including spaces
         // and nested paths, rather than their top-level parents.
         #[test]
@@ -1826,8 +1867,10 @@ map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
             }),
         };
         assert_eq!(space.used(), 2);
-        assert_eq!(space.display_used(), 1);
-        assert_eq!(space.display_available(), 1);
+        assert_eq!(space.display_used(), 2);
+        assert_eq!(space.display_available(), 0);
+        assert_eq!(space.native_used(), Some(1));
+        assert_eq!(space.reclaimable_available(), Some(1));
         assert_eq!(space.after_removing(1).display_available(), 1);
         assert_eq!(space.after_removing(2).display_available(), 2);
     }
@@ -1848,11 +1891,13 @@ map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
                 }),
                 ..raw
             };
-            assert_eq!(space.display_used(), raw.used());
+            assert_eq!(space.display_used(), raw.total - raw.available);
             assert_eq!(space.display_available(), raw.available);
+            assert_eq!(space.native_used(), None);
+            assert_eq!(space.reclaimable_available(), None);
             assert_eq!(space.purgeable(), None);
             let after = space.after_removing(5);
-            assert_eq!(after.display_used(), after.used());
+            assert_eq!(after.display_used(), after.total - after.available);
             assert_eq!(after.display_available(), after.available);
         }
         let old: SpaceInfo =
@@ -1887,17 +1932,19 @@ map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
                     used: Some(os_used), available: Some(os_available),
                 }),
             };
-            proptest::prop_assert_eq!(space.display_used(), os_used);
+            proptest::prop_assert_eq!(space.native_used(), Some(os_used));
             proptest::prop_assert_eq!(
-                space.display_available(), os_available
+                space.reclaimable_available(), Some(os_available)
             );
             let after = space.after_removing(removal);
             let expected = os_available.max(
                 (raw_free + removal).min(total)
             );
-            proptest::prop_assert_eq!(after.display_available(), expected);
             proptest::prop_assert_eq!(
-                after.display_used(), os_used.saturating_sub(removal)
+                after.reclaimable_available(), Some(expected)
+            );
+            proptest::prop_assert_eq!(
+                after.native_used(), Some(os_used.saturating_sub(removal))
             );
             // Raw counters remain the measurement used by removal guards
             // and before/after reports, unaffected by presentation policy.
