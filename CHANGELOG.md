@@ -7,6 +7,27 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.22.0
+
+- Size units - Choose and save Platform default, Decimal or Binary in
+  Settings > General. Platform default uses decimal units on macOS and
+  binary units on Windows and Linux; the choice applies throughout the
+  window, exported prompts and MCP reports.
+- macOS disk accounting - Include Data-only files in whole-disk scans
+  without counting mapped aliases twice. Label readable file allocation
+  Scanned, separately from the OS disk meter's Used and Available figures.
+  Available includes purgeable space; recovery projections avoid counting
+  that space again.
+- Messaging approval - Approve concrete MCP removal proposals through
+  supported clients' human confirmation controls, including PwrAgent
+  messaging. Each proposal names its paths, action, expiry and limits;
+  unsupported clients can use native Review. A linked local window and
+  explicit human approval remain required.
+- Removal previews - Reject MCP removal when a selected object, its parent
+  or scan root has been replaced since the preview. Expired, cancelled or
+  replayed approvals cannot start a new write; changed selections require
+  a fresh proposal and approval.
+
 ## v0.21.0
 
 - APFS reclaim estimates - Use measured private allocation for the reclaim
