@@ -640,8 +640,10 @@ What is different from Linux:
   contents under `/System/Volumes/Data`; firmlink aliases there are excluded
   using macOS's `/usr/share/firmlinks` table. Nested mounts remain excluded.
   An unavailable firmlink table is reported as unreadable. Hover the **ⓘ**
-  beside the disk heading for the accounting scopes. Estimated repeated
-  clone allocation does not turn a scan into exact physical use; the
+  beside the disk heading for the accounting scopes and figures. Short
+  windows keep the secondary figures in that tooltip so marks stay visible.
+  Estimated repeated clone allocation does not turn a scan into exact
+  physical use; the
   remaining difference is not a measurement of unreadable files.
 - **Cloned files** (copies APFS shares blocks between, as Finder's Duplicate
   makes) remain counted in full in the treemap. The scan line separately

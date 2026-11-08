@@ -3276,7 +3276,7 @@ fn side_panel(
         .children(privacy_line(app, theme, cx))
         .children(administrator_line(app, theme, cx))
         .children(marked_total(app, &plan, theme, cx))
-        .child(disk_section(app, &plan, theme, cx).flex_shrink_0())
+        .child(disk_section(app, &plan, compact, theme, cx).flex_shrink_0())
         .children(agent_line(app, compact, theme))
 }
 
@@ -4804,6 +4804,7 @@ fn freed_since_scan(app: &Disktree, theme: &Theme) -> Option<Div> {
 fn disk_section(
     app: &Disktree,
     plan: &Plan,
+    compact: bool,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
@@ -4834,7 +4835,28 @@ fn disk_section(
                 )
             },
         );
-    let accounting_note = format!(
+    let native_breakdown = app.space.and_then(|space| {
+        space.native_used().map(|used| {
+            let scope = if startup_group {
+                "System + Data"
+            } else {
+                "volume"
+            };
+            space.display_used().checked_sub(used).map_or_else(
+                || format!("{} {scope}", human_bytes(used)),
+                |other| {
+                    format!(
+                        "{} {scope} · {} other used",
+                        human_bytes(used),
+                        human_bytes(other)
+                    )
+                },
+            )
+        })
+    });
+    let reclaimable_note =
+        app.space.and_then(widgets::reclaimable_capacity_note);
+    let mut accounting_note = format!(
         "{used_scope} {available_scope} Used + Free equals Total before \
          rounding. Scanned size sums \
          readable file allocation; clones can count shared blocks more than \
@@ -4842,6 +4864,12 @@ fn disk_section(
          metadata. Removal projections use raw free space; reclaimable \
          capacity is not added to those projections."
     );
+    // Short panels reserve their height for selection and marks. Keep
+    // secondary capacity scopes reachable in the tooltip at every height.
+    for detail in [&native_breakdown, &reclaimable_note].into_iter().flatten() {
+        accounting_note.push('\n');
+        accounting_note.push_str(detail);
+    }
     let label = widgets::eyebrow(
         if startup_group {
             "Startup disk ⓘ"
@@ -5008,34 +5036,23 @@ fn disk_section(
                 .child(div().flex_1())
                 .child(format!("{} total", human_bytes(space_info.total))),
         )
-        .children(space_info.native_used().map(|used| {
-            let scope = if startup_group {
-                "System + Data"
-            } else {
-                "volume"
-            };
-            let breakdown =
-                space_info.display_used().checked_sub(used).map_or_else(
-                    || format!("{} {scope}", human_bytes(used)),
-                    |other| {
-                        format!(
-                            "{} {scope} · {} other used",
-                            human_bytes(used),
-                            human_bytes(other)
-                        )
-                    },
-                );
-            div()
-                .text_size(text::CAPTION)
-                .text_color(theme.secondary)
-                .child(breakdown)
-        }))
-        .children(widgets::reclaimable_capacity_note(space_info).map(|note| {
-            div()
-                .text_size(text::CAPTION)
-                .text_color(theme.secondary)
-                .child(note)
-        }))
+        .when(!compact, |section| {
+            section
+                .children(native_breakdown.map(|breakdown| {
+                    div()
+                        .debug_selector(|| "disk-native-usage".into())
+                        .text_size(text::CAPTION)
+                        .text_color(theme.secondary)
+                        .child(breakdown)
+                }))
+                .children(reclaimable_note.map(|note| {
+                    div()
+                        .debug_selector(|| "disk-reclaimable".into())
+                        .text_size(text::CAPTION)
+                        .text_color(theme.secondary)
+                        .child(note)
+                }))
+        })
         .children(freed_since_scan(app, theme))
 }
 
