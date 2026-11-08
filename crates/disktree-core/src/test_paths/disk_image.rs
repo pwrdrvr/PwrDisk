@@ -522,10 +522,11 @@ fn fail_eject(_: &Path, _: bool) -> Result<(), String> {
 fn default_mount_uses_system_scratch_without_moving_the_backing() {
     use std::os::unix::fs::MetadataExt as _;
 
-    let image = Image::blank(None);
+    let mut image = Image::blank(None);
     let mount_device = fs::metadata(image.root()).expect("mount point").dev();
     let backing_device = fs::metadata(image.backing()).expect("backing").dev();
-    image.close();
+    image.detach();
+    drop(image);
     assert_eq!(
         mount_device,
         fs::metadata("/tmp").expect("system scratch").dev(),
