@@ -319,7 +319,7 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
 | which display a new window opens on | `crates/disktree-app/src/placement.rs` |
 | the menu bar, its shortcuts, the strip's menu off macOS | `crates/disktree-app/src/app_menu.rs`, the dropdown in `views.rs` |
 | Help's rows, Copy Diagnostics Info | `crates/disktree-app/src/help.rs`, the report in `diagnostics.rs` |
-| Settings (Updates, Safety, Agents (MCP), Diagnostics, About) | `crates/disktree-app/src/settings.rs` |
+| Settings (General, Updates, Safety, Agents (MCP), Diagnostics, About) | `crates/disktree-app/src/settings.rs` |
 | Changelog, License, Third-Party Notices, Logs windows | `doc_window.rs`, `logs_window.rs`, framed by `aux_window.rs` |
 | what goes in `main.log`, and where it lives | `crates/disktree-app/src/diag_log.rs` — never a scanned path |
 | `THIRD_PARTY_LICENSES` | `cargo xtask licenses` (cargo-about), then commit it; non-crate parts in `licenses/bundled.txt` |

@@ -201,6 +201,11 @@ harness." Copy only the PNGs to short temporary attachment paths. Never
 commit screenshots or the image. Attach with `gh --attach` below and fetch
 every resulting URL; an upload can silently return 404.
 
+`scripts/screenshots/size-units.json` captures the platform default, an
+explicit binary override, and Settings › General. Its `size_units` setup
+changes only the offscreen process; `settings` opens another TestWindow,
+with saving disabled. Neither reads nor writes the saved size preference.
+
 ## When this needs the lab or the operator
 
 Native accessibility, VoiceOver, OS dialogs, window chrome behavior and

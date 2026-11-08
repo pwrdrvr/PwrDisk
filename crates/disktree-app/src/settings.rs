@@ -1,8 +1,7 @@
 //! The Settings window: its own window, one at a time, as in PwrRoute,
 //! PwrGit and PwrSnap. A nav on the left and panes of cards: Updates,
-//! Safety, Agents (MCP), Diagnostics and About. No General pane until
-//! there is something to put in it: Power Efficiency and the view settings
-//! stay in the strip, where they are used. Design: "Menus and Help
+//! General, Safety, Agents (MCP), Diagnostics and About. Power Efficiency
+//! and the view settings stay in the strip, where they are used. Design: "Menus and Help
 //! Windows" in the PwrDisk Claude Design project, turn 3; Agents (MCP) in
 //! "Notices, Sticky Headers and Agents (MCP)", as PwrSnap's Local Agents.
 //!
@@ -14,6 +13,7 @@
 use crate::semantics::{AccessibleButton as _, text as readable};
 use disktree_core::path_style::PathStyle;
 use disktree_core::removal_limit::Limit;
+use disktree_core::size::{self as sizes, SizeUnits};
 
 use crate::safety::Confirm;
 use std::path::PathBuf;
@@ -81,6 +81,7 @@ const SPEC: Spec = Spec {
 /// The nav's sections, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
+    General,
     Updates,
     Diagnostics,
     Safety,
@@ -89,7 +90,8 @@ pub enum Pane {
 }
 
 impl Pane {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
+        Self::General,
         Self::Updates,
         Self::Safety,
         Self::Agents,
@@ -99,6 +101,7 @@ impl Pane {
 
     pub const fn label(self) -> &'static str {
         match self {
+            Self::General => "General",
             Self::Updates => "Updates",
             Self::Diagnostics => "Diagnostics",
             Self::Safety => "Safety",
@@ -111,7 +114,9 @@ impl Pane {
     /// them: what PwrDisk does, then help with it.
     pub const fn group(self) -> &'static str {
         match self {
-            Self::Updates | Self::Safety | Self::Agents => "App",
+            Self::General | Self::Updates | Self::Safety | Self::Agents => {
+                "App"
+            }
             Self::Diagnostics | Self::About => "Support",
         }
     }
@@ -119,6 +124,7 @@ impl Pane {
     /// The nav item's element id.
     pub const fn nav_id(self) -> &'static str {
         match self {
+            Self::General => "settings-nav-general",
             Self::Updates => "settings-nav-updates",
             Self::Diagnostics => "settings-nav-diagnostics",
             Self::Safety => "settings-nav-safety",
@@ -131,11 +137,11 @@ impl Pane {
 pub fn install(cx: &mut App) {
     cx.on_action(|_: &OpenSettings, cx| {
         // Settings… reopens on the pane last shown; a first open starts on
-        // Updates, the one with something to set.
+        // General.
         cx.defer(|cx| {
             let pane = aux_window::find::<SettingsWindow>(cx, |_| true)
                 .and_then(|handle| handle.read(cx).ok().map(|view| view.pane))
-                .unwrap_or(Pane::Updates);
+                .unwrap_or(Pane::General);
             open(pane, cx);
         });
     });
@@ -498,6 +504,7 @@ impl Render for SettingsWindow {
             );
         }
         let pane = match self.pane {
+            Pane::General => self.general(&theme, window, cx),
             Pane::Updates => self.updates(&theme, cx),
             Pane::Diagnostics => self.diagnostics_pane(&theme, cx),
             Pane::Safety => self.safety_pane(&theme, window, cx),
@@ -596,6 +603,78 @@ const AGENTS: &str = "Agents over MCP stop at the limit, at 5% when it is \
 // ── panes ───────────────────────────────────────────────────────────────
 
 impl SettingsWindow {
+    /// Apply immediately in every window; a failed save is session-only.
+    pub fn pick_size_units(
+        &mut self,
+        units: SizeUnits,
+        cx: &mut Context<'_, Self>,
+    ) {
+        sizes::set_units(units);
+        self.note = self
+            .updates_dir
+            .as_deref()
+            .ok_or_else(|| "no settings directory".to_owned())
+            .and_then(|dir| {
+                disktree_core::size_preferences::save(
+                    &dir.join(disktree_core::size_preferences::FILE_NAME),
+                    units,
+                )
+                .map_err(|error| error.to_string())
+            })
+            .err()
+            .map(|error| {
+                format!("Size units apply until PwrDisk quits: {error}")
+            });
+        cx.refresh_windows();
+        cx.notify();
+    }
+
+    fn general(
+        &self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Div {
+        let entity = cx.entity().downgrade();
+        let picker =
+            div()
+                .debug_selector(|| "size-units".into())
+                .child(button_group(
+                    "size-units",
+                    SizeUnits::ALL
+                        .into_iter()
+                        .map(|units| {
+                            ChoiceItem::new(units.key(), units.label())
+                        })
+                        .collect(),
+                    SizeUnits::ALL
+                        .iter()
+                        .position(|&units| units == sizes::units()),
+                    move |index, window, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            this.pick_size_units(SizeUnits::ALL[index], cx);
+                            window.focus(&this.focus, cx);
+                        });
+                    },
+                    window,
+                    cx,
+                ));
+        let platform = if cfg!(target_os = "macos") {
+            "Platform default on macOS: Decimal."
+        } else {
+            "Platform default on Windows and Linux: Binary."
+        };
+        div().flex().flex_col().gap(space::LG)
+            .child(head("PwrDisk", "General", "How sizes appear throughout PwrDisk.", None, theme))
+            .child(card("Display", None, theme)
+                .child(field("Size units", Some("Applies to sizes and reports. Byte measurements stay the same."), vec![picker.into_any_element()], theme))
+                .child(field("Units", Some(platform), vec![
+                    value_text("Decimal: 1 kB = 1,000 bytes; MB, GB, TB.".to_owned()),
+                    value_text("Binary: 1 KiB = 1,024 bytes; MiB, GiB, TiB.".to_owned()),
+                ], theme)))
+            .children(self.note.as_deref().map(|note| alert_note(note, theme)))
+    }
+
     fn safety_pane(
         &self,
         theme: &Theme,

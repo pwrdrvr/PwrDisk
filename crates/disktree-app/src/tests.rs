@@ -12018,3 +12018,56 @@ fn the_only_pill_switches_kinds_and_the_tooltip_stays_clear(
         assert!(chip.contains(&only.center()), "hover follows hit testing");
     }
 }
+
+/// The preference changes a live Settings window and every formatter, and
+/// a restart reads the same pick. Process isolation keeps concurrent tests'
+/// historical binary fixtures independent of this application's choices.
+#[gpui_kit::test]
+fn size_units_settings_apply_and_save_every_choice(cx: &mut TestAppContext) {
+    use crate::settings::{Pane, SettingsWindow};
+    use disktree_core::{
+        size::{self as sizes, SizeUnits},
+        size_preferences,
+    };
+    const CHILD: &str = "PWRDISK_SIZE_SETTINGS_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(
+            std::env::current_exe().expect("test binary"),
+        )
+        .args([
+            "--exact",
+            "tests::size_units_settings_apply_and_save_every_choice",
+        ])
+        .env(CHILD, "1")
+        .status()
+        .expect("settings process");
+        assert!(status.success());
+        return;
+    }
+    cx.update(init);
+    let dir = tempfile::tempdir().expect("settings directory");
+    let (settings, cx) = cx.add_window_view(|_, cx| {
+        let mut view = SettingsWindow::new(Pane::General, cx);
+        view.updates_dir = Some(dir.path().to_path_buf());
+        view
+    });
+    for units in SizeUnits::ALL {
+        settings.update(cx, |settings, cx| settings.pick_size_units(units, cx));
+        draw(cx);
+        assert_eq!(sizes::units(), units);
+        assert_eq!(sizes::human_bytes(1_000_000), units.format(1_000_000));
+        assert_eq!(
+            disktree_mcp::report::observed(Some(1_000_000)),
+            format!("+{}", units.format(1_000_000)),
+        );
+        assert_eq!(
+            size_preferences::load(
+                &dir.path().join(size_preferences::FILE_NAME)
+            )
+            .expect("restart"),
+            units
+        );
+        assert!(settings.read_with(cx, |settings, _| settings.note.is_none()));
+        assert!(cx.debug_bounds("size-units").is_some());
+    }
+}

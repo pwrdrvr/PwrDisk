@@ -182,6 +182,7 @@ fn main() -> Result<()> {
 }
 
 fn run() -> Result<()> {
+    disktree_core::size_preferences::initialize();
     // `pwrdisk mcp` is the agent's disktree: it scans and marks over stdin
     // and stdout and opens no window of its own, though it may open one for
     // the review screen.
