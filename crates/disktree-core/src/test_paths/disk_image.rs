@@ -32,6 +32,7 @@ fn settle() {
 pub struct Image {
     temp: Option<tempfile::TempDir>,
     mount: Option<PathBuf>,
+    mount_temp: Option<tempfile::TempDir>,
     mounted: bool,
     device: Option<PathBuf>,
     volume: Option<PathBuf>,
@@ -235,6 +236,13 @@ impl Image {
         let mut image = Self {
             temp: Some(tempfile::tempdir().expect("private image directory")),
             mount,
+            // External scratch can have ownership disabled. Disk Arbitration
+            // then requires administrator approval for each custom mount.
+            // Only the empty placeholder lives here; all payload remains in
+            // the image backing file on the configured scratch volume.
+            mount_temp: Some(
+                tempfile::tempdir_in("/tmp").expect("private mount directory"),
+            ),
             // Formatting and attaching can leave a partial attachment even
             // on failure. Only an authoritative query permits file removal.
             mounted: true,
@@ -301,9 +309,9 @@ impl Image {
 
     pub(crate) fn root(&self) -> PathBuf {
         self.mount.clone().unwrap_or_else(|| {
-            self.temp
+            self.mount_temp
                 .as_ref()
-                .expect("image directory")
+                .expect("mount directory")
                 .path()
                 .join("mount")
         })
@@ -510,8 +518,45 @@ fn fail_eject(_: &Path, _: bool) -> Result<(), String> {
     Err("injected detach failure".into())
 }
 
+#[test]
+fn default_mount_uses_system_scratch_without_moving_the_backing() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let image = Image::blank(None);
+    let mount_device = fs::metadata(image.root()).expect("mount point").dev();
+    let backing_device = fs::metadata(image.backing()).expect("backing").dev();
+    image.close();
+    assert_eq!(
+        mount_device,
+        fs::metadata("/tmp").expect("system scratch").dev(),
+        "mount placeholders must not inherit an external TMPDIR's policy"
+    );
+    assert_eq!(
+        backing_device,
+        fs::metadata(std::env::temp_dir())
+            .expect("configured scratch")
+            .dev(),
+        "image payload must stay on the configured scratch volume"
+    );
+}
+
 fn check_interrupted_setup(stages: u8) -> Result<(), TestCaseError> {
+    use std::os::unix::fs::MetadataExt as _;
+
     let mut image = Image::blank(None);
+    // The setup model must preserve the separation at every stage, including
+    // an unformatted attachment and a mounted volume whose device differs.
+    let mount_parent = image.root().parent().expect("mount parent").to_owned();
+    prop_assert_eq!(
+        fs::metadata(mount_parent).expect("mount directory").dev(),
+        fs::metadata("/tmp").expect("system scratch").dev(),
+    );
+    prop_assert_eq!(
+        fs::metadata(image.backing()).expect("backing").dev(),
+        fs::metadata(std::env::temp_dir())
+            .expect("configured scratch")
+            .dev(),
+    );
     let entries = owned_entities(&image.backing())
         .expect("owned raw attachment")
         .expect("attached backing file");
@@ -600,6 +645,7 @@ fn check_retained_backing(eject: fn(&Path, bool) -> Result<(), String>) {
     let image = Image {
         temp: Some(temp),
         mount: None,
+        mount_temp: None,
         mounted: true,
         device: None,
         volume: None,
@@ -669,6 +715,10 @@ proptest! {
     ) {
         let temp = tempfile::tempdir().expect("cleanup model");
         let retained = temp.path().to_owned();
+        let mount_temp = tempfile::tempdir_in("/tmp").expect("mount model");
+        let mount_retained = mount_temp.path().to_owned();
+        fs::write(mount_retained.join("must-survive"), b"mounted stand-in")
+            .expect("mount sentinel");
         fs::write(retained.join("oracle.sparseimage"), [
             1, if normal_detached { 0 } else { 2 },
             if forced_detached { 0 } else { 2 },
@@ -686,6 +736,7 @@ proptest! {
         let image = Image {
             temp: Some(temp),
             mount: None,
+            mount_temp: Some(mount_temp),
             mounted: true,
             device: None,
             volume: None,
@@ -715,9 +766,15 @@ proptest! {
         prop_assert_eq!(retained.join("oracle.sparseimage").exists(),
             !attachment_known || !(normal_detached || forced_detached
                 || retirement_detached || final_detached));
+        prop_assert_eq!(mount_retained.join("must-survive").exists(),
+            retained.exists(), "uncertain mounts must not be traversed");
         if retained.exists() {
             fs::remove_dir_all(retained)
                 .expect("remove the unmounted stand-in");
+        }
+        if mount_retained.exists() {
+            fs::remove_dir_all(mount_retained)
+                .expect("remove the unmounted mount stand-in");
         }
     }
 }
@@ -816,6 +873,7 @@ fn check_external_detachment(
     let mut image = Image {
         temp: Some(temp),
         mount: None,
+        mount_temp: None,
         mounted: true,
         device: cached_device.clone(),
         volume: None,
@@ -971,6 +1029,7 @@ fn check_delayed_release(
     let mut image = Image {
         temp: Some(temp),
         mount: None,
+        mount_temp: None,
         mounted: true,
         device: None,
         volume: None,
@@ -1066,6 +1125,12 @@ impl Drop for Image {
             // TempDir would recurse into a still-mounted volume. Retain the
             // backing directory, and never turn an assertion into an abort.
             let retained = self.temp.take().expect("image directory").keep();
+            if let Some(mount) = self.mount_temp.take() {
+                eprintln!(
+                    "mount directory retained at {}",
+                    mount.keep().display()
+                );
+            }
             eprintln!(
                 "{error}\nprivate APFS image retained at {}",
                 retained.display()

@@ -158,6 +158,14 @@ frees 2 MiB, and marks that forget an earlier removal inside them.
   - Pure properties: 256 cases, and a test under about a second in debug.
   - Real-filesystem oracles: 32 to 64 cases. Disk images (`hdiutil`) cost
     about a second each, so gate them to macOS and keep them few.
+- **Separate image storage from its mount placeholder on macOS.** Keep
+  `TMPDIR` on the volume with room for the sparse backing file. The owned
+  image helper puts its empty mount placeholder under `/tmp`: an external
+  volume with ownership disabled can require a password for every custom
+  `diskutil mount`, exhausting the native command's 30-second deadline.
+  Writes through the mounted image still allocate in its backing file,
+  not on `/tmp`'s volume. Keep the session unlocked for native mount checks.
+  A timeout remains a failure; never extend it or skip an oracle to pass.
   - Raise `PROPTEST_CASES` locally when hunting.
 - **Don't commit replay files.** Set `failure_persistence: None` in the
   `ProptestConfig` so a failure writes no `proptest-regressions/` file.
