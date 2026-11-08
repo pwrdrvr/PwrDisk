@@ -1,0 +1,10 @@
+   Compiling sha2 v0.10.9
+   Compiling chrono v0.4.45
+   Compiling sysinfo v0.31.4
+   Compiling rustc-hash v2.1.3
+   Compiling disktree-core v0.21.0 (${WORKSPACE}/crates/disktree-core)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 33.57s
+real 33.64
+user 59.76
+sys 2.98
+time: sysctl kern.clockrate: Operation not permitted
