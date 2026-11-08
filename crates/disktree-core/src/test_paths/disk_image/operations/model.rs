@@ -15,7 +15,7 @@ enum State {
     Unknown,
 }
 
-fn state(value: u8) -> State {
+const fn state(value: u8) -> State {
     match value {
         0..=2 => State::Attached(value),
         3 => State::Gone,
@@ -137,19 +137,9 @@ fn check(
     let backing = model.backing.clone();
     let root = model.root.clone();
     let result = if checkpointing {
-        // Setup remembered volume 0, whose number can since have been reused.
-        super::checkpoint(&root, &device(0, true), &mut model)
+        super::checkpoint(&root, &backing, &mut model)
     } else {
-        // release_backing resolves this once before the forced pair today.
-        let outcome = match model.owned(&backing) {
-            Ok(Some(entries)) => {
-                let target = super::super::cleanup_device(&entries)
-                    .expect("owned cleanup disk");
-                super::eject(&target, force, &mut model)
-            }
-            Ok(None) => Ok(()),
-            Err(error) => Err(error),
-        };
+        let outcome = super::eject(&backing, force, &mut model);
         outcome.map(|()| Output {
             status: ExitStatus::from_raw(0),
             stdout: Vec::new(),
@@ -173,13 +163,13 @@ fn check(
             .into(),
             device(number, checkpointing),
         ));
-        if (checkpointing && !errors[0]) || (!checkpointing && force) {
-            if let State::Attached(next) = states[1] {
-                expected.push((
-                    if checkpointing { "mount" } else { "detach" }.into(),
-                    device(next, checkpointing),
-                ));
-            }
+        if ((checkpointing && !errors[0]) || (!checkpointing && force))
+            && let State::Attached(next) = states[1]
+        {
+            expected.push((
+                if checkpointing { "mount" } else { "detach" }.into(),
+                device(next, checkpointing),
+            ));
         }
     }
     prop_assert!(model.violations.is_empty(), "{:?}", model.violations);
@@ -188,6 +178,14 @@ fn check(
         let read = expected.len() == 2 && !errors[1] && states[1] == states[2];
         prop_assert_eq!(model.reads, usize::from(read));
         prop_assert_eq!(result.is_ok(), read);
+    } else if states[0] == State::Unknown
+        || (force && !expected.is_empty() && states[1] == State::Unknown)
+    {
+        prop_assert!(result.is_err(), "unknown ownership must fail cleanup");
+    } else if states[0] == State::Gone
+        || (force && !expected.is_empty() && states[1] == State::Gone)
+    {
+        prop_assert!(result.is_ok(), "observed detachment is sufficient");
     }
     Ok(())
 }
@@ -212,6 +210,39 @@ fn forced_eject_rechecks_after_unmount_removes_the_attachment() {
         true,
     )
     .expect("the former device now belongs to an unrelated image");
+}
+
+#[test]
+fn a_failed_unmount_can_release_its_device_number() {
+    check(
+        [State::Attached(0), State::Gone, State::Gone],
+        [true, false],
+        false,
+        true,
+    )
+    .expect("command failure cannot authorize acting on the old number");
+}
+
+#[test]
+fn forced_detachment_uses_the_new_owned_device_number() {
+    check(
+        [State::Attached(0), State::Attached(1), State::Gone],
+        [false; 2],
+        false,
+        true,
+    )
+    .expect("the same backing file can be attached under a new number");
+}
+
+#[test]
+fn a_disappeared_image_cannot_measure_the_mountpoints_host_volume() {
+    check(
+        [State::Attached(0), State::Attached(0), State::Gone],
+        [false; 2],
+        true,
+        false,
+    )
+    .expect("df must not fall through to the host filesystem");
 }
 
 proptest! {

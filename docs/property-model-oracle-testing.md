@@ -166,6 +166,11 @@ frees 2 MiB, and marks that forget an earlier removal inside them.
   Writes through the mounted image still allocate in its backing file,
   not on `/tmp`'s volume. Keep the session unlocked for native mount checks.
   A timeout remains a failure; never extend it or skip an oracle to pass.
+  Resolve ownership from the exact backing file before each native substep,
+  including between unmount and remount or forced detach. Device numbers
+  remembered during setup are only bookkeeping. The ownership model gives
+  vacated numbers to unrelated images and checks that no command targets
+  them; the native checkpoint verifies the owned mount before reading space.
   - Raise `PROPTEST_CASES` locally when hunting.
 - **Don't commit replay files.** Set `failure_persistence: None` in the
   `ProptestConfig` so a failure writes no `proptest-regressions/` file.
