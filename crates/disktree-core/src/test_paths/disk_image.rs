@@ -1,6 +1,7 @@
 //! Owned, serialized disk images for macOS filesystem oracles.
 
 mod command;
+mod operations;
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -172,24 +173,7 @@ fn only_child(entries: &[serde_json::Value], parent: &Path) -> PathBuf {
 }
 
 fn eject(root: &Path, force: bool) -> Result<(), String> {
-    if force {
-        // Release the chosen whole disk's volumes before native detach.
-        let unmount = run(Command::new("diskutil")
-            .args(["unmountDisk", "force"])
-            .arg(root));
-        // DiskImages owns the attachment and its helper process. Let its
-        // native detach finish cleanup after Disk Arbitration unmounts APFS;
-        // debug output preserves the reason if the device remains busy.
-        return run(Command::new("hdiutil")
-            .args(["detach", "-force", "-debug"])
-            .arg(root))
-        .map(|_| ())
-        .map_err(|detach| match unmount {
-            Ok(_) => detach,
-            Err(unmount) => format!("{unmount}\n{detach}"),
-        });
-    }
-    run(Command::new("diskutil").arg("eject").arg(root)).map(|_| ())
+    operations::eject(root, force, &mut operations::Native)
 }
 
 fn run(command: &mut Command) -> Result<Output, String> {
@@ -488,19 +472,12 @@ impl Image {
         // Keep the image attached: ejecting its physical store for every
         // reading needlessly tears down the whole APFS container.
         let volume = self.volume.as_ref().expect("attached APFS volume");
-        checked(
-            Command::new("diskutil")
-                .args(["unmount", "force"])
-                .arg(volume),
-        );
-        fs::create_dir_all(self.root()).expect("restore private mount point");
-        checked(
-            Command::new("diskutil")
-                .args(["mount", "nobrowse", "-mountPoint"])
-                .arg(self.root())
-                .arg(volume),
-        );
-        let output = checked(Command::new("df").arg("-kP").arg(self.root()));
+        let output = operations::checkpoint(
+            &self.root(),
+            volume,
+            &mut operations::Native,
+        )
+        .expect("checkpoint private APFS volume");
         let text = String::from_utf8(output.stdout).expect("df output");
         text.lines()
             .nth(1)
