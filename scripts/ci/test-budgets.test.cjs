@@ -25,7 +25,7 @@ function budget(jobName, runner) {
     /timeout-minutes: \$\{\{ matrix\.test_timeout \}\}/);
   const compile = steps.slice(0, testIndex).find(step => /--no-run/.test(step));
   const fixtureIndex = steps.findIndex(step =>
-    /cargo test -p disktree-core test_paths::disk_image\b/.test(step));
+    /run: cargo test -p disktree-core test_paths::disk_image\b/.test(step));
   const fixtureLimit = fixtureIndex < 0 ? 0 : Number(
     steps[fixtureIndex].match(/timeout-minutes: (\d+)/)?.[1]);
   if (compile && runner) {
@@ -41,7 +41,13 @@ function budget(jobName, runner) {
     /cargo build -p xtask(?:\n|$)/,
     /cargo test --workspace --no-run(?:\n|$)/,
   ].every(command => command.test(compile));
-  const warmFixture = warm && steps.indexOf(compile) < fixtureIndex;
+  const fixtureCommand = steps[fixtureIndex]?.split('run: ')[1]
+    ?.split('\n')[0].split(' -- ')[0];
+  // Workspace feature unification can produce a different test binary.
+  // Warm the exact package invocation used by the lifecycle execution step.
+  const warmFixture = compile && steps.indexOf(compile) < fixtureIndex &&
+    compile.split('\n').some(line =>
+      line.trim() === `${fixtureCommand} --no-run`);
   function completion(buildMinutes, testMinutes, fixtureMinutes = 0,
     coreBuildMinutes = 0) {
     // Core compilation is part of the total build workload. A fixture
@@ -115,8 +121,14 @@ test('Apple silicon compilation leaves room for every test suite', () => {
 
 for (const [platform, config] of [['Intel', intel], ['Apple silicon', arm]]) {
   const {compileLimit, testLimit, jobLimit, completion, fixtureLimit} = config;
-  test(`${platform}: fixture failures surface before workspace compilation`, () => {
-    assert.ok(config.isolatedFixture);
+  test(`${platform}: fixtures are isolated from the full workspace test gate`, () => {
+    assert.ok(config.fixtureBeforeGate);
+    if (platform === 'Intel') {
+      assert.ok(config.warmFixture,
+        'compile the lifecycle binary before starting its execution deadline');
+    } else {
+      assert.ok(config.isolatedFixture);
+    }
   });
 
   test(`${platform}: isolated fixture and cold test gate fit the job`, () => {

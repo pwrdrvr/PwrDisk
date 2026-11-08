@@ -407,19 +407,21 @@ jobs:
 
       - uses: ./.github/actions/setup-rust
 
-      - name: APFS image lifecycle
-        if: matrix.runner == 'macos-15-intel'
-        timeout-minutes: 10
-        run: cargo test -p disktree-core test_paths::disk_image -- --test-threads=1
-
       # A cold Intel build took 11 minutes before the APFS oracles started.
-      # Give compilation its own deadline, preserving the execution budget.
+      # Compile before either test step so neither spends its execution
+      # budget building core. Both execution deadlines stay unchanged.
       - name: Compile Intel macOS tests
         if: matrix.runner == 'macos-15-intel'
         timeout-minutes: 15
         run: |
           cargo build -p xtask
           cargo test --workspace --no-run
+          cargo test -p disktree-core test_paths::disk_image --no-run
+
+      - name: APFS image lifecycle
+        if: matrix.runner == 'macos-15-intel'
+        timeout-minutes: 10
+        run: cargo test -p disktree-core test_paths::disk_image -- --test-threads=1
 
       - name: Test
         timeout-minutes: ${{ matrix.test_timeout }}
