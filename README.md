@@ -175,7 +175,9 @@ removal tool. Approval to mark never authorizes removal. Agents must never
 approve through computer use. Trash may be recoverable until emptied;
 permanent deletion cannot be undone through PwrDisk. Settings > Safety
 limits each operation to 5% of each volume's capacity by default. If a PwrDisk window is open, you both look at the
-same map and its marks show up as the agent makes them. More in
+same map and its marks show up as the agent makes them. MCP confirmation
+can also reach you through PwrAgent messaging; see the
+[approval and client contract](docs/mcp-approval.md). More in
 [the guide](docs/guide.md#with-an-ai-agent).
 
 ## What PwrDisk will not delete

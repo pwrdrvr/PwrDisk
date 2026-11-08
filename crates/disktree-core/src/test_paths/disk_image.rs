@@ -379,7 +379,23 @@ impl Image {
         self.try_detach().expect("detach private APFS image");
     }
 
+    fn detach_externally(&self) -> Result<(), String> {
+        // External-removal tests need a detached backing image with stale
+        // bookkeeping. Establish that through the same owned lifecycle as
+        // cleanup: a forced eject of the cached physical store can be busy
+        // until its synthesized APFS container has retired.
+        self.release_backing()
+    }
+
     fn try_detach(&mut self) -> Result<(), String> {
+        self.release_backing()?;
+        self.mounted = false;
+        self.device = None;
+        self.volume = None;
+        Ok(())
+    }
+
+    fn release_backing(&self) -> Result<(), String> {
         // Device numbers can disappear or be reused. Resolve ownership from
         // the backing path before each operation, including after an error:
         // a command's exit status alone does not say whether it detached.
@@ -450,9 +466,6 @@ impl Image {
                 device.display(),
             ));
         }
-        self.mounted = false;
-        self.device = None;
-        self.volume = None;
         Ok(())
     }
 
@@ -790,6 +803,66 @@ fn eject_then_report_failure(root: &Path, force: bool) -> Result<(), String> {
     Err("injected error after successful device removal".into())
 }
 
+fn check_external_detachment(
+    busy_observations: usize,
+) -> Result<(), TestCaseError> {
+    let temp = tempfile::tempdir().expect("external detach model");
+    let backing = temp.path().join("oracle.sparseimage");
+    let mut states = vec![1, 1, 1, 2];
+    states.extend(std::iter::repeat_n(2, busy_observations));
+    states.extend([0, 0, 0]);
+    fs::write(&backing, states).expect("attachment observations");
+    let cached_device = Some(PathBuf::from("/dev/disk999997"));
+    let mut image = Image {
+        temp: Some(temp),
+        mount: None,
+        mounted: true,
+        device: cached_device.clone(),
+        volume: None,
+        eject: fail_eject,
+        attachment: model_attachment,
+        retire: |_| Ok(()),
+        settle: || {},
+        _guard: IMAGES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    };
+    let external = image.detach_externally();
+    let cached_state = (image.mounted, image.device.clone());
+    let detached = external.is_ok().then(|| model_attachment(&backing));
+    // Clean the stand-in before asserting so a pre-fix failure is safe too.
+    let cleanup = image.try_detach();
+    drop(image);
+    prop_assert!(external.is_ok(), "external setup: {external:?}");
+    prop_assert_eq!(detached, Some(Ok(None)));
+    prop_assert_eq!(cached_state, (true, cached_device));
+    prop_assert!(cleanup.is_ok(), "already detached cleanup: {cleanup:?}");
+    prop_assert!(
+        !backing.exists(),
+        "confirmed detachment releases the fixture"
+    );
+    Ok(())
+}
+
+#[test]
+fn external_detachment_handles_a_busy_physical_device() {
+    check_external_detachment(1)
+        .expect("external setup releases the owned image");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 32, failure_persistence: None, ..ProptestConfig::default()
+    })]
+
+    // Setup must establish observed detachment without changing the cached
+    // Image state, even when APFS keeps its physical store busy until retirement.
+    #[test]
+    fn external_detachment_preserves_stale_bookkeeping(busy_observations in 0_usize..6) {
+        check_external_detachment(busy_observations)?;
+    }
+}
+
 fn check_already_ejected(
     checkpoints: usize,
     reported_error: bool,
@@ -804,21 +877,19 @@ fn check_already_ejected(
     if reported_error {
         image.eject = eject_then_report_failure;
     } else {
-        // Intel can keep the physical store busy after a checkpoint. Use
-        // bounded, ownership-checked cleanup to establish detachment, then
-        // restore the stale cache that the next cleanup must not trust.
-        let cached =
-            (image.mounted, image.device.clone(), image.volume.clone());
-        image.detach();
-        (image.mounted, image.device, image.volume) = cached;
+        image
+            .detach_externally()
+            .expect("externally eject our private image");
     }
     let outcome = image.try_detach();
     drop(image);
-    if backing.exists() {
-        fs::remove_dir_all(backing.parent().expect("private directory"))
-            .expect("remove already detached backing files");
-    }
+    // Drop retains a backing file when ownership cannot prove detachment.
+    // Never recursively remove that retained directory to rescue a test.
     prop_assert!(outcome.is_ok(), "already detached image: {outcome:?}");
+    prop_assert!(
+        !backing.exists(),
+        "confirmed detachment removes the backing file"
+    );
     Ok(())
 }
 
@@ -832,6 +903,11 @@ fn an_already_ejected_image_after_one_checkpoint_is_successful_cleanup() {
     // The Intel CI property's minimal failure was fixture setup after one
     // checkpoint, before it could test the already-detached observation.
     check_already_ejected(1, false).expect("checkpointed image is detached");
+}
+
+#[test]
+fn an_already_ejected_image_after_two_checkpoints_is_successful_cleanup() {
+    check_already_ejected(2, false).expect("Intel CI's detached backing image");
 }
 
 #[test]

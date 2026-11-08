@@ -3,6 +3,22 @@
 What Windows keeps outside a file scan, what PwrDisk refuses, and what to
 leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
 
+## Human approval over MCP
+
+`pwrdisk_remove` asks the connected client for an explicit human decision
+about the exact preview. PwrAgent can present this confirmation over
+messaging. Auto/Full Access and tool arguments never count as consent.
+A replaced selected object, changed resolved parent or changed scan root
+requires a fresh preview and approval; the worker checks again before writes.
+Directory contents remain live. No approval survives a cancelled or expired
+request, and reconnect never replays acceptance. Read
+[the client contract](https://github.com/pwrdrvr/PwrDisk/blob/main/docs/mcp-approval.md).
+
+Approval identifies a selected link or junction itself, including one with
+a missing destination. Changing that destination does not approve its
+contents; replacing the selected link requires a fresh preview. Existing
+home-directory and protected-path guards still apply.
+
 ## Working with the window
 
 On Windows `pwrdisk mcp` connects to an open PwrDisk window over a local

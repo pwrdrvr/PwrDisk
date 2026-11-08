@@ -21,6 +21,7 @@ pub struct PreparedRemoval {
     preview: RemovalPreview,
     /// A cache cleanup's confirmed decisions, run as they were previewed.
     cleanup: Option<disktree_core::cleanup::Approved>,
+    scope: Option<disktree_core::removal::ApprovalScope>,
     marks: Vec<Target>,
     tree: Weak<Tree>,
     created: Instant,
@@ -213,6 +214,7 @@ impl Disktree {
                 consent: String::new(),
             },
             cleanup: None,
+            scope: Some(disktree_core::removal::ApprovalScope::capture(&plan)?),
             marks: self.marks.items().to_vec(),
             tree: Arc::downgrade(tree),
             created: Instant::now(),
@@ -318,6 +320,10 @@ impl Disktree {
         };
         Ok(PreparedRemoval {
             preview,
+            scope: approved
+                .as_ref()
+                .map(|_| disktree_core::removal::ApprovalScope::capture(&plan))
+                .transpose()?,
             cleanup: approved,
             marks: self.marks.items().to_vec(),
             tree: Arc::downgrade(tree),
@@ -401,10 +407,26 @@ impl Disktree {
                 "Removal policy or volume capacity changed; obtain a new preview and user confirmation",
             );
         }
+        let cleanup = prepared.cleanup.clone();
+        let Some(scope) = prepared.scope.clone() else {
+            return Response::error(
+                "No confirmed filesystem scope; obtain a new preview",
+            );
+        };
+        if let Err(reason) = scope.check(&fresh.cleanup.as_ref().map_or_else(
+            || {
+                disktree_core::removal::plan(
+                    self.marks.items(),
+                    &self.root_path,
+                )
+            },
+            |approved| approved.plan.clone(),
+        )) {
+            return Response::error(reason);
+        }
         self.removal_mode = request.mode.mode();
         self.confirm_open = false;
         self.rescan_after_removal = request.rescan;
-        let cleanup = prepared.cleanup.clone();
         // Starting a run associates both UI and MCP runs with this preview.
         if let Some(agent) = &mut self.agent {
             agent.removal_preview = Some(prepared);
@@ -412,7 +434,7 @@ impl Disktree {
         // Held to the agent limit, not the window's: with the window's Off
         // the preview was checked at the agent limit, and growth since must
         // be refused at the same limit.
-        self.begin_agent_removal(cleanup, cx);
+        self.begin_agent_removal(cleanup, scope, cx);
         if self.screen != Screen::Running {
             if let Some(agent) = &mut self.agent {
                 agent.removal_preview = None;
@@ -452,6 +474,7 @@ mod tests {
                 consent: String::new(),
             },
             cleanup: None,
+            scope: None,
             marks: vec![],
             tree: Weak::new(),
             created: Instant::now(),

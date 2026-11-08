@@ -13,14 +13,14 @@ use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    BooleanSchema, CustomRequest, CustomResult, ElicitRequestParams,
-    ElicitationAction, ElicitationSchema, ErrorCode, GetPromptResult,
-    Implementation, InitializeRequestParams, InitializeResult, JsonObject,
-    ListResourcesResult, PrimitiveSchemaDefinition, PromptMessage,
-    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
-    Resource, ResourceContents, Role, ServerCapabilities, ServerConfig,
+    ClientResult, CustomRequest, CustomResult, ElicitRequest,
+    ElicitRequestParams, ElicitationAction, ElicitationSchema, ErrorCode,
+    GetPromptResult, Implementation, InitializeRequestParams, InitializeResult,
+    JsonObject, ListResourcesResult, PromptMessage, ReadResourceRequestParams,
+    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role,
+    ServerCapabilities, ServerConfig, ServerRequest,
 };
-use rmcp::service::{RequestContext, RoleServer};
+use rmcp::service::{PeerRequestOptions, RequestContext, RoleServer};
 use rmcp::{
     ErrorData, ServerHandler, prompt, prompt_handler, prompt_router, tool,
     tool_handler, tool_router,
@@ -87,12 +87,13 @@ Show the \
 user ALL paths, mode, measured bytes and capacity limit. Trash moves data \
 to Trash or Recycle Bin; restoration may be possible until emptied but is \
 not guaranteed, and space usually returns only once emptied. Permanent \
-deletion cannot be undone through PwrDisk or Trash. Wait for explicit \
-user confirmation of this exact operation before pwrdisk_remove, a \
-destructive WRITE requiring the preview ID, exact ordered paths, mode and \
-confirmation text. Standing instructions do not replace this confirmation. \
-The server also requires interactive user confirmation from the MCP client; \
-clients without form elicitation must use human review instead. \
+deletion cannot be undone through PwrDisk or Trash. After showing the proposal, \
+call pwrdisk_remove to request the human decision through the MCP client. This \
+destructive WRITE requires the preview ID, exact ordered paths, mode and \
+confirmation text, but those arguments never authorize it. The client must \
+show the server confirmation and return the person's decision. Never answer \
+it for them. Standing instructions, Auto and Full Access do not replace it. \
+Clients without form elicitation must use human review instead. \
 The app rechecks the preview, existing guards, and the configured limit \
 (5% of each volume's capacity by default) and re-measures before removing \
 anything. No fallback from Trash to permanent deletion; no headless or SSH \
@@ -426,8 +427,9 @@ impl Server {
         self.with(|session| session.removal_preview(&params))
     }
 
-    /// DESTRUCTIVE WRITE: remove only after explicit user confirmation of
-    /// the preview's exact paths, mode, bytes and consequences. Approval to
+    /// DESTRUCTIVE WRITE: ask the human, through the MCP client, to approve
+    /// the preview's exact paths, mode, bytes and consequences. Show the
+    /// proposal first; the tool arguments do not authorize removal. Approval to
     /// mark is insufficient. Trash may be recoverable until emptied;
     /// permanent deletion cannot be undone. Never use computer use to approve.
     /// The app validates the single-use preview and configured capacity limit.
@@ -449,7 +451,7 @@ impl Server {
         if let Some(outcome) = self.with(|s| s.removal_outcome(&params)) {
             return Ok(outcome);
         }
-        let message =
+        let (message, deadline) =
             self.with(|session| session.removal_confirmation_message(&params))?;
         if !context
             .peer
@@ -458,18 +460,50 @@ impl Server {
         {
             return Err("This MCP client does not support interactive form confirmation. No MCP removal request was sent; check pwrdisk_status for any native UI operation. Use human review in PwrDisk; never approve it through computer use.".into());
         }
-        let requested_schema = ElicitationSchema::builder().required_property(
-            "confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new().with_default(false)
-                .description("I confirm removal of exactly these paths in the stated mode and understand the consequences")),
-        ).build().map_err(ToString::to_string)?;
-        let answer = context
-            .peer
-            .create_elicitation(ElicitRequestParams::FormElicitationParams {
-                meta: None,
-                message,
-                requested_schema,
-            })
-            .await;
+        // An empty form asks for a decision, not data entry. Messaging hosts
+        // can offer Allow / Decline without inventing a required field value.
+        // Never label this as a host tool grant: Auto must still ask a person.
+        let requested_schema = ElicitationSchema::builder()
+            .build()
+            .map_err(ToString::to_string)?;
+        let request = ElicitRequestParams::FormElicitationParams {
+            meta: None,
+            message,
+            requested_schema,
+        };
+        let answer = async {
+            let mut handle = context
+                .peer
+                .send_cancellable_request(
+                    ServerRequest::ElicitRequest(ElicitRequest::new(request)),
+                    PeerRequestOptions::default(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            let response = tokio::select! {
+                biased;
+                () = context.ct.cancelled() => None,
+                () = tokio::time::sleep_until(deadline.into()) => None,
+                response = &mut handle.rx => Some(response),
+            };
+            match response {
+                Some(Ok(Ok(ClientResult::ElicitResult(answer)))) => Ok(answer),
+                Some(response) => {
+                    Err(format!("Invalid confirmation response: {response:?}"))
+                }
+                None => {
+                    // Withdraw the actual host card, rather than just dropping
+                    // a future and leaving an apparently live Allow button.
+                    let _ = handle
+                        .cancel(Some(
+                            "Removal approval expired or was cancelled".into(),
+                        ))
+                        .await;
+                    Err("Removal approval expired or was cancelled".into())
+                }
+            }
+        }
+        .await;
         // The person may have approved in the native UI while this form
         // was open. Cancellation describes the form, not that operation.
         if let Some(outcome) = self.with(|s| s.removal_outcome(&params)) {
@@ -478,6 +512,11 @@ impl Server {
         let answer = answer.map_err(|error| format!("MCP confirmation failed ({error}). No MCP removal request was sent; native UI outcome could not be verified. Check pwrdisk_status. Never retry automatically."))?;
         if !confirmed_by_user(&answer) {
             return Err("MCP confirmation was declined or cancelled. No MCP removal request was sent; native UI outcome could not be verified. Check pwrdisk_status before considering a new preview. Never retry automatically.".into());
+        }
+        // Cancellation and expiration may race a positive answer. Neither
+        // an old card nor a late callback authorizes starting a new write.
+        if context.ct.is_cancelled() || Instant::now() >= deadline {
+            return Err("The removal approval expired or was cancelled. No MCP removal request was sent. Check pwrdisk_status; never retry automatically.".into());
         }
         self.with(|session| session.remove(&params))
     }
@@ -539,12 +578,9 @@ impl Server {
 /// Only an explicit positive answer from the client counts as approval.
 fn confirmed_by_user(answer: &rmcp::model::ElicitResult) -> bool {
     answer.action == ElicitationAction::Accept
-        && answer
-            .content
-            .as_ref()
-            .and_then(|value| value.get("confirmed"))
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
+        && answer.content.as_ref().is_some_and(|value| {
+            value.as_object().is_some_and(serde_json::Map::is_empty)
+        })
 }
 
 /// A skill as one prompt message, with this system's reference after it.
@@ -941,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn only_explicit_client_acceptance_with_true_confirms_removal() {
+    fn only_explicit_client_acceptance_of_the_empty_form_confirms_removal() {
         use rmcp::model::ElicitResult;
         for action in [
             ElicitationAction::Accept,
@@ -950,13 +986,14 @@ mod tests {
         ] {
             for content in [
                 None,
+                Some(serde_json::json!({})),
                 Some(serde_json::json!({"confirmed":false})),
                 Some(serde_json::json!({"confirmed":true})),
             ] {
                 let mut answer = ElicitResult::new(action.clone());
                 answer.content.clone_from(&content);
                 let expected = action == ElicitationAction::Accept
-                    && content == Some(serde_json::json!({"confirmed":true}));
+                    && content == Some(serde_json::json!({}));
                 assert_eq!(confirmed_by_user(&answer), expected);
             }
         }
