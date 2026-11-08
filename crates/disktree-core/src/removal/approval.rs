@@ -4,6 +4,14 @@ use std::path::{Path, PathBuf};
 
 use super::{Plan, Target, identity};
 
+#[cfg(windows)]
+use crate::windows::entry_identity;
+
+#[cfg(not(windows))]
+fn entry_identity(path: &Path) -> Option<(u64, u64)> {
+    identity(path, false)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Entry {
     path: PathBuf,
@@ -29,7 +37,7 @@ impl Entry {
                 .parent()
                 .and_then(|parent| identity(parent, true))
                 .ok_or("Cannot identify the approved parent")?,
-            id: identity(path, false)
+            id: entry_identity(path)
                 .ok_or("Cannot identify the approved path")?,
             is_dir: metadata.is_dir(),
             is_link: metadata.file_type().is_symlink(),
@@ -78,38 +86,166 @@ impl ApprovalScope {
         {
             return Err("Removal paths changed after approval; obtain a new preview and human approval".into());
         }
-        for target in &plan.targets {
-            self.check_target(target)?;
+        // Validate the shared root once, then walk the matching ordered
+        // lists. Searching for each entry stalls large selections.
+        if !self.root_unchanged() {
+            return Err(changed(&self.root));
+        }
+        for (entry, target) in self.entries.iter().zip(&plan.targets) {
+            if Entry::read(&target.path).as_ref() != Ok(entry) {
+                return Err(changed(&target.path));
+            }
         }
         Ok(())
     }
 
-    pub(super) fn check_target(&self, target: &Target) -> Result<(), String> {
-        let same_root = self.root.canonicalize().ok().as_ref()
-            == Some(&self.resolved_root)
-            && identity(&self.resolved_root, true) == Some(self.root_id);
-        let same_target = self
-            .entries
-            .iter()
-            .find(|entry| entry.path == target.path)
-            .is_some_and(|entry| {
-                Entry::read(&target.path).as_ref() == Ok(entry)
-            });
-        if same_root && same_target {
+    pub(super) fn check_target(
+        &self,
+        index: usize,
+        target: &Target,
+    ) -> Result<(), String> {
+        // The worker retains the plan's order. Direct indexing avoids a
+        // second quadratic pass while still rechecking identity per write.
+        let same_target = self.entries.get(index).is_some_and(|entry| {
+            entry.path == target.path
+                && Entry::read(&target.path).as_ref() == Ok(entry)
+        });
+        if self.root_unchanged() && same_target {
             Ok(())
         } else {
-            Err(format!(
-                "{} or its scan root changed after preview; obtain a new preview and human approval",
-                target.path.display()
-            ))
+            Err(changed(&target.path))
         }
     }
+
+    fn root_unchanged(&self) -> bool {
+        self.root.canonicalize().ok().as_ref() == Some(&self.resolved_root)
+            && identity(&self.resolved_root, true) == Some(self.root_id)
+    }
+}
+
+fn changed(path: &Path) -> String {
+    format!(
+        "{} or its scan root changed after preview; obtain a new preview and human approval",
+        path.display()
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    fn plan_for(root: &Path, paths: &[PathBuf]) -> Plan {
+        Plan {
+            root: root.to_owned(),
+            targets: paths
+                .iter()
+                .map(|path| Target {
+                    path: path.clone(),
+                    bytes: 0,
+                    is_dir: false,
+                    hidden: false,
+                })
+                .collect(),
+            ..Plan::default()
+        }
+    }
+
+    fn check_dispatch_ordinals(count: usize) -> Result<(), TestCaseError> {
+        let temp = tempfile::tempdir().expect("selection");
+        let paths: Vec<_> = (0..count)
+            .map(|index| temp.path().join(index.to_string()))
+            .collect();
+        for path in &paths {
+            std::fs::write(path, []).expect("selected file");
+        }
+        let plan = plan_for(temp.path(), &paths);
+        let scope = ApprovalScope::capture(&plan).expect("capture");
+        prop_assert!(scope.check(&plan).is_ok());
+        // Dispatch is bound to its original ordinal, so it can check an
+        // entry directly instead of searching the selection again.
+        for (slot, target) in plan.targets.iter().enumerate() {
+            for index in 0..=count {
+                prop_assert_eq!(
+                    scope.check_target(index, target).is_ok(),
+                    slot == index
+                );
+            }
+        }
+        let mut reordered = plan;
+        reordered.targets.rotate_left(1);
+        prop_assert!(scope.check(&reordered).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn dispatch_refuses_a_target_at_another_approved_ordinal() {
+        check_dispatch_ordinals(2).expect("ordinal binding");
+    }
+
+    #[cfg(any(unix, windows))]
+    fn directory_link(path: &Path, destination: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(destination, path).expect("directory link");
+        #[cfg(windows)]
+        assert!(crate::windows::make_junction(path, destination));
+    }
+
+    #[cfg(any(unix, windows))]
+    fn check_link_binding(dangling: bool) -> Result<(), TestCaseError> {
+        let temp = tempfile::tempdir().expect("link fixture");
+        let destination = temp.path().join("destination");
+        let path = temp.path().join("selected-junction");
+        std::fs::create_dir(&destination).expect("destination");
+        directory_link(&path, &destination);
+        let followed = identity(&destination, true).expect("destination id");
+        // Preserve the following identity used by Windows home guards.
+        #[cfg(windows)]
+        prop_assert_eq!(identity(&path, false), Some(followed));
+        if dangling {
+            std::fs::remove_dir(&destination).expect("make dangling");
+        }
+        let plan = plan_for(temp.path(), std::slice::from_ref(&path));
+        let scope =
+            ApprovalScope::capture(&plan).map_err(TestCaseError::fail)?;
+        prop_assert_ne!(scope.entries[0].id, followed);
+        prop_assert!(scope.check(&plan).is_ok());
+        // A change at the destination does not replace the selected link.
+        if !dangling {
+            std::fs::rename(&destination, temp.path().join("old-destination"))
+                .expect("retain destination");
+            std::fs::create_dir(&destination).expect("new destination");
+            prop_assert!(scope.check(&plan).is_ok());
+        }
+        std::fs::rename(&path, temp.path().join("old-junction"))
+            .expect("retain original link identity");
+        directory_link(&path, &destination);
+        prop_assert!(scope.check(&plan).is_err());
+        Ok(())
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_dangling_link_can_be_bound_without_approving_its_destination() {
+        check_link_binding(true).expect("dangling link binding");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 16, failure_persistence: None, ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn dispatch_matches_the_ordered_selection_model(count in 2..12_usize) {
+            check_dispatch_ordinals(count)?;
+        }
+
+        #[cfg(any(unix, windows))]
+        #[test]
+        fn approval_binds_the_link_not_its_destination(dangling in any::<bool>()) {
+            check_link_binding(dangling)?;
+        }
+    }
 
     #[test]
     fn the_worker_refuses_the_whole_batch_if_a_target_was_replaced() {

@@ -1729,7 +1729,7 @@ fn run(
         .or_else(|| {
             plan.approval_scope
                 .as_ref()
-                .and_then(|scope| scope.check_target(target).err())
+                .and_then(|scope| scope.check_target(index, target).err())
         });
         // Sample the scope's own volume, including when it differs from
         // the scan's meter. Its parent remains after a cache root is cleared.

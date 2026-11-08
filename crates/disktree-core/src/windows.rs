@@ -32,8 +32,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN,
     FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_ID_EXTD_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO, FILE_LIST_DIRECTORY,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FileIdExtdDirectoryInfo, FindFirstVolumeW, FindNextVolumeW,
     FindVolumeClose, GetDiskFreeSpaceExW, GetFileInformationByHandleEx,
     GetVolumeInformationW, GetVolumePathNameW,
@@ -478,7 +478,17 @@ fn file_id(id: u128) -> Option<u64> {
 ///
 /// [MS-FSCC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/2d3333fe-fc98-4a6f-98a2-4bb805aff407
 pub fn identity(path: &Path) -> Option<(u64, u64)> {
-    let info = information(path)?;
+    identity_with(path, true)
+}
+
+/// Identity of the selected entry itself, including a dangling reparse
+/// point. Approval must bind the link that removal touches, not its target.
+pub fn entry_identity(path: &Path) -> Option<(u64, u64)> {
+    identity_with(path, false)
+}
+
+fn identity_with(path: &Path, follow: bool) -> Option<(u64, u64)> {
+    let info = information(path, follow)?;
     let index = info.file_index();
     (index != 0 && index != u64::MAX)
         .then(|| (info.volume_serial_number(), index))
@@ -496,14 +506,24 @@ pub fn walk_volume(canonical: &Path) -> Option<u64> {
     if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) {
         return None;
     }
-    information(canonical).map(|info| info.volume_serial_number())
+    information(canonical, true).map(|info| info.volume_serial_number())
 }
 
-/// What the file system says about `path`, following links.
-fn information(path: &Path) -> Option<winapi_util::file::Information> {
+/// Without reparse processing, Windows opens a handle to the link itself.
+/// Following callers keep their existing directory and home-guard identity.
+fn information(
+    path: &Path,
+    follow: bool,
+) -> Option<winapi_util::file::Information> {
+    let flags = FILE_FLAG_BACKUP_SEMANTICS
+        | if follow {
+            0
+        } else {
+            FILE_FLAG_OPEN_REPARSE_POINT
+        };
     let file = OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .custom_flags(flags)
         .open(path)
         .ok()?;
     winapi_util::file::information(&file).ok()

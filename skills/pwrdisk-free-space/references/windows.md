@@ -14,6 +14,11 @@ Directory contents remain live. No approval survives a cancelled or expired
 request, and reconnect never replays acceptance. Read
 [the client contract](https://github.com/pwrdrvr/PwrDisk/blob/main/docs/mcp-approval.md).
 
+Approval identifies a selected link or junction itself, including one with
+a missing destination. Changing that destination does not approve its
+contents; replacing the selected link requires a fresh preview. Existing
+home-directory and protected-path guards still apply.
+
 ## Working with the window
 
 On Windows `pwrdisk mcp` connects to an open PwrDisk window over a local
