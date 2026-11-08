@@ -170,6 +170,12 @@ meter but maps paths to a logical `/`, so the real removal guards apply.
 It never scans the host's root or modifies its system folders. This hook
 requires the owned `/Volumes/Fixtures/Demo` image and is only for pictures.
 
+`disk_capacity` supplies invented raw and native capacity counters (100 GiB
+capacity, 5 GiB raw free, 15 GiB available and 80 GiB System/Data usage).
+It requires the owned Fixtures image and never changes its actual capacity.
+Use it with `system_folders` to compare startup-disk presentation across
+revisions; old versions ignore the optional native counters.
+
 `removal_check` and `removal_refused` render the marked fixture paths in
 preflight and a simulated whole-selection limit refusal. They require the
 owned Fixtures image and never start a removal worker or approve deletion.

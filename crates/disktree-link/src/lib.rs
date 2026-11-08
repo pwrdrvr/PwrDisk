@@ -685,6 +685,28 @@ pub struct Space {
     pub total: u64,
     pub free: u64,
     pub available: u64,
+    /// OS display counters; raw fields retain their protocol meaning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<disktree_core::space::NativeSpace>,
+}
+
+impl Space {
+    pub const fn display_used(self) -> u64 {
+        self.as_core().display_used()
+    }
+
+    pub const fn display_available(self) -> u64 {
+        self.as_core().display_available()
+    }
+
+    const fn as_core(self) -> disktree_core::space::SpaceInfo {
+        disktree_core::space::SpaceInfo {
+            total: self.total,
+            free: self.free,
+            available: self.available,
+            native: self.native,
+        }
+    }
 }
 
 /// What the last removal did, kept until the next one.
@@ -848,6 +870,28 @@ fn decode<T: for<'de> Deserialize<'de>>(line: &str) -> std::io::Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_space_is_optional_and_preserves_raw_protocol_counters() {
+        let old = r#"{"total":100,"free":10,"available":8}"#;
+        let raw: Space = serde_json::from_str(old).expect("old protocol");
+        assert_eq!(raw.display_used(), 90);
+        assert_eq!(raw.display_available(), 8);
+        let native = Space {
+            native: Some(disktree_core::space::NativeSpace {
+                used: Some(70),
+                available: Some(20),
+            }),
+            ..raw
+        };
+        let encoded = serde_json::to_string(&native).expect("encode");
+        let roundtrip: Space = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(roundtrip, native);
+        assert_eq!(roundtrip.free, 10);
+        assert_eq!(roundtrip.available, 8);
+        assert_eq!(roundtrip.display_used(), 70);
+        assert_eq!(roundtrip.display_available(), 20);
+    }
 
     #[cfg(any(unix, windows))]
     #[test]

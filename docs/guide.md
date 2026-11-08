@@ -622,8 +622,21 @@ PwrDisk; the app does not request elevation or install a privileged helper.
 
 What is different from Linux:
 
-- **Free space** is what `df` reports. Finder's figure is larger: it counts
-  purgeable space (caches and local snapshots macOS will clear on its own).
+- **Available space** uses macOS's important-usage capacity, including
+  purgeable space once. If that native counter is unavailable, the meter
+  falls back to raw free space. Used is the OS volume allocation; on the
+  startup disk it includes System and Data together, as Finder does.
+  Auxiliary volumes such as Preboot, Recovery and VM share capacity but
+  are outside that Used figure, so Used + Available need not equal Total.
+  Removal guards and measured recovery still use raw free-block samples.
+  A projection never credits already available purgeable space twice.
+  A scan of `/` includes readable System and Data files, including Data-only
+  contents under `/System/Volumes/Data`; firmlink aliases there are excluded
+  using macOS's `/usr/share/firmlinks` table. Nested mounts remain excluded.
+  An unavailable firmlink table is reported as unreadable. Hover the **ⓘ**
+  beside the disk heading for the accounting scopes. Estimated repeated
+  clone allocation does not turn a scan into exact physical use; the
+  remaining difference is not a measurement of unreadable files.
 - **Cloned files** (copies APFS shares blocks between, as Finder's Duplicate
   makes) remain counted in full in the treemap. The scan line separately
   reports bytes in cloned files and estimated repeated data-fork allocation.

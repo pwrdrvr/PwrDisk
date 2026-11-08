@@ -244,6 +244,23 @@ fn setup(
                         disktree_core::removal::RemovalMode::OwnerCleanup;
                     app.prepare_cleanup(cx);
                 }
+                State::DiskCapacity => {
+                    ensure!(
+                        root == Path::new("/Volumes/Fixtures/Demo"),
+                        "capacity pictures require the contrived Fixtures image"
+                    );
+                    // Serialized optional counters let the baseline harness
+                    // supply identical inputs to old and new presentations.
+                    app.space =
+                        Some(serde_json::from_value(serde_json::json!({
+                            "total": 107_374_182_400_u64,
+                            "free": 5_368_709_120_u64,
+                            "available": 5_368_709_120_u64,
+                            "native": {"used": 85_899_345_920_u64,
+                                "available": 16_106_127_360_u64}
+                        }))?);
+                    app.device = Some("/dev/fixture".into());
+                }
                 State::SystemFolders => {
                     ensure!(
                         root == Path::new("/Volumes/Fixtures/Demo"),

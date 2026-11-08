@@ -531,6 +531,7 @@ pub fn space_info(path: &Path) -> io::Result<SpaceInfo> {
         total,
         free,
         available,
+        native: None,
     })
 }
 

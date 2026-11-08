@@ -804,8 +804,13 @@ fn check_already_ejected(
     if reported_error {
         image.eject = eject_then_report_failure;
     } else {
-        eject(image.device.as_ref().expect("attached device"), true)
-            .expect("externally eject our private image");
+        // Intel can keep the physical store busy after a checkpoint. Use
+        // bounded, ownership-checked cleanup to establish detachment, then
+        // restore the stale cache that the next cleanup must not trust.
+        let cached =
+            (image.mounted, image.device.clone(), image.volume.clone());
+        image.detach();
+        (image.mounted, image.device, image.volume) = cached;
     }
     let outcome = image.try_detach();
     drop(image);
@@ -820,6 +825,13 @@ fn check_already_ejected(
 #[test]
 fn an_already_ejected_image_is_successful_cleanup() {
     check_already_ejected(0, false).expect("detached backing image is gone");
+}
+
+#[test]
+fn an_already_ejected_image_after_one_checkpoint_is_successful_cleanup() {
+    // The Intel CI property's minimal failure was fixture setup after one
+    // checkpoint, before it could test the already-detached observation.
+    check_already_ejected(1, false).expect("checkpointed image is detached");
 }
 
 #[test]

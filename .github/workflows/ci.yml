@@ -370,7 +370,8 @@ jobs:
       matrix:
         include:
           - { name: Linux aarch64, runner: ubuntu-24.04-arm, job_timeout: 15, test_timeout: 8 }
-          - { name: macOS x86_64, runner: macos-15-intel, job_timeout: 30, test_timeout: 20 }
+          # Lifecycle (10), compile (15), gate (20), setup/cleanup (5).
+          - { name: macOS x86_64, runner: macos-15-intel, job_timeout: 50, test_timeout: 20 }
           - { name: Windows aarch64, runner: windows-11-arm, job_timeout: 20, test_timeout: 15 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.job_timeout }}
