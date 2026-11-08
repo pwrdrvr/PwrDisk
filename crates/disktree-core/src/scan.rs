@@ -565,11 +565,14 @@ impl WalkContext {
         {
             return Classified::Skipped;
         }
-        // Memoized: the subtree a narrower scan already measured is taken
-        // whole after mount boundaries, since a cached subtree cannot make
-        // crossing a mount allowed.
+        // Widening can introduce exclusions below the cached root (for
+        // example Data/usr/local). Walk again so those paths are filtered
+        // before their nodes and allocation can enter the new tree.
         if let Some(known) = &self.known
             && known.path == path
+            && self.never_scanned.get().is_none_or(|never| {
+                !never.iter().any(|excluded| excluded.starts_with(&path))
+            })
         {
             return Classified::Known(entry.take_name());
         }
@@ -2307,6 +2310,131 @@ mod tests {
             );
             proptest::prop_assert!(child(child(data, "System"), "Library")
                 .child_named("AssetsV2").is_none());
+        }
+    }
+
+    #[cfg(unix)]
+    fn cached_scan_snapshot(
+        node: Node<'_>,
+        path: &Path,
+    ) -> std::collections::BTreeMap<PathBuf, (u64, u64, u32)> {
+        let mut result = std::collections::BTreeMap::from([(
+            path.to_path_buf(),
+            (node.bytes, node.files, node.dirs),
+        )]);
+        for child in node.children() {
+            result
+                .extend(cached_scan_snapshot(child, &path.join(child.name())));
+        }
+        result
+    }
+
+    #[cfg(unix)]
+    fn assert_cached_firmlink_widening_matches_cold_scan(
+        name: &str,
+        depth: usize,
+        bytes: usize,
+        dedup: bool,
+    ) {
+        let temp = TempDir::new().expect("fixture");
+        let root = temp.path().canonicalize().expect("canonical root");
+        let data = root.join("Data");
+        let cached = data.join("usr");
+        let mut alias = PathBuf::from("usr");
+        for _ in 0..depth {
+            alias.push("nested");
+        }
+        alias.push(name);
+        let ordinary =
+            write(&root, &alias.join("file").to_string_lossy(), bytes);
+        let duplicate = data.join(&alias).join("file");
+        fs::create_dir_all(duplicate.parent().unwrap()).unwrap();
+        fs::hard_link(ordinary, duplicate).unwrap();
+        // Excluding `local` must retain `local-copy` and private siblings.
+        write(
+            &root,
+            &format!(
+                "Data/{}/private",
+                alias.with_file_name(format!("{name}-copy")).display()
+            ),
+            bytes,
+        );
+        write(&cached, "share/private", bytes);
+        let options = ScanOptions {
+            dedup_hardlinks: dedup,
+            apfs_clone_metadata: false,
+            ..ScanOptions::default()
+        };
+        // A direct scan sees the alias legitimately. Only widening to the
+        // System/Data namespace introduces the new exclusion beneath it.
+        let known =
+            Arc::new(scan(&cached, options.clone()).expect("narrow scan"));
+        let wide = |known| {
+            let context = Arc::new(WalkContext {
+                known,
+                options: options.clone(),
+                progress: Arc::new(ScanProgress::default()),
+                root_device: Mutex::new(None),
+                foreign_mounts: OnceLock::from(FxHashSet::from_iter([
+                    data.clone()
+                ])),
+                never_scanned: OnceLock::from(FxHashSet::from_iter([
+                    data.join(&alias)
+                ])),
+                data_volume: OnceLock::from(data.clone()),
+                data_error: OnceLock::new(),
+                data_device: OnceLock::new(),
+                visited_dirs: Mutex::new(FxHashSet::default()),
+                accounted: Arc::new(Seen::new()),
+                require_complete: false,
+                leaves: None,
+                volume: OnceLock::new(),
+                #[cfg(target_os = "macos")]
+                clone_cache: crate::clone_cache::Cache::default(),
+            });
+            scan_blocking(&root, &context).expect("wide scan")
+        };
+        let cold = wide(None);
+        let reused = wide(Some(Known {
+            path: cached,
+            tree: known,
+        }));
+
+        // Compare every path and aggregate, since hardlink deduplication
+        // could otherwise hide duplicate tiles by zeroing their bytes.
+        let cold = cached_scan_snapshot(cold.root(), &root);
+        assert!(!cold.contains_key(&data.join(alias)));
+        assert_eq!(cached_scan_snapshot(reused.root(), &root), cold);
+    }
+
+    #[cfg(unix)]
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 32,
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        #[test]
+        fn cached_firmlink_widening_matches_the_cold_scan_oracle(
+            name in "[a-z]{1,8}",
+            depth in 0_usize..4,
+            bytes in 1_usize..8192,
+            dedup in proptest::bool::ANY,
+        ) {
+            assert_cached_firmlink_widening_matches_cold_scan(
+                &name, depth, bytes, dedup);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_data_usr_cannot_restore_an_excluded_descendant() {
+        // The shrunk oracle failure, then the reported usr/local shape.
+        for name in ["a", "local"] {
+            assert_cached_firmlink_widening_matches_cold_scan(
+                name, 0, 1, false,
+            );
         }
     }
 
