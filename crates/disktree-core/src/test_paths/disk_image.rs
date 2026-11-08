@@ -899,6 +899,13 @@ fn an_already_ejected_image_is_successful_cleanup() {
 }
 
 #[test]
+fn an_already_ejected_image_after_one_checkpoint_is_successful_cleanup() {
+    // The Intel CI property's minimal failure was fixture setup after one
+    // checkpoint, before it could test the already-detached observation.
+    check_already_ejected(1, false).expect("checkpointed image is detached");
+}
+
+#[test]
 fn an_already_ejected_image_after_two_checkpoints_is_successful_cleanup() {
     check_already_ejected(2, false).expect("Intel CI's detached backing image");
 }

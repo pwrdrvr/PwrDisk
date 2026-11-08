@@ -54,6 +54,7 @@ pub enum State {
     PermanentReview,
     CleanupReview,
     SystemFolders,
+    DiskCapacity,
     RemovalCheck,
     RemovalRefused,
     FileList,
@@ -129,6 +130,7 @@ impl Scenario {
                     | State::PermanentReview
                     | State::CleanupReview
                     | State::SystemFolders
+                    | State::DiskCapacity
                     | State::RemovalCheck
                     | State::RemovalRefused
                     | State::FileList
@@ -175,6 +177,7 @@ mod tests {
             {"op": "setup", "state": {"type": "file_list"}},
             {"op": "setup", "state": {"type": "help"}},
             {"op": "setup", "state": {"type": "system_folders"}},
+            {"op": "setup", "state": {"type": "disk_capacity"}},
             {"op": "setup", "state": {"type": "removal_check"}},
             {"op": "setup", "state": {"type": "removal_refused"}},
             {"op": "hover", "at": [100, 200]},

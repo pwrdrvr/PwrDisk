@@ -26,6 +26,9 @@ use rustix::fs::{AtFlags, FileType};
 
 use crate::sharing::CloneInfo;
 
+mod capacity;
+pub use capacity::presentation as space_presentation;
+
 /// APFS listing throughput can fall as more workers contend in the kernel.
 /// On an 8P/4E M2 Max, ten workers beat twelve on 6.2 million files while
 /// using 19% less system CPU. Keep all performance cores and half the

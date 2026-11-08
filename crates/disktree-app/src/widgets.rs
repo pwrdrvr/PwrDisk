@@ -157,22 +157,33 @@ pub fn space_meter(space: SpaceInfo, reclaiming: u64, cx: &App) -> Div {
     let theme = cx.omarchy();
     let total = space.total.max(1);
     let projected = space.after_removing(reclaiming);
-    let used_now = space.used() as f32 / total as f32;
-    let gained = (projected.used() as f32 / total as f32).max(0.0);
+    let used_now = space.total.saturating_sub(space.display_available()) as f32
+        / total as f32;
+    let gained = (projected
+        .total
+        .saturating_sub(projected.display_available())
+        as f32
+        / total as f32)
+        .max(0.0);
     let used_now = used_now.clamp(0.0, 1.0);
     let gained = gained.clamp(0.0, used_now);
 
+    let availability = if space.purgeable().is_some() {
+        "available"
+    } else {
+        "free"
+    };
     let label = if reclaiming > 0 {
         format!(
-            "{} free · {} after removing {}",
-            human_bytes(space.available),
-            human_bytes(projected.available),
+            "{} {availability} · ≈ {} after removing {}",
+            human_bytes(space.display_available()),
+            human_bytes(projected.display_available()),
             human_bytes(reclaiming)
         )
     } else {
         format!(
-            "{} free of {}",
-            human_bytes(space.available),
+            "{} {availability} of {}",
+            human_bytes(space.display_available()),
             human_bytes(space.total)
         )
     };

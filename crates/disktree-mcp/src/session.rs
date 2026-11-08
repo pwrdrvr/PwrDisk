@@ -27,7 +27,8 @@ use disktree_core::scan::{ScanHandle, ScanOptions};
 use disktree_core::sharing::{self, Estimate};
 use disktree_core::size::{human_bytes, human_count, share};
 use disktree_core::space::{
-    SpaceInfo, device_for, space_info, volume_root_for, volumes,
+    SpaceInfo, device_for, display_space_info as space_info, volume_root_for,
+    volumes,
 };
 use disktree_core::tree::{Node, Tree, path_of};
 use disktree_link::{
@@ -727,12 +728,13 @@ impl Session {
         );
         let _ = writeln!(out, " \u{00b7} {}", scan_context(tree));
         if let Some(space) = facts.space {
-            let used = space.total.saturating_sub(space.free);
+            let used = space.display_used();
             let _ = writeln!(
                 out,
-                "Volume {}{}: {} free of {}, {:.0}% used. This scan holds \
-                 {:.0}% of what is used; the rest is outside {} or is not \
-                 files (snapshots, other volumes, swap).",
+                "Volume {}{}: {} available of {}, {:.0}% used. This scan is \
+                 {:.0}% of what is used. File allocation and OS usage \
+                 measure different things; files outside {} and filesystem \
+                 metadata also affect disk use.",
                 volume_root_for(&facts.root).map_or_else(
                     || "?".to_string(),
                     |root| root.display().to_string()
@@ -741,7 +743,7 @@ impl Session {
                     .device
                     .as_deref()
                     .map_or_else(String::new, |device| format!(" ({device})")),
-                human_bytes(space.available),
+                human_bytes(space.display_available()),
                 human_bytes(space.total),
                 share(used, space.total.max(1)),
                 share(tree.bytes, used.max(1)),
@@ -2548,11 +2550,11 @@ impl Session {
                 let after = space.after_removing(estimate.on_volume);
                 let _ = writeln!(
                     out,
-                    "Projects {} on {}: {} free now, {} after.",
+                    "Projects {} on {}: {} available now, at least {} after.",
                     human_bytes(estimate.on_volume),
                     device_for(&root).unwrap_or_else(|| self.show(&root)),
-                    human_bytes(space.available),
-                    human_bytes(after.available),
+                    human_bytes(space.display_available()),
+                    human_bytes(after.display_available()),
                 );
             }
             None => {
@@ -2870,7 +2872,7 @@ fn volumes_report() -> String {
                     out,
                     "  {}  {} free of {} ({:.0}% used){}",
                     volume.point.display(),
-                    human_bytes(space.available),
+                    human_bytes(space.display_available()),
                     human_bytes(space.total),
                     f64::from(space.used_fraction()) * 100.0,
                     volume
@@ -2968,6 +2970,7 @@ impl ScanFacts {
                 total: space.total,
                 free: space.free,
                 available: space.available,
+                native: space.native,
             }),
             device: scan.device.clone(),
             top: Listing::of(
@@ -5237,6 +5240,7 @@ mod tests {
             total: 1_000_000,
             free: 500_000,
             available: 500_000,
+            native: None,
         });
         let report = session.scan_report(&facts);
         assert!(report.contains("1.9 MiB"), "{report}");

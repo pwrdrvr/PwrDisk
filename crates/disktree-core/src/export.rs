@@ -535,6 +535,7 @@ mod tests {
             total: 500 << 30,
             free: 12 << 30,
             available: 10 << 30,
+            native: None,
         };
         let prompt = agent_prompt(&targets, Path::new("/home/me"), Some(space));
         assert!(

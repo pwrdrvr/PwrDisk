@@ -52,11 +52,16 @@ execution, the later screenshot-feature build and script checks. Cold
 compilation took 11 minutes on Intel and 3m06s on Apple silicon. On the
 latter, core tests then took 6m23s, leaving no time in the old ten-minute
 step for the remaining suites. Counting compilation against execution
-terminated both advancing suites. The deadline model in
-`scripts/ci/test-budgets.test.cjs` checks workloads against the separate
-phase budgets and the unchanged 30-minute job limit. The job limits also
-cover setup and cache saving. Revisit them when runner speeds or cold-cache
-build times change.
+terminated both advancing suites. Intel run 42415250815 passed the workspace
+tests, including 10m07s in core, but reached the 30-minute job limit while
+building the screenshot-feature tests. Its enclosing job now allows 50
+minutes: the existing 10-minute lifecycle, 15-minute compilation and
+20-minute gate deadlines, plus five for setup and cleanup. The phase limits
+are unchanged. Apple silicon keeps its 30-minute job limit. The deadline
+model in `scripts/ci/test-budgets.test.cjs` checks workloads against the
+separate phase budgets and exhaustively checks that Intel's valid phase
+durations fit the job. The job limits also cover setup and cache saving.
+Revisit them when runner speeds or cold-cache build times change.
 
 ### The Rust cache
 
