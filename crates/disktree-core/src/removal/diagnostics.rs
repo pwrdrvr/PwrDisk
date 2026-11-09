@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use super::RemovalEvent;
 
 #[derive(Clone, Debug)]
-pub(crate) struct Progress(Arc<(Mutex<Trace>, Condvar)>);
+pub struct Progress(Arc<(Mutex<Trace>, Condvar)>);
 
 thread_local! {
     static CURRENT: std::cell::RefCell<Option<Progress>> = const {
@@ -16,7 +16,7 @@ thread_local! {
     };
 }
 
-pub(crate) fn scan_trace() -> Option<Progress> {
+pub fn scan_trace() -> Option<Progress> {
     CURRENT.with(|current| current.borrow().clone())
 }
 
@@ -71,6 +71,7 @@ impl Progress {
             "{elapsed:?} {:?}: {stage}",
             std::thread::current().id()
         ));
+        drop(trace);
     }
 
     pub(super) fn polled(
@@ -90,19 +91,16 @@ impl Progress {
     }
 
     pub(super) fn after_failure(&self) -> String {
-        let trace = self
-            .0
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (lock, changed) = &*self.0;
         // The test's verdict is already fixed. Observe exit without polling
         // or accepting a late completion as success, before fixture teardown.
-        let (trace, _) = self
-            .0
-            .1
-            .wait_timeout_while(trace, Duration::from_secs(10), |trace| {
-                !trace.exited
-            })
+        let (trace, _) = changed
+            .wait_timeout_while(
+                lock.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                Duration::from_secs(10),
+                |trace| !trace.exited,
+            )
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         drop(trace);
         self.snapshot()
@@ -125,6 +123,7 @@ impl Progress {
         for line in &trace.history {
             let _ = writeln!(text, "{line}");
         }
+        drop(trace);
         text
     }
 }
