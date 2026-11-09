@@ -26,41 +26,28 @@ jobs:
           "CARGO_TERM_COLOR=never" >> $env:GITHUB_ENV
           New-Item -ItemType Directory evidence
           git rev-parse HEAD | Tee-Object evidence/head.txt
-          Get-CimInstance Win32_Processor | Format-List Name,NumberOfLogicalProcessors,Architecture | Out-File evidence/host.txt
+          Get-CimInstance Win32_Processor | Format-List Name,NumberOfLogicalProcessors,Architecture | Tee-Object evidence/host.txt
       - uses: ./.github/actions/setup-rust
-        with:
-          components: clippy, rustfmt
-      - name: Exact focus test without diagnostics
-        id: baseline
+      - name: Compile the diagnostic test binary once
+        run: |
+          $messages = cargo test --locked -p disktree-app --features removal-diagnostics --bin pwrdisk --no-run --message-format=json 2> evidence/build-stderr.txt
+          $buildExit = $LASTEXITCODE
+          $messages | Out-File evidence/build.jsonl
+          if ($buildExit -ne 0) { exit $buildExit }
+          $binary = $messages | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'pwrdisk' -and $_.profile.test -and $_.executable } | Select-Object -Last 1
+          if (-not $binary) { throw 'No application test binary was built' }
+          "REMOVAL_TEST_BINARY=$($binary.executable)" >> $env:GITHUB_ENV
+      - name: Scheduling pressure with the original polling assertion
+        id: stress
         continue-on-error: true
         run: |
-          cargo test --locked -p disktree-app --bin pwrdisk tests::focus_review_delete_cancel_enter_preserves_the_fixture -- --exact --nocapture 2>&1 | Tee-Object evidence/baseline.txt
+          & $env:REMOVAL_TEST_BINARY --test-threads=16 --nocapture 2>&1 | Tee-Object evidence/concurrency-16.txt
           exit $LASTEXITCODE
-      - name: Focus test with stage and channel evidence
-        id: focused
+      - name: Default concurrency control
+        id: control
         continue-on-error: true
         run: |
-          cargo test --locked -p disktree-app --features removal-diagnostics --bin pwrdisk tests::focus_review_delete_cancel_enter_preserves_the_fixture -- --exact --nocapture 2>&1 | Tee-Object evidence/focused.txt
-          exit $LASTEXITCODE
-      - name: Original suite concurrency with stage and channel evidence
-        id: suite
-        continue-on-error: true
-        run: |
-          $failed = 0
-          for ($iteration = 1; $iteration -le 3; $iteration++) {
-            cargo test --locked -p disktree-app --features removal-diagnostics --bin pwrdisk -- --nocapture 2>&1 | Tee-Object "evidence/suite-$iteration.txt"
-            if ($LASTEXITCODE -ne 0) { $failed = 1; break }
-          }
-          exit $failed
-      - name: Check formatting without modifying source
-        continue-on-error: true
-        run: |
-          cargo fmt --all -- --check 2>&1 | Tee-Object evidence/fmt.txt
-          exit $LASTEXITCODE
-      - name: Unchanged lint gate
-        continue-on-error: true
-        run: |
-          cargo xtask lint 2>&1 | Tee-Object evidence/lint.txt
+          & $env:REMOVAL_TEST_BINARY --nocapture 2>&1 | Tee-Object evidence/default-concurrency.txt
           exit $LASTEXITCODE
       - name: Preserve investigation evidence
         if: always()
@@ -69,3 +56,23 @@ jobs:
           name: windows-arm-removal-evidence
           path: evidence/
           retention-days: 7
+      - name: Report actual experiment outcomes
+        if: always()
+        env:
+          STRESS_OUTCOME: ${{ steps.stress.outcome }}
+          CONTROL_OUTCOME: ${{ steps.control.outcome }}
+        run: |
+          if ($env:STRESS_OUTCOME -ne 'success' -or $env:CONTROL_OUTCOME -ne 'success') { exit 1 }
+
+  lint:
+    runs-on: windows-11-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy, rustfmt
+      - name: Unchanged lint gate
+        run: cargo xtask lint

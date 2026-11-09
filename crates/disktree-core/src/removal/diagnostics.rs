@@ -8,7 +8,17 @@ use std::time::{Duration, Instant};
 use super::RemovalEvent;
 
 #[derive(Clone, Debug)]
-pub(super) struct Progress(Arc<(Mutex<Trace>, Condvar)>);
+pub(crate) struct Progress(Arc<(Mutex<Trace>, Condvar)>);
+
+thread_local! {
+    static CURRENT: std::cell::RefCell<Option<Progress>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+pub(crate) fn scan_trace() -> Option<Progress> {
+    CURRENT.with(|current| current.borrow().clone())
+}
 
 #[derive(Debug)]
 struct Trace {
@@ -46,7 +56,7 @@ impl Progress {
         )))
     }
 
-    pub(super) fn record(&self, stage: &str) {
+    pub(crate) fn record(&self, stage: &str) {
         let mut trace = self
             .0
             .0
@@ -136,7 +146,7 @@ impl EventSender {
     pub(super) fn send(
         &self,
         event: RemovalEvent,
-    ) -> Result<(), mpsc::SendError<RemovalEvent>> {
+    ) -> bool {
         let index = kind(&event);
         let result = self.sender.send(event);
         if result.is_ok() {
@@ -150,10 +160,13 @@ impl EventSender {
         } else {
             self.progress.record(&format!("send failed event {index}"));
         }
-        result
+        result.is_ok()
     }
 
     pub(super) fn worker(&self) -> WorkerExit {
+        CURRENT.with(|current| {
+            *current.borrow_mut() = Some(self.progress.clone());
+        });
         WorkerExit(self.progress.clone())
     }
 }
@@ -174,5 +187,6 @@ impl Drop for WorkerExit {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .exited = true;
         self.0.0.1.notify_all();
+        CURRENT.with(|current| *current.borrow_mut() = None);
     }
 }

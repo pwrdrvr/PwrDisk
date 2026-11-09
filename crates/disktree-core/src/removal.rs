@@ -40,6 +40,8 @@ thread_local! {
 mod diagnostics;
 #[cfg(feature = "removal-diagnostics")]
 use diagnostics::EventSender;
+#[cfg(feature = "removal-diagnostics")]
+pub(crate) use diagnostics::scan_trace;
 #[cfg(not(feature = "removal-diagnostics"))]
 type EventSender = mpsc::Sender<RemovalEvent>;
 
@@ -1492,6 +1494,13 @@ impl RemovalHandle {
         self.progress.snapshot()
     }
 
+    /// Retain the trace after the app clears a completed run's handle.
+    #[cfg(feature = "removal-diagnostics")]
+    pub fn diagnostic_observer(&self) -> Box<dyn Fn() -> String + Send> {
+        let progress = self.progress.clone();
+        Box::new(move || progress.snapshot())
+    }
+
     /// Observe worker exit after a diagnostic test has already failed.
     #[cfg(feature = "removal-diagnostics")]
     pub fn diagnostics_after_failure(&self) -> String {
@@ -1672,6 +1681,7 @@ fn start(
                 } else {
                     Err("Removal guards changed before preflight; nothing was removed".into())
                 };
+                removal_progress!(sender, "fresh preflight returned");
                 if let Err(reason) = checked {
                     fail_all(&plan.targets, &reason, &sender);
                     return;
@@ -1709,11 +1719,7 @@ fn start(
 
 /// A whole run that removed nothing: every target failed for `reason`,
 /// then the end, so the run finishes and reads as failed, item by item.
-fn fail_all(
-    targets: &[Target],
-    reason: &str,
-    sender: &EventSender,
-) {
+fn fail_all(targets: &[Target], reason: &str, sender: &EventSender) {
     for target in targets {
         let _ = sender.send(RemovalEvent::Item {
             path: target.path.clone(),
@@ -1802,14 +1808,13 @@ fn run(
             match mode {
                 RemovalMode::Permanent => {
                     removal_progress!(sender, "permanent filesystem remove");
-                    let result = remove_permanently(&target.path, &plan.root);
-                    removal_progress!(sender, "permanent remove returned");
-                    result
+                    remove_permanently(&target.path, &plan.root)
                 }
                 RemovalMode::Trash => move_to_trash(&target.path, backend),
                 RemovalMode::OwnerCleanup => Ok(()),
             }
         };
+        removal_progress!(sender, "target action returned");
         // A cleanup step: its own refusal, checks and action, with a typed
         // reason. One step's failure never stops or changes the next.
         let outcome = if let Some((approved, refusals)) = cleanup {

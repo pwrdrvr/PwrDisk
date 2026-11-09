@@ -7833,6 +7833,10 @@ fn focus_review_delete_cancel_enter_preserves_the_fixture(
     press(cx, "enter");
     assert_eq!(read(&view, cx, |app| app.screen), Screen::Running);
     let epoch = read(&view, cx, |app| app.run_epoch);
+    #[cfg(feature = "removal-diagnostics")]
+    let trace = read(&view, cx, |app| {
+        app.run.as_ref().expect("worker").diagnostic_observer()
+    });
     let mut finished = false;
     for poll in 0..400 {
         let _ = poll;
@@ -7846,13 +7850,13 @@ fn focus_review_delete_cancel_enter_preserves_the_fixture(
             read(&view, cx, |app| {
                 eprintln!(
                     "removal poll={poll} screen={:?} epoch={epoch}/{} run_checked={} list={:?} junk_exists={} keep_exists={}\n{}",
-                    app.screen, app.run_epoch, app.run_checked,
-                    app.run_list.totals(), temp.path().join("junk").exists(),
+                    app.screen,
+                    app.run_epoch,
+                    app.run_checked,
+                    app.run_list.totals(),
+                    temp.path().join("junk").exists(),
                     temp.path().join("keep/notes.txt").exists(),
-                    app.run.as_ref().map_or_else(
-                        || "run handle cleared".into(),
-                        disktree_core::removal::RemovalHandle::diagnostics,
-                    ),
+                    trace(),
                 );
             });
         }
@@ -7864,8 +7868,9 @@ fn focus_review_delete_cancel_enter_preserves_the_fixture(
     if !finished {
         read(&view, cx, |app| {
             if let Some(run) = &app.run {
+                eprintln!("Original 400-poll verdict: FAILED");
                 eprintln!(
-                    "Original 400-poll verdict: FAILED. Post-failure worker exit observation (verdict unchanged):\n{}",
+                    "Post-failure worker exit observation (verdict unchanged):\n{}",
                     run.diagnostics_after_failure(),
                 );
             }

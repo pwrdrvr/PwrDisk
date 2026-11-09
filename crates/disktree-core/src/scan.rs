@@ -1163,11 +1163,25 @@ fn fixed_pool(threads: ScanThreads) -> io::Result<Option<rayon::ThreadPool>> {
         .map_err(io::Error::other)
 }
 
+// Keep ordinary scans out of the removal trace. The caller's trace is
+// captured before dispatch so Rayon entry distinguishes queuing from work.
+macro_rules! removal_scan_stage {
+    ($trace:ident, $stage:literal) => {
+        #[cfg(feature = "removal-diagnostics")]
+        if let Some(trace) = &$trace {
+            trace.record($stage);
+        }
+    };
+}
+
 fn scan_on_pool(
     root: &Path,
     context: &Arc<WalkContext>,
     pool: &rayon::ThreadPool,
 ) -> io::Result<Tree> {
+    #[cfg(feature = "removal-diagnostics")]
+    let removal_trace = crate::removal::scan_trace();
+    removal_scan_stage!(removal_trace, "scan root metadata and volume queries");
     if context.require_complete && !fs::symlink_metadata(root)?.is_dir() {
         return scan_entry(root, context, pool);
     }
@@ -1234,9 +1248,12 @@ fn scan_on_pool(
     #[cfg(windows)]
     {
         let progress = &context.progress;
+        removal_scan_stage!(removal_trace, "scan MFT pool queued");
         let read = pool.install(|| {
+            removal_scan_stage!(removal_trace, "scan MFT pool entered");
             crate::mft::scan(root, canonical, &context.options, progress)
         });
+        removal_scan_stage!(removal_trace, "scan MFT pool returned");
         if let Some(node) = read {
             let node = node?;
             // Cancelled after the reader's last check: the rescan that
@@ -1258,6 +1275,7 @@ fn scan_on_pool(
         // when a walk that does not follow links cannot leave the volume.
         // Only on a resolved root: a mapped share's letter kept as typed
         // looks like a local drive.
+        removal_scan_stage!(removal_trace, "scan walk volume query");
         if !context.options.follow_links
             && let Some(resolved) = &resolved
             && let Some(serial) = crate::windows::walk_volume(resolved)
@@ -1274,7 +1292,9 @@ fn scan_on_pool(
     let context: &WalkContext = context;
     // Building ends with parallel relayout too. Keep it on the selected
     // pool so fixed budgets and isolation from the UI cover that phase.
+    removal_scan_stage!(removal_trace, "scan tree pool queued");
     let tree = pool.install(|| {
+        removal_scan_stage!(removal_trace, "scan tree pool entered");
         Tree::try_build(|builder| {
             let sink = Sink {
                 builder,
@@ -1287,7 +1307,9 @@ fn scan_on_pool(
             })
         })
     })?;
+    removal_scan_stage!(removal_trace, "scan tree pool returned");
     context.progress.finalizing.store(true, Ordering::Relaxed);
+    removal_scan_stage!(removal_trace, "scan finishing");
     finish_tree(tree, canonical, context, pool)
 }
 
