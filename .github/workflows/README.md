@@ -70,6 +70,16 @@ where applicable and cleanup. The deadline model in
 that separate compilation and execution fit the enclosing jobs. Every
 phase remains bounded; timeouts still fail the check.
 
+Windows likewise compiles both test feature combinations before execution.
+Run 42562931627 passed the ARM workspace suite but exhausted the 15-minute
+gate compiling screenshot tests. On x64, lint and tests passed but the
+later debug executable build exhausted the 30-minute job. The compile
+phase now includes that executable, leaving the icon check to inspect it.
+x64 allows 30 minutes for compilation and 18 for execution inside a
+60-minute job; ARM allows 25 and 15 inside 45 minutes. The execution limits
+are unchanged. The deadline model checks the cold workloads, screenshot
+precompilation, executable availability and enclosing job limits.
+
 ### The Rust cache
 
 Every Rust job in `ci.yml`, `preview-build.yml` and `release.yml` sets up

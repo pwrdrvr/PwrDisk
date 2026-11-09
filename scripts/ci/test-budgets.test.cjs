@@ -71,6 +71,10 @@ function budget(jobName, runner) {
   return {
     compileLimit, testLimit, jobLimit, completion, fixtureLimit,
     warmFixture,
+    warmScreenshots: Boolean(compile?.includes(
+      'cargo test -p disktree-app --features screenshots screenshots:: --no-run')),
+    warmExecutable: Boolean(compile?.includes(
+      'cargo build --locked -p disktree-app')),
     fixtureBeforeGate: fixtureIndex >= 0 && fixtureIndex < testIndex,
     isolatedFixture: fixtureIndex >= 0 && fixtureIndex < steps.indexOf(compile),
   };
@@ -179,3 +183,27 @@ for (const [platform, config, build, execution] of [
     assert.equal(config.completion(1, config.testLimit), 'complete');
   });
 }
+
+// Run 42562931627: ARM passed workspace tests but compiled screenshot tests
+// inside its 15-minute gate. x64 passed lint/tests but its later executable
+// build consumed the enclosing 30-minute job. Model both cold workloads.
+for (const [platform, config, build, execution] of [
+  ['Windows x64', budget('windows'), 28, 4],
+  ['Windows ARM', budget('other-architectures', 'windows-11-arm'), 16, 2],
+]) {
+  test(`${platform}: cold build and execution have separate budgets`, () => {
+    assert.equal(config.completion(build, execution), 'complete');
+    assert.ok(config.warmScreenshots,
+      'screenshot-feature code generation belongs to compilation');
+  });
+  test(`${platform}: every valid compile and execution phase fits the job`, () => {
+    for (let build = 0; build <= config.compileLimit; build++) {
+      for (let execution = 0; execution <= config.testLimit; execution++) {
+        assert.equal(config.completion(build, execution), 'complete');
+      }
+    }
+  });
+}
+test('Windows icon validation uses an executable built in the compile phase', () => {
+  assert.ok(budget('windows').warmExecutable);
+});

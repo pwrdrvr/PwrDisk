@@ -315,7 +315,7 @@ jobs:
   windows:
     name: Lint and test (Windows)
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 60
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
@@ -345,18 +345,25 @@ jobs:
       - name: Lint
         run: cargo xtask lint
 
+      # Include the screenshot feature and shipping executable here:
+      # neither later test execution nor icon validation should compile.
+      - name: Compile Windows tests and executable
+        timeout-minutes: 30
+        run: |
+          cargo build -p xtask
+          cargo test --workspace --no-run
+          cargo test -p disktree-app --features screenshots screenshots:: --no-run
+          cargo build --locked -p disktree-app
+
       - name: Test
         timeout-minutes: 18
         run: cargo xtask test
 
-      # A debug build: build.rs embeds the icon in every profile, and Test
-      # has already compiled everything but the binary. A release build
-      # (thin LTO, one codegen unit) took over three minutes even with a
-      # warm cache; preview-build.yml and release.yml build that one.
+      # Check the debug executable built above: build.rs embeds the icon
+      # in every profile. Release builds belong to the packaging workflows.
       - name: Check embedded executable icon
         shell: pwsh
         run: |
-          cargo build --locked -p disktree-app
           Add-Type @'
           using System;
           using System.Runtime.InteropServices;
@@ -382,7 +389,7 @@ jobs:
           - { name: Linux aarch64, runner: ubuntu-24.04-arm, job_timeout: 35, test_timeout: 8 }
           # Lifecycle (10), compile (30), gate (20), setup/cleanup (5).
           - { name: macOS x86_64, runner: macos-15-intel, job_timeout: 65, test_timeout: 20 }
-          - { name: Windows aarch64, runner: windows-11-arm, job_timeout: 20, test_timeout: 15 }
+          - { name: Windows aarch64, runner: windows-11-arm, job_timeout: 45, test_timeout: 15 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.job_timeout }}
     needs: changes
@@ -421,6 +428,16 @@ jobs:
       - name: Compile Linux tests
         if: matrix.runner == 'ubuntu-24.04-arm'
         timeout-minutes: 20
+        run: |
+          cargo build -p xtask
+          cargo test --workspace --no-run
+          cargo test -p disktree-app --features screenshots screenshots:: --no-run
+
+      # Run 42562931627 passed the workspace suite but exhausted the gate
+      # compiling screenshot-feature tests. Warm both graphs first.
+      - name: Compile Windows tests
+        if: matrix.runner == 'windows-11-arm'
+        timeout-minutes: 25
         run: |
           cargo build -p xtask
           cargo test --workspace --no-run
