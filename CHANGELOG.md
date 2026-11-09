@@ -7,6 +7,26 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.23.0
+
+- Desktop MCP - Make the running desktop own MCP tools, skills, reports and
+  execution, so they match the desktop installation. `pwrdisk mcp` now
+  requires an already running desktop and never launches it. For independent
+  scans and marks without a window, use `pwrdisk mcp --standalone`.
+- MCP connections - Report desktop and relay versions separately and resolve
+  relative tool paths from the connecting command's working directory.
+  Keep removal previews isolated between clients. After upgrading, restart
+  the MCP connection with the updated executable and reload its tools and
+  skills; desktop exit ends the connection without replaying calls.
+- Free-space meter - Show space writable now as Free, with Used and Free
+  adding up to Total before rounding. Show native allocation and capacity
+  including reclaimable space separately, keeping Explore and Review
+  projections consistent and Marked visible in short windows.
+- Removal guards - Allow ordinary directories reached through a scan-root
+  alias on another volume when they are not mount points. Compare each
+  directory with its resolved parent while preserving mount protections
+  and treating a selected symlink as the link itself.
+
 ## v0.22.0
 
 - Size units - Choose and save Platform default, Decimal or Binary in
