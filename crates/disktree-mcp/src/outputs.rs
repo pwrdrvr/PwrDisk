@@ -204,6 +204,8 @@ pub struct Identification {
 #[serde(deny_unknown_fields)]
 pub struct Params {
     /// Search below this scanned directory; default all scanned roots.
+    /// Relative paths use the reported session path base; `~` uses the
+    /// server's home. Without a path base, use absolute paths or `~/…`.
     pub path: Option<PathBuf>,
     /// OR of subtypes or families. Omit/empty for all. jvm includes scala,
     /// gradle, maven and coursier; rust includes cargo and cargo-registry.

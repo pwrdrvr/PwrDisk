@@ -13,10 +13,11 @@
 //! single-use intent matching an explicitly confirmed preview. UI and MCP
 //! removal share the same guards and configured capacity limit.
 
-use disktree_core::path_style::PathStyle;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use disktree_core::path_style::PathStyle;
 use disktree_core::removal::{Plan, RemovalMode, Target};
 use disktree_core::tree::{Node, path_of};
 use disktree_link::{
@@ -44,25 +45,29 @@ pub struct Presence {
 /// The listener and what has come over it.
 #[derive(Debug)]
 pub struct AgentLink {
-    listener: Listener,
+    mcp_host: Option<disktree_mcp::DesktopHost>,
+    pub(crate) listener: Listener,
     pub presence: Option<Presence>,
     /// A path to show once the scan an agent asked for lands.
     pending_show: Option<PathBuf>,
     /// The last removal, for an agent that asks what was freed.
     pub last_removal: Option<Removal>,
     pub(crate) removal_preview: Option<crate::agent_removal::PreparedRemoval>,
+    pub(crate) previews: HashMap<u64, crate::agent_removal::PreparedRemoval>,
     pub(crate) removal_operation: Option<disktree_link::RemovalOperation>,
     pub(crate) removal_operation_epoch: u64,
 }
 
 impl AgentLink {
-    pub const fn new(listener: Listener) -> Self {
+    pub fn new(listener: Listener) -> Self {
         Self {
+            mcp_host: None,
             listener,
             presence: None,
             pending_show: None,
             last_removal: None,
             removal_preview: None,
+            previews: HashMap::new(),
             removal_operation: None,
             removal_operation_epoch: 0,
         }
@@ -145,7 +150,13 @@ fn presence_line(presence: Option<&Presence>) -> String {
 impl Disktree {
     /// Start answering agents on `listener`.
     pub fn attach_agent(&mut self, listener: Listener, cx: &Context<'_, Self>) {
-        self.agent = Some(AgentLink::new(listener));
+        let host = disktree_mcp::DesktopHost::start(listener.path().into());
+        let mut agent = AgentLink::new(listener);
+        match host {
+            Ok(host) => agent.mcp_host = Some(host),
+            Err(error) => eprintln!("MCP listener not available: {error}"),
+        }
+        self.agent = Some(agent);
         Self::poll_agent(cx);
     }
 
@@ -183,11 +194,31 @@ impl Disktree {
         }
         for item in incoming {
             match item {
-                Incoming::Request { request, reply, .. } => {
+                Incoming::Request {
+                    connection,
+                    request,
+                    reply,
+                } => {
+                    // The existing guard code consumes one preview. Restore
+                    // only this connection's slot while it handles the call,
+                    // so a new client cannot clear another client's approval.
+                    if let Some(agent) = &mut self.agent {
+                        agent.removal_preview =
+                            agent.previews.remove(&connection);
+                    }
                     let response = self.answer_agent(&request, cx);
+                    if let Some(agent) = &mut self.agent
+                        && let Some(preview) = agent.removal_preview.take()
+                    {
+                        agent.previews.insert(connection, preview);
+                    }
                     reply.send(response);
                 }
-                Incoming::Closed { .. } => {}
+                Incoming::Closed { connection } => {
+                    if let Some(agent) = &mut self.agent {
+                        agent.previews.remove(&connection);
+                    }
+                }
             }
         }
         self.forget_departed_agent(cx);
@@ -281,7 +312,9 @@ impl Disktree {
                 if let Some(agent) = &mut self.agent {
                     agent.removal_preview = None;
                 }
-                self.raw_inspection = None;
+                // Inspection belongs to the scan and selection, not this
+                // connection. A new client cannot revoke another preview's
+                // prepared inspection; the worker still rechecks it.
                 self.note_agent(Some(client), "connected".to_string());
                 Response::State(self.agent_state())
             }

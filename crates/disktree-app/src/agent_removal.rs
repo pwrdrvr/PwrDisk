@@ -43,26 +43,43 @@ impl Disktree {
     /// Associate a native UI run with a preview only for the same selection,
     /// mode and scan. This records an outcome; it never authorizes a run.
     pub(crate) fn track_agent_removal(&mut self) {
-        let matches = self
-            .agent
-            .as_ref()
-            .and_then(|a| a.removal_preview.as_ref())
-            .is_some_and(|prepared| {
-                prepared.preview.root == self.root_path
-                    && prepared.preview.mode.mode() == self.removal_mode
-                    && prepared.marks == self.marks.items()
-                    && self.tree.as_ref().is_some_and(|tree| {
-                        Weak::ptr_eq(&Arc::downgrade(tree), &prepared.tree)
-                    })
-                    && prepared.preview.paths.iter().eq(self
-                        .run_list
-                        .items
-                        .iter()
-                        .map(|item| &item.target.path))
-            });
-        if matches && let Some(agent) = &mut self.agent {
-            let prepared =
-                agent.removal_preview.take().expect("matched preview");
+        let matches = |prepared: &PreparedRemoval| {
+            prepared.preview.root == self.root_path
+                && prepared.preview.mode.mode() == self.removal_mode
+                && prepared.marks == self.marks.items()
+                && self.tree.as_ref().is_some_and(|tree| {
+                    Weak::ptr_eq(&Arc::downgrade(tree), &prepared.tree)
+                })
+                && prepared.preview.paths.iter().eq(self
+                    .run_list
+                    .items
+                    .iter()
+                    .map(|item| &item.target.path))
+        };
+        let Some(agent) = &self.agent else {
+            return;
+        };
+        let active_matches =
+            agent.removal_preview.as_ref().is_some_and(matches);
+        // Between protocol calls the preview lives in its connection slot.
+        // A native run correlates the latest matching preview, as it did
+        // before previews were isolated per client. This records an outcome
+        // only; native consent and worker guards still authorize the run.
+        let connection = agent
+            .previews
+            .iter()
+            .filter(|(_, prepared)| matches(prepared))
+            .max_by_key(|(_, prepared)| prepared.created)
+            .map(|(connection, _)| *connection);
+        if let Some(agent) = &mut self.agent {
+            let prepared = if active_matches {
+                agent.removal_preview.take()
+            } else {
+                connection.and_then(|id| agent.previews.remove(&id))
+            };
+            let Some(prepared) = prepared else {
+                return;
+            };
             agent.removal_operation = Some(disktree_link::RemovalOperation {
                 preview_id: prepared.preview.preview_id,
                 mode: prepared.preview.mode,

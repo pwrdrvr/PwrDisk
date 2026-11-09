@@ -5813,7 +5813,7 @@ fn ask_over(
 #[cfg(any(unix, windows))]
 #[gpui_kit::test]
 fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
-    use disktree_link::{MarkRequest, Request, Response};
+    use disktree_link::{Link, MarkRequest, Request, Response};
 
     cx.update(init);
     let temp = fixture();
@@ -6075,12 +6075,12 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     assert_eq!(report.accepted, [root.join("junk")]);
     assert!(report.reclaim.is_none(), "apparent fixture");
     assert_eq!(ask(cx, Request::State), before);
-    assert!(read(&view, cx, |app| app
+    assert!(!read(&view, cx, |app| app
         .agent
         .as_ref()
         .expect("agent")
-        .removal_preview
-        .is_some()));
+        .previews
+        .is_empty()));
     let confirmed = |preview: &disktree_link::RemovalPreview| {
         disktree_link::ConfirmedRemoval {
             rescan: false,
@@ -6200,6 +6200,36 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     let preview = await_removal_preview(&mut ask, cx, &preview_request);
     assert_eq!(preview.paths, [root.join("junk")]);
     assert_eq!(preview.limit_percent, 5);
+    // Another client connecting must not discard this client's approval.
+    let second_socket = read(&view, cx, |app| {
+        app.agent
+            .as_ref()
+            .expect("agent")
+            .listener
+            .path()
+            .to_path_buf()
+    });
+    let second = std::thread::spawn(move || {
+        let mut link = Link::connect_at(&second_socket).expect("second client");
+        link.call(&Request::Hello {
+            client: "Other MCP client".into(),
+            version: disktree_link::VERSION,
+        })
+        .expect("second Hello")
+    });
+    for _ in 0..400 {
+        update(&view, cx, |app, cx| {
+            app.poll_agent_once(cx);
+        });
+        if second.is_finished() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(matches!(
+        second.join().expect("second client"),
+        Response::State(_)
+    ));
     let started = ask(cx, Request::Remove(confirmed(&preview)));
     assert!(
         matches!(started, Response::State(ref state) if state.screen == "running"),
@@ -6484,6 +6514,111 @@ fn removal_capacity_limit_blocks_the_entire_ui_selection(
     });
     assert!(temp.path().join("junk/blob.bin").exists());
     assert!(temp.path().join("keep/notes.txt").exists());
+    draw(cx);
+}
+
+/// Reconnecting MCP changes the relay identity but never moves the window,
+/// imports another session's scans, or loses the desktop's marked paths.
+#[gpui_kit::test]
+fn desktop_mcp_reconnect_keeps_the_tree_and_marks(cx: &mut TestAppContext) {
+    use disktree_link::mcp_stream::{self, Stream};
+    use serde_json::{Value, json};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+    async fn rpc(io: &mut BufReader<Stream>, message: Value) -> Value {
+        io.get_mut()
+            .write_all(format!("{message}\n").as_bytes())
+            .await
+            .expect("write MCP");
+        let mut line = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            io.read_line(&mut line),
+        )
+        .await
+        .expect("answer in time")
+        .expect("read MCP");
+        serde_json::from_str(&line).expect("JSON MCP answer")
+    }
+
+    cx.update(init);
+    let temp = fixture();
+    let root = temp.path().to_path_buf();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    #[cfg(not(windows))]
+    let command_path = root.join("desktop-link.sock");
+    #[cfg(windows)]
+    let command_path = PathBuf::from(format!(
+        r"\\.\pipe\pwrdisk-mcp-reconnect-{}",
+        temp.path()
+            .file_name()
+            .expect("fixture name")
+            .to_string_lossy()
+    ));
+    let listener =
+        disktree_link::Listener::bind_at(&command_path).expect("UI backend");
+    update(&view, cx, |app, cx| app.attach_agent(listener, cx));
+    let tree = read(&view, cx, |app| app.tree.clone().expect("tree"));
+    let client_root = root.clone();
+    let client = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        runtime.block_on(async {
+            for (generation, relay_version) in ["0.12.0", "0.13.0"].into_iter().enumerate() {
+                let mut io = BufReader::new(mcp_stream::connect(
+                    &mcp_stream::endpoint(&command_path),
+                ).await.expect("MCP endpoint"));
+                let ready = rpc(&mut io, json!({"transport_version":1,"relay_version":relay_version,"working_directory":client_root})).await;
+                assert_eq!(ready["transport_version"], 1);
+                let initialized = rpc(&mut io, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"reconnect-fixture","version":"1"}
+                }})).await;
+                let meta = &initialized["result"]["_meta"]["com.pwrdrvr.pwrdisk/interface"];
+                assert_eq!(meta["owner"], "desktop");
+                assert_eq!(meta["relayVersion"], relay_version);
+                assert_eq!(meta["desktopVersion"], env!("CARGO_PKG_VERSION"));
+                assert_eq!(meta["pathBase"], json!(client_root));
+                io.get_mut().write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n").await.expect("initialized");
+                let tools = rpc(&mut io, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).await;
+                assert!(tools["result"]["tools"].as_array().expect("tools").iter().any(|tool| tool["name"] == "pwrdisk_mark"));
+                if generation == 0 {
+                    let marked = rpc(&mut io, json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+                        "name":"pwrdisk_mark","arguments":{"paths":["junk"]}
+                    }})).await;
+                    assert_ne!(marked["result"]["isError"], true, "{marked}");
+                }
+                let status = rpc(&mut io, json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
+                    "name":"pwrdisk_status","arguments":{}
+                }})).await;
+                assert!(status["result"]["content"].to_string().contains("Marked: 1"), "{status}");
+            }
+        });
+    });
+    for _ in 0..800 {
+        update(&view, cx, |app, cx| {
+            app.poll_agent_once(cx);
+        });
+        if client.is_finished() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(client.is_finished(), "MCP client must not block the UI");
+    client.join().expect("MCP client");
+    read(&view, cx, |app| {
+        assert!(std::sync::Arc::ptr_eq(
+            &tree,
+            app.tree.as_ref().expect("same tree")
+        ));
+        assert_eq!(app.marks.items().len(), 1);
+        assert_eq!(app.marks.items()[0].path, root.join("junk"));
+        assert_eq!(app.root_path, root);
+    });
+    assert!(root.join("junk/blob.bin").exists());
     draw(cx);
 }
 
@@ -6859,8 +6994,12 @@ fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
         assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
         app.run_epoch
     });
-    for _ in 0..400 {
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    // This waits for real filesystem work, outside GPUI's test clock.
+    // The two-second loop expired on the hosted Windows ARM runner while
+    // its worker was still running. Keep a wall-clock limit for hangs.
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
         let done = update(view, cx, |app, cx| {
             app.poll_removal_once(epoch, cx);
             app.screen == Screen::Done
@@ -6868,8 +7007,12 @@ fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
         if done {
             return;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the removal did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    panic!("the removal did not finish");
 }
 
 /// Cargo writes a cache tag into every `target` directory. Review once

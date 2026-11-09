@@ -23,13 +23,16 @@ function budget(jobName, runner) {
     steps[testIndex].match(/timeout-minutes: (\d+)/)?.[1]);
   if (runner) assert.match(steps[testIndex],
     /timeout-minutes: \$\{\{ matrix\.test_timeout \}\}/);
-  const compile = steps.slice(0, testIndex).find(step => /--no-run/.test(step));
+  const compile = steps.slice(0, testIndex).find(step => {
+    const guard = step.match(/if: matrix\.runner == '([^']+)'/);
+    return /--no-run/.test(step) && (!guard || guard[1] === runner);
+  });
   const fixtureIndex = steps.findIndex(step =>
     /run: cargo test -p disktree-core test_paths::disk_image\b/.test(step));
   const fixtureLimit = fixtureIndex < 0 ? 0 : Number(
     steps[fixtureIndex].match(/timeout-minutes: (\d+)/)?.[1]);
   if (compile && runner) {
-    assert.match(compile, /if: matrix\.runner == 'macos-15-intel'/);
+    assert.ok(compile.includes(`if: matrix.runner == '${runner}'`));
   }
   const compileLimit = compile
     ? Number(compile.match(/timeout-minutes: (\d+)/)?.[1]) : jobLimit;
@@ -68,6 +71,10 @@ function budget(jobName, runner) {
   return {
     compileLimit, testLimit, jobLimit, completion, fixtureLimit,
     warmFixture,
+    warmScreenshots: Boolean(compile?.includes(
+      'cargo test -p disktree-app --features screenshots screenshots:: --no-run')),
+    warmExecutable: Boolean(compile?.includes(
+      'cargo build --locked -p disktree-app')),
     fixtureBeforeGate: fixtureIndex >= 0 && fixtureIndex < testIndex,
     isolatedFixture: fixtureIndex >= 0 && fixtureIndex < steps.indexOf(compile),
   };
@@ -159,3 +166,44 @@ for (const [platform, config] of [['Intel', intel], ['Apple silicon', arm]]) {
     }
   });
 }
+
+// Run 42559851081 exhausted these deadlines during compilation, before
+// executing tests. Model one minute beyond each observed cutoff plus test
+// execution: restoring a warm cache cannot be required for correctness.
+for (const [platform, config, build, execution] of [
+  ['Linux x64', budget('check'), 11, 2],
+  ['Linux ARM', budget('other-architectures', 'ubuntu-24.04-arm'), 9, 2],
+  ['macOS ARM', arm, 11, 8],
+  ['macOS Intel', intel, 16, 10],
+]) {
+  test(`${platform}: cold compilation exceeding the old limit still runs tests`, () => {
+    assert.equal(config.completion(build, execution), 'complete');
+  });
+  test(`${platform}: compilation cannot spend the execution deadline`, () => {
+    assert.equal(config.completion(1, config.testLimit), 'complete');
+  });
+}
+
+// Run 42562931627: ARM passed workspace tests but compiled screenshot tests
+// inside its 15-minute gate. x64 passed lint/tests but its later executable
+// build consumed the enclosing 30-minute job. Model both cold workloads.
+for (const [platform, config, build, execution] of [
+  ['Windows x64', budget('windows'), 28, 4],
+  ['Windows ARM', budget('other-architectures', 'windows-11-arm'), 16, 2],
+]) {
+  test(`${platform}: cold build and execution have separate budgets`, () => {
+    assert.equal(config.completion(build, execution), 'complete');
+    assert.ok(config.warmScreenshots,
+      'screenshot-feature code generation belongs to compilation');
+  });
+  test(`${platform}: every valid compile and execution phase fits the job`, () => {
+    for (let build = 0; build <= config.compileLimit; build++) {
+      for (let execution = 0; execution <= config.testLimit; execution++) {
+        assert.equal(config.completion(build, execution), 'complete');
+      }
+    }
+  });
+}
+test('Windows icon validation uses an executable built in the compile phase', () => {
+  assert.ok(budget('windows').warmExecutable);
+});

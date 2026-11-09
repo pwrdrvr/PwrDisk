@@ -7,6 +7,7 @@ use proptest::prelude::*;
 use serde_json::Value;
 
 use super::*;
+use std::process::Command;
 
 fn clone_file(source: &Path, destination: &Path) {
     let output = Command::new("cp")
