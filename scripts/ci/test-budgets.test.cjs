@@ -25,7 +25,7 @@ function budget(jobName, runner) {
     /timeout-minutes: \$\{\{ matrix\.test_timeout \}\}/);
   const compile = steps.slice(0, testIndex).find(step => /--no-run/.test(step));
   const fixtureIndex = steps.findIndex(step =>
-    /cargo test -p disktree-core test_paths::disk_image\b/.test(step));
+    /run: cargo test -p disktree-core test_paths::disk_image\b/.test(step));
   const fixtureLimit = fixtureIndex < 0 ? 0 : Number(
     steps[fixtureIndex].match(/timeout-minutes: (\d+)/)?.[1]);
   if (compile && runner) {
@@ -41,10 +41,22 @@ function budget(jobName, runner) {
     /cargo build -p xtask(?:\n|$)/,
     /cargo test --workspace --no-run(?:\n|$)/,
   ].every(command => command.test(compile));
-  function completion(buildMinutes, testMinutes, fixtureMinutes = 0) {
-    if (fixtureMinutes > fixtureLimit) return 'fixture deadline';
-    const buildStep = warm ? buildMinutes : 0;
-    const testStep = testMinutes + (warm ? 0 : buildMinutes);
+  const fixtureCommand = steps[fixtureIndex]?.split('run: ')[1]
+    ?.split('\n')[0].split(' -- ')[0];
+  // Workspace feature unification can produce a different test binary.
+  // Warm the exact package invocation used by the lifecycle execution step.
+  const warmFixture = compile && steps.indexOf(compile) < fixtureIndex &&
+    compile.split('\n').some(line =>
+      line.trim() === `${fixtureCommand} --no-run`);
+  function completion(buildMinutes, testMinutes, fixtureMinutes = 0,
+    coreBuildMinutes = 0) {
+    // Core compilation is part of the total build workload. A fixture
+    // command encountered first has to compile its own test binary.
+    const fixtureBuild = fixtureIndex >= 0 && !warmFixture
+      ? coreBuildMinutes : 0;
+    if (fixtureMinutes + fixtureBuild > fixtureLimit) return 'fixture deadline';
+    const buildStep = warm ? buildMinutes - fixtureBuild : 0;
+    const testStep = testMinutes + (warm ? 0 : buildMinutes - fixtureBuild);
     if (buildStep > compileLimit) return 'compile deadline';
     if (testStep > testLimit) return 'test deadline';
     // Reserve a minute for setup; the job still bounds both phases.
@@ -55,6 +67,8 @@ function budget(jobName, runner) {
   }
   return {
     compileLimit, testLimit, jobLimit, completion, fixtureLimit,
+    warmFixture,
+    fixtureBeforeGate: fixtureIndex >= 0 && fixtureIndex < testIndex,
     isolatedFixture: fixtureIndex >= 0 && fixtureIndex < steps.indexOf(compile),
   };
 }
@@ -68,14 +82,22 @@ test('a cold Intel build leaves the execution budget intact', () => {
   assert.equal(intel.completion(11, 10), 'complete');
 });
 
+test('Intel: cold core compilation cannot consume the fixture deadline', () => {
+  // Run 42529711572 compiled core for 4m21s, then passed all 33 lifecycle
+  // tests in 348.35s. Those independent phases exceeded the shared 10m step.
+  assert.equal(intel.completion(11, 10, 348.35 / 60, 261.2 / 60), 'complete');
+});
+
 test('Intel: the enclosing job covers every valid phase budget', () => {
   // Lifecycle, compilation and execution have independent deadlines. A
   // valid phase must not lose its budget to time spent in earlier phases.
   for (let fixture = 0; fixture <= intel.fixtureLimit; fixture++) {
     for (let build = 0; build <= intel.compileLimit; build++) {
       for (let execution = 0; execution <= intel.testLimit; execution++) {
-        assert.equal(intel.completion(build, execution, fixture), 'complete',
-          `fixture ${fixture}m, compile ${build}m, execute ${execution}m`);
+        for (let core = 0; core <= build; core++) {
+          assert.equal(intel.completion(build, execution, fixture, core), 'complete',
+            `fixture ${fixture}m, compile ${build}m (${core}m core), execute ${execution}m`);
+        }
       }
     }
   }
@@ -99,8 +121,14 @@ test('Apple silicon compilation leaves room for every test suite', () => {
 
 for (const [platform, config] of [['Intel', intel], ['Apple silicon', arm]]) {
   const {compileLimit, testLimit, jobLimit, completion, fixtureLimit} = config;
-  test(`${platform}: fixture failures surface before workspace compilation`, () => {
-    assert.ok(config.isolatedFixture);
+  test(`${platform}: fixtures are isolated from the full workspace test gate`, () => {
+    assert.ok(config.fixtureBeforeGate);
+    if (platform === 'Intel') {
+      assert.ok(config.warmFixture,
+        'compile the lifecycle binary before starting its execution deadline');
+    } else {
+      assert.ok(config.isolatedFixture);
+    }
   });
 
   test(`${platform}: isolated fixture and cold test gate fit the job`, () => {

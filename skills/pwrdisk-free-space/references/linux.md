@@ -57,6 +57,8 @@ would read it.
 `/home` and every account's folder in it (another user's home,
 `/home/linuxbrew`; what is inside one may be proposed), the same under
 `/var/home` where `/home` links there, and mount points.
+An ancestor alias on a different disk does not make an ordinary child a
+mount point; the mount check compares the child with its resolved parent.
 
 Shared containers themselves also stay refused: `/tmp`, `/var`, `/var/tmp`,
 `/var/cache`, `/var/log`, `/var/backups`, `/var/local`, `/var/opt`, `/opt`,

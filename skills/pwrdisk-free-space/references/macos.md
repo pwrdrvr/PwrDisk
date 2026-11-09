@@ -135,6 +135,8 @@ does not bypass system-tree, profile or nested-mount guards. In particular,
 there does not make its live state removable. A one-filesystem scan stops
 at the same mounts under every spelling of its root. A selected symlink
 itself is still unlinked without deleting its destination.
+An ancestor alias on a different disk does not make an ordinary child a
+mount point; the mount check compares the child with its resolved parent.
 
 ## Never propose
 
