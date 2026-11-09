@@ -143,10 +143,7 @@ impl EventSender {
         }
     }
 
-    pub(super) fn send(
-        &self,
-        event: RemovalEvent,
-    ) -> bool {
+    pub(super) fn send(&self, event: RemovalEvent) -> bool {
         let index = kind(&event);
         let result = self.sender.send(event);
         if result.is_ok() {

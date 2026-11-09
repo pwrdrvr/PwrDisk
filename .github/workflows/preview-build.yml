@@ -3,12 +3,18 @@ name: Windows ARM removal investigation
 # Diagnostic branch only. Dispatch uses this branch's workflow definition.
 on:
   workflow_dispatch:
+    inputs:
+      experiment:
+        description: Run the controlled scheduling comparison
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
   reproduce:
+    if: inputs.experiment
     runs-on: windows-11-arm
     timeout-minutes: 20
     defaults:
