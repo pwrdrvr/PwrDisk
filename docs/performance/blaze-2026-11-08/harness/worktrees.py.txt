@@ -1,0 +1,37 @@
+import concurrent.futures,json,pathlib,subprocess
+import bench
+root=bench.ROOT
+other=root/'worktree2'
+expected=next(r['help_stdout'] for r in bench.ROWS if r['name']=='cargo-helper-cold')
+
+def snapshot(name):subprocess.run(['python3',str(root/'snapshot.py'),name],check=True)
+
+snapshot('worktree2-source-only')
+assert bench.run('blaze-worktree2-first','blaze',other,2)['help_stdout']==expected
+bench.save();snapshot('after-blaze-worktree2')
+assert bench.run('cargo-worktree2-first','cargo',other,2)['help_stdout']==expected
+bench.save();snapshot('after-cargo-worktree2')
+originals={}
+old=b'disktree-scan \xe2\x80\x94 read-only SSH scan helper\\n'
+try:
+    for lane,workspace in [(1,bench.WORKSPACE),(2,other)]:
+        path=workspace/'crates/disktree-scan/src/main.rs'
+        originals[path]=path.read_bytes()
+        assert originals[path].count(old)==1
+        suffix=f' (lane {lane})'.encode()
+        path.write_bytes(originals[path].replace(old,old[:-2]+suffix+b'\\n'))
+    for tool in ('cargo','blaze'):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures=[pool.submit(bench.run,f'{tool}-concurrent-lane-{lane}',tool,workspace,lane) for lane,workspace in [(1,bench.WORKSPACE),(2,other)]]
+            results=[f.result() for f in futures]
+        for lane,result in enumerate(results,1):
+            assert result['help_stdout']==expected.replace('scan helper\n',f'scan helper (lane {lane})\n'),result
+        bench.save()
+finally:
+    for path,data in originals.items():path.write_bytes(data)
+for lane,workspace in [(1,bench.WORKSPACE),(2,other)]:
+    for tool in ('cargo','blaze'):
+        assert bench.run(f'{tool}-final-restore-lane-{lane}',tool,workspace,lane)['help_stdout']==expected
+        bench.save()
+snapshot('after-concurrency')
+print('Both isolated worktrees produced their own exact expected help text; originals restored.',flush=True)

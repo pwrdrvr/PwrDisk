@@ -1,0 +1,21 @@
+import hashlib,json,pathlib,subprocess,sys,time
+root=pathlib.Path(__file__).resolve().parent
+fixture=root/'fixture';fixture.mkdir(exist_ok=True)
+file=fixture/'data';file.write_bytes(b'hello')
+request={'root':str(fixture),'disk':False,'options':{'apparent_size':True,'apfs_clone_metadata':False,'follow_links':False,'include_hidden':True,'one_filesystem':True,'max_depth':None,'dedup_hardlinks':True,'metric':'Bytes'}}
+name,binary=sys.argv[1:]
+start=time.monotonic()
+try:
+    r=subprocess.run([str(pathlib.Path(binary).resolve()),'--stdio-v1'],input=json.dumps(request)+'\n',capture_output=True,text=True,timeout=20)
+    lines=r.stdout.splitlines()
+    records=[]
+    for line in lines:
+        value=json.loads(line)
+        if isinstance(value,list):records.append(value)
+        elif isinstance(value,dict) and value.get('entry') is not None:records.append(value['entry'])
+    # Keep only contrived entry records; headers include real host space/identity.
+    data=[x for x in records if x[0]=='data']
+    result={'exit':r.returncode,'wall_seconds':round(time.monotonic()-start,3),'stderr':r.stderr,'line_count':len(lines),'fixture_records':records,'expected_data_record_present':any(x[2]==5 for x in data),'input_unchanged':file.read_bytes()==b'hello'}
+except subprocess.TimeoutExpired:
+    result={'exit':None,'timeout_seconds':20,'input_unchanged':file.read_bytes()==b'hello'}
+(root/'logs'/f'{name}.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
