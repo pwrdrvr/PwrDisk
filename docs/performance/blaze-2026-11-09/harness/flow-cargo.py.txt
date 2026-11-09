@@ -1,0 +1,125 @@
+"""Full-workspace benchmark. All artifacts are private to this directory."""
+import json,os,pathlib,signal,stat,subprocess,sys,time
+ROOT=pathlib.Path(__file__).resolve().parent
+WORKSPACE=ROOT.parent.parent
+BOOT=WORKSPACE/'target/fB'
+STATE=WORKSPACE/'target/fV'
+TEMP=WORKSPACE/'.t'
+OWNER='Full PwrDisk workflow benchmark 2026-11-09 mw8odhs6'
+for p in (ROOT/'tmp',ROOT/'user-home',BOOT,STATE,TEMP):
+ p.mkdir(parents=True,exist_ok=True)
+for p in (BOOT,STATE,TEMP):
+ p.chmod(0o700)
+ marker=p/'OWNER.txt'
+ if marker.exists():assert marker.read_text().strip()==OWNER
+ else:marker.write_text(OWNER+'\n')
+common={k:os.environ[k] for k in ('HOME','PATH','USER','LOGNAME','LANG','LC_ALL','SDKROOT','DEVELOPER_DIR','MACOSX_DEPLOYMENT_TARGET','CARGO_HOME','RUSTUP_HOME') if k in os.environ}
+common.update(TMPDIR=str(TEMP),CARGO_BUILD_JOBS='4')
+mode=sys.argv[1]
+
+def allocation():
+ seen=set();logical=allocated=files=0
+ for area in (ROOT,BOOT,STATE,TEMP,WORKSPACE/'a',WORKSPACE/'b'):
+  for base,dirs,names in os.walk(area,followlinks=False):
+   for name in names:
+    try:s=(pathlib.Path(base)/name).lstat()
+    except FileNotFoundError:continue
+    if not stat.S_ISREG(s.st_mode):continue
+    key=(s.st_dev,s.st_ino)
+    if key in seen:continue
+    seen.add(key);logical+=s.st_size;allocated+=s.st_blocks*512;files+=1
+ return {'logical_bytes':logical,'allocated_bytes':allocated,'files':files}
+
+def rss_tree(roots):
+ out=subprocess.check_output(['ps','-axo','pid=,ppid=,rss='],text=True)
+ rows=[list(map(int,line.split())) for line in out.splitlines() if line.strip()]
+ owned=set(roots)
+ while True:
+  old=len(owned);owned.update(pid for pid,parent,rss in rows if parent in owned)
+  if len(owned)==old:break
+ return sum(rss for pid,parent,rss in rows if pid in owned)*1024
+
+results=[]
+workflow_start=time.monotonic()
+def run(name,command,env,cwd,limit=1200,extra_pids=()):
+ start=time.monotonic();reason=None;next_sample=0;peak_allocated=peak_rss=0
+ with (ROOT/'logs'/f'{name}.log').open('w') as log:
+  proc=subprocess.Popen(command,env=env,cwd=cwd,stdout=log,stderr=log,start_new_session=True)
+  while proc.poll() is None:
+   elapsed=time.monotonic()-start;s=os.statvfs(ROOT);free=s.f_bavail*s.f_frsize
+   if elapsed>=limit:reason=f'{limit} second phase limit'
+   if mode.startswith('blaze') and time.monotonic()-workflow_start>=2700:reason='45 minute candidate workflow limit'
+   if free<48*1024**3:reason='48 GiB available-space floor'
+   if elapsed>=next_sample:
+    a=allocation();rss=rss_tree((proc.pid,*extra_pids));peak_allocated=max(peak_allocated,a['allocated_bytes']);peak_rss=max(peak_rss,rss);next_sample=elapsed+20
+    with (ROOT/'logs/monitor.jsonl').open('a') as f:f.write(json.dumps({'phase':name,'wall_seconds':elapsed,'available_bytes':free,'owned_rss_bytes':rss,**a})+'\n')
+    if a['allocated_bytes']>64*1024**3:reason='64 GiB summed allocated-byte allowance'
+    if rss>20*1024**3:reason='20 GiB sampled aggregate RSS limit'
+   if reason:
+    try:os.killpg(proc.pid,signal.SIGTERM)
+    except ProcessLookupError:pass
+    try:proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:os.killpg(proc.pid,signal.SIGKILL);proc.wait()
+    break
+   time.sleep(.25)
+ row={'name':name,'command':command,'cwd':str(cwd),'exit':proc.returncode,'wall_seconds':round(time.monotonic()-start,3),'stopped_by':reason,'peak_sampled_allocated_bytes':peak_allocated,'peak_sampled_rss_bytes':peak_rss,'final_inventory':allocation()}
+ results.append(row);(ROOT/'logs'/f'{mode}-results.json').write_text(json.dumps(results,indent=2)+'\n');print({k:row[k] for k in ('name','exit','wall_seconds','stopped_by')},flush=True)
+ if reason:raise RuntimeError(reason)
+ return row
+
+if mode.startswith('cargo'):
+ lane='b' if mode.startswith('cargo-b') or mode.startswith('blaze-b') else 'a'
+ env=common.copy();env.update(CARGO_TARGET_DIR=str(ROOT/f'cargo-target-{lane}'),CARGO_NET_OFFLINE='true')
+ cwd=WORKSPACE/lane
+ (ROOT/'logs'/f'{mode}-environment.json').write_text(json.dumps(env,indent=2)+'\n')
+ phases=[('cargo-app-dev',['cargo','build','--workspace','--offline','--locked'],1200),('cargo-lint',['cargo','xtask','lint'],1200),('cargo-test-gate',['cargo','xtask','test'],1200),('cargo-release',['cargo','build','--release','--offline','--locked'],1800)]
+ if mode.endswith('native-tests'):phases=[('cargo-test-gate',['cargo','xtask','test'],1200)]
+ for name,args,limit in phases:
+  phase_env=env.copy()
+  if 'test-gate' in name:phase_env['TMPDIR']=os.environ['TMPDIR']
+  run(name.replace('cargo-',mode+'-',1),args,phase_env,cwd,limit)
+elif mode=='bootstrap':
+ env=common.copy();env.update(BLAZE_HOME=str(BOOT),BLAZE_CACHE=str(ROOT/'bootstrap-store'),BLAZE_REMOTE='',BLAZE_IDLE_SECS='60')
+ binary=next((ROOT/'stable-bin').glob('*/blaze'))
+ run('bootstrap-nightly',[str(binary),'toolchain'],env,WORKSPACE/'a',120)
+elif mode.startswith('blaze'):
+ lane='b' if mode.startswith('cargo-b') or mode.startswith('blaze-b') else 'a';cwd=WORKSPACE/lane
+ env=common.copy();env.update(HOME=str(ROOT/'user-home'),XDG_CACHE_HOME=str(ROOT/'user-home/cache'),BLAZE_HOME=str(STATE),BLAZE_DAEMON_MEMORY_GB='12',BLAZE_CORES='4',BLAZE_STATS='1',CARGO_TARGET_DIR=str(ROOT/f'blaze-target-{lane}'))
+ link=ROOT/'user-home/.blaze/toolchains';link.parent.mkdir(exist_ok=True)
+ if not link.exists():link.symlink_to(BOOT/'toolchains',target_is_directory=True)
+ binary=next((ROOT/'canary-bin').glob('*/blaze'))
+ (ROOT/'logs'/f'{mode}-environment.json').write_text(json.dumps(env,indent=2)+'\n')
+ daemon_log=(ROOT/'logs'/f'{mode}-daemon.log').open('w')
+ daemon_started=time.monotonic()
+ daemon=subprocess.Popen([str(binary),'serve'],env=env,cwd=cwd,stdout=daemon_log,stderr=daemon_log,start_new_session=True)
+ try:
+  while not (STATE/'v2.sock').exists():
+   if daemon.poll() is not None:raise RuntimeError(f'Owned daemon exited {daemon.returncode}; see daemon log')
+   if time.monotonic()-daemon_started>30:raise RuntimeError('Owned daemon readiness exceeded 30 seconds')
+   time.sleep(.05)
+  startup={'name':f'{mode}-daemon-startup','command':[str(binary),'serve'],'exit':0,'wall_seconds':round(time.monotonic()-daemon_started,3),'stopped_by':None}
+  results.append(startup);print(startup,flush=True)
+  if lane=='a':run(f'{mode}-source-fetch',[str(binary),'fetch','--locked'],env,cwd,180,(daemon.pid,))
+  run(f'{mode}-app-dev',[str(binary),'build','--workspace','--locked'],env,cwd,1200,(daemon.pid,))
+  lint_env=common.copy();lint_env.update(CARGO_TARGET_DIR=str(ROOT/f'candidate-lint-{lane}'),CARGO_NET_OFFLINE='true')
+  run(f'{mode}-cargo-lint',['cargo','xtask','lint'],lint_env,cwd,1200,(daemon.pid,))
+  for name,args in [('workspace-tests',['test','--workspace','--locked']),('screenshots-tests',['test','-p','disktree-app','--features','screenshots','screenshots::','--locked'])]:
+   test_env=env.copy();test_env['TMPDIR']=os.environ['TMPDIR']
+   run(f'{mode}-{name}',[str(binary),*args],test_env,cwd,1200,(daemon.pid,))
+  for folder in ('screenshots','release'):
+   run(f'{mode}-python-{folder}',['python3','-B','-m','unittest','discover','-s',str(cwd/'scripts'/folder),'-p','*_test.py'],env,cwd,120)
+  run(f'{mode}-release',[str(binary),'build','--release','--locked'],env,cwd,1800,(daemon.pid,))
+ finally:
+  try:
+   subprocess.run([str(binary),'stop'],env=env,cwd=cwd,stdout=daemon_log,stderr=daemon_log,timeout=15)
+  except subprocess.TimeoutExpired:
+   daemon_log.write('\nOwned daemon stop client exceeded 15 seconds.\n');daemon_log.flush()
+  finally:
+   try:daemon.wait(timeout=15)
+   except subprocess.TimeoutExpired:
+    os.killpg(daemon.pid,signal.SIGTERM)
+    try:daemon.wait(timeout=15)
+    except subprocess.TimeoutExpired:os.killpg(daemon.pid,signal.SIGKILL);daemon.wait()
+   (ROOT/'logs'/f'{mode}-daemon-exit.json').write_text(json.dumps({'owned_pid':daemon.pid,'exit':daemon.returncode})+'\n')
+   daemon_log.close()
+else:raise SystemExit('unknown mode')

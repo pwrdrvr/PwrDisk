@@ -1,5 +1,11 @@
 # Blaze recheck — November 8, 2026
 
+**Scope correction:** these are helper-only measurements. For the complete
+new-worktree app, lint, test and release workflow, see the
+[November 9 study](../blaze-2026-11-09/README.md). That study obtained a
+passing Cargo baseline and a physical-memory-limited Blaze result, not a
+completed whole-app speed comparison.
+
 **Verdict: keep Cargo; do not adopt Blaze for PwrDisk yet.** With enough
 disposable disk, the published canary builds our helper and passes basic
 runtime checks. It was slower in the measured helper workloads and added

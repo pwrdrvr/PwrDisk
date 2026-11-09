@@ -1,0 +1,46 @@
+"""Historical project-scoped setup, pinned distributions; no global install."""
+from pathlib import Path
+import hashlib, os, shutil, tarfile, urllib.request
+
+ROOT = Path(__file__).resolve().parent
+WORKSPACE = ROOT.parent.parent
+assert ROOT == WORKSPACE / "target/blaze-full"
+assert set(p.name for p in ROOT.iterdir()) <= {"setup.py"}
+for name in ("a", "b", ".t", "target/fB", "target/fV"):
+    assert not (WORKSPACE / name).exists(), name
+assert len(str(WORKSPACE / "a/crates/disktree-app").encode()) <= 72
+space = os.statvfs(WORKSPACE)
+assert space.f_bavail * space.f_frsize >= 112 * 1024**3
+owner = "Full PwrDisk workflow benchmark 2026-11-09 mw8odhs6"
+(ROOT / "OWNER.txt").write_text(
+    "Owned by full PwrDisk workflow benchmark 2026-11-09, "
+    "mw8odhs6/disktree.\n"
+)
+for name in ("logs", "tmp", "user-home", "upstream"):
+    (ROOT / name).mkdir(mode=0o700)
+for name in (".t", "target/fB", "target/fV"):
+    directory = WORKSPACE / name
+    directory.mkdir(mode=0o700)
+    (directory / "OWNER.txt").write_text(owner + "\n")
+pins = [
+    ("stable", "0.20261027.0",
+     "47dae8e838765931ed8e216a94e4d75454469fa6c3950d1c02eba2841bc8dad5"),
+    ("canary", "0.20261105.4",
+     "27da522a507cba1716ecbfbf91fc99546956b6a6f9da21c608539bb70c0da45b"),
+]
+for channel, version, expected in pins:
+    name = f"blaze-v{version}-aarch64-apple-darwin.tar.gz"
+    archive = ROOT / name
+    url = (
+        f"https://github.com/indexable-inc/blaze/releases/download/"
+        f"v{version}/{name}"
+    )
+    with urllib.request.urlopen(url, timeout=60) as response:
+        with archive.open("wb") as output:
+            shutil.copyfileobj(response, output)
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected
+    destination = ROOT / f"{channel}-bin"
+    destination.mkdir()
+    with tarfile.open(archive) as package:
+        package.extractall(destination, filter="data")
+

@@ -1,0 +1,101 @@
+== cargo-a-cold-app-dev.log ==
+    Finished `dev` profile [optimized + debuginfo] target(s) in 4m 12s
+
+== cargo-a-cold-lint.log ==
+    Finished `dev` profile [optimized + debuginfo] target(s) in 18.05s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 03s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 6.66s
+
+== cargo-a-cold-test-gate.log ==
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.16s
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 48s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 451 filtered out; finished in 0.01s
+test result: ok. 450 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 8.80s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 499 filtered out; finished in 0.00s
+test result: ok. 493 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 217.21s
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 83 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.75s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    Finished `test` profile [optimized + debuginfo] target(s) in 24.77s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 446 filtered out; finished in 0.01s
+Ran 5 tests in 1.835s
+OK
+Ran 6 tests in 0.011s
+OK
+
+== cargo-a-cold-release.log ==
+    Finished `release` profile [optimized] target(s) in 2m 45s
+
+== bootstrap-nightly.log ==
+Downloading Rust nightly-2026-10-27 for blaze (123 MB, once)...
+Downloaded Rust nightly-2026-10-27 for blaze in 3.7s.
+blaze builds with blaze-2026-10-27, blaze's toolchain (Rust nightly-2026-10-27), at <workspace>/target/fB/toolchains/nightly-2026-10-27-aarch64-apple-darwin
+
+== blaze-a-12gb-source-fetch.log ==
+error: no such command: `fetch`
+
+help: blaze's commands are build, check, run, test, bench, doc, clean, cache, fmt, serve, stop, status, toolchain, daemon, codegen-inputs, trace, tables, pack, explore, debug, explain, why, reach and slow
+
+== blaze-a-12gb-app-dev.log ==
+   Compiling waitpid-any v0.3.0
+   Compiling notify v7.0.0
+   Compiling xml v1.4.0
+   Compiling ureq v3.4.2
+   Compiling zip v8.6.0
+   Compiling derivative v2.2.0
+   Compiling disktree-link v0.22.0 (<workspace>/a/crates/disktree-link)
+   Compiling disktree-app v0.22.0 (<workspace>/a/crates/disktree-app)
+   Compiling dunce v1.0.5
+   Compiling disktree-scan v0.22.0 (<workspace>/a/crates/disktree-scan)
+   Compiling xtask v0.22.0 (<workspace>/a/xtask)
+   Compiling disktree-mcp v0.22.0 (<workspace>/a/crates/disktree-mcp)
+
+== blaze-a-resume-app-dev.log ==
+error: lowering the units: lowering <workspace>/a needs 6.84 GB of memory as predicted, more than blaze may use here: 5.00 GB (BLAZE_DAEMON_MEMORY_GB=6, 6.00 GB, less a margin of 1.00 GB); to fit it, run with BLAZE_DAEMON_MEMORY_GB=8 (or `--memory-gb 8`) on a machine with that much memory, which every other limit above must allow too; a command with another value than the daemon's restarts it when idle; 6.84 GB is what this unit's own last runs held at most (its key's record in the daemon's history), not a guess from its kind or size
+
+== blaze-a-resume-workspace-tests.log ==
+error: lowering the units: lowering <workspace>/a needs 6.84 GB of memory as predicted, more than blaze may use here: 5.00 GB (BLAZE_DAEMON_MEMORY_GB=6, 6.00 GB, less a margin of 1.00 GB); to fit it, run with BLAZE_DAEMON_MEMORY_GB=8 (or `--memory-gb 8`) on a machine with that much memory, which every other limit above must allow too; a command with another value than the daemon's restarts it when idle; 6.84 GB is what this unit's own last runs held at most (its key's record in the daemon's history), not a guess from its kind or size
+
+== blaze-a-resume-screenshots-tests.log ==
+error: lowering the units: lowering <workspace>/a needs 6.84 GB of memory as predicted, more than blaze may use here: 5.00 GB (BLAZE_DAEMON_MEMORY_GB=6, 6.00 GB, less a margin of 1.00 GB); to fit it, run with BLAZE_DAEMON_MEMORY_GB=8 (or `--memory-gb 8`) on a machine with that much memory, which every other limit above must allow too; a command with another value than the daemon's restarts it when idle; 6.84 GB is what this unit's own last runs held at most (its key's record in the daemon's history), not a guess from its kind or size
+
+== blaze-a-resume-release.log ==
+error: lowering the units: lowering <workspace>/a needs 6.84 GB of memory as predicted, more than blaze may use here: 5.00 GB (BLAZE_DAEMON_MEMORY_GB=6, 6.00 GB, less a margin of 1.00 GB); to fit it, run with BLAZE_DAEMON_MEMORY_GB=8 (or `--memory-gb 8`) on a machine with that much memory, which every other limit above must allow too; a command with another value than the daemon's restarts it when idle; 6.84 GB is what this unit's own last runs held at most (its key's record in the daemon's history), not a guess from its kind or size
+
+== blaze-a-8gb-app-dev.log ==
+   Compiling disktree-link v0.22.0 (<workspace>/a/crates/disktree-link)
+   Compiling zopfli v0.8.4
+   Compiling zip v8.6.0
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling notify v7.0.0
+warning: httparse@1.10.1: building for no_std disables httparse SIMD
+   Compiling xtask v0.22.0 (<workspace>/a/xtask)
+   Compiling ureq-proto v0.6.5
+   Compiling ureq v3.4.2
+   Compiling disktree-scan v0.22.0 (<workspace>/a/crates/disktree-scan)
+   Compiling velopack v1.2.161
+   Compiling disktree-mcp v0.22.0 (<workspace>/a/crates/disktree-mcp)
+
+== python-corrected-screenshots.log ==
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 2.083s
+
+OK
+
+== python-corrected-release.log ==
+  wrote <native-macos-temp>/tmphfuxa_8u/.DS_Store (29-byte background alias, 6 records)
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.011s
+
+OK
+
+== independent vmmap observation ==
+Physical footprint:         22.8G
+Physical footprint (peak):  23.7G
