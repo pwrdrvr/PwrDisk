@@ -23,13 +23,16 @@ function budget(jobName, runner) {
     steps[testIndex].match(/timeout-minutes: (\d+)/)?.[1]);
   if (runner) assert.match(steps[testIndex],
     /timeout-minutes: \$\{\{ matrix\.test_timeout \}\}/);
-  const compile = steps.slice(0, testIndex).find(step => /--no-run/.test(step));
+  const compile = steps.slice(0, testIndex).find(step => {
+    const guard = step.match(/if: matrix\.runner == '([^']+)'/);
+    return /--no-run/.test(step) && (!guard || guard[1] === runner);
+  });
   const fixtureIndex = steps.findIndex(step =>
     /run: cargo test -p disktree-core test_paths::disk_image\b/.test(step));
   const fixtureLimit = fixtureIndex < 0 ? 0 : Number(
     steps[fixtureIndex].match(/timeout-minutes: (\d+)/)?.[1]);
   if (compile && runner) {
-    assert.match(compile, /if: matrix\.runner == 'macos-15-intel'/);
+    assert.ok(compile.includes(`if: matrix.runner == '${runner}'`));
   }
   const compileLimit = compile
     ? Number(compile.match(/timeout-minutes: (\d+)/)?.[1]) : jobLimit;
@@ -157,5 +160,22 @@ for (const [platform, config] of [['Intel', intel], ['Apple silicon', arm]]) {
     if (1 + compileLimit + testLimit > jobLimit) {
       assert.equal(completion(compileLimit, testLimit), 'job deadline');
     }
+  });
+}
+
+// Run 42559851081 exhausted these deadlines during compilation, before
+// executing tests. Model one minute beyond each observed cutoff plus test
+// execution: restoring a warm cache cannot be required for correctness.
+for (const [platform, config, build, execution] of [
+  ['Linux x64', budget('check'), 11, 2],
+  ['Linux ARM', budget('other-architectures', 'ubuntu-24.04-arm'), 9, 2],
+  ['macOS ARM', arm, 11, 8],
+  ['macOS Intel', intel, 16, 10],
+]) {
+  test(`${platform}: cold compilation exceeding the old limit still runs tests`, () => {
+    assert.equal(config.completion(build, execution), 'complete');
+  });
+  test(`${platform}: compilation cannot spend the execution deadline`, () => {
+    assert.equal(config.completion(1, config.testLimit), 'complete');
   });
 }

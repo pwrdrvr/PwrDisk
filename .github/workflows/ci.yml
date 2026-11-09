@@ -198,7 +198,7 @@ jobs:
   check:
     name: Lint and test
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
@@ -225,6 +225,15 @@ jobs:
       - name: Lint
         run: cargo xtask lint
 
+      # Cold GPUI code generation exceeded the old test deadline before
+      # any test ran. Keep compilation out of the execution budget.
+      - name: Compile Linux tests
+        timeout-minutes: 20
+        run: |
+          cargo build -p xtask
+          cargo test --workspace --no-run
+          cargo test -p disktree-app --features screenshots screenshots:: --no-run
+
       - name: Test
         timeout-minutes: 10
         run: cargo xtask test
@@ -235,7 +244,7 @@ jobs:
     # either: gpui-kit builds GPUI with runtime shader compilation, so the
     # shaders compile when the app starts, not here.
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 60
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
@@ -257,13 +266,14 @@ jobs:
       - name: Lint
         run: cargo xtask lint
 
-      # Workspace compilation used three minutes of the old ten-minute
-      # test step, leaving no room after the native APFS oracles passed.
+      # Cold test code generation exceeded ten minutes in run 42559851081.
+      # Compile both feature combinations before the execution deadline.
       - name: Compile macOS tests
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
           cargo build -p xtask
           cargo test --workspace --no-run
+          cargo test -p disktree-app --features screenshots screenshots:: --no-run
 
       - name: Test
         timeout-minutes: 15
@@ -369,9 +379,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: Linux aarch64, runner: ubuntu-24.04-arm, job_timeout: 15, test_timeout: 8 }
-          # Lifecycle (10), compile (15), gate (20), setup/cleanup (5).
-          - { name: macOS x86_64, runner: macos-15-intel, job_timeout: 50, test_timeout: 20 }
+          - { name: Linux aarch64, runner: ubuntu-24.04-arm, job_timeout: 35, test_timeout: 8 }
+          # Lifecycle (10), compile (30), gate (20), setup/cleanup (5).
+          - { name: macOS x86_64, runner: macos-15-intel, job_timeout: 65, test_timeout: 20 }
           - { name: Windows aarch64, runner: windows-11-arm, job_timeout: 20, test_timeout: 15 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.job_timeout }}
@@ -407,16 +417,25 @@ jobs:
 
       - uses: ./.github/actions/setup-rust
 
-      # A cold Intel build took 11 minutes before the APFS oracles started.
-      # Compile before either test step so neither spends its execution
-      # budget building core. Both execution deadlines stay unchanged.
+      # A cold ARM Linux build exhausted eight minutes before tests ran.
+      - name: Compile Linux tests
+        if: matrix.runner == 'ubuntu-24.04-arm'
+        timeout-minutes: 20
+        run: |
+          cargo build -p xtask
+          cargo test --workspace --no-run
+          cargo test -p disktree-app --features screenshots screenshots:: --no-run
+
+      # Run 42559851081 exhausted fifteen minutes in cold code generation.
+      # Warm the exact lifecycle and screenshot feature combinations too.
       - name: Compile Intel macOS tests
         if: matrix.runner == 'macos-15-intel'
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: |
           cargo build -p xtask
           cargo test --workspace --no-run
           cargo test -p disktree-core test_paths::disk_image --no-run
+          cargo test -p disktree-app --features screenshots screenshots:: --no-run
 
       - name: APFS image lifecycle
         if: matrix.runner == 'macos-15-intel'

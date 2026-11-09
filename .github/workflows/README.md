@@ -50,23 +50,25 @@ cannot be spent compiling core under another feature combination; run
 42529711572 passed all 33 lifecycle tests in 5m48s but its preceding 4m21s
 core build exhausted that step. Apple silicon runs the fixture tests before
 compiling the GUI dependency graph.
-Both macOS jobs compile workspace tests and xtask separately:
-Intel has a 15-minute compilation limit and 20-minute test gate; Apple
-silicon has 10 and 15 minutes respectively. The test gate includes
-execution, the later screenshot-feature build and script checks. Cold
-compilation took 11 minutes on Intel and 3m06s on Apple silicon. On the
-latter, core tests then took 6m23s, leaving no time in the old ten-minute
-step for the remaining suites. Counting compilation against execution
-terminated both advancing suites. Intel run 42415250815 passed the workspace
-tests, including 10m07s in core, but reached the 30-minute job limit while
-building the screenshot-feature tests. Its enclosing job now allows 50
-minutes: the existing 10-minute lifecycle, 15-minute compilation and
-20-minute gate deadlines, plus five for setup and cleanup. The phase limits
-are unchanged. Apple silicon keeps its 30-minute job limit. The deadline
-model in `scripts/ci/test-budgets.test.cjs` checks workloads against the
-separate phase budgets and exhaustively checks that Intel's valid phase
-durations fit the job. The job limits also cover setup and cache saving.
-Revisit them when runner speeds or cold-cache build times change.
+Linux and macOS compile xtask, workspace tests and screenshot-feature tests
+before starting the execution deadline. In run 42559851081, Linux x64 and
+ARM reached their ten- and eight-minute test deadlines while still
+compiling. The macOS ARM and Intel compile steps likewise exhausted ten
+and fifteen minutes. No tests ran in those four failed steps. These jobs
+must work with a cold cache, including dependency feature changes that
+invalidate restored artifacts.
+
+Linux gets a 20-minute compile phase, with the existing ten-minute x64 and
+eight-minute ARM execution limits. macOS gets 20 minutes to compile on
+Apple silicon and 30 on Intel; execution stays at 15 and 20 respectively.
+Both feature combinations compile in the build phase so screenshot code
+generation cannot consume the execution budget. The job limits are 45
+minutes for Linux x64, 35 for Linux ARM, 60 for Apple silicon and 65 for
+Intel, including setup, lint where applicable, APFS fixtures, packaging
+where applicable and cleanup. The deadline model in
+`scripts/ci/test-budgets.test.cjs` reproduces the old cutoffs and verifies
+that separate compilation and execution fit the enclosing jobs. Every
+phase remains bounded; timeouts still fail the check.
 
 ### The Rust cache
 

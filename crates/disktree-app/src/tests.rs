@@ -6994,8 +6994,12 @@ fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
         assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
         app.run_epoch
     });
-    for _ in 0..400 {
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    // This waits for real filesystem work, outside GPUI's test clock.
+    // The two-second loop expired on the hosted Windows ARM runner while
+    // its worker was still running. Keep a wall-clock limit for hangs.
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
         let done = update(view, cx, |app, cx| {
             app.poll_removal_once(epoch, cx);
             app.screen == Screen::Done
@@ -7003,8 +7007,12 @@ fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
         if done {
             return;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the removal did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    panic!("the removal did not finish");
 }
 
 /// Cargo writes a cache tag into every `target` directory. Review once
