@@ -1,6 +1,7 @@
 //! Owned, serialized disk images for macOS filesystem oracles.
 
 mod command;
+mod operations;
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -32,9 +33,13 @@ fn settle() {
 pub struct Image {
     temp: Option<tempfile::TempDir>,
     mount: Option<PathBuf>,
+    mount_temp: Option<tempfile::TempDir>,
     mounted: bool,
+    // Bookkeeping for lifecycle assertions and diagnostics, never an operand
+    // for a native operation: its number can belong to another image later.
     device: Option<PathBuf>,
-    volume: Option<PathBuf>,
+    // Callbacks receive backing paths so cached identifiers cannot cross the
+    // native boundary, including in regression cleanup and injected failures.
     eject: fn(&Path, bool) -> Result<(), String>,
     attachment: fn(&Path) -> Result<Option<PathBuf>, String>,
     retire: fn(&Path) -> Result<(), String>,
@@ -154,7 +159,10 @@ fn retire_container(backing: &Path) -> Result<(), String> {
     .map(|_| ())
 }
 
-fn only_child(entries: &[serde_json::Value], parent: &Path) -> PathBuf {
+fn only_child(
+    entries: &[serde_json::Value],
+    parent: &Path,
+) -> Result<PathBuf, String> {
     let prefix = format!("{}s", parent.display());
     let mut children = entries.iter().filter_map(|entry| {
         let device = entry["dev-entry"].as_str()?;
@@ -162,33 +170,15 @@ fn only_child(entries: &[serde_json::Value], parent: &Path) -> PathBuf {
         (!suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
             .then(|| PathBuf::from(device))
     });
-    let child = children.next().expect("one owned child device");
-    assert!(
-        children.next().is_none(),
-        "only one owned partition or volume"
-    );
-    child
+    let child = children.next().ok_or("missing owned child device")?;
+    if children.next().is_some() {
+        return Err("multiple owned partitions or volumes".into());
+    }
+    Ok(child)
 }
 
-fn eject(root: &Path, force: bool) -> Result<(), String> {
-    if force {
-        // Release the chosen whole disk's volumes before native detach.
-        let unmount = run(Command::new("diskutil")
-            .args(["unmountDisk", "force"])
-            .arg(root));
-        // DiskImages owns the attachment and its helper process. Let its
-        // native detach finish cleanup after Disk Arbitration unmounts APFS;
-        // debug output preserves the reason if the device remains busy.
-        return run(Command::new("hdiutil")
-            .args(["detach", "-force", "-debug"])
-            .arg(root))
-        .map(|_| ())
-        .map_err(|detach| match unmount {
-            Ok(_) => detach,
-            Err(unmount) => format!("{unmount}\n{detach}"),
-        });
-    }
-    run(Command::new("diskutil").arg("eject").arg(root)).map(|_| ())
+fn eject(backing: &Path, force: bool) -> Result<(), String> {
+    operations::eject(backing, force, &mut operations::Native)
 }
 
 fn run(command: &mut Command) -> Result<Output, String> {
@@ -211,7 +201,7 @@ fn describe(command: &mut Command) -> String {
 
 impl Image {
     pub(crate) fn new() -> Self {
-        let mut image = Self::blank(None);
+        let image = Self::blank(None);
         image.create_container();
         image.add_volume();
         image.mount_volume();
@@ -220,7 +210,7 @@ impl Image {
     }
 
     pub(crate) fn mount_at(mount: &Path) -> Self {
-        let mut image = Self::blank(Some(mount.to_path_buf()));
+        let image = Self::blank(Some(mount.to_path_buf()));
         image.create_container();
         image.add_volume();
         image.mount_volume();
@@ -235,11 +225,17 @@ impl Image {
         let mut image = Self {
             temp: Some(tempfile::tempdir().expect("private image directory")),
             mount,
+            // External scratch can have ownership disabled. Disk Arbitration
+            // then requires administrator approval for each custom mount.
+            // Only the empty placeholder lives here; all payload remains in
+            // the image backing file on the configured scratch volume.
+            mount_temp: Some(
+                tempfile::tempdir_in("/tmp").expect("private mount directory"),
+            ),
             // Formatting and attaching can leave a partial attachment even
             // on failure. Only an authoritative query permits file removal.
             mounted: true,
             device: None,
-            volume: None,
             eject,
             attachment,
             retire: retire_container,
@@ -301,9 +297,9 @@ impl Image {
 
     pub(crate) fn root(&self) -> PathBuf {
         self.mount.clone().unwrap_or_else(|| {
-            self.temp
+            self.mount_temp
                 .as_ref()
-                .expect("image directory")
+                .expect("mount directory")
                 .path()
                 .join("mount")
         })
@@ -320,7 +316,7 @@ impl Image {
         checked(
             Command::new("/sbin/newfs_apfs")
                 .args(["-C", "-w"])
-                .arg(only_child(&entries, &physical)),
+                .arg(only_child(&entries, &physical).expect("owned partition")),
         );
     }
 
@@ -340,14 +336,14 @@ impl Image {
         );
     }
 
-    fn mount_volume(&mut self) {
+    fn mount_volume(&self) {
         let entries = owned_entities(&self.backing())
             .expect("owned attachment")
             .expect("attached backing image");
         let container = container_device(&entries)
             .expect("owned container")
             .expect("created APFS container");
-        let volume = only_child(&entries, &container);
+        let volume = only_child(&entries, &container).expect("owned volume");
         checked(
             Command::new("diskutil")
                 .args(["mount", "nobrowse", "-mountPoint"])
@@ -370,7 +366,6 @@ impl Image {
             root.canonicalize().expect("mounted path"),
             self.root().canonicalize().expect("private mount point")
         );
-        self.volume = Some(volume);
         fs::write(self.root().join(".metadata_never_index"), [])
             .expect("keep Spotlight out of the oracle");
     }
@@ -391,7 +386,6 @@ impl Image {
         self.release_backing()?;
         self.mounted = false;
         self.device = None;
-        self.volume = None;
         Ok(())
     }
 
@@ -402,10 +396,10 @@ impl Image {
         let mut failure = String::new();
         let mut target = (self.attachment)(&self.backing())?;
         for force in [false, true] {
-            let Some(device) = target.take() else {
+            let Some(_) = target.take() else {
                 break;
             };
-            if let Err(error) = (self.eject)(&device, force) {
+            if let Err(error) = (self.eject)(&self.backing(), force) {
                 failure.push('\n');
                 failure.push_str(&error);
             }
@@ -421,12 +415,14 @@ impl Image {
             target = (self.attachment)(&self.backing())
                 .map_err(|error| format!("{failure}\n{error}"))?;
             for attempt in 0..RELEASE_ATTEMPTS {
-                let Some(device) = target.take() else {
+                let Some(_) = target.take() else {
                     break;
                 };
                 // Restart with graceful ejection after retirement; forced
                 // detach can still see EBUSY while the store is releasing.
-                if let Err(error) = (self.eject)(&device, attempt % 2 != 0) {
+                if let Err(error) =
+                    (self.eject)(&self.backing(), attempt % 2 != 0)
+                {
                     failure.push('\n');
                     failure.push_str(&error);
                 }
@@ -479,20 +475,12 @@ impl Image {
         // A remount commits APFS's deferred frees and retires old checkpoints.
         // Keep the image attached: ejecting its physical store for every
         // reading needlessly tears down the whole APFS container.
-        let volume = self.volume.as_ref().expect("attached APFS volume");
-        checked(
-            Command::new("diskutil")
-                .args(["unmount", "force"])
-                .arg(volume),
-        );
-        fs::create_dir_all(self.root()).expect("restore private mount point");
-        checked(
-            Command::new("diskutil")
-                .args(["mount", "nobrowse", "-mountPoint"])
-                .arg(self.root())
-                .arg(volume),
-        );
-        let output = checked(Command::new("df").arg("-kP").arg(self.root()));
+        let output = operations::checkpoint(
+            &self.root(),
+            &self.backing(),
+            &mut operations::Native,
+        )
+        .expect("checkpoint private APFS volume");
         let text = String::from_utf8(output.stdout).expect("df output");
         text.lines()
             .nth(1)
@@ -510,8 +498,46 @@ fn fail_eject(_: &Path, _: bool) -> Result<(), String> {
     Err("injected detach failure".into())
 }
 
-fn check_interrupted_setup(stages: u8) -> Result<(), TestCaseError> {
+#[test]
+fn default_mount_uses_system_scratch_without_moving_the_backing() {
+    use std::os::unix::fs::MetadataExt as _;
+
     let mut image = Image::blank(None);
+    let mount_device = fs::metadata(image.root()).expect("mount point").dev();
+    let backing_device = fs::metadata(image.backing()).expect("backing").dev();
+    image.detach();
+    drop(image);
+    assert_eq!(
+        mount_device,
+        fs::metadata("/tmp").expect("system scratch").dev(),
+        "mount placeholders must not inherit an external TMPDIR's policy"
+    );
+    assert_eq!(
+        backing_device,
+        fs::metadata(std::env::temp_dir())
+            .expect("configured scratch")
+            .dev(),
+        "image payload must stay on the configured scratch volume"
+    );
+}
+
+fn check_interrupted_setup(stages: u8) -> Result<(), TestCaseError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let mut image = Image::blank(None);
+    // The setup model must preserve the separation at every stage, including
+    // an unformatted attachment and a mounted volume whose device differs.
+    let mount_parent = image.root().parent().expect("mount parent").to_owned();
+    prop_assert_eq!(
+        fs::metadata(mount_parent).expect("mount directory").dev(),
+        fs::metadata("/tmp").expect("system scratch").dev(),
+    );
+    prop_assert_eq!(
+        fs::metadata(image.backing()).expect("backing").dev(),
+        fs::metadata(std::env::temp_dir())
+            .expect("configured scratch")
+            .dev(),
+    );
     let entries = owned_entities(&image.backing())
         .expect("owned raw attachment")
         .expect("attached backing file");
@@ -600,9 +626,9 @@ fn check_retained_backing(eject: fn(&Path, bool) -> Result<(), String>) {
     let image = Image {
         temp: Some(temp),
         mount: None,
+        mount_temp: None,
         mounted: true,
         device: None,
-        volume: None,
         eject,
         attachment: |_| Ok(Some(PathBuf::from("/dev/disk999999"))),
         retire: |_| Ok(()),
@@ -669,6 +695,10 @@ proptest! {
     ) {
         let temp = tempfile::tempdir().expect("cleanup model");
         let retained = temp.path().to_owned();
+        let mount_temp = tempfile::tempdir_in("/tmp").expect("mount model");
+        let mount_retained = mount_temp.path().to_owned();
+        fs::write(mount_retained.join("must-survive"), b"mounted stand-in")
+            .expect("mount sentinel");
         fs::write(retained.join("oracle.sparseimage"), [
             1, if normal_detached { 0 } else { 2 },
             if forced_detached { 0 } else { 2 },
@@ -686,9 +716,9 @@ proptest! {
         let image = Image {
             temp: Some(temp),
             mount: None,
+            mount_temp: Some(mount_temp),
             mounted: true,
             device: None,
-            volume: None,
             eject,
             attachment: if attachment_known {
                 model_attachment
@@ -715,9 +745,15 @@ proptest! {
         prop_assert_eq!(retained.join("oracle.sparseimage").exists(),
             !attachment_known || !(normal_detached || forced_detached
                 || retirement_detached || final_detached));
+        prop_assert_eq!(mount_retained.join("must-survive").exists(),
+            retained.exists(), "uncertain mounts must not be traversed");
         if retained.exists() {
             fs::remove_dir_all(retained)
                 .expect("remove the unmounted stand-in");
+        }
+        if mount_retained.exists() {
+            fs::remove_dir_all(mount_retained)
+                .expect("remove the unmounted mount stand-in");
         }
     }
 }
@@ -725,7 +761,7 @@ proptest! {
 #[test]
 fn an_unmounted_volume_still_detaches_its_backing_image() {
     let mut image = Image::new();
-    let device = image.device.clone().expect("attached device");
+    let backing = image.backing();
     let retained = image
         .temp
         .as_ref()
@@ -734,20 +770,18 @@ fn an_unmounted_volume_still_detaches_its_backing_image() {
         .to_owned();
     // A busy detach can unmount APFS before failing to eject the image.
     // Reproduce that state directly, without relying on background readers.
-    checked(
-        Command::new("diskutil")
-            .args(["unmount", "force"])
-            .arg(image.root()),
-    );
+    operations::unmount(&backing, &mut operations::Native)
+        .expect("unmount the owned volume");
     let outcome =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             image.detach();
         }));
     drop(image);
     if outcome.is_err() {
-        // On pre-fix code the mount point is gone, but the recorded image
-        // device still belongs to this test and must be released explicitly.
-        eject(&device, true).expect("release the retained private image");
+        // Even regression cleanup must rediscover the attachment. A device
+        // recorded before the failure may no longer belong to this image.
+        eject(&backing, true).expect("release the retained private image");
+        assert!(attachment(&backing).expect("attachment state").is_none());
         fs::remove_dir_all(retained).expect("remove retained backing files");
     }
     assert!(outcome.is_ok(), "unmounting must not lose the eject target");
@@ -798,8 +832,11 @@ fn an_open_reader_does_not_prevent_private_image_cleanup() {
     );
 }
 
-fn eject_then_report_failure(root: &Path, force: bool) -> Result<(), String> {
-    eject(root, force)?;
+fn eject_then_report_failure(
+    backing: &Path,
+    force: bool,
+) -> Result<(), String> {
+    eject(backing, force)?;
     Err("injected error after successful device removal".into())
 }
 
@@ -816,9 +853,9 @@ fn check_external_detachment(
     let mut image = Image {
         temp: Some(temp),
         mount: None,
+        mount_temp: None,
         mounted: true,
         device: cached_device.clone(),
-        volume: None,
         eject: fail_eject,
         attachment: model_attachment,
         retire: |_| Ok(()),
@@ -915,25 +952,18 @@ fn a_failed_command_that_detached_the_image_is_successful_cleanup() {
     check_already_ejected(0, true).expect("detached backing image is gone");
 }
 
-fn busy_physical_store(target: &Path, force: bool) -> Result<(), String> {
-    let output = run(Command::new("hdiutil").args(["info", "-plist"]))?;
-    let records = plist_field(&output.stdout, "images")?;
-    let images = records.as_array().ok_or("attached image records")?;
-    let held = images.iter().any(|image| {
-        image["system-entities"].as_array().is_some_and(|entries| {
-            entries.iter().any(|entry| {
-                entry["dev-entry"].as_str().map(Path::new) == Some(target)
-            }) && entries
-                .iter()
-                .any(|entry| entry["content-hint"] == APFS_CONTAINER)
-        })
-    });
+fn busy_physical_store(backing: &Path, force: bool) -> Result<(), String> {
+    let held = owned_entities(backing)?
+        .map(|entries| container_device(&entries))
+        .transpose()?
+        .flatten()
+        .is_some();
     if held {
         // CI refused both container and physical-store ejection after all
         // volumes unmounted. Keep that hold until APFS retires its container.
         Err("modeled EBUSY: physical store has a live APFS container".into())
     } else {
-        eject(target, force)
+        eject(backing, force)
     }
 }
 
@@ -971,9 +1001,9 @@ fn check_delayed_release(
     let mut image = Image {
         temp: Some(temp),
         mount: None,
+        mount_temp: None,
         mounted: true,
         device: None,
-        volume: None,
         eject: fail_eject,
         attachment: model_attachment,
         retire: |_| Ok(()),
@@ -1066,6 +1096,12 @@ impl Drop for Image {
             // TempDir would recurse into a still-mounted volume. Retain the
             // backing directory, and never turn an assertion into an abort.
             let retained = self.temp.take().expect("image directory").keep();
+            if let Some(mount) = self.mount_temp.take() {
+                eprintln!(
+                    "mount directory retained at {}",
+                    mount.keep().display()
+                );
+            }
             eprintln!(
                 "{error}\nprivate APFS image retained at {}",
                 retained.display()

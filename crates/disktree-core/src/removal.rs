@@ -1266,7 +1266,10 @@ pub fn is_mount_point(path: &Path) -> bool {
     let Some(parent) = path.parent() else {
         return true;
     };
-    match fs::symlink_metadata(parent) {
+    // Ancestor links are followed when looking up the entry. Compare its
+    // device with that actual parent, not an alias inode on another disk.
+    // The entry itself stays lstat'ed: removing a link never mounts its target.
+    match fs::metadata(parent) {
         Ok(parent_meta) => parent_meta.dev() != meta.dev(),
         // A directory whose parent cannot be stat'ed is not worth the risk.
         Err(_) => true,

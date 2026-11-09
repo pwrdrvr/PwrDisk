@@ -42,9 +42,14 @@ November 6, 2026, the Intel macOS test step took 8–13 minutes, Windows
 tests at most 9, and the other test steps at most 5. Their limits allow
 roughly twice those times; Intel gets 20 minutes. One earlier Intel run
 took 46 minutes in the test step: it would now fail instead of holding up
-the check. Both macOS jobs first run the isolated APFS image fixture tests
-with a ten-minute deadline, before compiling the GUI dependency graph.
-The full test gate repeats those tests alongside the deletion oracle.
+the check. Both macOS jobs run the isolated APFS image fixture tests
+with a ten-minute deadline before the full test gate repeats those tests
+alongside the deletion oracle. Intel compiles workspace tests and the exact
+core lifecycle invocation first so the lifecycle step's execution deadline
+cannot be spent compiling core under another feature combination; run
+42529711572 passed all 33 lifecycle tests in 5m48s but its preceding 4m21s
+core build exhausted that step. Apple silicon runs the fixture tests before
+compiling the GUI dependency graph.
 Both macOS jobs compile workspace tests and xtask separately:
 Intel has a 15-minute compilation limit and 20-minute test gate; Apple
 silicon has 10 and 15 minutes respectively. The test gate includes

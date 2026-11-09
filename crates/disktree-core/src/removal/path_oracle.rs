@@ -171,6 +171,21 @@ proptest! {
     }
 }
 
+#[test]
+fn an_alias_on_another_volume_does_not_make_a_child_a_mount() {
+    // The shrunk counterexample: /tmp is on the startup disk while TMPDIR
+    // can be on an external disk. The alias's inode is not the parent of a.
+    let temp = tempfile::tempdir_in("/tmp").expect("tree");
+    fs::create_dir(temp.path().join("a")).expect("directory");
+    let aliases = tempfile::tempdir().expect("aliases");
+    check(
+        temp.path(),
+        &["a".into()],
+        &aliases.path().join("root"),
+        None,
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn var_folders_is_protected_even_when_the_root_is_a_link() {
