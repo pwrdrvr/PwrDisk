@@ -3,7 +3,36 @@
 What macOS keeps outside a file scan, what PwrDisk refuses, and what to
 leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
 
+## Human approval over MCP
+
+`pwrdisk_remove` asks the connected client for an explicit human decision
+about the exact preview. PwrAgent can present this confirmation over
+messaging. Auto/Full Access and tool arguments never count as consent.
+A replaced selected object, changed resolved parent or changed scan root
+requires a fresh preview and approval; the worker checks again before writes.
+Directory contents remain live. No approval survives a cancelled or expired
+request, and reconnect never replays acceptance. Read
+[the client contract](https://github.com/pwrdrvr/PwrDisk/blob/main/docs/mcp-approval.md).
+
 ## Reading the numbers
+
+Before promising recovery, call `pwrdisk_retention` for each selected
+volume. This read-only, time-bounded check lists local Time Machine
+snapshots. It does not quantify blocks retained from the selected paths,
+list all APFS snapshots, inspect open files or predict concurrent writes.
+Unknown and measured zero snapshots are distinct. Snapshot presence is
+plausible evidence of retention, not proof that it explains an exact
+shortfall; absence does not guarantee immediate recovery. Do not thin,
+delete or alter snapshots as part of this check. Even a set with almost
+all private allocation can yield no immediate available-space increase.
+
+An allocated scan's reported bytes are allocation, never apparent logical
+size. Keep reported allocation, private allocation, whole-set reclaim
+bounds and signed observed volume change separate. Logical size is a fifth
+metric only when measured. Use `pwrdisk_rank` on explicit candidates to
+compare private allocation or standalone reclaim lower bounds; unavailable
+is null, not zero. Establish ownership and the owning tool's cleanup method
+separately, and do not propose worktrees just to release clone groups.
 
 - **APFS clones share blocks.** Finder duplicates, `cp -c` and some package
   managers make clones: two copies can cost one copy's space, and removing
@@ -11,10 +40,20 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
   cloned tree can exceed the volume's used space. Listed allocation is not
   guaranteed freed space; do not cap the scan total to volume usage. The
   free space measured after the review is the real figure.
+- **Read a row's clone split.** A row with clone blocks adds
+  `X private · Y shared with other APFS clones · frees ≈ Z alone`. Only the
+  private part goes when that entry is removed by itself; the shared part
+  stays while any other clone of it remains, and APFS counts clones outside
+  the scanned root too. A header line `APFS clones: … counted again` says
+  how much of the total is listed more than once. Do not present listed
+  bytes, or the shared part, as space a clone-backed worktree or copy will
+  free. A row without the clause has no clone files.
 - **Use the selected-set reclaim bounds, not listed bytes.** PwrDisk
-  evaluates accepted marks together: a complete clone group is counted
-  once, while copies retained outside the selection keep shared blocks
-  alive. All hardlink names must be selected before their allocation can
+  evaluates accepted marks together: a complete clone ID counts shared
+  data once toward possible savings only, with a partial estimate. Modified
+  clones with another ID, even outside the scan, can retain those blocks;
+  only measured private bytes enter the lower bound. All hardlink names
+  must be selected before their allocation can
   be reclaimed. Clone groups are scoped to their physical APFS volume.
   Missing metadata widens the bounds; it does not justify projecting all
   listed bytes. Apparent-size scans and disabled clone measurements cannot
@@ -23,16 +62,33 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
   Bounds are scan-derived, before snapshots, open files and
   later changes; even the lower estimate is not a guaranteed saving.
 - **One container, several volumes.** The System, Data, Preboot, Recovery
-  and VM volumes share one APFS container's space. A whole-disk scan of
-  `/` explains the Data volume; the rest shows as space the scan does not
-  explain. `diskutil apfs list` shows each volume's use.
+  and VM volumes share one APFS container's space. The startup disk meter
+  shows actual free space and total capacity from the shared pool. Used is
+  Total minus Free; it includes the other volumes and metadata too. The
+  System + Data allocation and other used space are a separate breakdown,
+  not a substitute for the whole pool's Used figure. A scan of
+  `/` includes readable System and Data files; it excludes nested mounts
+  such as Preboot, Recovery and VM. Data-only contents under
+  `/System/Volumes/Data` are included, while destinations listed in
+  `/usr/share/firmlinks` are excluded there because the scan reaches them
+  through their normal paths. A missing or invalid firmlink table makes
+  that Data traversal unreadable, rather than silently omitting its files
+  or counting aliases twice. `diskutil apfs list` shows each volume's use.
+  Finder's startup-volume Used figure covers System and Data together;
+  use the same units before comparing. The clone-adjusted scan
+  is still approximate: do not attribute its entire residual difference
+  to unreadable files or snapshots without measuring them.
 - **Local snapshots hold deleted data.** Time Machine and system updates
   keep APFS snapshots; space freed while one exists may not come back until
   it expires. `tmutil listlocalsnapshots /` lists them. Deleting one
   (`tmutil deletelocalsnapshots`) is the user's decision; give the command,
   do not run it.
-- **"Purgeable" is not free.** Finder counts purgeable space as available;
-  PwrDisk and `df` do not. If the numbers disagree, that is usually why.
+- **Reclaimable capacity is not free space.** PwrDisk shows macOS's native
+  important-usage estimate separately as including reclaimable space. It
+  already counts that space once and can differ from Finder's Available
+  figure. Actual free-block counters drive the primary meter, projections,
+  removal guards and measured recovery. Do not add reclaimable bytes to
+  those counters or treat a changing estimate as recovery from removal.
 - **Swap and the sleep image** live on the VM volume. Leave them alone.
 
 ## Privacy and access
@@ -54,11 +110,36 @@ leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
 
 `pwrdisk_mark` keeps these back and says why: `/System`, `/Library`,
 `/private`, `/cores`, `/opt/homebrew` and the other system trees, the home
-directory and anything holding it, mount points, and the `.fseventsd` and
+directory and anything holding it, `/Users` and every account's folder in
+it (`/Users/Shared`, `/Users/Guest`, another user's home; what is inside
+one may be proposed), mount points, and the `.fseventsd` and
 `.Spotlight-V100` stores (use `mdutil` for Spotlight, never delete either).
-Classification is independent of removal eligibility: `pwrdisk_find` may
-list `/private/tmp` as a temporary cleanup candidate, but reports the
-`/private` system-tree guard refusal. Do not mark it or bypass the guard.
+What is inside `/private/tmp` and `/private/var/tmp` (`/tmp` and
+`/var/tmp`) may be marked, as on Linux; the two folders themselves stay
+refused under `/private`, and so does `/private/var/folders`, where each
+user's `$TMPDIR` and caches hold running apps' live state. Classification
+is independent of removal eligibility: `pwrdisk_find` may list
+`/private/tmp` as a temporary cleanup candidate and report the `/private`
+guard refusal for the folder. Look inside it with `pwrdisk_ls`, propose
+entries the user recognizes as their own leftovers, and leave files a
+running program may still use. Do not bypass the guard.
+
+`/Applications`, `/Applications/Utilities` and `/Volumes` themselves are
+protected containers. They cannot be marked or removed, including through
+case variants, the Data-volume spelling or a linked scan root. Individual
+third-party apps inside `/Applications` remain eligible under the other
+guards; prefer an app's supported uninstaller when it has one. Selecting a
+folder to inspect it is still allowed. The same guards apply in Review
+and again on the removal worker.
+
+Choosing a scan root through a link (`/var`, `/tmp`, a root-volume alias)
+does not bypass system-tree, profile or nested-mount guards. In particular,
+`/var/folders` remains protected as `/private/var/folders`; an explicit scan
+there does not make its live state removable. A one-filesystem scan stops
+at the same mounts under every spelling of its root. A selected symlink
+itself is still unlinked without deleting its destination.
+An ancestor alias on a different disk does not make an ordinary child a
+mount point; the mount check compares the child with its resolved parent.
 
 ## Never propose
 
@@ -77,14 +158,15 @@ list `/private/tmp` as a temporary cleanup candidate, but reports the
 - **Mail and Messages attachments, Keychains, and iPhone and iPad backups**
   (`~/Library/Application Support/MobileSync/Backup`): user data and
   secrets. Old device backups are the user's to delete from Finder.
-- **`/Applications`**: uninstall with the app's uninstaller or by dragging to
-  the Trash in Finder, which the user does.
+- **All of `/Applications` or `/Applications/Utilities`**: inspect individual
+  apps instead. Establish that the user wants to uninstall that app and
+  whether it has an uninstaller before proposing its bundle for removal.
 
 ## Usually safe, with the owning tool first
 
 | what | where | prefer |
 | --- | --- | --- |
-| app caches | `~/Library/Caches/<app>` | quit the app first; they regrow |
+| app cache inspection | `~/Library/Caches/<app>` | quit the app; use its supported cleanup; unknown owners need inspection |
 | Xcode build data | `~/Library/Developer/Xcode/DerivedData` | Xcode rebuilds it |
 | old device support | `~/Library/Developer/Xcode/iOS DeviceSupport` | re-created when a device connects |
 | simulators | `~/Library/Developer/CoreSimulator` | `xcrun simctl delete unavailable`; runtimes in Xcode › Settings › Components |
@@ -92,7 +174,7 @@ list `/private/tmp` as a temporary cleanup candidate, but reports the
 | Homebrew downloads | `~/Library/Caches/Homebrew` | `brew cleanup --dry-run`, then `brew cleanup` |
 | Docker Desktop | `~/Library/Containers/com.docker.docker/.../Docker.raw` | never mark the disk image; `docker system df`, then prune |
 | pnpm package store | `~/Library/pnpm/store/v*/files` (also older `.pnpm-store/v*/files`) | `pnpm store path` to confirm the location; `pnpm store prune` first; never treat the `pnpm` installation, executable, `global` or `.tools` as a disposable store |
-| language caches | `~/.npm`, `~/.cargo/registry`, `~/Library/Caches/pip`, `~/.gradle/caches` | the tool's clean command |
+| language caches | `~/.npm/_cacache`, `~/.cargo/registry`, `~/Library/Caches/pip`, `~/.gradle/caches` | the tool's clean command |
 
 ## Trash
 
@@ -101,6 +183,10 @@ the user empties the Trash; on an external disk, that disk's `.Trashes`.
 
 ## Confirmed removal
 
+Removal preflight supports descendant paths longer than a full-path lookup
+allows. Cache inspection and fresh capacity measurement still apply to the
+whole selection; unreadable entries and nested mounts still stop removal.
+
 Never approve a removal with computer use (clicks, keys or accessibility
 actions). The user approves in the app, or explicitly confirms the exact
 paths and mode from `pwrdisk_removal_preview` before the destructive
@@ -108,7 +194,21 @@ paths and mode from `pwrdisk_removal_preview` before the destructive
 emptied, but is not guaranteed; permanent deletion cannot be undone through
 PwrDisk. Both modes use the existing removal guards and Settings > Safety's
 per-operation limit, 5% of each volume's capacity by default. Never bypass a
-refusal, increase the setting or split batches to evade it.
+refusal, increase the setting or split batches to evade it. A window
+refuses a mark that would take the list past the limit, and marks made
+without one are checked when they reach it: only the person can mark past
+it, in the window. Say so, and let them decide.
+
+The worker counts hardlinked allocation once across the complete selection,
+including aliases in different marked folders. Scan and recheck use the
+same entry measurement and aggregation code, retaining the scan's size,
+hardlink and clone-metadata parameters. The recheck includes hidden/deep
+contents, never follows links, and stays on the target's volume regardless
+of display filters. It checks the reviewed and
+fresh totals separately on each volume; it never adds two scans' different
+hardlink charge assignments. A preflight refusal removes no selected paths.
+Observed is the signed volume free-space change, including other activity,
+not evidence that this attempt deleted files.
 
 MCP removal also requires interactive confirmation from the client (form
 elicitation). An agent-supplied confirmation value does not establish human
@@ -117,3 +217,143 @@ never approve its buttons or confirmation keys through computer use.
 
 Capacity checks charge a symbolic link to its containing volume, not its
 destination.
+
+## Read-only APFS path-set planning
+
+Use `pwrdisk_estimate` with the complete hypothetical `paths` list before
+marking. It leaves the cart, scan root, displayed directory and pending
+removal previews unchanged. Do not temporarily mark worktrees to measure a
+set, and do not add individual directory reclaim estimates: clone groups
+and hardlink names can span directories.
+
+`listed_bytes` counts directory allocation, even repeated clone blocks.
+`shared_allocation` includes copies shared inside the selection and clone
+allocation whose private size is unknown. `internal_duplicate_allocation`
+reports repetitions within that whole set; neither is unique physical
+usage or necessarily space retained outside it. Private allocation can
+remain held by hardlink names outside the set. Reclaim bounds evaluate the
+accepted union with existing guards; covered paths do not count twice.
+Unavailable values are null, not measured zero. Apparent scans, disabled or
+unsupported clone collection cannot supply physical bounds. Check metadata
+and scan completeness, hidden filtering, depth, unreadable entries and
+volume attribution. Cross-volume directory totals are not projected onto
+the scanned volume's meter.
+
+For four full 12 GB clones, selecting three can reclaim almost nothing.
+Selecting all four can unlock the shared 12 GB once. The tool returns
+bounded retained clone-holder **directories** and bounds for adding each,
+plus a single estimate for adding all returned peers. Individual peer
+savings are alternatives, not additive. `additional` uses interval
+subtraction, so modified clones can have wide additional bounds. A peer is
+an inspection lead, never permission or a recommendation to remove it.
+Establish ownership, uncommitted work and the user's intent before proposing
+any worktree for removal.
+
+`peer_scope` groups peers by its direct child directories. Its default is
+the selected paths' common parent; widen it within the current scan to look
+elsewhere, then narrow it with another call if results are too broad. The
+response bounds peer count and metadata visits and reports truncation.
+Known unselected clone files are observations within the scan. Unresolved
+reference counts have no owner paths; `references_not_seen_in_scan` is only
+available when the relevant metadata walk and scan coverage are complete.
+It does not identify external owners. Clone IDs cannot discover every
+shared extent owner, especially after clones are modified. Snapshots, open
+files, compression and changes after scanning can alter actual freed space;
+never present these bounds as exact predictions. Trash usually frees space
+only after the user empties it.
+
+## Owner-managed caches
+
+Cache cleanup is for caches PwrDisk can clean with their owner's own
+command (npm, npx, uv, pip, Cypress, Playwright): a marked path in one, or
+holding one, is refused for `trash` and `permanent` and goes through
+`owner_cleanup`. Anything else (a folder named `cache` or `Caches`, a
+`regenerable` hatch, a cache tag, a Cargo `target`, a `.venv`, or a cache
+whose owner has no command here, such as pnpm or Homebrew) is an ordinary
+`trash` or `permanent` removal, proposed, agreed and confirmed like any
+other path. Cache cleanup is decided path by path. Call
+`pwrdisk_removal_preview` with `owner_cleanup` and no decisions: it returns
+one proposal per marked path with its status and problem, resolved owner,
+version, executable, arguments, environment overrides, configured root, full
+actual scope (including unselected siblings), effects, limitations,
+recoverability, and whether Delete files is offered. Show every proposal and
+let the user choose for each path `skip`, `owner` (only where offered) or
+`delete_files`. Never choose for them; where the owner's command is
+offered, recommend it over `delete_files`. Then preview again with `decisions` naming every marked
+path once, and `delete_files_mode` (`trash` or `permanent`, as the user
+chose) when any path uses `delete_files`. Confirmation needs that preview's
+exact paths and its own text: `RUN OWNER CLEANUP`, `DELETE CACHE FILES`,
+`TRASH CACHE FILES`, or both intents joined with `AND`. Owner approval never
+approves deleting files. Unavailable commands do not establish absent
+software. An unsupported version, failed probe, or failed or cancelled owner
+command never falls back to deleting files, and never to a shell command;
+deleting them instead is a new preview the user decides.
+
+An owner's cache is recognized by its default or configured root, a name
+only it uses, or the layout it keeps when moved; a cache tag alone is not
+uv's. All removal modes may
+return a preparing response while inspection runs on a worker; retry
+only the read-only preview. Exported
+lists keep marked paths, and raw script exports cannot replace owner cleanup.
+
+On macOS and Linux the adapters cover npm packages (9–11), npm's separate
+npx cache (11.2–11.x), uv (0.11.x), pip (23–26), Cypress (13–15) and the
+installed JavaScript Playwright CLI (only 1.64.0–1.64.1). Each CLI must
+resolve the selected cache. Playwright's read-only dry-run verifies its
+root, then `PLAYWRIGHT_BROWSERS_PATH=ROOT playwright uninstall --all`
+removes managed browsers and reference files inside that root, including
+versions other projects use. Branded Chrome/Edge and unrelated files stay.
+It takes no uninstall lock; an existing `__dirlock` is refused and process
+checks are best effort. A generic `cli.js` basename does not identify
+Playwright: its exact executable or known owner launchers must match.
+Stop installers, tests and cached browsers first.
+Exit success may leave files behind; report the rescan and measured change.
+Playwright log/profile writes and version-display overrides are disabled
+for the probes and command. pnpm remains inspection-only because prune
+reaches separate metadata/dlx/runtime state; Homebrew reaches installed versions, logs and
+locks; Puppeteer loads executable config and requires interactive input
+without a verified root-pinned argument-list adapter. See
+[the scope audit](https://github.com/pwrdrvr/PwrDisk/blob/main/docs/owner-cleanup.md#candidate-audit-2026-11-04).
+Windows command launchers have no execution adapter yet. Neither containers nor volumes are
+cleanup scopes.
+
+Owner inspection includes pnpm's independently located store and
+metadata/dlx caches (`PNPM_HOME`, XDG data/cache and Windows local-app-data
+locations), Playwright's npm environment aliases, and Puppeteer's home cache
+even with `XDG_CACHE_HOME` set. These are inspection hints, never permission
+to clean the whole installation. pnpm's `store path` can create temporary
+files/hardlink probes; do not run it as guaranteed read-only discovery.
+Homebrew cleanup also reaches dependency autoremove and its own vendored
+runtime. Puppeteer single-build removal can rewrite parent metadata.
+No new candidate adapter or Windows execution is enabled; see the
+[scope review](https://github.com/pwrdrvr/PwrDisk/blob/main/docs/owner-cleanup.md#scope-review-2026-11-05).
+A native owner image can identify active use even when its arguments do not.
+Windows requires audited runtime/entry-point identity, child Job Object
+cancellation and active-use coverage before any command can be offered;
+never bridge the refusal through a shell or stop another application.
+
+Each path gets its own result: succeeded, failed with a reason, cancelled
+(possibly part done), skipped, or not reached after Stop. A command's
+success reports the owner's exit result, not guaranteed savings.
+Report allocation separately from observed volume availability before/after;
+other activity, hardlinks, open files, APFS clones and snapshots can retain
+blocks. PwrDisk always rescans after owner cleanup, even partial failure.
+Never alter snapshots to force the reported allocation to become free space.
+
+## Developer artifacts and virtual machines
+
+Artifact identity and evidence are separate from cleanup suitability.
+`detected` is inventory only. `suggested` means a plausible, relatively
+lower-risk candidate to review, with local edits, active tools and the
+cost of reinstalling or rebuilding still to check. Name conventions are
+weaker evidence than recognized tool layouts. Whole tool homes and generic
+`target`, `build`, `dist`, `bin` or `obj` names do not establish disposability;
+review the specific detected subtree instead.
+
+VM/container disk images can contain unique work. Manage snapshots in the
+owner app, never by removing individual files in a snapshot chain. Saved
+memory or suspend state can usually be released by resuming the VM and
+shutting it down normally; checkpoints may retain it. VM data stays a
+detection even inside a directory named like a cache, and its displayed
+size is not a promise of recovered space. Do not run an owner's destructive
+cleanup command without explicit approval for that operation.

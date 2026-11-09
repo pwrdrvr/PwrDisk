@@ -11,9 +11,54 @@ use gpui_kit::{
     App, Div, ElementId, FontWeight, Hsla, InteractiveElement as _,
     ParentElement, SharedString, Styled, div, relative,
 };
-use gpui_omarchy::{ActiveTheme, Status};
+use gpui_omarchy::ActiveTheme;
 
-use crate::ui::{space, text};
+use crate::ui::{size, space, text};
+
+/// How long the pointer rests on a control before its tooltip shows.
+/// Omarchy's 400 ms fired while the pointer was still on its way across a
+/// row of chips, so a tooltip popped up over the next one.
+pub const TOOLTIP_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(700);
+
+/// Omarchy's tooltip, out of the pointer's way.
+///
+/// GPUI puts a tooltip's corner one pixel from the pointer's tip, so the
+/// box sat under the cursor and over whatever was next to it: the next
+/// chip, its "only" pill. The surface is drawn [`size::TOOLTIP_CLEARANCE`]
+/// lower inside a transparent frame, which keeps it clear of the arrow.
+/// Near the window's bottom GPUI flips the frame above the pointer; the
+/// gap is then above the surface, which still clears the tip.
+pub fn with_tooltip<T: gpui_kit::StatefulInteractiveElement>(
+    control: T,
+    text: impl Into<SharedString>,
+) -> T {
+    let text = text.into();
+    control
+        .tooltip_show_delay(TOOLTIP_DELAY)
+        .tooltip(move |_, cx| {
+            gpui_kit::AppContext::new(cx, |_| ClearTooltip(text.clone())).into()
+        })
+}
+
+struct ClearTooltip(SharedString);
+
+impl gpui_kit::Render for ClearTooltip {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<'_, Self>,
+    ) -> impl gpui_kit::IntoElement {
+        div()
+            .debug_selector(|| "app-tooltip".into())
+            .pt(size::TOOLTIP_CLEARANCE)
+            .child(
+                div()
+                    .debug_selector(|| "app-tooltip-surface".into())
+                    .child(gpui_omarchy::tooltip(self.0.clone(), cx)),
+            )
+    }
+}
 
 /// File counts, which is what a directory count is too.
 pub fn human_count(value: u64) -> String {
@@ -21,64 +66,30 @@ pub fn human_count(value: u64) -> String {
 }
 
 /// The value to show for a node under the active metric.
-pub fn short_value(node: &Node, metric: Metric) -> String {
+pub fn short_value(node: Node<'_>, metric: Metric) -> String {
     match metric {
         Metric::Bytes => human_bytes_short(node.bytes),
         Metric::Files => human_count(node.files),
     }
 }
 
-/// A dim label above a number, for the header strip.
-pub fn stat(
-    label: impl Into<SharedString>,
-    value: impl Into<SharedString>,
-    cx: &App,
-) -> Div {
-    let theme = cx.omarchy();
-    div()
-        .flex()
-        .flex_col()
-        .gap(space::XXS)
-        .child(
-            div()
-                .text_size(text::CAPTION)
-                .text_color(theme.secondary.opacity(0.75))
-                .child(label.into()),
-        )
-        .child(
-            div()
-                .text_size(text::TITLE)
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.bright)
-                .child(value.into()),
-        )
-}
-
-/// A value with a status colour rather than the neutral one.
-pub fn stat_colored(
-    label: impl Into<SharedString>,
-    value: impl Into<SharedString>,
-    color: Hsla,
-    cx: &App,
-) -> Div {
-    let theme = cx.omarchy();
-    div()
-        .flex()
-        .flex_col()
-        .gap(space::XXS)
-        .child(
-            div()
-                .text_size(text::CAPTION)
-                .text_color(theme.secondary.opacity(0.75))
-                .child(label.into()),
-        )
-        .child(
-            div()
-                .text_size(text::TITLE)
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(color)
-                .child(value.into()),
-        )
+/// What part of `node` a filter shows, and all of it: "48G of 196G".
+pub fn short_share(
+    node: Node<'_>,
+    bytes: u64,
+    files: u64,
+    metric: Metric,
+) -> String {
+    match metric {
+        Metric::Bytes => format!(
+            "{} of {}",
+            human_bytes_short(bytes),
+            human_bytes_short(node.bytes)
+        ),
+        Metric::Files => {
+            format!("{} of {}", human_count(files), human_count(node.files))
+        }
+    }
 }
 
 /// A square chip, used for counts and states.
@@ -146,22 +157,28 @@ pub fn space_meter(space: SpaceInfo, reclaiming: u64, cx: &App) -> Div {
     let theme = cx.omarchy();
     let total = space.total.max(1);
     let projected = space.after_removing(reclaiming);
-    let used_now = space.used() as f32 / total as f32;
-    let gained = (projected.used() as f32 / total as f32).max(0.0);
+    let used_now = space.total.saturating_sub(space.display_available()) as f32
+        / total as f32;
+    let gained = (projected
+        .total
+        .saturating_sub(projected.display_available())
+        as f32
+        / total as f32)
+        .max(0.0);
     let used_now = used_now.clamp(0.0, 1.0);
     let gained = gained.clamp(0.0, used_now);
 
     let label = if reclaiming > 0 {
         format!(
-            "{} free · {} after removing {}",
-            human_bytes(space.available),
-            human_bytes(projected.available),
+            "{} free · ≈ {} after removing {}",
+            human_bytes(space.display_available()),
+            human_bytes(projected.display_available()),
             human_bytes(reclaiming)
         )
     } else {
         format!(
             "{} free of {}",
-            human_bytes(space.available),
+            human_bytes(space.display_available()),
             human_bytes(space.total)
         )
     };
@@ -179,6 +196,12 @@ pub fn space_meter(space: SpaceInfo, reclaiming: u64, cx: &App) -> Div {
                 .text_color(theme.secondary)
                 .child(div().child(label)),
         )
+        .children(reclaimable_capacity_note(space).map(|note| {
+            div()
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(note)
+        }))
         .child(
             div()
                 .relative()
@@ -218,6 +241,16 @@ pub fn space_meter(space: SpaceInfo, reclaiming: u64, cx: &App) -> Div {
                         .bg(theme.success.opacity(0.65)),
                 ),
         )
+}
+
+/// Keep macOS's reclaimable-capacity estimate apart from actual free space.
+pub fn reclaimable_capacity_note(space: SpaceInfo) -> Option<String> {
+    space
+        .reclaimable_available()
+        .filter(|available| *available > space.available)
+        .map(|available| {
+            format!("≈ {} including reclaimable space", human_bytes(available))
+        })
 }
 
 /// A `key value` hint pair for the bottom bar.
@@ -291,17 +324,6 @@ pub fn percent(part: u64, total: u64) -> String {
         format!("{value:.1}%")
     } else {
         format!("{value:.0}%")
-    }
-}
-
-/// The status colour for an alert.
-pub fn alert_color(status: Status, cx: &App) -> Hsla {
-    let theme = cx.omarchy();
-    match status {
-        Status::Neutral => theme.secondary,
-        Status::Success => theme.success,
-        Status::Warning => theme.warning,
-        Status::Error => theme.danger,
     }
 }
 
@@ -442,6 +464,44 @@ pub fn signal(filled: usize, cx: &App) -> Div {
         );
     }
     bars
+}
+
+/// The treemap view's glyph: the app's own mark in outline, one tall tile
+/// and two stacked, so it reads as "tiles" beside the list's rows.
+pub fn treemap_glyph(color: Hsla) -> Div {
+    let tile = || div().border_1().border_color(color);
+    div()
+        .flex_shrink_0()
+        .flex()
+        .flex_row()
+        .gap(space::XXS)
+        .w(crate::ui::icon::SM)
+        .h(crate::ui::size::VIEW_GLYPH_HEIGHT)
+        .child(tile().w(crate::ui::size::VIEW_GLYPH_TILE).h_full())
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .gap(space::XXS)
+                .child(tile().flex_1())
+                .child(tile().flex_1()),
+        )
+}
+
+/// The list view's glyph: three rows.
+pub fn list_glyph(color: Hsla) -> Div {
+    let row = || div().w_full().h(space::XXS).bg(color);
+    div()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .justify_between()
+        .w(crate::ui::icon::SM)
+        .h(crate::ui::size::VIEW_GLYPH_HEIGHT)
+        .child(row())
+        .child(row())
+        .child(row())
 }
 
 /// One bar per Power Efficiency preset.

@@ -39,15 +39,18 @@ follows the system's light or dark setting.
 
 ## Choosing sources and roots
 
-Launch without a path to choose **This computer** or enter an SSH alias /
-`user@host` and press **Connect SSH**. Discovery reads that machine's mount
-namespace, not file contents. It never starts a scan or probes mounted
-network filesystems just to fill the list.
+Launch without a path and the chooser lists **This computer**'s mounts.
+Switch to **SSH host**, enter an SSH alias or `user@host` and press
+**Connect** to list that machine's instead. Discovery reads that machine's
+mount namespace, not file contents. It never starts a scan or probes
+mounted network filesystems just to fill the list.
 
-Select a mount and choose **Scan selected root**, or enter an absolute
-directory path and choose **Scan directory**. Enter acts on the focused
-host/path field or the highlighted mount. Escape cancels discovery and
-returns to the current scan, or the idle welcome screen at startup.
+The list ends with a **Directory** row: type an absolute path there, or
+choose **Choose…** for the system's folder picker on this computer. Select
+a mount or the Directory row and press **Scan**; Enter does the same, and
+in the host field it connects. Escape or **Cancel** closes the chooser and
+returns to the current scan, or the idle welcome screen at startup; a click
+outside it does not.
 
 During exploration, press `v`, click **Source…** beside the disk name,
 or click the PwrDisk logo to reopen the same chooser. The source being
@@ -65,38 +68,84 @@ a root. Explicit command-line paths and `--disk` still start directly;
 
 ## The screen
 
-- **Top:** the trail from `/`, then what is measured — **Size**, **Files** or
-  **Age**, **Hidden files**, **Apparent size**, and the depth drawn. In the
+- **Top:** the trail from `/`, then **Treemap | List**, how the directory is
+  drawn, and what is measured — **Size**, **Files** or **Age**, **Hidden
+  files**, **Apparent size**, and the depth drawn. The list shows the same
+  directory one entry per row and is the view for screen readers. When the
+  window is too narrow for every control, the ones used least move into
+  **⋮** at the end of the bar: the scan options first, then back, forward
+  and depth, then Size | Files | Age. In the
   tree a crumb goes there, and its ▾ lists its siblings, largest first with
   their share and size, to jump sideways (arrows and Enter work too). Above
   the scanned root a crumb is dimmer, and clicking it widens the scan to
   there (see [The whole disk](#the-whole-disk)).
-- **Under it:** the scan totals, the filter when one is typed, and the legend.
+- **Under it:** the scan totals and the filter when one is typed, and on
+  its own row the legend. Each entry carries what it holds of the whole
+  scan, in the same unit as the tiles. The row never wraps: kinds that
+  hold nothing, or less than a thousandth of the scan, and then the
+  smallest when the row runs out of room, wait in a **+N** menu at its
+  end. Setting one there moves it onto the row, where its state shows.
 - **Mosaic:** colour is the *kind* of data — code, agent scratch,
-  toolchains, synced files, git, media, documents, caches — at one muted
-  level, lighter with depth. A diagonal hatch is space that can be had back
-  (caches, sync history, package stores, build output), independent of
-  colour. Top-level directories carry a strip of their colour and a name
-  band; deeper open directories a slim label row. In **Age** mode colour is
-  the last write instead, from this week to older.
+  toolchains, synced files, git, media, documents, caches, temporary data,
+  diagnostic logs, trash, virtual machines — at one muted level, lighter
+  with depth. A diagonal hatch is a cleanup suggestion to review (caches,
+  sync history, package stores, build output), independent of colour; it
+  never says the contents are safe to lose. Top-level directories carry a
+  strip of their colour and a
+  name band; deeper open directories a slim label row. In **Age** mode
+  colour is the last write instead, from this week to older. Temporary and
+  agent scratch labels describe the location or use, not whether the data
+  is still needed or can be recovered.
+- **Legend:** each entry is also a filter. Click it once to show only that
+  kind (or age), again to hide it, and a third time to show it again.
+  Kinds set to only add up ("Code" and "Cache" show both), while
+  **Suggested** narrows them to their cleanup suggestions. The mosaic lays
+  out only what passes, at its own size, and a folder that only partly
+  passes says so: `48G of 196G`. Kind and age filters apply together, so
+  "old code" is a click in each mode. **Show all** or `esc` clears them.
+  When nothing in the folder on screen passes, the mosaic or list says
+  so, and whether anything elsewhere in the scan does.
+  A filter changes what is shown, never what a mark takes: marking a
+  folder that is only partly shown marks all of it, and the panel says so.
 - **Panel:** the selection (its size set large, share of the scan, files,
   last write, and for a checkout what git says — changes, stashes, unpushed
-  commits); *Worth a look*, the largest things that could plausibly go;
-  what is marked; and the disk, free now and after the marks, with the way
-  to the review screen. Drag its left edge to resize it; double-click the
-  edge to reset.
+  commits); for a recognized artifact, whether it is only *Detected* or
+  *Suggested for review*, how it was identified and what to do first, as
+  [the classification notes](artifact-classification.md) describe; what
+  is marked; *Worth a look*, the largest cleanup suggestions and agent
+  findings to review; then, pinned above the disk, the marks taken together —
+  how much is marked, what removing all of it frees, and the way to the
+  review screen; and the disk, free now and after the marks. An empty
+  list is one line: *Marked* says "Space to mark" and *Worth a look*
+  "none". On a short window (under 48 rem, 768 px at the default size)
+  the share, files, last write and kind fold into one line under the size
+  that opens them again, the selection's label goes, and the line inviting
+  an AI agent shows only once one is connected; Help › Connect an AI Agent
+  (MCP)… is always there. The assessment and Mark never fold. What still
+  does not fit scrolls; the disk stays in view. Drag the panel's left edge
+  to resize it; double-click the edge to reset.
 
 One colour is kept apart: amber marks the selection, the main action, and
-what can be had back.
+cleanup suggestions.
 
 The kinds come from directory names and a few shapes (a bare git repository,
-`target` beside a `Cargo.toml`). Some of the names are specific to one
-machine; see `crates/disktree-core/src/classify.rs`.
+a pnpm store, and the tool layouts in
+[the classification notes](artifact-classification.md), such as
+`target/debug/deps`). Some of the names are specific to one machine; see
+`crates/disktree-core/src/classify.rs`.
 
 ## Marking
 
 Space, X, Enter and the arrows act on the tile under the mouse if the mouse
-moved last, and on the keyboard selection after you use an arrow or Tab.
+moved last, and on the keyboard selection after you use an arrow or n.
+
+A click selects the tile under the pointer. A second click on the
+selection, slow or as a double-click, opens one level toward it: the
+directory on screen's child that holds it, however deep the tile is
+drawn, with the tile still selected so the next click opens the next
+level. One double- or triple-click never opens more than one level. The
+pointer turns into a hand over a selection a click would open, and the
+tile's hover card names the directory a click or a double-click opens.
 
 A marked tile takes the danger colour, and so does everything inside it:
 removing a directory takes its contents with it. Marking a directory absorbs
@@ -128,8 +177,43 @@ there, then choose:
 - **Delete permanently** — `rm -rf` semantics. It always asks first, in a dialog
   that names what goes and how much comes back.
 
-When it finishes, PwrDisk scans again so the numbers on screen match the disk,
-and shows how much free space was actually gained.
+One removal may take only so much of a disk: 5% of the volume's capacity
+by default, counting everything marked. A mark that would pass it is not
+made by Space or **Mark for removal**: the button reads **Over 5% limit**,
+and the ▾ beside it holds **Mark anyway**, which names the share. Review
+then shows each disk the removal takes past the limit, its share against
+the limit, and keeps the commit button off until you type the phrase it
+shows, such as `delete 20% of my disk` (`trash …` to the trash), or
+`delete 20% and 19% of my disks` when marks on a disk mounted inside the
+scan pass the limit there too. Each disk counts on its own, and removal
+holds each to the share you typed for it and every other disk to the
+limit: if what is marked has grown past that when the removal starts,
+nothing is removed.
+Settings › Safety sets the limit (1%, 5%, 10%, 25%, 50% or Off) and what
+Review asks past it (type a phrase, tick a box, or nothing more). Neither
+lets an agent past the limit.
+
+The commit is the footer's right-hand button; beside it, **Move & rescan**
+(**Delete & rescan…** in permanent mode, `shift enter`) does the same and
+then scans again. **Back** is beside them; **Export** and **Unmark all** sit
+on the left. While a removal runs, **Stop after this item** (or `esc`) ends
+it once the item in hand is done.
+
+Without a rescan, the tree stays as the scan found it, so the next batch
+can be marked straight away; a rescan of a whole disk takes minutes. What
+was removed stays where it was, greyed out, with its hover card saying
+**Removed since the scan**, and cannot be marked again. Every size on
+screen is still the scan's; a directory marked around something already
+removed counts only what is left in it. The next scan clears all of it.
+
+The Done screen lists every removal since the last scan three ways:
+**reported**, the listed size of what went, a clone counted in every place
+it appears; **private**, what the scan saw as theirs alone; and
+**observed**, the volume's free space after minus before, which other
+programs change too. With more than one removal, a total row adds the
+first two and measures the third from the first removal's start to the
+last one's end. The Disk section keeps the total as **Freed since scan**
+until the next scan.
 
 ## Keys
 
@@ -137,19 +221,23 @@ and shows how much free space was actually gained.
 | --- | --- |
 | `space` / `x` | mark or unmark the tile you point at |
 | `ctrl`-click (`⌘`-click on macOS) | mark without moving the selection |
+| click, then click again (or double-click) | select a tile, then open one level toward it |
 | `enter` | open that directory, at any depth |
 | `⌫` / `esc` | go up one directory |
 | `alt ←` `alt →` | back and forward through where you have been |
 | `←` `↑` `↓` `→` | move between tiles at this level |
-| `tab` | next largest sibling |
+| `tab` / `shift-tab` | next / previous control; Escape returns to files |
+| `n` / `shift-n` | next / previous largest sibling |
 | scroll | zoom toward a directory, then go into it |
 | `shift`-scroll | pan the magnified view |
 | `[` `]` | draw fewer or more levels at once |
 | `-` `=` `0` | magnify, shrink, reset the view |
-| `ctrl =` `ctrl -` `ctrl 0` (`⌘` on macOS) | interface zoom |
+| `ctrl =` `ctrl -` `ctrl 0` (`⌘` on macOS) | interface zoom, 75–200%, shared by all windows |
 | `/` | filter by name: only matches keep their colour; `enter` shows only them, `esc` clears |
+| click a legend entry | show only that kind or age, then hide it, then show it again; `esc` clears |
 | `c` | review the marked list |
 | `t` | size, files or age: what areas and colours say |
+| `ctrl 1` `ctrl 2` (`⌘` on macOS) | treemap or file list; the list is read by screen readers |
 | `d` | disk usage or apparent size |
 | `i` | include or skip hidden entries |
 | `r` | scan again |
@@ -162,20 +250,28 @@ and shows how much free space was actually gained.
 | right-click | show that tile in Finder, File Explorer or the file manager |
 | `shift u` | updates: the version, the release channel, check now |
 | `?` | every key |
-| `q` | quit |
+| `q` | quit, on Linux; ⌘Q on macOS and Alt+F4 on Windows |
 
 On macOS the menu bar also has ⌘⇧R to show the selection in Finder, ⌘R to
 rescan, ⌘[ and ⌘] for back and forward, and ⌘Q, ⌘H and ⌘W (closing the
 window quits); other ⌘ chords are left to the system. On Linux and Windows
 the same work with ctrl, with F5 to rescan too.
 
-On the review screen: `m` trash, `p` permanent, `!` unmark all, `enter`
-commits, `esc` goes back. Or hand the list on instead of acting on it: `s`
-saves it as a text file, one path per line, and `a` copies a prompt for a
+On the review screen: `m` trash, `p` permanent, `!` or **Unmark all**
+clears the list, `u` or Edit › Undo (⌘Z, Ctrl+Z) puts it back, `enter`
+commits, `esc` goes back. Or hand the list on instead of acting on it from
+**Export**: `s` saves it as a text file, one path per line, `e` and `y`
+save or copy a delete script, and `a` copies a prompt for a
 coding agent: free the space by removing what you picked, checking each path
 first (git work that exists nowhere else, a tool's own clean command) and
 touching nothing else. A name holding a newline is left out of the list and
 escaped in the prompt, so it cannot pass for another path.
+
+Help keeps its heading and Close button visible while the shortcut list
+scrolls. Use arrows, PageUp/PageDown and Home/End to read it. Settings panes
+scroll with PageUp/PageDown and Home/End; Ctrl+PageUp/PageDown still switches
+panes. Documents wrap to the window and scale. Logs uses PageUp/PageDown to
+scroll within long wrapped lines, while Up/Down selects lines for copying.
 
 ## What it measures
 
@@ -389,9 +485,11 @@ claude mcp add --scope user pwrdisk -- pwrdisk mcp
 (Codex: `codex mcp add pwrdisk -- pwrdisk mcp`. Any other client: a
 server named `pwrdisk` with the command `pwrdisk` and the argument `mcp`.
 On macOS the command lives inside the app, at
-`PwrDisk.app/Contents/MacOS/pwrdisk`. The window's **Work with an AI
-agent** line, under the disk, and **Help › Work with an AI Agent…** on
-macOS, show each command with the binary's full path and a Copy button.)
+`PwrDisk.app/Contents/MacOS/pwrdisk`. **Settings › Agents (MCP)** shows
+the bare command line and each client's command with the binary's full
+path and a Copy button, and who is connected. **Help › Connect an AI
+Agent (MCP)…** and the **Connect an AI agent (MCP)** line under the disk
+open it; on a short window that line waits until an agent connects.)
 
 Then ask it what is eating your disk. The agent walks the tree largest
 first, lists every cache, build directory and package store at once, and
@@ -399,13 +497,29 @@ proposes what can go. It marks what you agree to, and marking is all it
 does by default. `pwrdisk_review` opens the marked list for you to approve;
 the agent must never approve it through computer use. For requested MCP
 removal, `pwrdisk_removal_preview` returns the exact paths and an explicit
-Trash or permanent mode. After you confirm that operation, the destructive
-`pwrdisk_remove` tool requires interactive confirmation through the MCP
-client. Clients without form elicitation use human review instead. Trash
+Trash or permanent mode. The destructive `pwrdisk_remove` tool asks you to
+confirm that exact operation through the MCP client. PwrAgent can show it
+over messaging, with Allow/Decline buttons or a per-card text reply code;
+a bare "yes" does not approve it. The card names the preview ID and expires
+with it. Tool arguments and Auto/Full Access do not supply consent.
+Clients without form elicitation use human review instead. See
+[the approval contract](mcp-approval.md) for lifecycle and client requirements. Trash
 may be recoverable until emptied; permanent deletion cannot be undone
 through PwrDisk. Settings > Safety sets the per-operation limit: 5% of each
 volume's capacity by default, for both UI and MCP removal. The app rechecks
 the guards and re-measures the complete selection before removing anything.
+During this check the window says **Checking selection**. Hardlinked files
+count once across all selected paths, as in the scan; both the reviewed and
+fresh volume totals must fit the confirmed limit. Scan and recheck use the
+same platform entry readers and aggregation code, with the scan's size,
+hardlink, clone-metadata and worker settings captured in the removal plan.
+A recheck completes hidden/deep traversal, stays on each target's volume,
+and never follows symbolic links, so filters cannot hide data removal would
+touch. Default scans and rechecks have identical options. If the check
+refuses the selection, no selected paths are removed. The observed
+free-space change
+includes other activity on the volume and can be negative even when nothing
+was removed.
 
 When a PwrDisk window is open, its tree is what the agent reads. `ls`,
 `find` and `scan` are answered from the mosaic on screen, a mark is
@@ -424,6 +538,14 @@ process and cannot be handed to the window through this connection.
 Removal, show and review require the desktop connection. A window showing
 an SSH server is not followed: the agent's tools measure this computer, and PwrDisk does not remove files
 over SSH.
+
+`pwrdisk_remove` does not rescan unless asked (`rescan: true`), so the
+agent can find and mark the next batch at once. Until a rescan,
+`pwrdisk_ls` and `pwrdisk_find` still list removed paths with the scan's
+sizes, but say **removed since the scan** on each, and on a directory that
+lost part of itself, how much of it went; marking a removed path is
+refused. `pwrdisk_status` lists every removal since the scan,
+reported, private and observed, with their total.
 
 The tools: `pwrdisk_status`, `pwrdisk_scan`, `pwrdisk_ls`,
 `pwrdisk_find`, `pwrdisk_show`, `pwrdisk_mark`, `pwrdisk_unmark` and
@@ -483,9 +605,21 @@ release in the background. The download installs when PwrDisk quits, or at
 once from **Restart to update**. Nothing is sent but the request for the
 release list.
 
-**Shift-U** opens the Updates panel (on macOS also **PwrDisk › Check for
-Updates…**): the version, what the last check found, **Check now**, and the
-release channel:
+**Check for Updates…** (in the PwrDisk menu on macOS, the strip's menu
+elsewhere) checks at once and answers in a toast at the lower left of the
+main window, above the screen's buttons. While it works the toast says so,
+and while it downloads it shows how far along it is. Then it answers: up
+to date, an update ready to install, or why the check failed. An answer
+goes after eight seconds; resting the pointer on it holds it.
+
+An update ready to install, found by any check, stays in a toast with
+**Restart to update** until you restart or choose **Later**. Later puts away
+that version only: a newer one, or Check for Updates…, brings it back. The
+title strip offers it too, as **0.15.0 ready · Restart**, Later or not.
+Restarting forgets your marks, and it waits while a removal runs.
+
+**Shift-U** opens the Updates panel: the version, what the last check found,
+**Check now**, and the release channel:
 
 | Channel | Gets |
 | --- | --- |
@@ -520,14 +654,44 @@ PwrDisk; the app does not request elevation or install a privileged helper.
 
 What is different from Linux:
 
-- **Free space** is what `df` reports. Finder's figure is larger: it counts
-  purgeable space (caches and local snapshots macOS will clear on its own).
+- **Free space** is space this user can write now. Used is the rest of
+  the same capacity, so Used + Free equals Total before rounding. On APFS
+  this includes every volume sharing the container, plus filesystem
+  metadata. The startup meter separately breaks down System + Data and
+  other used space (Preboot, Recovery, VM and other container allocation).
+  macOS's important-usage estimate is shown separately as **including
+  reclaimable space**: those bytes are still occupied until macOS releases
+  them. It can differ from Finder's Available figure and change without a
+  deletion. Removal guards, measured recovery and the free-space projection
+  use raw free-block samples; reclaimable capacity is never added to them.
+  A scan of `/` includes readable System and Data files, including Data-only
+  contents under `/System/Volumes/Data`; firmlink aliases there are excluded
+  using macOS's `/usr/share/firmlinks` table. Nested mounts remain excluded.
+  An unavailable firmlink table is reported as unreadable. Hover the **ⓘ**
+  beside the disk heading for the accounting scopes and figures. Short
+  windows keep the secondary figures in that tooltip so marks stay visible.
+  Estimated repeated clone allocation does not turn a scan into exact
+  physical use; the
+  remaining difference is not a measurement of unreadable files.
 - **Cloned files** (copies APFS shares blocks between, as Finder's Duplicate
   makes) remain counted in full in the treemap. The scan line separately
   reports bytes in cloned files and estimated repeated data-fork allocation.
-  The selection, review and permanent-delete confirmation estimate savings
-  from the accepted set of marks together. Complete clone groups credit
-  shared data once; a remaining hardlink retains its file data. Unknown or
+  The selection panel and a tile's hover card split the listed bytes into
+  private and shared: shared bytes are clone blocks another clone, inside
+  the scan or outside it, may still hold. In `pwrdisk mcp`, every
+  `pwrdisk_scan`, `pwrdisk_ls` and `pwrdisk_find` row with clone blocks
+  reads `0 B private · 11 MiB shared with other APFS clones · frees ≈ 0 B
+  alone`, and the scan and listing headers say how much is counted again
+  and what the files take on disk. Rows without clones, and every row off
+  APFS or in an apparent-size scan, read as before.
+  The panel's marked total, the review and the permanent-delete
+  confirmation estimate savings from the accepted set of marks together;
+  the selection's own line says what that entry frees removed on its own,
+  which for one of several clones can be far less. Complete clone groups count
+  shared data once toward possible savings, with a partial estimate: modified
+  clones with another ID, even outside the scan, may retain those blocks.
+  Only measured private bytes enter the lower bound; a remaining hardlink
+  retains its file data. Unknown or
   modified sharing and allocation outside the data fork supply a range,
   with only its lower bound used by the volume meter. Unknown private sizes
   contribute zero to that bound. Snapshots and open files can retain blocks,
@@ -655,6 +819,15 @@ tested:
 - a directory holding your home directory or a system tree is refused (on
   macOS `/Users` is on the same volume as `/`, and `/opt` holds
   `/opt/homebrew`);
+- every account's folder is refused, and so is the folder holding them:
+  `/Users` and each folder in it on macOS, `/home` and each folder in it
+  on Linux (by either name where `/home` links to `/var/home`, as on
+  Fedora's atomic editions), the profiles folder (usually `C:\Users`) and
+  each profile on Windows. What is inside one stays removable;
+- these are asked before a mark is made: the panel says why instead of
+  offering **Mark for removal**, and Space marks nothing;
+- one removal may take only so much of a disk, 5% by default (see
+  [Removing](#removing));
 - system trees (`/usr`, `/etc`, `/boot`, `/var/lib`, `/nix/store`,
   `/gnu/store`, Homebrew's prefix on macOS and Linux, …) are
   refused even where permissions would allow it: packages own them, and

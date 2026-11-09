@@ -165,6 +165,8 @@ pub async fn serve_connection(
     check_transport(hello.transport_version)?;
     let session = Session::desktop(command_path)
         .with_path_base(hello.working_directory)?;
+    // The desktop already shares the window's live size preference. Only
+    // the independent stdio server needs to reload it from disk per call.
     let server = Server::desktop(session, hello.relay_version);
     let running = server.serve((reader, writer)).await?;
     running.waiting().await?;

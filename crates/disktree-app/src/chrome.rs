@@ -25,11 +25,13 @@ use gpui_kit::{
     Window, WindowButton, WindowButtonLayout, WindowControlArea,
     WindowControls, div, img, px, rgb, svg, white,
 };
-use gpui_omarchy::{ActiveTheme as _, IconName, Theme, with_tooltip};
+use gpui_omarchy::{ActiveTheme as _, IconName, Theme};
+
+use crate::widgets::with_tooltip;
 
 use crate::palette;
 use crate::state::Disktree;
-use crate::ui::{chrome, space};
+use crate::ui::{self, chrome, space};
 
 /// Which system the window is on, as far as its frame is concerned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,7 +214,9 @@ impl Frame {
 
 /// The app icon, from the same file the Dock, the desktop entry and the
 /// installer use, so the window shows the mark people already know.
-static MARK: LazyLock<Arc<Image>> = LazyLock::new(|| {
+/// Settings › About draws it too. An SVG, so it is sharp at any size and
+/// loads the same on macOS, Windows and Linux.
+pub static MARK: LazyLock<Arc<Image>> = LazyLock::new(|| {
     Arc::new(Image::from_bytes(
         ImageFormat::Svg,
         include_bytes!("../../../assets/disktree.svg").to_vec(),
@@ -345,7 +349,13 @@ pub fn aux_strip<V: Drags>(
     );
     let last = crumbs.len().saturating_sub(1);
     let trail = crumbs.iter().enumerate().fold(
-        div().flex().flex_row().items_center().gap(space::SM),
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(space::SM)
+            .min_w_0()
+            .overflow_hidden(),
         |trail, (index, crumb)| {
             trail
                 .child(
@@ -396,7 +406,12 @@ pub fn aux_strip<V: Drags>(
                 .when(frame.leading == Controls::None, |area| {
                     area.pl(space::LG)
                 })
-                .child(brand(true, &theme))
+                .child(brand(
+                    window.viewport_size().width.as_f32()
+                        / window.rem_size().as_f32()
+                        >= ui::COMPACT_WINDOW_REMS,
+                    &theme,
+                ))
                 .child(trail),
         )
         .child(

@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.14.0"
+version = "0.22.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
@@ -89,7 +89,3 @@ lto = "thin"
 codegen-units = 1
 overflow-checks = true
 
-# gpui-pre-macros leaves a helper ungated in release builds while its module is
-# gated on debug_assertions; enable it for the host proc-macro only.
-[profile.release.package.gpui-pre-macros]
-debug-assertions = true

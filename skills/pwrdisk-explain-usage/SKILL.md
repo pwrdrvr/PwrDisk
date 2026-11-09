@@ -7,10 +7,12 @@ license: MIT
 # Explain disk usage with PwrDisk
 
 The user wants to understand their disk, not change it. Use only the tools
-that read: `pwrdisk_status`, `pwrdisk_scan`, `pwrdisk_ls`, `pwrdisk_find`
-and, only when the user asks to see a path, `pwrdisk_show`. Do not call
-`pwrdisk_mark`, `pwrdisk_review` or `pwrdisk_remove`, and do
-not run anything that deletes or changes settings. End with the
+that read: `pwrdisk_status`, `pwrdisk_scan`, `pwrdisk_ls`, `pwrdisk_find`,
+`pwrdisk_find_outputs`, `pwrdisk_estimate`, `pwrdisk_rank`,
+`pwrdisk_retention` and, only when the user asks to see a path,
+`pwrdisk_show`. Do not call `pwrdisk_mark`, `pwrdisk_review` or
+`pwrdisk_remove`, and do not run anything that deletes or changes settings.
+End with the
 explanation; offering to free space is a question you ask, not a step you
 take.
 
@@ -63,7 +65,17 @@ to enable relative paths. Standalone captures its own working directory.
    the OS, or the user's own files. `pwrdisk_find` with
    `reclaimable: true` totals classified cleanup candidates such as caches,
    build output and verified package stores, including guard refusals;
-   `kind: "file"` with `min_bytes` finds the large single files.
+   `kind: "file"` with `min_bytes` finds large single files. Use
+   `pwrdisk_find_outputs` across output/cache/scratch types, with optional
+   subtype filters such as `types: ["cargo"]` or `types: ["scala"]`, or
+   `family: "jvm"` for the JVM family. It reports name/layout/metadata
+   evidence separately, with exact file-write times and coverage limits.
+   Cargo requires metadata. Start with a size floor and age cutoff (for
+   example 1 GiB and 30 days), oldest first; relax age if insufficient.
+   Fetch all pages. Nested types can overlap; use the union total, not a
+   sum of rows or per-type totals. Age is file mtime, not activity detection.
+   Use reported evidence directly; do not upgrade name/layout hints into
+   verified ownership or disposability. Explain exclusions and coverage.
 5. **Explain.** A short table: what, where, how big, who owns it, and
    whether it comes back by itself. Say plainly where PwrDisk's number
    differs from another tool's and why: PwrDisk counts allocated blocks,
@@ -72,7 +84,18 @@ to enable relative paths. Standalone captures its own working directory.
    allocation can exceed volume usage because APFS clones share blocks.
    Never cap the total or call it guaranteed freed space. Finder, Explorer
    and `du` may measure differently.
-6. **Offer, don't act.** If space can be had back, say roughly how much
+6. **Estimate a hypothetical set when asked.** Pass the full list to
+   `pwrdisk_estimate`; never mark temporarily or add directory estimates.
+   Report listed allocation, private/shared allocation and selected-set
+   reclaim bounds separately. Shared bytes include duplicates inside the
+   selection. Check completeness and unavailable measurements. Bounded
+   clone-holder directory peers help find retained copies; inspect those
+   directories, never recommend deleting a worktree just because it unlocks
+   space. Change `peer_scope` within the scan to group other directories.
+   Peer rows are alternatives; use the returned combined union or another
+   full path-list estimate. Unresolved reference counts do not identify
+   out-of-scan owners, and clone IDs do not enumerate modified shared extents.
+7. **Offer, don't act.** If space can be had back, say roughly how much
    and from what, and ask whether the user wants to go through it. If they
    do, follow `skill://pwrdisk-free-space/SKILL.md`, which starts by agreeing
    the list with them.

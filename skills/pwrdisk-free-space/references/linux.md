@@ -3,6 +3,17 @@
 What Linux keeps outside a file scan, what PwrDisk refuses, and what to
 leave alone. Read with `skill://pwrdisk-free-space/SKILL.md`.
 
+## Human approval over MCP
+
+`pwrdisk_remove` asks the connected client for an explicit human decision
+about the exact preview. PwrAgent can present this confirmation over
+messaging. Auto/Full Access and tool arguments never count as consent.
+A replaced selected object, changed resolved parent or changed scan root
+requires a fresh preview and approval; the worker checks again before writes.
+Directory contents remain live. No approval survives a cancelled or expired
+request, and reconnect never replays acceptance. Read
+[the client contract](https://github.com/pwrdrvr/PwrDisk/blob/main/docs/mcp-approval.md).
+
 ## Reading the numbers
 
 - **Hardlinks are counted once.** pnpm stores, Nix, ccache and backup tools
@@ -40,9 +51,27 @@ would read it.
 
 `pwrdisk_mark` keeps these back and says why: `/bin`, `/boot`, `/dev`,
 `/etc`, `/lib*`, `/proc`, `/run` (except removable media under it), `/sbin`,
-`/sys`, `/usr`, `/var/lib`, `/efi`, `/nix/store`, `/gnu/store`, Homebrew's
+`/sys`, `/usr`, `/var/lib`, `/var/db`, `/var/spool`, `/var/mail`, `/var/run`,
+`/var/lock`, `/efi`, `/nix/store`, `/gnu/store`, Homebrew's
 `/home/linuxbrew/.linuxbrew`, the home directory and anything holding it,
-and mount points.
+`/home` and every account's folder in it (another user's home,
+`/home/linuxbrew`; what is inside one may be proposed), the same under
+`/var/home` where `/home` links there, and mount points.
+An ancestor alias on a different disk does not make an ordinary child a
+mount point; the mount check compares the child with its resolved parent.
+
+Shared containers themselves also stay refused: `/tmp`, `/var`, `/var/tmp`,
+`/var/cache`, `/var/log`, `/var/backups`, `/var/local`, `/var/opt`, `/opt`,
+`/srv`, `/mnt`, `/media`, `/lost+found`, `/nix`, `/gnu` and `/root` (the root
+account's home, outside `/home`). This rule protects
+the folder, not every child. Inspect and agree individual leftovers under
+the existing guards; never remove an entire shared folder. Linked scan
+roots do not bypass this container rule. Review and the removal worker
+enforce it too.
+
+System trees, profiles and nested mounts retain their guards when the
+explicit scan root is reached through a symlink. A selected symlink itself
+is unlinked without deleting its destination; it cannot redirect removal.
 
 ## Never propose
 
@@ -63,11 +92,11 @@ and mount points.
 
 | what | where | prefer |
 | --- | --- | --- |
-| user caches | `~/.cache/<app>` | close the app; they regrow |
+| user caches | `~/.cache/<app>` | close the app; use its supported cleanup; unknown owners need inspection |
 | pacman packages | `/var/cache/pacman/pkg` | `paccache -dk1`, then `paccache -rk1` (root) |
 | apt and dnf packages | `/var/cache/apt`, `/var/cache/dnf` | `apt clean`, `dnf clean all` (root) |
 | unused Flatpak runtimes | `/var/lib/flatpak`, `~/.local/share/flatpak` | `flatpak uninstall --unused` |
-| language caches | `~/.npm`, `~/.cargo/registry`, `~/.cache/pip`, `~/.gradle/caches` | the tool's clean command |
+| language caches | `~/.npm/_cacache`, `~/.cargo/registry`, `~/.cache/pip`, `~/.gradle/caches` | the tool's clean command |
 | pnpm store | `~/.local/share/pnpm/store` | `pnpm store prune` |
 | build output | `target/`, `node_modules/`, `build/`, `dist/` | check the checkout first (see the skill) |
 | Steam games | `~/.local/share/Steam/steamapps` | uninstall in Steam |
@@ -83,6 +112,10 @@ so; tell the user before they confirm.
 
 ## Confirmed removal
 
+Removal preflight supports descendant paths longer than a full-path lookup
+allows. Cache inspection and fresh capacity measurement still apply to the
+whole selection; unreadable entries and nested mounts still stop removal.
+
 Never approve a removal with computer use (clicks, keys or accessibility
 actions). The user approves in the app, or explicitly confirms the exact
 paths and mode from `pwrdisk_removal_preview` before the destructive
@@ -90,7 +123,21 @@ paths and mode from `pwrdisk_removal_preview` before the destructive
 emptied, but is not guaranteed; permanent deletion cannot be undone through
 PwrDisk. Both modes use the existing removal guards and Settings > Safety's
 per-operation limit, 5% of each volume's capacity by default. Never bypass a
-refusal, increase the setting or split batches to evade it.
+refusal, increase the setting or split batches to evade it. A window
+refuses a mark that would take the list past the limit, and marks made
+without one are checked when they reach it: only the person can mark past
+it, in the window. Say so, and let them decide.
+
+The worker counts hardlinked allocation once across the complete selection,
+including aliases in different marked folders. Scan and recheck use the
+same entry measurement and aggregation code, retaining the scan's size,
+hardlink and clone-metadata parameters. The recheck includes hidden/deep
+contents, never follows links, and stays on the target's volume regardless
+of display filters. It checks the reviewed and
+fresh totals separately on each volume; it never adds two scans' different
+hardlink charge assignments. A preflight refusal removes no selected paths.
+Observed is the signed volume free-space change, including other activity,
+not evidence that this attempt deleted files.
 
 MCP removal also requires interactive confirmation from the client (form
 elicitation). An agent-supplied confirmation value does not establish human
@@ -99,3 +146,99 @@ never approve its buttons or confirmation keys through computer use.
 
 Capacity checks charge a symbolic link to its containing volume, not its
 destination.
+
+## Owner-managed caches
+
+Cache cleanup is for caches PwrDisk can clean with their owner's own
+command (npm, npx, uv, pip, Cypress, Playwright): a marked path in one, or
+holding one, is refused for `trash` and `permanent` and goes through
+`owner_cleanup`. Anything else (a folder named `cache` or `Caches`, a
+`regenerable` hatch, a cache tag, a Cargo `target`, a `.venv`, or a cache
+whose owner has no command here, such as pnpm or Homebrew) is an ordinary
+`trash` or `permanent` removal, proposed, agreed and confirmed like any
+other path. Cache cleanup is decided path by path. Call
+`pwrdisk_removal_preview` with `owner_cleanup` and no decisions: it returns
+one proposal per marked path with its status and problem, resolved owner,
+version, executable, arguments, environment overrides, configured root, full
+actual scope (including unselected siblings), effects, limitations,
+recoverability, and whether Delete files is offered. Show every proposal and
+let the user choose for each path `skip`, `owner` (only where offered) or
+`delete_files`. Never choose for them; where the owner's command is
+offered, recommend it over `delete_files`. Then preview again with `decisions` naming every marked
+path once, and `delete_files_mode` (`trash` or `permanent`, as the user
+chose) when any path uses `delete_files`. Confirmation needs that preview's
+exact paths and its own text: `RUN OWNER CLEANUP`, `DELETE CACHE FILES`,
+`TRASH CACHE FILES`, or both intents joined with `AND`. Owner approval never
+approves deleting files. Unavailable commands do not establish absent
+software. An unsupported version, failed probe, or failed or cancelled owner
+command never falls back to deleting files, and never to a shell command;
+deleting them instead is a new preview the user decides.
+
+An owner's cache is recognized by its default or configured root, a name
+only it uses, or the layout it keeps when moved; a cache tag alone is not
+uv's. All removal modes may
+return a preparing response while inspection runs on a worker; retry
+only the read-only preview. Exported
+lists keep marked paths, and raw script exports cannot replace owner cleanup.
+
+On macOS and Linux the adapters cover npm packages (9–11), npm's separate
+npx cache (11.2–11.x), uv (0.11.x), pip (23–26), Cypress (13–15) and the
+installed JavaScript Playwright CLI (only 1.64.0–1.64.1). Each CLI must
+resolve the selected cache. Playwright's read-only dry-run verifies its
+root, then `PLAYWRIGHT_BROWSERS_PATH=ROOT playwright uninstall --all`
+removes managed browsers and reference files inside that root, including
+versions other projects use. Branded Chrome/Edge and unrelated files stay.
+It takes no uninstall lock; an existing `__dirlock` is refused and process
+checks are best effort. A generic `cli.js` basename does not identify
+Playwright: its exact executable or known owner launchers must match.
+Stop installers, tests and cached browsers first.
+Exit success may leave files behind; report the rescan and measured change.
+Playwright log/profile writes and version-display overrides are disabled
+for the probes and command. pnpm remains inspection-only because prune
+reaches separate metadata/dlx/runtime state; Homebrew reaches installed versions, logs and
+locks; Puppeteer loads executable config and requires interactive input
+without a verified root-pinned argument-list adapter. See
+[the scope audit](https://github.com/pwrdrvr/PwrDisk/blob/main/docs/owner-cleanup.md#candidate-audit-2026-11-04).
+Windows command launchers have no execution adapter yet. Neither containers nor volumes are
+cleanup scopes.
+
+Owner inspection includes pnpm's independently located store and
+metadata/dlx caches (`PNPM_HOME`, XDG data/cache and Windows local-app-data
+locations), Playwright's npm environment aliases, and Puppeteer's home cache
+even with `XDG_CACHE_HOME` set. These are inspection hints, never permission
+to clean the whole installation. pnpm's `store path` can create temporary
+files/hardlink probes; do not run it as guaranteed read-only discovery.
+Homebrew cleanup also reaches dependency autoremove and its own vendored
+runtime. Puppeteer single-build removal can rewrite parent metadata.
+No new candidate adapter or Windows execution is enabled; see the
+[scope review](https://github.com/pwrdrvr/PwrDisk/blob/main/docs/owner-cleanup.md#scope-review-2026-11-05).
+A native owner image can identify active use even when its arguments do not.
+Windows requires audited runtime/entry-point identity, child Job Object
+cancellation and active-use coverage before any command can be offered;
+never bridge the refusal through a shell or stop another application.
+
+Each path gets its own result: succeeded, failed with a reason, cancelled
+(possibly part done), skipped, or not reached after Stop. A command's
+success reports the owner's exit result, not guaranteed savings.
+Report allocation separately from observed volume availability before/after;
+other activity, hardlinks, open files, APFS clones and snapshots can retain
+blocks. PwrDisk always rescans after owner cleanup, even partial failure.
+Never alter snapshots to force the reported allocation to become free space.
+
+## Developer artifacts and virtual machines
+
+Artifact identity and evidence are separate from cleanup suitability.
+`detected` is inventory only. `suggested` means a plausible, relatively
+lower-risk candidate to review, with local edits, active tools and the
+cost of reinstalling or rebuilding still to check. Name conventions are
+weaker evidence than recognized tool layouts. Whole tool homes and generic
+`target`, `build`, `dist`, `bin` or `obj` names do not establish disposability;
+review the specific detected subtree instead.
+
+VM/container disk images can contain unique work. Manage snapshots in the
+owner app, never by removing individual files in a snapshot chain. Saved
+memory or suspend state can usually be released by resuming the VM and
+shutting it down normally; checkpoints may retain it. VM data stays a
+detection even inside a directory named like a cache, and its displayed
+size is not a promise of recovered space. Do not run an owner's destructive
+cleanup command without explicit approval for that operation.

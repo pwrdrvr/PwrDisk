@@ -5,16 +5,21 @@ use rustc_hash::FxHashMap;
 use super::{Allocation, CloneInfo};
 use crate::tree::Node;
 
+#[cfg(all(test, target_os = "macos"))]
+mod apfs_tests;
+
 /// Scan-derived bounds before snapshots, open files, compression and changes
 /// after the scan. Only the lower bound is projected onto the volume meter.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Estimate {
     pub lower: u64,
     pub upper: u64,
+    /// Missing extent relationships or metadata, bounded accounting, or
+    /// inconsistent observations of one file.
     pub partial: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct Group {
     members: u64,
     references: u32,
@@ -23,21 +28,38 @@ struct Group {
 }
 
 impl Group {
+    /// One file's membership of its clone group.
+    fn member(info: CloneInfo, allocated: u64) -> Self {
+        Self {
+            members: 1,
+            references: info.references,
+            shared: info.data_bytes.min(
+                allocated
+                    .saturating_sub(info.private_bytes.unwrap_or(allocated)),
+            ),
+            all_zero_private: info.private_bytes == Some(0),
+        }
+    }
+
     fn credit(&self) -> Estimate {
         let complete =
             self.references >= 2 && self.members == u64::from(self.references);
+        // APFS gives a modified clone a new ID even while it retains some
+        // of this group's blocks. It may be outside the scanned root, so
+        // selecting every reference to this ID proves only possible savings.
         Estimate {
-            lower: if complete { self.shared } else { 0 },
+            lower: 0,
             upper: if complete && self.all_zero_private {
                 self.shared
             } else {
                 0
             },
-            partial: false,
+            partial: complete && self.shared > 0,
         }
     }
 }
 
+#[derive(Clone)]
 struct Links {
     allocation: Allocation,
     names: u64,
@@ -49,14 +71,16 @@ impl Links {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Accumulator {
     base: Estimate,
     credit: Estimate,
+    uncertain_groups: u64,
     groups: FxHashMap<(u64, u64), Group>,
     links: FxHashMap<(u64, u64), Links>,
     limit: usize,
     incomplete: bool,
+    extents_uncertain: bool,
 }
 
 impl Accumulator {
@@ -73,51 +97,79 @@ impl Accumulator {
 
     pub(super) const fn estimate(&self) -> Estimate {
         Estimate {
-            lower: self.base.lower.saturating_add(if self.base.partial {
-                0
-            } else {
-                self.credit.lower
-            }),
+            lower: self.base.lower,
             upper: self.base.upper.saturating_add(self.credit.upper),
-            partial: self.base.partial || self.incomplete,
+            partial: self.base.partial
+                || self.incomplete
+                || self.extents_uncertain
+                || self.uncertain_groups > 0,
         }
     }
 
-    pub(super) fn leaf(node: &Node, limit: usize) -> Self {
+    pub(super) fn leaf(node: Node<'_>, limit: usize) -> Self {
         work();
         let mut acc = Self::new(limit);
-        if let Some(allocation) = node.allocation.as_deref() {
-            if allocation.followed {
-                return acc;
-            }
-            if allocation.links > 1 {
-                if let Some(key) = allocation.identity {
-                    acc.links.insert(
-                        key,
-                        Links {
-                            allocation: *allocation,
-                            names: 1,
-                        },
-                    );
-                } else {
-                    acc.base.partial = true;
-                    acc.base.upper = allocation.bytes;
-                }
-            } else {
-                acc.file(allocation, true);
-            }
-        } else {
-            acc.base.lower = node.bytes;
-            acc.base.upper = node.bytes;
-        }
+        acc.add_leaf(node);
         acc
     }
 
+    /// Add one file: its private and possible bytes, its clone group, or
+    /// its name among a hardlink's. This is what merging a file's own
+    /// accumulator did, without making one: a tree of millions of clones
+    /// allocated, merged and freed a set of maps for every file.
+    pub(super) fn add_leaf(&mut self, node: Node<'_>) {
+        let Some(allocation) = node.allocation() else {
+            self.base.lower = self.base.lower.saturating_add(node.bytes);
+            self.base.upper = self.base.upper.saturating_add(node.bytes);
+            return;
+        };
+        if allocation.followed {
+            return;
+        }
+        if allocation.links > 1 {
+            if let Some(key) = allocation.identity {
+                self.join_links(
+                    key,
+                    Links {
+                        allocation,
+                        names: 1,
+                    },
+                );
+            } else {
+                self.base.partial = true;
+                self.base.upper =
+                    self.base.upper.saturating_add(allocation.bytes);
+            }
+            return;
+        }
+        if let Some(info) = self.bounds(&allocation, true) {
+            work();
+            self.join(
+                (info.device, info.id),
+                Group::member(info, allocation.bytes),
+            );
+        }
+    }
+
     fn file(&mut self, allocation: &Allocation, add: bool) {
+        if let Some(info) = self.bounds(allocation, add) {
+            self.member(info, allocation.bytes, add);
+        }
+    }
+
+    /// A file's private and possible bytes; its clone facts when they can
+    /// join a group.
+    fn bounds(
+        &mut self,
+        allocation: &Allocation,
+        add: bool,
+    ) -> Option<CloneInfo> {
         let info = allocation.clone;
         // Missing clone facts may widen the bounds but cannot prove group
         // completeness. Keep that limitation when crossing the window link.
-        self.incomplete |= info.is_some_and(CloneInfo::incomplete);
+        self.incomplete |= info.is_some_and(CloneInfo::metadata_incomplete);
+        self.extents_uncertain |=
+            info.is_some_and(CloneInfo::extents_uncertain);
         let private = info.map_or(allocation.bytes, |info| {
             info.private_bytes.unwrap_or(0).min(allocation.bytes)
         });
@@ -138,9 +190,7 @@ impl Accumulator {
         };
         adjust(&mut self.base.lower, private, add);
         adjust(&mut self.base.upper, upper, add);
-        if let Some(info) = grouped {
-            self.member(info, allocation.bytes, add);
-        }
+        grouped
     }
 
     fn member(&mut self, info: CloneInfo, allocated: u64, add: bool) {
@@ -160,13 +210,17 @@ impl Accumulator {
             ..Group::default()
         });
         let before = group.credit();
-        adjust(&mut group.members, 1, add);
-        group.references = group.references.max(info.references);
-        group.shared = group.shared.min(info.data_bytes.min(
-            allocated.saturating_sub(info.private_bytes.unwrap_or(allocated)),
-        ));
-        group.all_zero_private &= info.private_bytes == Some(0);
-        replace(&mut self.credit, before, group.credit());
+        let file = Group::member(info, allocated);
+        adjust(&mut group.members, file.members, add);
+        group.references = group.references.max(file.references);
+        group.shared = group.shared.min(file.shared);
+        group.all_zero_private &= file.all_zero_private;
+        replace(
+            &mut self.credit,
+            &mut self.uncertain_groups,
+            before,
+            group.credit(),
+        );
     }
 
     pub(super) fn merge(&mut self, mut other: Self) {
@@ -188,58 +242,77 @@ impl Accumulator {
         self.base.upper = self.base.upper.saturating_add(other.base.upper);
         self.base.partial |= other.base.partial;
         self.incomplete |= other.incomplete;
+        self.extents_uncertain |= other.extents_uncertain;
         for (key, group) in other.groups {
             work();
-            if !self.groups.contains_key(&key)
-                && self.groups.len() >= self.limit
-            {
-                self.base.partial = true;
-                self.base.upper = self.base.upper.saturating_add(group.shared);
-                continue;
-            }
-            let old = self.groups.entry(key).or_insert_with(|| Group {
-                shared: u64::MAX,
-                all_zero_private: true,
-                ..Group::default()
-            });
-            let before = old.credit();
-            old.members += group.members;
-            old.references = old.references.max(group.references);
-            old.shared = old.shared.min(group.shared);
-            old.all_zero_private &= group.all_zero_private;
-            replace(&mut self.credit, before, old.credit());
+            self.join(key, group);
         }
         for (key, links) in other_links {
             work();
-            if let Some(old) = self.links.remove(&key) {
-                if old.complete() {
-                    self.file(&old.allocation, false);
-                }
-                let mut allocation = old.allocation;
-                allocation.bytes = allocation.bytes.min(links.allocation.bytes);
-                allocation.links = allocation.links.max(links.allocation.links);
-                if allocation.clone != links.allocation.clone {
-                    // Inconsistent live observations cannot authorize saving.
-                    allocation.clone = Some(CloneInfo::default());
-                }
-                let joined = Links {
-                    allocation,
-                    names: old.names + links.names,
-                };
-                if joined.complete() {
-                    self.file(&joined.allocation, true);
-                }
-                self.links.insert(key, joined);
-            } else if self.links.len() < self.limit {
-                if links.complete() {
-                    self.file(&links.allocation, true);
-                }
-                self.links.insert(key, links);
-            } else {
-                self.base.partial = true;
-                self.base.upper =
-                    self.base.upper.saturating_add(links.allocation.bytes);
+            self.join_links(key, links);
+        }
+    }
+
+    fn join(&mut self, key: (u64, u64), group: Group) {
+        if !self.groups.contains_key(&key) && self.groups.len() >= self.limit {
+            self.base.partial = true;
+            self.base.upper = self.base.upper.saturating_add(group.shared);
+            return;
+        }
+        let old = self.groups.entry(key).or_insert_with(|| Group {
+            shared: u64::MAX,
+            all_zero_private: true,
+            ..Group::default()
+        });
+        let before = old.credit();
+        old.members += group.members;
+        old.references = old.references.max(group.references);
+        old.shared = old.shared.min(group.shared);
+        old.all_zero_private &= group.all_zero_private;
+        replace(
+            &mut self.credit,
+            &mut self.uncertain_groups,
+            before,
+            old.credit(),
+        );
+    }
+
+    fn join_links(&mut self, key: (u64, u64), links: Links) {
+        if let Some(old) = self.links.remove(&key) {
+            // Disagreement is permanent evidence even if these names never
+            // become complete. Otherwise `bounds` would retain it only when
+            // an intermediate join happened to complete this file.
+            self.incomplete |= old.allocation != links.allocation;
+            if old.complete() {
+                self.file(&old.allocation, false);
             }
+            let mut allocation = old.allocation;
+            allocation.bytes = allocation.bytes.min(links.allocation.bytes);
+            allocation.links = allocation.links.max(links.allocation.links);
+            if allocation.clone != links.allocation.clone {
+                // Inconsistent live observations cannot authorize saving.
+                allocation.clone = Some(CloneInfo::default());
+            }
+            let joined = Links {
+                allocation,
+                names: old.names + links.names,
+            };
+            // With matching facts, exceeding the link count cannot be
+            // undone; a later larger count is itself a disagreement.
+            self.incomplete |= joined.names > joined.allocation.links;
+            if joined.complete() {
+                self.file(&joined.allocation, true);
+            }
+            self.links.insert(key, joined);
+        } else if self.links.len() < self.limit {
+            if links.complete() {
+                self.file(&links.allocation, true);
+            }
+            self.links.insert(key, links);
+        } else {
+            self.base.partial = true;
+            self.base.upper =
+                self.base.upper.saturating_add(links.allocation.bytes);
         }
     }
 }
@@ -252,7 +325,16 @@ const fn adjust(total: &mut u64, value: u64, add: bool) {
     };
 }
 
-const fn replace(total: &mut Estimate, before: Estimate, after: Estimate) {
+const fn replace(
+    total: &mut Estimate,
+    uncertain: &mut u64,
+    before: Estimate,
+    after: Estimate,
+) {
+    // Count current uncertain groups so a later observation that changes
+    // completeness gives the same answer in either merge order.
+    adjust(uncertain, before.partial as u64, false);
+    adjust(uncertain, after.partial as u64, true);
     total.lower = total
         .lower
         .saturating_sub(before.lower)
@@ -264,19 +346,56 @@ const fn replace(total: &mut Estimate, before: Estimate, after: Estimate) {
 }
 
 /// Accepted non-overlapping aggregated subtrees are evaluated together, so complete
-/// groups spanning separate marks receive credit once.
+/// groups spanning separate marks count possible shared savings once.
 ///
 /// Callers cache this scan-derived answer; removal authorization must still be checked afresh.
-pub fn estimate<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Estimate {
-    let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
-    for node in nodes {
-        total.merge(gather(node));
-    }
-    total.estimate()
+pub fn estimate<'a>(nodes: impl IntoIterator<Item = Node<'a>>) -> Estimate {
+    Selected::new(nodes).estimate()
 }
 
-fn gather(node: &Node) -> Accumulator {
-    if node.allocation.as_deref().is_some_and(|info| info.followed) {
+/// Reuse one gathered selection for its total, attribution and bounded peers.
+pub struct Selected(Accumulator);
+
+impl Selected {
+    pub fn new<'a>(nodes: impl IntoIterator<Item = Node<'a>>) -> Self {
+        let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
+        for node in nodes {
+            total.merge(gather(node));
+        }
+        Self(total)
+    }
+
+    pub const fn estimate(&self) -> Estimate {
+        self.0.estimate()
+    }
+
+    /// Known allocation metadata can still leave extent relationships unknown.
+    pub const fn metadata_complete(&self) -> bool {
+        !self.0.base.partial && !self.0.incomplete
+    }
+
+    /// Disjoint alternatives and their combined union use the same engine.
+    /// Only candidates are gathered here; the selected tree is never re-walked.
+    pub fn additions(
+        &self,
+        candidates: &[Node<'_>],
+    ) -> (Vec<(Estimate, Estimate)>, Estimate) {
+        let mut combined = self.0.clone();
+        let mut answers = Vec::with_capacity(candidates.len());
+        for node in candidates {
+            let addition = gather(*node);
+            let alone = addition.estimate();
+            let mut union = self.0.clone();
+            union.merge(addition.clone());
+            combined.merge(addition);
+            answers.push((alone, union.estimate()));
+        }
+        (answers, combined.estimate())
+    }
+}
+
+fn gather(node: Node<'_>) -> Accumulator {
+    if node.allocation().is_some_and(|info| info.followed) {
         return Accumulator::new(super::MAX_CLONE_GROUPS);
     }
     if !node.is_dir() {
@@ -286,7 +405,7 @@ fn gather(node: &Node) -> Accumulator {
     // Aggregation retains a summary on any subtree whose metadata can
     // interact with another mark, including zero-weight hardlink aliases.
     // Ordinary subtrees need no second walk after a mark changes.
-    if node.sharing.is_none() {
+    if node.stored_sharing().is_none() {
         let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
         total.base = Estimate {
             lower: node.bytes,
@@ -296,28 +415,36 @@ fn gather(node: &Node) -> Accumulator {
         return total;
     }
     let mut total = Accumulator::new(super::MAX_CLONE_GROUPS);
-    for child in &node.children {
-        total.merge(gather(child));
+    for child in node.children() {
+        if child.is_dir() {
+            total.merge(gather(child));
+        } else {
+            total.add_leaf(child);
+        }
     }
     total
 }
 
 #[cfg(test)]
 thread_local! {
-    static WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Map entries visited, here and by `sharing::refresh`, which tests
+    /// hold to a budget.
+    pub(super) static WORK: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 #[cfg(not(test))]
-const fn work() {}
+pub(super) const fn work() {}
 
 #[cfg(test)]
-fn work() {
+pub(super) fn work() {
     WORK.with(|work| work.set(work.get() + 1));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::{Draft, Tree};
     use crate::tree::{Metric, NodeKind, Seen, aggregate_deduped};
 
     fn file(
@@ -325,8 +452,8 @@ mod tests {
         inode: u64,
         links: u64,
         clone: Option<CloneInfo>,
-    ) -> Node {
-        let mut node = Node::entry(name, NodeKind::File, 4096);
+    ) -> Draft {
+        let mut node = Draft::entry(name, NodeKind::File, 4096);
         node.inode =
             Some((1, std::num::NonZeroU64::new(inode).expect("inode")));
         node.allocation = Some(Box::new(Allocation {
@@ -353,9 +480,9 @@ mod tests {
     fn ten_worktrees_with_external_clones_free_only_their_private_files() {
         const MIB: u64 = 1024 * 1024;
         const LISTED: u64 = 10 * 1024 * MIB;
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         for inode in 1..=11 {
-            let mut dir = Node::directory(format!("worktree-{inode}"));
+            let mut dir = Draft::directory(format!("worktree-{inode}"));
             let mut shared = file(
                 "shared",
                 inode,
@@ -371,7 +498,7 @@ mod tests {
                 shared.bytes;
             dir.children.push(shared);
             if inode <= 10 {
-                dir.children.push(Node::entry(
+                dir.children.push(Draft::entry(
                     "private",
                     NodeKind::File,
                     50 * MIB,
@@ -379,23 +506,24 @@ mod tests {
             }
             root.children.push(dir);
         }
-        aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
-        let selected = &root.children[..10];
+        let mut tree = Tree::from(root);
+        aggregate_deduped(&mut tree, Metric::Bytes, &Seen::new());
+        let root = tree.root();
+        let selected = || root.children().iter().take(10);
+        assert_eq!(selected().map(|n| n.bytes).sum::<u64>(), 100 * 1024 * MIB);
         assert_eq!(
-            selected.iter().map(|n| n.bytes).sum::<u64>(),
-            100 * 1024 * MIB
-        );
-        assert_eq!(
-            estimate(selected),
+            estimate(selected()),
             Estimate {
                 lower: 500 * MIB,
                 upper: 500 * MIB,
                 partial: false,
             }
         );
-        // Including the surviving member completes the union exactly once.
-        assert_eq!(estimate(&root.children).lower, LISTED + 450 * MIB);
-        assert_eq!(estimate(&root.children).upper, LISTED + 450 * MIB);
+        // Completing an ID adds possible savings, never measured private
+        // allocation: another ID may retain some of its blocks.
+        assert_eq!(estimate(root.children()).lower, 500 * MIB);
+        assert_eq!(estimate(root.children()).upper, LISTED + 450 * MIB);
+        assert!(estimate(root.children()).partial);
     }
 
     #[test]
@@ -404,47 +532,123 @@ mod tests {
         let mut info = clone_info();
         info.references = 3;
         let b = file("b", 2, 1, Some(info));
-        assert_eq!(estimate([&a, &b]).lower, 0);
+        assert_eq!(
+            estimate([Tree::from(&a).root(), Tree::from(&b).root()]).lower,
+            0
+        );
         info.device = 2;
         info.references = 2;
         let c = file("c", 3, 1, Some(info));
-        assert_eq!(estimate([&a, &c]).lower, 0);
+        assert_eq!(
+            estimate([Tree::from(&a).root(), Tree::from(&c).root()]).lower,
+            0
+        );
     }
 
     #[test]
     fn selected_aliases_free_nothing_until_the_last_real_name_is_selected() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         for name in ["a", "b"] {
-            let mut dir = Node::directory(name);
+            let mut dir = Draft::directory(name);
             dir.children.push(file("file", 1, 2, None));
             root.children.push(dir);
         }
-        aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
+        let mut tree = Tree::from(root);
+        aggregate_deduped(&mut tree, Metric::Bytes, &Seen::new());
+        let root = tree.root();
         assert_eq!(root.bytes, 4096);
-        for child in &root.children {
+        for child in root.children() {
             assert_eq!(estimate([child]).lower, 0);
             assert_eq!(child.sharing().reclaimable(child.bytes), 0);
         }
-        assert_eq!(estimate(&root.children).lower, 4096);
+        assert_eq!(estimate(root.children()).lower, 4096);
         assert_eq!(root.sharing().reclaimable(root.bytes), 4096);
     }
 
     #[test]
     fn hardlinks_are_one_clone_reference_even_across_marked_directories() {
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         for (name, inode, links) in [("a", 1, 2), ("b", 1, 2), ("c", 2, 1)] {
-            let mut dir = Node::directory(name);
+            let mut dir = Draft::directory(name);
             dir.children
                 .push(file("file", inode, links, Some(clone_info())));
             root.children.push(dir);
         }
-        aggregate_deduped(&mut root, Metric::Bytes, &Seen::new());
+        let mut tree = Tree::from(root);
+        aggregate_deduped(&mut tree, Metric::Bytes, &Seen::new());
+        let root = tree.root();
         assert_eq!(root.bytes, 8192);
         assert_eq!(root.sharing().duplicate_bytes, 4096);
-        assert_eq!(estimate(root.children.iter().take(2)).lower, 0);
-        assert_eq!(estimate(&root.children).lower, 4096);
-        assert_eq!(root.sharing().reclaimable(root.bytes), 4096);
-        assert_eq!(estimate(&root.children).upper, 4096);
+        assert_eq!(estimate(root.children().iter().take(2)).lower, 0);
+        assert_eq!(estimate(root.children()).lower, 0);
+        assert_eq!(root.sharing().reclaimable(root.bytes), 0);
+        assert_eq!(estimate(root.children()).upper, 4096);
+        assert!(estimate(root.children()).partial);
+    }
+
+    #[test]
+    fn changing_link_counts_are_partial_before_all_names_are_seen() {
+        // Two observations with link counts 2 and 3 disagree even though
+        // neither merge order completes the file's final set of names.
+        let trees = [
+            Tree::from(file("a", 1, 2, None)),
+            Tree::from(file("b", 1, 3, None)),
+        ];
+        assert!(estimate(trees.iter().map(Tree::root)).partial);
+        assert!(estimate(trees.iter().rev().map(Tree::root)).partial);
+    }
+
+    #[test]
+    fn a_third_name_cannot_hide_conflicting_clone_observations() {
+        // Reduced from the flat-directory oracle's seed 132: the flat
+        // order completes two conflicting names before the third arrives;
+        // nesting completes two matching names, then joins the conflict.
+        let a = file("a", 1, 2, None);
+        let b = file("b", 1, 2, Some(clone_info()));
+        let c = file("c", 1, 2, Some(clone_info()));
+        let mut flat = Draft::directory("flat");
+        flat.children = vec![a.clone(), b.clone(), c.clone()];
+        let mut pair = Draft::directory("pair");
+        pair.children = vec![b, c];
+        let mut nested = Draft::directory("nested");
+        nested.children = vec![a, pair];
+        let mut flat = Tree::from(flat);
+        let mut nested = Tree::from(nested);
+        crate::tree::aggregate(&mut flat, Metric::Bytes);
+        crate::tree::aggregate(&mut nested, Metric::Bytes);
+        let flat = estimate([flat.root()]);
+        let nested = estimate([nested.root()]);
+        assert!(flat.partial);
+        assert!(nested.partial);
+        assert_eq!(flat, nested);
+    }
+
+    #[test]
+    fn inconsistent_hardlinks_are_partial_without_completing_the_file() {
+        let mut smaller = file("smaller", 1, 3, None);
+        smaller.allocation.as_mut().expect("allocation").bytes = 2048;
+        for names in [
+            vec![file("a", 1, 3, None), file("b", 1, 3, Some(clone_info()))],
+            vec![file("a", 1, 3, None), smaller],
+            vec![
+                file("a", 1, 2, None),
+                file("b", 1, 2, None),
+                file("c", 1, 2, None),
+            ],
+        ] {
+            let trees: Vec<_> = names.into_iter().map(Tree::from).collect();
+            let expected = Estimate {
+                partial: true,
+                ..Estimate::default()
+            };
+            assert_eq!(estimate(trees.iter().map(Tree::root)), expected);
+            assert_eq!(estimate(trees.iter().rev().map(Tree::root)), expected);
+        }
+        // Unselected names alone are not inconsistent evidence.
+        assert_eq!(
+            estimate([Tree::from(file("a", 1, 3, None)).root()]),
+            Estimate::default()
+        );
     }
 
     #[test]
@@ -459,7 +663,8 @@ mod tests {
             }
             let a = file("a", 1, 1, Some(info));
             let b = file("b", 2, 1, Some(info));
-            let estimate = estimate([&a, &b]);
+            let estimate =
+                estimate([Tree::from(&a).root(), Tree::from(&b).root()]);
             assert_eq!(estimate.lower, 0, "{missing}");
             assert_eq!(estimate.upper, 8192, "{missing}");
             assert!(estimate.partial, "{missing}");
@@ -472,10 +677,16 @@ mod tests {
         info.private_bytes = Some(1024);
         let a = file("a", 1, 1, Some(info));
         let b = file("b", 2, 1, Some(info));
-        assert_eq!(estimate([&a]).lower, 1024);
-        assert_eq!(estimate([&a]).upper, 4096);
-        assert_eq!(estimate([&a, &b]).lower, 5120);
-        assert_eq!(estimate([&a, &b]).upper, 8192);
+        assert_eq!(estimate([Tree::from(&a).root()]).lower, 1024);
+        assert_eq!(estimate([Tree::from(&a).root()]).upper, 4096);
+        assert_eq!(
+            estimate([Tree::from(&a).root(), Tree::from(&b).root()]).lower,
+            2048
+        );
+        assert_eq!(
+            estimate([Tree::from(&a).root(), Tree::from(&b).root()]).upper,
+            8192
+        );
     }
 
     #[test]
@@ -483,11 +694,15 @@ mod tests {
         let mut link = file("link", 1, 1, Some(clone_info()));
         link.allocation.as_mut().expect("allocation").followed = true;
         let real = file("real", 2, 1, Some(clone_info()));
-        let mut directory_link = Node::directory("directory-link");
+        let mut directory_link = Draft::directory("directory-link");
         directory_link.allocation = link.allocation.clone();
         directory_link.children.push(real.clone());
-        assert_eq!(estimate([&link, &real]).lower, 0);
-        assert_eq!(estimate([&directory_link]).lower, 0);
+        assert_eq!(
+            estimate([Tree::from(&link).root(), Tree::from(&real).root()])
+                .lower,
+            0
+        );
+        assert_eq!(estimate([Tree::from(&directory_link).root()]).lower, 0);
     }
 
     #[test]
@@ -499,7 +714,7 @@ mod tests {
                 info.id = group;
                 info.private_bytes = Some(1024);
                 total.merge(Accumulator::leaf(
-                    &file("f", inode, 1, Some(info)),
+                    Tree::from(file("f", inode, 1, Some(info))).root(),
                     1,
                 ));
             }
@@ -518,7 +733,7 @@ mod tests {
             let mut nodes = Vec::new();
             for group in 1..=n {
                 for alias in [0, 1] {
-                    let mut dir = Node::directory(format!("g{group}-{alias}"));
+                    let mut dir = Draft::directory(format!("g{group}-{alias}"));
                     let mut info = clone_info();
                     info.id = group;
                     for member in [1, 2] {
@@ -529,13 +744,16 @@ mod tests {
                             Some(info),
                         ));
                     }
+                    let mut dir = Tree::from(dir);
                     aggregate_deduped(&mut dir, Metric::Bytes, &Seen::new());
                     nodes.push(dir);
                 }
             }
             WORK.set(0);
-            let value = estimate(&nodes);
-            assert_eq!(value.lower, n * 4096);
+            let value = estimate(nodes.iter().map(Tree::root));
+            assert_eq!(value.lower, 0);
+            assert_eq!(value.upper, n * 4096);
+            assert!(value.partial);
             let work = WORK.get();
             assert!(work < n * 40, "absolute work budget: {n}: {work}");
             counts.push(work);
@@ -543,6 +761,166 @@ mod tests {
         assert!(counts[1] <= counts[0] * 16, "{counts:?}");
         eprintln!(
             "selected-set accounting operations 128->1024 groups: {counts:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod observation_tests {
+    use std::fs;
+    use std::os::unix::fs::MetadataExt as _;
+    use std::path::Path;
+
+    use proptest::prelude::*;
+
+    use super::*;
+    use crate::tree::{Draft, NodeKind, Tree};
+
+    fn observe(path: &Path) -> Draft {
+        let metadata = fs::metadata(path).expect("the observed name exists");
+        let bytes = metadata.blocks() * 512;
+        let mut node = Draft::entry("observed", NodeKind::File, bytes);
+        node.allocation = Some(Box::new(Allocation {
+            bytes,
+            identity: Some((metadata.dev(), metadata.ino())),
+            links: metadata.nlink(),
+            followed: false,
+            clone: None,
+        }));
+        node
+    }
+
+    fn check_observations(
+        extra_names: &[u8],
+    ) -> Result<(), proptest::test_runner::TestCaseError> {
+        let temp = tempfile::tempdir().expect("a temporary tree");
+        let canonical = temp.path().canonicalize().expect("real root");
+        let anchor = temp.path().join("anchor");
+        fs::write(&anchor, [0; 4096]).expect("a file to link");
+        let mut observations = Vec::new();
+        let mut trees = Vec::new();
+        for (index, extra) in extra_names.iter().copied().enumerate() {
+            let name = format!("observed-{index}");
+            let path = temp.path().join(&name);
+            fs::hard_link(&anchor, &path).expect("a name to observe");
+            let extras: Vec<_> = (0..extra)
+                .map(|at| {
+                    let path = temp.path().join(format!("extra-{at}"));
+                    fs::hard_link(&anchor, &path).expect("another name");
+                    path
+                })
+                .collect();
+            let observed = observe(&path);
+            let real = observe(&canonical.join(name));
+            // macOS temp roots can be spelled through /var or /private;
+            // both spellings must supply the same accounting evidence.
+            prop_assert_eq!(
+                observed.allocation.as_deref(),
+                real.allocation.as_deref()
+            );
+            observations
+                .push(*observed.allocation.as_deref().expect("retained facts"));
+            trees.push(Tree::from(observed));
+            // A scan retains a name already observed even if it is
+            // unlinked before the next listing. The anchor keeps the
+            // inode alive, so later observations are of the same file.
+            fs::remove_file(path).expect("remove the observed name");
+            for path in extras {
+                fs::remove_file(path).expect("remove an extra name");
+            }
+
+            // The final observations, with no intermediate sums: facts
+            // must agree and cannot describe more names than exist.
+            let first = observations[0];
+            let partial = observations.iter().any(|info| *info != first)
+                || observations.len() as u64 > first.links;
+            let forward = Selected::new(trees.iter().map(Tree::root));
+            let reverse = Selected::new(trees.iter().rev().map(Tree::root));
+            prop_assert_eq!(forward.metadata_complete(), !partial);
+            prop_assert_eq!(reverse.metadata_complete(), !partial);
+            let forward = forward.estimate();
+            let reverse = reverse.estimate();
+            prop_assert_eq!(forward.partial, partial);
+            prop_assert_eq!(reverse.partial, partial);
+            prop_assert_eq!(forward, reverse);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn two_observations_of_a_changing_link_count_stay_partial() {
+        // Shrunk from the property on pre-fix main: one inode observed
+        // with 4 links, then 2, while only two names have been selected.
+        check_observations(&[2, 0]).expect("partial in either order");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 32,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn live_hardlink_observations_match_the_partial_model(
+            extra_names in prop::collection::vec(0_u8..4, 1..12),
+        ) {
+            check_observations(&extra_names)?;
+        }
+    }
+}
+
+#[cfg(test)]
+mod addition_tests {
+    use super::*;
+    use crate::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+
+    #[test]
+    fn bounded_peer_unions_scale_with_metadata_not_pairs_of_files() {
+        let mut counts = Vec::new();
+        for count in [128_u64, 1024] {
+            let mut root = Draft::directory("root");
+            for member in 0..=20 {
+                let mut dir = Draft::directory(format!("member-{member}"));
+                for group in 1..=count {
+                    let mut file =
+                        Draft::entry(group.to_string(), NodeKind::File, 4096);
+                    file.allocation = Some(Box::new(Allocation {
+                        bytes: 4096,
+                        identity: None,
+                        links: 1,
+                        followed: false,
+                        clone: Some(CloneInfo {
+                            device: 1,
+                            id: group,
+                            references: 21,
+                            private_bytes: Some(0),
+                            data_bytes: 4096,
+                        }),
+                    }));
+                    dir.children.push(file);
+                }
+                root.children.push(dir);
+            }
+            let mut tree = Tree::from(root);
+            aggregate(&mut tree, Metric::Bytes);
+            let nodes: Vec<_> = tree.root().children().iter().collect();
+            WORK.set(0);
+            let (alternatives, together) =
+                Selected::new(nodes[..1].iter().copied())
+                    .additions(&nodes[1..]);
+            assert!(alternatives.iter().all(|(_, union)| union.upper == 0));
+            assert_eq!(together.lower, 0);
+            assert_eq!(together.upper, count * 4096);
+            assert!(together.partial);
+            let operations = WORK.get();
+            assert!(operations < count * 200, "{count}: {operations}");
+            counts.push(operations);
+        }
+        assert!(counts[1] <= counts[0] * 9, "{counts:?}");
+        eprintln!(
+            "20 peer union accounting operations, 128 -> 1024 groups: {counts:?}"
         );
     }
 }

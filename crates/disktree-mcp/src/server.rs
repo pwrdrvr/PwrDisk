@@ -13,22 +13,24 @@ use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    BooleanSchema, CustomRequest, CustomResult, ElicitRequestParams,
-    ElicitationAction, ElicitationSchema, ErrorCode, GetPromptResult,
-    Implementation, InitializeRequestParams, InitializeResult, JsonObject,
-    ListResourcesResult, PrimitiveSchemaDefinition, PromptMessage,
-    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
-    Resource, ResourceContents, Role, ServerCapabilities, ServerConfig,
+    ClientResult, CustomRequest, CustomResult, ElicitRequest,
+    ElicitRequestParams, ElicitationAction, ElicitationSchema, ErrorCode,
+    GetPromptResult, Implementation, InitializeRequestParams, InitializeResult,
+    JsonObject, ListResourcesResult, PromptMessage, ReadResourceRequestParams,
+    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role,
+    ServerCapabilities, ServerConfig, ServerRequest,
 };
-use rmcp::service::{RequestContext, RoleServer};
+use rmcp::service::{PeerRequestOptions, RequestContext, RoleServer};
 use rmcp::{
     ErrorData, ServerHandler, prompt, prompt_handler, prompt_router, tool,
     tool_handler, tool_router,
 };
 
+use crate::outputs;
 use crate::session::{
-    FindParams, LsParams, PathsParams, RemovalPreviewParams, RemoveParams,
-    ScanParams, ScanPlan, Session, ShowParams, run_scan,
+    EstimateParams, FindParams, LsParams, PathsParams, RankParams,
+    RemovalPreviewParams, RemoveParams, ScanParams, ScanPlan, Session,
+    ShowParams, run_scan,
 };
 use crate::skills::{self, SKILLS};
 
@@ -41,8 +43,22 @@ const SCAN_WAIT: Duration = Duration::from_mins(10);
 /// What the client is told at `initialize`: enough to use the tools well,
 /// and safely, without reading a skill first.
 const INSTRUCTIONS: &str = "\
-Start with pwrdisk_status, then scan and explore with pwrdisk_ls and \
-pwrdisk_find. Browsing never moves the displayed directory. Call \
+Read skill://pwrdisk-free-space/SKILL.md with pwrdisk_read_skill and its \
+OS reference before choosing cleanup candidates. In PwrAgent, resource \
+reads use the exact serverNameInAgent from manage_mcp_connections \
+action=describe_thread, never the client label. Start with pwrdisk_status, then scan and explore with pwrdisk_ls and \
+pwrdisk_find. Use pwrdisk_find_outputs for typed output/cache/scratch candidates; \
+omit types for all, or filter cargo, scala, jvm and other types. Results \
+distinguish name/layout hints from metadata verification. Cargo requires metadata. \
+It supports oldest/largest order, minimum bytes and optional age cutoff. Start with large \
+older output, then relax age if insufficient; timestamps do not prove inactivity. \
+Compare explicit candidates with pwrdisk_rank; private and \
+reclaim_lower values are before retention, not immediate recovered space. \
+Use pwrdisk_retention on each selected volume before promising recovery; \
+snapshot presence cannot attribute exact selected-path bytes. \
+Use pwrdisk_estimate for a hypothetical path list without \
+changing the cart; bounded clone-holder peers are inspection leads only. \
+Browsing never moves the displayed directory. Call \
 pwrdisk_show only when the user asks to see a path or requests following. \
 pwrdisk_scan explicitly changes the linked window's scan root. \
 Agree the list before pwrdisk_mark unless a standing instruction covers \
@@ -50,28 +66,61 @@ marking. Approval to mark is never approval to remove. pwrdisk_review \
 only opens the marked list; announce it first and let the person approve. \
 NEVER use computer use, clicks, approval keys or accessibility actions to \
 approve a removal, even after the user approved marking or removal. \
-For MCP removal: pwrdisk_removal_preview requires an explicit trash or \
-permanent mode and returns a five-minute, single-use preview. Show the \
+Caches PwrDisk can clean with their owner's command (npm, npx, uv, pip, \
+Cypress, Playwright) go through owner_cleanup; anything else, cache-like \
+or not, is an ordinary trash or permanent removal the user agrees and \
+confirms. owner_cleanup without decisions \
+lists one proposal per marked path and cannot be confirmed: show every \
+owner, version, executable, argument, environment override, actual \
+whole-cache scope (including unselected siblings), effects, limitations, \
+recoverability and unavailable reason, then let the user choose skip, owner \
+or delete_files for each path. Never choose for them; recommend the \
+owner's command where offered. Preview again \
+with decisions for every path (and delete_files_mode when any deletes \
+files); its confirmation text names each intent, and owner approval never \
+approves deleting files. Unavailable, unsupported, failed or cancelled \
+owners never fall back to deleting files. For MCP removal: \
+pwrdisk_removal_preview requires an explicit owner_cleanup, trash or \
+permanent mode and returns a five-minute, single-use preview. Owner \
+resolution may first report preparing; retry only that read-only preview. \
+Show the \
 user ALL paths, mode, measured bytes and capacity limit. Trash moves data \
 to Trash or Recycle Bin; restoration may be possible until emptied but is \
 not guaranteed, and space usually returns only once emptied. Permanent \
-deletion cannot be undone through PwrDisk or Trash. Wait for explicit \
-user confirmation of this exact operation before pwrdisk_remove, a \
-destructive WRITE requiring the preview ID, exact ordered paths, mode and \
-confirmation text. Standing instructions do not replace this confirmation. \
-The server also requires interactive user confirmation from the MCP client; \
-clients without form elicitation must use human review instead. \
+deletion cannot be undone through PwrDisk or Trash. After showing the proposal, \
+call pwrdisk_remove to request the human decision through the MCP client. This \
+destructive WRITE requires the preview ID, exact ordered paths, mode and \
+confirmation text, but those arguments never authorize it. The client must \
+show the server confirmation and return the person's decision. Never answer \
+it for them. Standing instructions, Auto and Full Access do not replace it. \
+Clients without form elicitation must use human review instead. \
 The app rechecks the preview, existing guards, and the configured limit \
 (5% of each volume's capacity by default) and re-measures before removing \
 anything. No fallback from Trash to permanent deletion; no headless or SSH \
 removal. Refusal, changed scan/marks/policy or expiration requires a new \
 preview and user confirmation. Never retry removal automatically, split \
 batches, change the limit, or use shell/UI deletion to bypass protection. \
+A window refuses a mark past the limit, including marks made before it \
+was linked; only the person can mark past it, in the window. \
 pwrdisk_status reports completion, failures and measured freed space. \
 A linked window's tree and marks are the source of truth. Read \
 skill://pwrdisk-free-space/SKILL.md and the matching references/macos.md, \
 references/linux.md or references/windows.md before marking or removal. \
 For read-only audits use skill://pwrdisk-explain-usage/SKILL.md.";
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SkillParams {
+    /// An exact skill:// URI from the PwrDisk skill catalog.
+    uri: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RetentionParams {
+    /// An absolute path on the selected volume; run for each volume.
+    path: std::path::PathBuf,
+}
 
 /// The server: one session behind a lock, so the tools can run from any
 /// protocol task while scans run off to the side.
@@ -79,6 +128,7 @@ For read-only audits use skill://pwrdisk-explain-usage/SKILL.md.";
 pub struct Server {
     session: Arc<Mutex<Session>>,
     relay_version: Option<String>,
+    follow_saved_size_units: bool,
     tool_router: ToolRouter<Self>,
     prompt_router: PromptRouter<Self>,
 }
@@ -94,6 +144,7 @@ impl Server {
         Self {
             session: Arc::new(Mutex::new(session)),
             relay_version: None,
+            follow_saved_size_units: false,
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
         }
@@ -140,11 +191,22 @@ impl Server {
         format!("{owner}\n{paths} ~ expands to this server's home directory.")
     }
 
+    /// The stdio process follows the saved window preference at each request,
+    /// so an already-connected agent sees a later Settings change too.
+    #[must_use]
+    pub const fn with_saved_size_units(mut self) -> Self {
+        self.follow_saved_size_units = true;
+        self
+    }
+
     /// Run `f` with the session. A poisoned lock means a tool panicked; the
     /// state is still worth more than nothing.
     pub fn with<R>(&self, f: impl FnOnce(&mut Session) -> R) -> R {
         let mut session =
             self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.follow_saved_size_units {
+            disktree_core::size_preferences::initialize();
+        }
         f(&mut session)
     }
 }
@@ -153,13 +215,71 @@ impl Server {
 impl Server {
     /// What this session knows: scans held, the window if one is open, what
     /// is marked, the last removal, and every volume's free space. Start
-    /// here.
+    /// here. Read `skill://pwrdisk-free-space/SKILL.md` with `pwrdisk_read_skill`.
+    /// Read it and the OS reference via this tool's exact MCP server name,
+    /// not its product/client label. In PwrAgent, `manage_mcp_connections`
+    /// `action=describe_thread` supplies `serverNameInAgent`; use that exact
+    /// value with `list_mcp_resources(server=...)` and `read_mcp_resource`.
     #[tool(
         name = "pwrdisk_status",
         annotations(title = "PwrDisk status", read_only_hint = true)
     )]
     async fn status(&self) -> String {
         format!("{}\n{}", self.ownership(), self.with(Session::status))
+    }
+
+    /// Read the required PwrDisk skill or OS reference directly, using its
+    /// skill URI. Start with `skill://pwrdisk-free-space/SKILL.md` before
+    /// choosing cleanup candidates, then references/macos.md, linux.md or
+    /// windows.md. Also exposed as MCP resources: in PwrAgent use
+    /// `manage_mcp_connections(action="describe_thread").serverNameInAgent`
+    /// as the exact server for `list_mcp_resources` and `read_mcp_resource`.
+    #[tool(
+        name = "pwrdisk_read_skill",
+        annotations(title = "Read PwrDisk skill", read_only_hint = true)
+    )]
+    async fn read_skill(
+        &self,
+        Parameters(params): Parameters<SkillParams>,
+    ) -> Result<String, String> {
+        skills::read(&params.uri)
+            .map(str::to_owned)
+            .ok_or_else(|| "Unknown PwrDisk skill resource URI".into())
+    }
+
+    /// Read-only retention preflight before proposing recovered space.
+    /// On macOS lists Time Machine snapshots for the path's volume with a
+    /// bounded command. Never changes snapshots. Reports presence only:
+    /// selected-path retention bytes and immediate recovery remain unknown.
+    /// Not a complete APFS snapshot or open-file inventory.
+    #[tool(
+        name = "pwrdisk_retention",
+        annotations(
+            title = "Inspect retention uncertainty",
+            read_only_hint = true
+        )
+    )]
+    async fn retention(
+        &self,
+        Parameters(params): Parameters<RetentionParams>,
+    ) -> Result<String, String> {
+        crate::retention::inspect(&params.path).await
+    }
+
+    /// Rank explicit candidate paths by private allocation or standalone
+    /// conservative reclaim lower bound. Read-only, no marking. Unknown
+    /// values are null and sort last; known zero stays zero. The complete
+    /// union is estimated once: never add candidate bounds. Ranking does
+    /// not establish ownership, disposability or immediate recovered space.
+    #[tool(
+        name = "pwrdisk_rank",
+        annotations(title = "Rank cleanup candidates", read_only_hint = true)
+    )]
+    async fn rank(
+        &self,
+        Parameters(params): Parameters<RankParams>,
+    ) -> Result<String, String> {
+        self.with(|session| session.rank(&params))
     }
 
     /// Scan a directory tree and keep the result for the other tools. With
@@ -212,7 +332,8 @@ impl Server {
 
     /// List a scanned directory, largest first: each entry's share, size,
     /// kind of data, whether its space can be had back and why, and when it
-    /// was last written. Never changes the directory shown in the window.
+    /// was last written. Sorts by listed allocation, not predicted recovery;
+    /// compare explicit candidates with `pwrdisk_rank`. Never moves the view.
     #[tool(
         name = "pwrdisk_ls",
         annotations(title = "List a directory", read_only_hint = true)
@@ -228,7 +349,8 @@ impl Server {
     /// every scanned root: files over a size, everything reclaimable
     /// (caches, build output, package stores), one kind of data, a name,
     /// or what nobody has written to in a while. A matching directory is
-    /// listed once, without its contents.
+    /// listed once, without its contents. Sorts by listed allocation;
+    /// compare explicit candidates with `pwrdisk_rank` before recommending.
     #[tool(
         name = "pwrdisk_find",
         annotations(title = "Find the largest matches", read_only_hint = true)
@@ -238,6 +360,52 @@ impl Server {
         Parameters(params): Parameters<FindParams>,
     ) -> Result<String, String> {
         self.with(|s| s.find(&params))
+    }
+
+    /// Find typed build output, caches, dependencies and temporary/scratch
+    /// locations with evidence, family/subtype filters, size/age filters and
+    /// oldest/largest ordering. jvm includes Scala, Gradle, Maven and Coursier;
+    /// cargo identifies Cargo output through metadata checks. Other detectors
+    /// expose name/layout evidence without claiming metadata verification.
+    /// Nested types remain visible; union totals avoid double counting.
+    /// Never navigates, marks or authorizes removal. Use estimate/retention
+    /// before promising recovery. Age is file mtime, not proof of inactivity.
+    #[tool(
+        name = "pwrdisk_find_outputs",
+        annotations(
+            title = "Find typed output candidates",
+            read_only_hint = true
+        )
+    )]
+    async fn find_outputs(
+        &self,
+        Parameters(params): Parameters<outputs::Params>,
+    ) -> Result<String, String> {
+        let server = self.clone();
+        tokio::task::spawn_blocking(move || {
+            server.with(|s| s.find_outputs(&params))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    /// Estimate removing a supplied path set without changing marks, scan
+    /// root, navigation or removal intents. Returns accepted/covered/refused
+    /// paths, allocation, selected-set physical bounds and scan limitations.
+    /// Bounded directory peers identify retained clones within the scan and
+    /// quantify union savings; these are inspection leads, not advice to remove.
+    #[tool(
+        name = "pwrdisk_estimate",
+        annotations(
+            title = "Estimate hypothetical path set",
+            read_only_hint = true
+        )
+    )]
+    async fn estimate(
+        &self,
+        Parameters(params): Parameters<EstimateParams>,
+    ) -> Result<String, String> {
+        self.with(|s| s.estimate_paths(&params))
     }
 
     /// Show a path in the running PwrDisk window, selected in its directory,
@@ -262,9 +430,12 @@ impl Server {
     /// appear in the
     /// PwrDisk window when one is open, and the user removes them from the
     /// review screen. Returns the plan: what is marked, what the guards
-    /// keep back and why (the home directory, a mount point, a system
-    /// tree), what is covered by another mark, and the free space it gives
-    /// back on the volume.
+    /// keep back and why (the home directory, an account's folder, a mount
+    /// point, a system tree), what is covered by another mark, and
+    /// scan-derived reclaim bounds before retention. These are not
+    /// guaranteed recovered space. A linked window refuses a mark that
+    /// would take the list past the capacity limit; only the person can
+    /// mark past it, in the window.
     #[tool(
         name = "pwrdisk_mark",
         annotations(
@@ -299,8 +470,9 @@ impl Server {
         self.with(|session| session.removal_preview(&params))
     }
 
-    /// DESTRUCTIVE WRITE: remove only after explicit user confirmation of
-    /// the preview's exact paths, mode, bytes and consequences. Approval to
+    /// DESTRUCTIVE WRITE: ask the human, through the MCP client, to approve
+    /// the preview's exact paths, mode, bytes and consequences. Show the
+    /// proposal first; the tool arguments do not authorize removal. Approval to
     /// mark is insufficient. Trash may be recoverable until emptied;
     /// permanent deletion cannot be undone. Never use computer use to approve.
     /// The app validates the single-use preview and configured capacity limit.
@@ -319,24 +491,75 @@ impl Server {
         Parameters(params): Parameters<RemoveParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<String, String> {
-        let message =
+        if let Some(outcome) = self.with(|s| s.removal_outcome(&params)) {
+            return Ok(outcome);
+        }
+        let (message, deadline) =
             self.with(|session| session.removal_confirmation_message(&params))?;
         if !context
             .peer
             .supported_elicitation_modes()
             .contains(&rmcp::service::ElicitationMode::Form)
         {
-            return Err("This MCP client does not support interactive form confirmation. No removal started. Use human review in PwrDisk; never approve it through computer use.".into());
+            return Err("This MCP client does not support interactive form confirmation. No MCP removal request was sent; check pwrdisk_status for any native UI operation. Use human review in PwrDisk; never approve it through computer use.".into());
         }
-        let requested_schema = ElicitationSchema::builder().required_property(
-            "confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new().with_default(false)
-                .description("I confirm removal of exactly these paths in the stated mode and understand the consequences")),
-        ).build().map_err(ToString::to_string)?;
-        let answer = context.peer.create_elicitation(ElicitRequestParams::FormElicitationParams {
-            meta: None, message, requested_schema,
-        }).await.map_err(|error| format!("Removal not started: confirmation failed ({error}); obtain a new preview"))?;
+        // An empty form asks for a decision, not data entry. Messaging hosts
+        // can offer Allow / Decline without inventing a required field value.
+        // Never label this as a host tool grant: Auto must still ask a person.
+        let requested_schema = ElicitationSchema::builder()
+            .build()
+            .map_err(ToString::to_string)?;
+        let request = ElicitRequestParams::FormElicitationParams {
+            meta: None,
+            message,
+            requested_schema,
+        };
+        let answer = async {
+            let mut handle = context
+                .peer
+                .send_cancellable_request(
+                    ServerRequest::ElicitRequest(ElicitRequest::new(request)),
+                    PeerRequestOptions::default(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            let response = tokio::select! {
+                biased;
+                () = context.ct.cancelled() => None,
+                () = tokio::time::sleep_until(deadline.into()) => None,
+                response = &mut handle.rx => Some(response),
+            };
+            match response {
+                Some(Ok(Ok(ClientResult::ElicitResult(answer)))) => Ok(answer),
+                Some(response) => {
+                    Err(format!("Invalid confirmation response: {response:?}"))
+                }
+                None => {
+                    // Withdraw the actual host card, rather than just dropping
+                    // a future and leaving an apparently live Allow button.
+                    let _ = handle
+                        .cancel(Some(
+                            "Removal approval expired or was cancelled".into(),
+                        ))
+                        .await;
+                    Err("Removal approval expired or was cancelled".into())
+                }
+            }
+        }
+        .await;
+        // The person may have approved in the native UI while this form
+        // was open. Cancellation describes the form, not that operation.
+        if let Some(outcome) = self.with(|s| s.removal_outcome(&params)) {
+            return Ok(outcome);
+        }
+        let answer = answer.map_err(|error| format!("MCP confirmation failed ({error}). No MCP removal request was sent; native UI outcome could not be verified. Check pwrdisk_status. Never retry automatically."))?;
         if !confirmed_by_user(&answer) {
-            return Err("Removal not started: user declined or cancelled confirmation. A new preview is required.".into());
+            return Err("MCP confirmation was declined or cancelled. No MCP removal request was sent; native UI outcome could not be verified. Check pwrdisk_status before considering a new preview. Never retry automatically.".into());
+        }
+        // Cancellation and expiration may race a positive answer. Neither
+        // an old card nor a late callback authorizes starting a new write.
+        if context.ct.is_cancelled() || Instant::now() >= deadline {
+            return Err("The removal approval expired or was cancelled. No MCP removal request was sent. Check pwrdisk_status; never retry automatically.".into());
         }
         self.with(|session| session.remove(&params))
     }
@@ -398,12 +621,9 @@ impl Server {
 /// Only an explicit positive answer from the client counts as approval.
 fn confirmed_by_user(answer: &rmcp::model::ElicitResult) -> bool {
     answer.action == ElicitationAction::Accept
-        && answer
-            .content
-            .as_ref()
-            .and_then(|value| value.get("confirmed"))
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
+        && answer.content.as_ref().is_some_and(|value| {
+            value.as_object().is_some_and(serde_json::Map::is_empty)
+        })
 }
 
 /// A skill as one prompt message, with this system's reference after it.
@@ -590,6 +810,34 @@ pub fn custom(
 mod tests {
     use super::*;
 
+    /// Every supported find kind must agree across the advertised schema,
+    /// JSON deserialization and the core classifier's category names.
+    #[test]
+    fn find_category_schema_and_requests_agree_with_core_kinds() {
+        use disktree_core::classify::Category;
+
+        let tools = Server::tool_router().list_all();
+        let find = tools
+            .iter()
+            .find(|tool| tool.name == "pwrdisk_find")
+            .expect("find");
+        let categories = find.input_schema["$defs"]["CategoryName"]["enum"]
+            .as_array()
+            .expect("category enum");
+        assert_eq!(categories.len(), Category::LEGEND.len() + 1);
+        for category in Category::LEGEND.into_iter().chain([Category::Other]) {
+            let name = category.name().replace(' ', "-");
+            assert!(
+                categories.contains(&serde_json::json!(name)),
+                "find schema must advertise {name}"
+            );
+            let params: FindParams =
+                serde_json::from_value(serde_json::json!({"category": name}))
+                    .expect("advertised category must deserialize");
+            assert_eq!(params.category.map(Category::from), Some(category));
+        }
+    }
+
     /// Every skill `skills/list` names is the one `skills/get` returns, and
     /// every file it lists is a resource that reads back with that size
     /// and digest.
@@ -623,6 +871,55 @@ mod tests {
             }
         }
         assert_eq!(covered, resources.len(), "no resource outside a skill");
+    }
+
+    #[test]
+    fn output_inventory_advertises_generic_types_and_age_ordering() {
+        let tools = Server::tool_router().list_all();
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == "pwrdisk_find_outputs")
+            .expect("one generic query must cover every output type");
+        assert_eq!(
+            tool.annotations.as_ref().expect("read tool").read_only_hint,
+            Some(true)
+        );
+        let schema = serde_json::to_value(&tool.input_schema).expect("schema");
+        for key in [
+            "older_than_days",
+            "min_bytes",
+            "order",
+            "offset",
+            "types",
+            "minimum_evidence",
+        ] {
+            assert!(schema["properties"].get(key).is_some(), "{key}");
+        }
+        let orders = schema["$defs"]["Order"]["enum"]
+            .as_array()
+            .expect("order enum");
+        assert_eq!(orders.len(), 2);
+        for order in ["oldest", "largest"] {
+            assert!(orders.contains(&serde_json::json!(order)));
+            let params: outputs::Params = serde_json::from_value(
+                serde_json::json!({"order": order, "older_than_days": 30}),
+            )
+            .expect("advertised order deserializes");
+            assert_eq!(
+                serde_json::to_value(params.order).expect("order"),
+                order
+            );
+        }
+        for invalid in [
+            serde_json::json!({"order": "newest"}),
+            serde_json::json!({"older_than_days": -1}),
+            serde_json::json!({"offset": -1}),
+            serde_json::json!({"unrecognized_policy": true}),
+        ] {
+            assert!(
+                serde_json::from_value::<outputs::Params>(invalid).is_err()
+            );
+        }
     }
 
     #[test]
@@ -667,6 +964,59 @@ mod tests {
             assert!(instructions.contains(&skill.uri()), "{}", skill.name);
         }
     }
+
+    #[tokio::test]
+    async fn skills_are_readable_directly_from_tool_discovery() {
+        let server = Server::new(Session::detached(
+            std::env::temp_dir().join("pwrdisk-no-window.sock"),
+            None,
+        ));
+        for skill in SKILLS {
+            for file in skill.files {
+                let text = server
+                    .read_skill(Parameters(SkillParams {
+                        uri: skills::uri(skill.name, file.path),
+                    }))
+                    .await
+                    .expect("tool reads exact resource");
+                assert_eq!(text, file.text);
+            }
+        }
+        assert!(
+            server
+                .read_skill(Parameters(SkillParams {
+                    uri: "file:///etc/passwd".into()
+                }))
+                .await
+                .is_err()
+        );
+        let tools = Server::tool_router().list_all();
+        for name in ["pwrdisk_read_skill", "pwrdisk_retention", "pwrdisk_rank"]
+        {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .expect("discoverable");
+            assert_eq!(
+                tool.annotations
+                    .as_ref()
+                    .expect("annotations")
+                    .read_only_hint,
+                Some(true)
+            );
+        }
+        let status = tools
+            .iter()
+            .find(|tool| tool.name == "pwrdisk_status")
+            .expect("status");
+        assert!(
+            status
+                .description
+                .as_ref()
+                .expect("onboarding")
+                .contains("serverNameInAgent")
+        );
+    }
     #[test]
     fn removal_is_a_destructive_non_idempotent_write_and_listing_is_read_only()
     {
@@ -679,6 +1029,14 @@ mod tests {
         assert_eq!(flags.read_only_hint, Some(false));
         assert_eq!(flags.destructive_hint, Some(true));
         assert_eq!(flags.idempotent_hint, Some(false));
+        let estimate = tools
+            .iter()
+            .find(|tool| tool.name == "pwrdisk_estimate")
+            .expect("estimate");
+        assert_eq!(
+            estimate.annotations.as_ref().expect("read").read_only_hint,
+            Some(true)
+        );
         let listing = tools
             .iter()
             .find(|tool| tool.name == "pwrdisk_ls")
@@ -696,7 +1054,7 @@ mod tests {
     }
 
     #[test]
-    fn only_explicit_client_acceptance_with_true_confirms_removal() {
+    fn only_explicit_client_acceptance_of_the_empty_form_confirms_removal() {
         use rmcp::model::ElicitResult;
         for action in [
             ElicitationAction::Accept,
@@ -705,13 +1063,14 @@ mod tests {
         ] {
             for content in [
                 None,
+                Some(serde_json::json!({})),
                 Some(serde_json::json!({"confirmed":false})),
                 Some(serde_json::json!({"confirmed":true})),
             ] {
                 let mut answer = ElicitResult::new(action.clone());
                 answer.content.clone_from(&content);
                 let expected = action == ElicitationAction::Accept
-                    && content == Some(serde_json::json!({"confirmed":true}));
+                    && content == Some(serde_json::json!({}));
                 assert_eq!(confirmed_by_user(&answer), expected);
             }
         }

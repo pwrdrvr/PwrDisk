@@ -66,6 +66,18 @@ pub mod icon {
 /// Region and lane widths. Each is the comfortable default for its content at
 /// the default rem; they scale with zoom like everything else.
 pub mod size {
+    /// Minimum physical pointer target, also at the smallest UI zoom.
+    pub const POINTER_TARGET: gpui_kit::Pixels = gpui_kit::px(24.0);
+    /// How far below the pointer's tip a tooltip starts: past the arrow
+    /// cursor (about 21 logical pixels on macOS, GNOME and Windows), so it
+    /// never sits under the pointer or over the row being pointed at.
+    /// Pixels, not rems: the cursor does not zoom with the UI.
+    pub const TOOLTIP_CLEARANCE: gpui_kit::Pixels = gpui_kit::px(26.0);
+    /// Below this height budget, reserve a reading lane instead of repeating
+    /// the color legend and long action captions in the semantic file list.
+    pub const FILE_LIST_FULL_DETAILS: Rems = Rems(32.0);
+    /// One text line plus padding; still 24 logical pixels at 75% zoom.
+    pub const FILE_ENTRY: Rems = Rems(2.0);
     use super::Rems;
 
     /// A crumb's sibling menu.
@@ -75,28 +87,53 @@ pub mod size {
     /// names are four known words, but wide enough for Drain My Battery
     /// beside the check, bar and count.
     pub const POWER_MENU: Rems = Rems(22.0);
+    /// The Treemap | List glyphs: a little shorter than wide, like a text
+    /// line's x-height plus ascender, so they sit on the label's centre line.
+    pub const VIEW_GLYPH_HEIGHT: Rems = Rems(0.625);
+    /// The treemap glyph's tall tile: just over half its width, as the
+    /// largest tile in a squarified layout tends to be.
+    pub const VIEW_GLYPH_TILE: Rems = Rems(0.375);
+    /// ⋮, the bar's overflow: its longest row is Depth with its stepper.
+    pub const MORE_MENU: Rems = Rems(16.0);
     /// One bar of the Power Efficiency gauge.
     pub const SIGNAL_BAR: Rems = Rems(0.1875);
     /// A list row's share bar.
     pub const ROW_BAR: Rems = Rems(5.5);
     /// A legend or identity swatch.
     pub const SWATCH: Rems = Rems(0.625);
+    /// The legend's "+N" menu: room for the longest kind and its size.
+    pub const LEGEND_MENU: Rems = Rems(13.0);
     /// A thin meter: share of the scan, the disk.
     pub const METER: Rems = Rems(0.3125);
     /// Fixed progress rows keep paths and changing counters from reflowing.
     pub const PROGRESS_ROW: Rems = Rems(1.375);
-    pub const SCAN_STATUS: Rems = Rems(2.0);
+    /// The scan heading's box and its one line, in `text::FIGURE` type.
+    /// It clips, so the line must hold the mono font's whole ascent and
+    /// descent: `JetBrains Mono`, the usual Linux fallback, needs 1.32 em.
+    pub const SCAN_STATUS: Rems = Rems(2.25);
     pub const PROGRESS_VALUE: Rems = Rems(9.0);
+    /// A side panel section's header: its caption eyebrow and total on one
+    /// line. Fixed, since a pinned header is pushed up by exactly this.
+    pub const SECTION_HEAD: Rems = Rems(1.25);
+
+    // Checked at build time: the headless tests cannot see a clipped glyph.
+    const _: () = assert!(SCAN_STATUS.0 >= super::text::FIGURE.0 * 1.32);
     /// The Size | Files | Age choice in the settings row.
     pub const RANKING_CHOICE: Rems = Rems(11.0);
     /// The review screen's summary column.
     pub const REVIEW_SUMMARY: Rems = Rems(22.5);
+    /// Exact owner command previews need more room than a short delete alert.
+    pub const CLEANUP_PREVIEW_WIDTH: Rems = Rems(44.0);
+    pub const CLEANUP_PREVIEW_HEIGHT_FRACTION: f32 = 0.6;
     /// The review list's share-bar lane.
     pub const SHARE_LANE: Rems = Rems(6.0);
     /// The review list's size lane: right-aligned, so sizes compare.
     pub const SIZE_LANE: Rems = Rems(5.0);
     /// The cursor tooltip.
     pub const TOOLTIP: Rems = Rems(16.75);
+    /// A figure column of the removal ledger: "-1023.9 GB" in caption
+    /// type, with room to spare.
+    pub const LEDGER_FIGURE: Rems = Rems(5.5);
     /// Source/root chooser, with room for host, path and mount labels.
     pub const SOURCE_PICKER: Rems = Rems(40.0);
     pub const SOURCE_LIST_HEIGHT: Rems = Rems(18.0);
@@ -104,9 +141,14 @@ pub mod size {
     pub const SOURCE_VIEWPORT_FRACTION: f32 = 0.92;
     /// The keyboard overlay.
     pub const HELP: Rems = Rems(32.5);
-    /// Settings › Updates' channel names' lane, so their descriptions line
-    /// up.
-    pub const UPDATE_SLOT: Rems = Rems(9.5);
+    /// A toast: PwrDisk's 330 px, a little under the family's 380 to 460,
+    /// since it sits over the treemap.
+    pub const TOAST: Rems = Rems(20.625);
+    /// The answer's countdown strip along a toast's top edge: the family's
+    /// 2 px.
+    pub const TOAST_TIMER: Rems = Rems(0.125);
+    /// A toast's progress track: the family's 4 px.
+    pub const TOAST_TRACK: Rems = Rems(0.25);
     /// The key column of the keyboard overlay.
     pub const KEY_LANE: Rems = Rems(7.0);
     /// A document's measure (the changelog): about 90 characters.
@@ -117,6 +159,13 @@ pub mod size {
     pub const SETTINGS_NAV: Rems = Rems(12.25);
     pub const SETTINGS_PANE: Rems = Rems(47.5);
     pub const SETTINGS_LABEL: Rems = Rems(10.0);
+    /// A pane's lede: the family's 56 characters or so.
+    pub const SETTINGS_LEDE: Rems = Rems(36.0);
+    /// A Settings nav row: the family's 28 to 30 px.
+    pub const SETTINGS_NAV_ROW: Rems = Rems(1.75);
+    /// The app icon in About's header: the family's 44 px, two lines of
+    /// the name and build line beside it.
+    pub const ABOUT_ICON: Rems = Rems(2.75);
     /// Logs: the search field's least width, so a query still reads
     /// beside its match count and chevrons.
     pub const LOG_FILTER: Rems = Rems(16.25);
@@ -136,6 +185,8 @@ pub mod size {
     pub const MENU_BUTTON: Rems = Rems(1.625);
     /// Its dropdown: wide enough for a row and its shortcut.
     pub const APP_MENU: Rems = Rems(18.0);
+    /// The review footer's Export menu: its longest row and its key.
+    pub const EXPORT_MENU: Rems = Rems(14.0);
     pub const APP_MENU_HEIGHT: Rems = Rems(36.0);
 }
 
@@ -180,7 +231,82 @@ pub mod chrome {
 }
 
 /// Interface zoom steps, as a factor of the 16 px default rem.
-pub const ZOOM_STEPS: [f32; 7] = [0.75, 0.875, 1.0, 1.125, 1.25, 1.5, 1.75];
+pub const ZOOM_STEPS: [f32; 8] =
+    [0.75, 0.875, 1.0, 1.125, 1.25, 1.5, 1.75, 2.0];
 
 /// The default rem, in pixels.
 pub const BASE_REM: f32 = 16.0;
+
+/// Below this many rems across (a narrow window, or 200% zoom of a normal
+/// one) an auxiliary window drops its wordmark and Settings stacks its panes
+/// above the content: a side column and the content no longer both fit.
+pub const COMPACT_WINDOW_REMS: f32 = 50.0;
+
+/// A session-wide scale: existing and newly opened auxiliary windows agree.
+/// It is not persisted and never changes an operating-system preference.
+struct InterfaceScale(f32);
+impl gpui_kit::Global for InterfaceScale {}
+
+pub fn sync_scale(window: &mut gpui_kit::Window, cx: &gpui_kit::App) -> bool {
+    let Some(scale) = cx.try_global::<InterfaceScale>() else {
+        return false;
+    };
+    let rem = BASE_REM * scale.0;
+    if (window.rem_size().as_f32() - rem).abs() < 0.01 {
+        return false;
+    }
+    window.set_rem_size(gpui_kit::px(rem));
+    true
+}
+
+pub fn zoom_interface(
+    event: &gpui_kit::KeyDownEvent,
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+) -> bool {
+    let key = &event.keystroke;
+    if !(key.modifiers.control || key.modifiers.platform) {
+        return false;
+    }
+    let current = window.rem_size().as_f32() / BASE_REM;
+    let index = ZOOM_STEPS
+        .iter()
+        .position(|step| (step - current).abs() < 0.01)
+        .unwrap_or(2);
+    let next = match key.key.as_str() {
+        "=" | "+" => (index + 1).min(ZOOM_STEPS.len() - 1),
+        "-" => index.saturating_sub(1),
+        "0" => 2,
+        _ => return false,
+    };
+    cx.set_global(InterfaceScale(ZOOM_STEPS[next]));
+    sync_scale(window, cx);
+    cx.refresh_windows();
+    true
+}
+
+/// Keyboard scrolling is explicit, so a virtual/overflow region needs no
+/// pointer wheel. Offsets are clamped to the measured content's bounds.
+pub fn scroll_key(
+    key: &str,
+    scroll: &gpui_kit::ScrollHandle,
+    rem: gpui_kit::Pixels,
+) -> bool {
+    let mut offset = scroll.offset();
+    let page = scroll.bounds().size.height * 0.8;
+    offset.y = match key {
+        "up" => offset.y + rem * 2.0,
+        "down" => offset.y - rem * 2.0,
+        "pageup" => offset.y + page,
+        "pagedown" => offset.y - page,
+        "home" => gpui_kit::px(0.0),
+        "end" => -scroll.max_offset().y,
+        _ => return false,
+    }
+    .clamp(
+        -scroll.max_offset().y.max(gpui_kit::px(0.0)),
+        gpui_kit::px(0.0),
+    );
+    scroll.set_offset(offset);
+    true
+}

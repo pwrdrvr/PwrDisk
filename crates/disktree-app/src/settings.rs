@@ -1,33 +1,41 @@
 //! The Settings window: its own window, one at a time, as in PwrRoute,
 //! PwrGit and PwrSnap. A nav on the left and panes of cards: Updates,
-//! Diagnostics and About. No General pane until there is something to put
-//! in it: Power Efficiency and the view settings stay in the strip, where
-//! they are used. Design: "Menus and Help Windows" in the PwrDisk Claude
-//! Design project, turn 3.
+//! General, Safety, Agents (MCP), Diagnostics and About. Power Efficiency
+//! and the view settings stay in the strip, where they are used. Design: "Menus and Help
+//! Windows" in the PwrDisk Claude Design project, turn 3; Agents (MCP) in
+//! "Notices, Sticky Headers and Agents (MCP)", as PwrSnap's Local Agents.
 //!
 //! Updates is the panel the main window used to draw, moved here with its
 //! rows, its names and its keys (↑↓ and Enter pick a channel, C checks, R
 //! restarts). Restart to update goes through the main window, which knows
 //! whether a removal is running and refuses to cut one short.
 
+use crate::semantics::{AccessibleButton as _, text as readable};
 use disktree_core::path_style::PathStyle;
+use disktree_core::removal_limit::Limit;
+use disktree_core::size::{self as sizes, SizeUnits};
+
+use crate::safety::Confirm;
 use std::path::PathBuf;
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClipboardItem, Context, Div, ElementId, FocusHandle,
     FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, WindowHandle, div,
+    ParentElement as _, Render, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Window, WindowHandle, div,
+    img,
 };
-use gpui_omarchy::{ActiveTheme as _, ButtonVariant, Theme, button};
+use gpui_omarchy::{
+    ActiveTheme as _, ButtonVariant, ChoiceItem, Theme, button, button_group,
+};
 
 use crate::aux_window::{self, Spec};
 use crate::build_info::BuildInfo;
 use crate::chrome::Drags;
 use crate::diagnostics::{self, Diagnostics};
 use crate::state::Disktree;
-use crate::ui::{icon, size, space, text};
+use crate::ui::{size, space, text};
 use crate::update_channel::{Slot, UpdateSettings};
 use crate::updater;
 
@@ -55,6 +63,13 @@ pub const CHECK_ID: &str = "updates-check";
 pub const RESTART_ID: &str = "updates-restart";
 pub const COPY_DIAGNOSTICS_ID: &str = "diagnostics-copy";
 pub const COPY_BUILD_ID: &str = "about-copy-build";
+pub const COPY_PROMPT_ID: &str = "agents-copy-prompt";
+/// How long a copy button says "Copied": PwrSnap's and PwrAgnt's 1.5 s.
+pub const COPY_FEEDBACK: std::time::Duration =
+    std::time::Duration::from_millis(1500);
+/// About's header: the icon, the name and version, the build line.
+pub const ABOUT_HEADER_ID: &str = "about-header";
+pub const ABOUT_BUILD_LINE_ID: &str = "about-build-line";
 
 const SPEC: Spec = Spec {
     title: "PwrDisk Settings",
@@ -66,31 +81,54 @@ const SPEC: Spec = Spec {
 /// The nav's sections, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
+    General,
     Updates,
     Diagnostics,
     Safety,
+    Agents,
     About,
 }
 
 impl Pane {
-    pub const ALL: [Self; 4] =
-        [Self::Updates, Self::Safety, Self::Diagnostics, Self::About];
+    pub const ALL: [Self; 6] = [
+        Self::General,
+        Self::Updates,
+        Self::Safety,
+        Self::Agents,
+        Self::Diagnostics,
+        Self::About,
+    ];
 
     pub const fn label(self) -> &'static str {
         match self {
+            Self::General => "General",
             Self::Updates => "Updates",
             Self::Diagnostics => "Diagnostics",
             Self::Safety => "Safety",
+            Self::Agents => "Agents (MCP)",
             Self::About => "About",
+        }
+    }
+
+    /// The nav's heading above this pane, as the family's Settings group
+    /// them: what PwrDisk does, then help with it.
+    pub const fn group(self) -> &'static str {
+        match self {
+            Self::General | Self::Updates | Self::Safety | Self::Agents => {
+                "App"
+            }
+            Self::Diagnostics | Self::About => "Support",
         }
     }
 
     /// The nav item's element id.
     pub const fn nav_id(self) -> &'static str {
         match self {
+            Self::General => "settings-nav-general",
             Self::Updates => "settings-nav-updates",
             Self::Diagnostics => "settings-nav-diagnostics",
             Self::Safety => "settings-nav-safety",
+            Self::Agents => "settings-nav-agents",
             Self::About => "settings-nav-about",
         }
     }
@@ -99,11 +137,11 @@ impl Pane {
 pub fn install(cx: &mut App) {
     cx.on_action(|_: &OpenSettings, cx| {
         // Settings… reopens on the pane last shown; a first open starts on
-        // Updates, the one with something to set.
+        // General.
         cx.defer(|cx| {
             let pane = aux_window::find::<SettingsWindow>(cx, |_| true)
                 .and_then(|handle| handle.read(cx).ok().map(|view| view.pane))
-                .unwrap_or(Pane::Updates);
+                .unwrap_or(Pane::General);
             open(pane, cx);
         });
     });
@@ -133,14 +171,38 @@ pub fn open_window(
     })
 }
 
+/// Redraws Settings › Agents (MCP) when the agent connected to the main
+/// window changes. Only that pane: nothing else there follows the agent.
+pub fn agents_changed(cx: &mut App) {
+    if let Some(handle) = aux_window::find::<SettingsWindow>(cx, |_| true) {
+        let _ = handle.update(cx, |view, _, cx| {
+            if view.pane == Pane::Agents {
+                cx.notify();
+            }
+        });
+    }
+}
+
 /// Redraws Settings when the updater's state moves (`updater::install`).
+/// Never for a download's percent, which Settings does not show: this
+/// collects the diagnostics again.
 pub fn refresh(cx: &mut App) {
+    #[cfg(test)]
+    REFRESHES.set(REFRESHES.get() + 1);
     if let Some(handle) = aux_window::find::<SettingsWindow>(cx, |_| true) {
         let _ = handle.update(cx, |view, _, cx| {
             view.diagnostics = diagnostics::collect(cx);
             cx.notify();
         });
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`refresh`] ran, for the test that a download's
+    /// percent does not rebuild Settings.
+    pub static REFRESHES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// The window's view.
@@ -152,11 +214,23 @@ pub struct SettingsWindow {
     /// it at a temporary one.
     pub updates_dir: Option<PathBuf>,
     pub diagnostics: Diagnostics,
-    /// The copy button that last copied, which says "Copied".
+    /// The copy button that last copied, which says "Copied" for
+    /// [`COPY_FEEDBACK`].
     copied: Option<&'static str>,
+    /// Puts "Copied" back to "Copy"; a newer copy replaces it, so an older
+    /// click cannot cut the newer one's short.
+    copied_reset: Option<gpui_kit::Task<()>>,
+    /// Agents (MCP)'s commands: the executable does not move while it
+    /// runs, so they are built once rather than on every redraw.
+    connect: Vec<crate::agent::Connect>,
     /// Why the last pick could not be saved.
     pub note: Option<String>,
+    /// The saved removal limit, as Safety shows it: read when the window
+    /// opens, whenever Safety is shown and after a pick is saved, never
+    /// while drawing, which runs on every frame.
+    pub safety: Result<crate::safety::Policy, String>,
     focus: FocusHandle,
+    pub pane_scroll: gpui_kit::ScrollHandle,
     strip_drag: bool,
 }
 
@@ -169,14 +243,22 @@ impl Drags for SettingsWindow {
 impl SettingsWindow {
     pub fn new(pane: Pane, cx: &Context<'_, Self>) -> Self {
         let installed = updater::installed_version();
+        let updates_dir = updater::settings_dir();
         Self {
             pane,
             updates_row: updater::selection().resolve(&installed).index(),
-            updates_dir: updater::settings_dir(),
+            safety: crate::safety::load_policy(updates_dir.as_deref()),
+            updates_dir,
             diagnostics: diagnostics::collect(cx),
             copied: None,
+            copied_reset: None,
+            connect: crate::agent::connect_commands(
+                &std::env::current_exe()
+                    .unwrap_or_else(|_| PathBuf::from("pwrdisk")),
+            ),
             note: None,
             focus: cx.focus_handle(),
+            pane_scroll: gpui_kit::ScrollHandle::new(),
             strip_drag: false,
         }
     }
@@ -185,7 +267,23 @@ impl SettingsWindow {
         self.pane = pane;
         self.copied = None;
         self.diagnostics = diagnostics::collect(cx);
+        if pane == Pane::Safety {
+            self.reload_safety();
+        }
         cx.notify();
+    }
+
+    /// The copy button that says "Copied" now, if any.
+    #[cfg(test)]
+    pub const fn copied(&self) -> Option<&'static str> {
+        self.copied
+    }
+
+    /// Read the saved removal limit again.
+    fn reload_safety(&mut self) {
+        self.safety = crate::safety::load_policy(self.updates_dir.as_deref());
+        #[cfg(test)]
+        work::SAFETY_LOADS.set(work::SAFETY_LOADS.get() + 1);
     }
 
     fn copy(
@@ -196,6 +294,13 @@ impl SettingsWindow {
     ) {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         self.copied = Some(id);
+        self.copied_reset = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COPY_FEEDBACK).await;
+            let _ = this.update(cx, |this, cx| {
+                this.copied = None;
+                cx.notify();
+            });
+        }));
         cx.notify();
     }
 
@@ -224,7 +329,7 @@ impl SettingsWindow {
     }
 
     /// Restart into the download, through the main window: it refuses
-    /// while a removal runs, and says so in its notice line.
+    /// while a removal runs, and says so in a toast.
     fn restart(cx: &mut App) {
         let main = cx
             .windows()
@@ -237,38 +342,42 @@ impl SettingsWindow {
                     app.restart_to_update(cx);
                 });
             }
-            None => {
-                let _ = updater::restart_to_update();
-            }
+            None => updater::restart_in_background(),
         }
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, cx: &mut Context<'_, Self>) {
         let keystroke = &event.keystroke;
+        if keystroke.modifiers.control
+            && matches!(keystroke.key.as_str(), "pageup" | "pagedown")
+        {
+            let index = Pane::ALL
+                .iter()
+                .position(|pane| *pane == self.pane)
+                .unwrap_or(0);
+            let step = if keystroke.key == "pageup" {
+                Pane::ALL.len() - 1
+            } else {
+                1
+            };
+            self.show(Pane::ALL[(index + step) % Pane::ALL.len()], cx);
+            return;
+        }
         if keystroke.modifiers.platform || keystroke.modifiers.control {
             return;
         }
         let rows = Slot::ALL.len();
         match keystroke.key.as_str() {
-            "tab" => {
-                let index = Pane::ALL
-                    .iter()
-                    .position(|pane| *pane == self.pane)
-                    .unwrap_or(0);
-                let step = if keystroke.modifiers.shift {
-                    Pane::ALL.len() - 1
-                } else {
-                    1
-                };
-                self.show(Pane::ALL[(index + step) % Pane::ALL.len()], cx);
-            }
             _ if self.pane != Pane::Updates => {}
-            "down" | "j" => {
-                self.updates_row = (self.updates_row + 1) % rows;
+            // The channels are a grid, Stable over Beta and Latest beside
+            // Prerelease: up and down change the train, left and right the
+            // track.
+            "down" | "j" | "up" | "k" => {
+                self.updates_row = (self.updates_row + 2) % rows;
                 cx.notify();
             }
-            "up" | "k" => {
-                self.updates_row = (self.updates_row + rows - 1) % rows;
+            "right" | "l" | "left" | "h" => {
+                self.updates_row ^= 1;
                 cx.notify();
             }
             "enter" | "space" => self.pick(Slot::ALL[self.updates_row], cx),
@@ -279,7 +388,9 @@ impl SettingsWindow {
             "r" => {
                 let installed = updater::installed_version();
                 let slot = updater::selection().resolve(&installed);
-                if updater::ready(&updater::state(), &installed, slot).is_some()
+                let state = updater::state();
+                if !state.restarting
+                    && updater::ready(&state, &installed, slot).is_some()
                 {
                     cx.defer(Self::restart);
                 }
@@ -295,66 +406,150 @@ impl Render for SettingsWindow {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        crate::ui::sync_scale(window, cx);
         let theme = cx.omarchy().clone();
-        let nav = Pane::ALL.iter().fold(
-            div()
-                .flex()
-                .flex_col()
-                .gap(space::XXS)
-                .w(size::SETTINGS_NAV)
-                .flex_shrink_0()
-                .p(space::SM)
-                .border_r_1()
-                .border_color(theme.divider())
-                .bg(theme.inset),
-            |nav, &pane| {
-                let on = pane == self.pane;
-                nav.child(
+        // When compact the panes wrap in a row above the content instead of
+        // taking a column beside it, and the group headings, which only
+        // make sense in a column, step out.
+        let compact = window.viewport_size().width.as_f32()
+            / window.rem_size().as_f32()
+            < crate::ui::COMPACT_WINDOW_REMS;
+        // Grouped, with the pane shown marked by an accent bar, as the
+        // family's Settings windows have it; square, as Omarchy draws.
+        let mut nav = div()
+            .id("settings-panes")
+            .role(gpui_kit::Role::TabList)
+            .aria_label("Settings panes")
+            .flex()
+            .flex_col()
+            .gap(space::XXS)
+            .w(size::SETTINGS_NAV)
+            .flex_shrink_0()
+            .px(space::SM)
+            .pb(space::SM)
+            .border_r_1()
+            .border_color(theme.divider())
+            .bg(theme.inset)
+            .when(compact, |nav| {
+                nav.pt(space::SM).flex_row().flex_wrap().w_full()
+            });
+        let mut group = "";
+        for &pane in &Pane::ALL {
+            if pane.group() != group && !compact {
+                group = pane.group();
+                nav = nav.child(
                     div()
-                        .id(pane.nav_id())
-                        .debug_selector(move || pane.nav_id().into())
-                        .px(space::MD)
-                        .py(space::SM)
-                        .border_1()
-                        .border_color(if on {
-                            theme.border
-                        } else {
-                            theme.inset
-                        })
-                        .when(on, |item| {
-                            item.bg(theme.accent.opacity(0.18))
-                                .text_color(theme.bright)
-                        })
-                        .hover(|item| item.bg(theme.hover_fill()))
-                        .cursor_pointer()
-                        .child(pane.label())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.show(pane, cx);
-                        })),
-                )
-            },
-        );
+                        .px(space::SM)
+                        .pt(space::MD)
+                        .pb(space::XXS)
+                        .font_family(theme.mono_font.clone())
+                        .text_size(text::CAPTION)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.secondary)
+                        .child(SharedString::from(group.to_uppercase())),
+                );
+            }
+            let on = pane == self.pane;
+            // The accent bar marks the pane shown, so focus gets the
+            // app's full outline on a wrapper instead: recolouring the
+            // bar would hide focus on the shown pane and make any other
+            // focused row look shown too.
+            nav = nav.child(
+                div()
+                    .id(pane.nav_id())
+                    .role(gpui_kit::Role::Tab)
+                    .aria_label(pane.label())
+                    .aria_selected(on)
+                    .focusable()
+                    .tab_stop(true)
+                    .h(size::SETTINGS_NAV_ROW)
+                    .border_1()
+                    .border_color(theme.inset)
+                    .focus_visible(|style| style.border_color(theme.accent))
+                    .debug_selector(move || pane.nav_id().into())
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .px(space::SM)
+                            .border_l_2()
+                            .border_color(if on {
+                                theme.accent
+                            } else {
+                                theme.inset
+                            })
+                            .when(on, |item| {
+                                item.bg(theme.accent.opacity(0.14))
+                                    .text_color(theme.bright)
+                            })
+                            .hover(|item| item.bg(theme.hover_fill()))
+                            .child(pane.label()),
+                    )
+                    .on_key_down(cx.listener(
+                        move |this, event: &KeyDownEvent, _, cx| {
+                            if matches!(
+                                event.keystroke.key.as_str(),
+                                "enter" | "space"
+                            ) {
+                                this.show(pane, cx);
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.show(pane, cx);
+                    })),
+            );
+        }
         let pane = match self.pane {
+            Pane::General => self.general(&theme, window, cx),
             Pane::Updates => self.updates(&theme, cx),
             Pane::Diagnostics => self.diagnostics_pane(&theme, cx),
-            Pane::Safety => self.safety_pane(&theme, cx),
+            Pane::Safety => self.safety_pane(&theme, window, cx),
+            Pane::Agents => self.agents_pane(&theme, cx),
             Pane::About => self.about(&theme, cx),
         };
         let body = div()
             .id(ROOT_ID)
             .debug_selector(|| ROOT_ID.into())
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                this.on_key(event, cx);
-            }))
+            .tab_group()
+            .tab_stop(false)
+            .on_key_down(cx.listener(
+                |this, event: &KeyDownEvent, window, cx| {
+                    // Tab is the frame's; see `aux_window::frame`.
+                    if !event.keystroke.modifiers.control
+                        && matches!(
+                            event.keystroke.key.as_str(),
+                            "pageup" | "pagedown" | "home" | "end"
+                        )
+                        && crate::ui::scroll_key(
+                            &event.keystroke.key,
+                            &this.pane_scroll,
+                            window.rem_size(),
+                        )
+                    {
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
+                    this.on_key(event, cx);
+                },
+            ))
             .flex()
             .flex_row()
+            .when(compact, gpui_kit::Styled::flex_col)
             .flex_1()
             .min_h_0()
             .child(nav)
             .child(
                 div()
                     .id("settings-scroll")
+                    .debug_selector(|| "settings-scroll".into())
+                    .min_h_0()
+                    .track_scroll(&self.pane_scroll)
                     .flex_1()
                     .min_w_0()
                     .overflow_y_scroll()
@@ -373,61 +568,376 @@ impl Render for SettingsWindow {
     }
 }
 
+/// The removal limits Settings › Safety offers, in percent of a volume;
+/// `None` is Off, for the window only. 100% was the last choice before Off
+/// existed, and said the same less plainly.
+const LIMITS: [Option<u8>; 6] =
+    [Some(1), Some(5), Some(10), Some(25), Some(50), None];
+
+const APPLIES_TO: &str = "Trash may be recoverable until it is emptied; \
+     restoring is not guaranteed. A permanent deletion cannot be undone \
+     through PwrDisk. An agent must have the exact paths and mode confirmed \
+     every time.";
+
+/// What no setting lifts, said where the settings are so a refusal is
+/// never a surprise.
+#[cfg(target_os = "macos")]
+const PROTECTED: &str = "/Users and each folder in it, your home and any \
+     folder holding it; /System, /Library, /private, /usr, /opt/homebrew \
+     and the other system trees; mount points and the scanned root.";
+#[cfg(windows)]
+const PROTECTED: &str = "The profiles folder and each profile in it, your \
+     home and any folder holding it; Windows and Program Files; mount \
+     points, drive roots and the scanned root.";
+#[cfg(target_os = "linux")]
+const PROTECTED: &str = "/home and each folder in it, your home and any \
+     folder holding it; /usr, /etc, /boot and the other system trees; \
+     mount points and the scanned root.";
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+const PROTECTED: &str = "Your home and any folder holding it; /usr, /etc, \
+     /boot and the other system trees; mount points and the scanned root.";
+
+const AGENTS: &str = "Agents over MCP stop at the limit, at 5% when it is \
+     Off, and can never mark a protected folder or confirm for you.";
+
 // ── panes ───────────────────────────────────────────────────────────────
 
 impl SettingsWindow {
-    fn safety_pane(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
-        let current = crate::safety::load(self.updates_dir.as_deref());
-        let mut rows = div().flex().flex_col().gap(space::SM);
-        for percent in [1, 5, 10, 25, 50, 100] {
-            let picked = current
-                .as_ref()
-                .is_ok_and(|limit| limit.percent() == percent);
-            rows = rows.child(
-                button(
-                    ElementId::Name(format!("safety-limit-{percent}").into()),
-                    format!(
-                        "{percent}%{}",
-                        if picked { " (selected)" } else { "" }
-                    ),
-                    if picked {
-                        ButtonVariant::Primary
-                    } else {
-                        ButtonVariant::Secondary
-                    },
-                    cx,
+    /// Apply immediately in every window; a failed save is session-only.
+    pub fn pick_size_units(
+        &mut self,
+        units: SizeUnits,
+        cx: &mut Context<'_, Self>,
+    ) {
+        sizes::set_units(units);
+        self.note = self
+            .updates_dir
+            .as_deref()
+            .ok_or_else(|| "no settings directory".to_owned())
+            .and_then(|dir| {
+                disktree_core::size_preferences::save(
+                    &dir.join(disktree_core::size_preferences::FILE_NAME),
+                    units,
                 )
-                .debug_selector(move || format!("safety-limit-{percent}"))
-                .on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.note =
-                            disktree_core::removal_limit::Limit::new(percent)
+                .map_err(|error| error.to_string())
+            })
+            .err()
+            .map(|error| {
+                format!("Size units apply until PwrDisk quits: {error}")
+            });
+        cx.refresh_windows();
+        cx.notify();
+    }
+
+    fn general(
+        &self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Div {
+        let entity = cx.entity().downgrade();
+        let picker =
+            div()
+                .debug_selector(|| "size-units".into())
+                .child(button_group(
+                    "size-units",
+                    SizeUnits::ALL
+                        .into_iter()
+                        .map(|units| {
+                            ChoiceItem::new(units.key(), units.label())
+                        })
+                        .collect(),
+                    SizeUnits::ALL
+                        .iter()
+                        .position(|&units| units == sizes::units()),
+                    move |index, window, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            this.pick_size_units(SizeUnits::ALL[index], cx);
+                            window.focus(&this.focus, cx);
+                        });
+                    },
+                    window,
+                    cx,
+                ));
+        let platform = if cfg!(target_os = "macos") {
+            "Platform default on macOS: Decimal."
+        } else {
+            "Platform default on Windows and Linux: Binary."
+        };
+        div().flex().flex_col().gap(space::LG)
+            .child(head("PwrDisk", "General", "How sizes appear throughout PwrDisk.", None, theme))
+            .child(card("Display", None, theme)
+                .child(field("Size units", Some("Applies to sizes and reports. Byte measurements stay the same."), vec![picker.into_any_element()], theme))
+                .child(field("Units", Some(platform), vec![
+                    value_text("Decimal: 1 kB = 1,000 bytes; MB, GB, TB.".to_owned()),
+                    value_text("Binary: 1 KiB = 1,024 bytes; MiB, GiB, TiB.".to_owned()),
+                ], theme)))
+            .children(self.note.as_deref().map(|note| alert_note(note, theme)))
+    }
+
+    fn safety_pane(
+        &self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Div {
+        let current = &self.safety;
+        // One choice of six, so one control: the segments the review
+        // screen uses for Trash or permanent, saved as soon as one is
+        // picked. Six buttons read as six commands.
+        let picked = current.as_ref().ok().and_then(|policy| {
+            LIMITS.iter().position(|&percent| {
+                percent == policy.limit.map(Limit::percent)
+            })
+        });
+        let entity = cx.entity().downgrade();
+        let rows =
+            div()
+                .debug_selector(|| "safety-limit".into())
+                .child(button_group(
+                    "safety-limit",
+                    LIMITS
+                        .iter()
+                        .map(|percent| {
+                            percent.map_or_else(
+                                || ChoiceItem::new("off", "Off"),
+                                |percent| {
+                                    ChoiceItem::new(
+                                        percent.to_string(),
+                                        format!("{percent}%"),
+                                    )
+                                },
+                            )
+                        })
+                        .collect(),
+                    picked,
+                    move |index, window, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            this.note = LIMITS[index]
+                                .map(Limit::new)
+                                .transpose()
                                 .and_then(|limit| {
-                                    crate::safety::save(
+                                    crate::safety::save_limit(
                                         this.updates_dir.as_deref(),
                                         limit,
                                     )
                                 })
                                 .err();
+                            // Read back what was written, so the pane
+                            // shows the file and not the click.
+                            this.reload_safety();
+                            cx.set_global(crate::safety::Saved);
+                            // Back to the window, as the other panes'
+                            // controls do, so Tab keeps walking panes.
+                            window.focus(&this.focus, cx);
+                            cx.notify();
+                        });
+                    },
+                    window,
+                    cx,
+                ));
+        let confirmed = current.as_ref().ok().and_then(|policy| {
+            Confirm::ALL
+                .iter()
+                .position(|&confirm| confirm == policy.confirm)
+        });
+        let entity = cx.entity().downgrade();
+        let confirm = div().debug_selector(|| "safety-confirm".into()).child(
+            button_group(
+                "safety-confirm",
+                Confirm::ALL
+                    .iter()
+                    .map(|confirm| {
+                        ChoiceItem::new(confirm.label(), confirm.label())
+                    })
+                    .collect(),
+                confirmed,
+                move |index, window, cx| {
+                    let _ = entity.update(cx, |this, cx| {
+                        this.note = crate::safety::save_confirm(
+                            this.updates_dir.as_deref(),
+                            Confirm::ALL[index],
+                        )
+                        .err();
+                        this.reload_safety();
+                        cx.set_global(crate::safety::Saved);
                         window.focus(&this.focus, cx);
                         cx.notify();
-                    },
-                )),
+                    });
+                },
+                window,
+                cx,
+            ),
+        );
+        let caption = |id: &'static str, text: &'static str| {
+            readable(id, text)
+                .text_color(theme.foreground)
+                .child(text)
+                .into_any_element()
+        };
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap(space::LG)
+            .child(head(
+                "Safety",
+                "Removal limit",
+                "Each operation is re-measured before anything is removed, \
+                 from the window and from an agent over MCP.",
+                None,
+                theme,
+            ))
+            .child(
+                card_plain(theme)
+                    .child(field(
+                        "Per operation",
+                        Some(
+                            "Measured data, as a share of each volume's \
+                             capacity. The default is 5%. Past it, Mark \
+                             needs Mark anyway.",
+                        ),
+                        vec![rows.into_any_element()],
+                        theme,
+                    ))
+                    .child(field(
+                        "Over the limit",
+                        Some(
+                            "What Review asks after Mark anyway, before \
+                             anything is removed.",
+                        ),
+                        vec![confirm.into_any_element()],
+                        theme,
+                    ))
+                    .child(field(
+                        "Always protected",
+                        Some("Never offered for removal. Not a setting."),
+                        vec![caption("safety-protected", PROTECTED)],
+                        theme,
+                    ))
+                    .child(field(
+                        "Agents",
+                        Some("Marks and removals over MCP."),
+                        vec![caption("safety-agents", AGENTS)],
+                        theme,
+                    ))
+                    .child(field(
+                        "Applies to",
+                        Some("Trash and permanent deletion."),
+                        vec![caption("safety-applies", APPLIES_TO)],
+                        theme,
+                    )),
+            );
+        if let Err(reason) = current {
+            body = body.child(
+                readable("safety-error", reason.clone())
+                    .role(Role::Alert)
+                    .text_color(theme.warning)
+                    .child(reason.clone()),
             );
         }
-        let mut body = div().flex().flex_col().gap(space::MD)
-            .child(div().text_size(text::TITLE).child("Removal limit"))
-            .child("Maximum measured data per operation, as a percentage of each volume's capacity. Applies to both Trash and permanent deletion, from the window and MCP. The default is 5%. Each operation is re-measured before anything is removed.")
-            .child("Trash may be recoverable until emptied; restoration is not guaranteed. Permanent deletion cannot be undone through PwrDisk. MCP requires confirmation of the exact paths and mode for every operation.")
-            .child(rows);
-        if let Err(reason) = current {
-            body = body.child(div().text_color(theme.warning).child(reason));
-        }
         if let Some(note) = &self.note {
-            body =
-                body.child(div().text_color(theme.warning).child(note.clone()));
+            body = body.child(alert_note(note, theme));
         }
         body
+    }
+
+    /// How to connect an agent over MCP, who is connected, and what an
+    /// agent may do. The main window's link answers the agent; this pane
+    /// only reads who it is.
+    fn agents_pane(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
+        let (connected, status) = cx
+            .windows()
+            .into_iter()
+            .filter_map(|window| window.downcast::<Disktree>())
+            .find_map(|main| main.read(cx).ok().map(Disktree::agent_status))
+            .unwrap_or_else(|| {
+                (false, "No PwrDisk window is open.".to_owned())
+            });
+        let mut connect = card("Connect", None, theme);
+        for way in &self.connect {
+            connect = connect.child(field(
+                way.label,
+                None,
+                vec![self.copy_row(way.id, &way.text, theme, cx)],
+                theme,
+            ));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(space::LG)
+            .child(head(
+                "App",
+                "Agents (MCP)",
+                "Let Claude Code, Codex or any MCP client scan, explore and \
+                 mark with PwrDisk, and this window follows along. Removing \
+                 stays yours.",
+                None,
+                theme,
+            ))
+            .child(card("Connection", None, theme).child(field(
+                "Status",
+                None,
+                vec![
+                        readable("agents-status", status.clone())
+                            .debug_selector(|| "agents-status".into())
+                            .flex()
+                            .flex_row()
+                            .gap(space::XS)
+                            .child(
+                                div()
+                                    .text_color(if connected {
+                                        theme.success
+                                    } else {
+                                        theme.secondary
+                                    })
+                                    .child("\u{25cf}"),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme.foreground)
+                                    .child(status),
+                            )
+                            .into_any_element(),
+                    ],
+                theme,
+            )))
+            .child(connect)
+            .child(card("First prompt", None, theme).child(field(
+                "Ask it",
+                Some("A proposal first: it marks only once you agree."),
+                vec![self.copy_row(
+                    COPY_PROMPT_ID,
+                    crate::agent::FIRST_PROMPT,
+                    theme,
+                    cx,
+                )],
+                theme,
+            )))
+            .child(
+                card("What an agent may do", None, theme)
+                    .child(field(
+                        "Look and mark",
+                        None,
+                        vec![value_text(
+                            "Scan, walk the tree, mark what could go, and \
+                             open the review screen."
+                                .to_owned(),
+                        )],
+                        theme,
+                    ))
+                    .child(field(
+                        "Remove",
+                        None,
+                        vec![value_text(
+                            "Only after you confirm the exact paths and \
+                             mode, within the limit in Safety. Removing \
+                             from the review screen stays yours."
+                                .to_owned(),
+                        )],
+                        theme,
+                    )),
+            )
     }
 
     fn updates(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
@@ -438,11 +948,18 @@ impl SettingsWindow {
         let slot = selection.resolve(&installed);
         let state = updater::state();
         let ready = updater::ready(&state, &installed, slot);
-        let lede = match updater::installation() {
+        let installation = updater::installation();
+        // Only a copy Velopack installed checks on its own.
+        let on_its_own = match installation {
+            Installation::Velopack { .. } => "PwrDisk also checks on its own.",
+            Installation::NotInstalled { .. } => {
+                "This copy never checks on its own."
+            }
+        };
+        let lede = match installation {
             Installation::Velopack { .. } => {
-                "Checks GitHub Releases at startup and every six hours, and \
-                 downloads what it finds. A download installs when you \
-                 restart or quit."
+                "Checks GitHub Releases at startup and every six hours. A \
+                 download installs when you restart or quit."
             }
             Installation::NotInstalled { .. } => {
                 "Not installed from the DMG, Setup.exe or the MSI, so this \
@@ -451,147 +968,238 @@ impl SettingsWindow {
             }
         };
 
-        let mut rows = div().flex().flex_col();
-        for (index, choice) in Slot::ALL.into_iter().enumerate() {
-            let current = choice == slot;
-            let note = match (current, selection.is_inferred()) {
-                (true, true) => " \u{b7} follows this build",
-                (true, false) => " \u{b7} picked",
-                _ => "",
-            };
-            rows = rows.child(
-                div()
-                    .id(ElementId::Name(format!("update-slot-{index}").into()))
-                    .debug_selector(move || format!("update-slot-{index}"))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(space::MD)
-                    .px(space::MD)
-                    .py(space::SM)
-                    .when(index == self.updates_row, |row| {
-                        row.bg(theme.accent.opacity(0.18))
-                    })
-                    .hover(|row| row.bg(theme.accent.opacity(0.1)))
-                    .cursor_pointer()
-                    .child(div().w(icon::MD).flex_shrink_0().when(
-                        current,
-                        |mark| {
-                            mark.child(
-                                gpui_omarchy::icon(
-                                    gpui_omarchy::IconName::Check,
-                                )
-                                .size(icon::MD)
-                                .text_color(theme.accent),
-                            )
-                        },
-                    ))
-                    .child(
-                        div()
-                            .w(size::UPDATE_SLOT)
-                            .flex_shrink_0()
-                            .text_color(if current {
-                                theme.bright
-                            } else {
-                                theme.foreground
-                            })
-                            .child(choice.to_string()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(text::CAPTION)
-                            .text_color(theme.secondary)
-                            .child(format!("{}{note}", slot_purpose(choice))),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.pick(choice, cx);
-                    })),
-            );
+        // Stable over Beta, Latest beside Prerelease: the grid the family's
+        // Updates panes use.
+        let mut grid = div()
+            .flex()
+            .flex_col()
+            .gap(space::XS)
+            .px(space::MD)
+            .pt(space::SM)
+            .pb(space::SM)
+            .border_t_1()
+            .border_color(theme.divider());
+        for (train, pair) in Slot::ALL.chunks(2).enumerate() {
+            let mut row = div().flex().flex_row().gap(space::XS);
+            for (track, &choice) in pair.iter().enumerate() {
+                let index = train * 2 + track;
+                row = row.child(self.slot_tile(index, choice, slot, theme, cx));
+            }
+            grid = grid.child(row);
         }
+        let follows = if selection.is_inferred() {
+            "Follows this build until you pick one."
+        } else {
+            "Picked, and saved with the other settings."
+        };
+        let channel = card(
+            "Release channel",
+            Some(
+                readable("channel-purpose", "Which releases a check reads")
+                    .text_size(text::CAPTION)
+                    .text_color(theme.secondary)
+                    .child("Which releases a check reads")
+                    .into_any_element(),
+            ),
+            theme,
+        )
+        .child(grid)
+        .child(
+            readable("channel-follows", follows)
+                .px(space::MD)
+                .pb(space::SM)
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(follows),
+        );
+
         let chip = ready.as_ref().map(|held| {
             chip(format!("{} ready", held.version), theme.warning, theme)
                 .into_any_element()
         });
-
-        let status = if state.checking {
-            "Checking\u{2026}".to_owned()
+        let checked = if state.checking {
+            "Checking now".to_owned()
         } else {
-            match &state.last {
-                Some((when, outcome)) => {
+            state.last.as_ref().map_or_else(
+                || "Not checked yet this session".to_owned(),
+                |(when, _)| {
                     let then = when
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |since| {
                             i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
                         });
-                    let ago =
-                        crate::widgets::ago(crate::state::now_seconds(), then);
-                    format!("{ago}: {outcome}")
-                }
-                None => "Not checked yet this session.".to_owned(),
-            }
+                    format!(
+                        "Checked {}",
+                        crate::widgets::ago(crate::state::now_seconds(), then)
+                    )
+                },
+            )
         };
-        let mut actions = div().flex().flex_row().gap(space::SM);
-        if let Some(held) = &ready {
-            let verb = if held.switch_back { "switch" } else { "update" };
-            actions = actions.child(
-                button(
-                    RESTART_ID,
-                    format!("Restart to {verb} to {}", held.version),
-                    ButtonVariant::Primary,
-                    cx,
-                )
-                .debug_selector(|| RESTART_ID.into())
-                // As the panel had it: never while a removal runs, which an
-                // exit would stop partway through the marked list.
-                .disabled(!Self::can_restart(cx))
-                .on_click(|_, _, cx| cx.defer(Self::restart)),
-            );
-        }
-        actions = actions.child(
-            button(CHECK_ID, "Check now", ButtonVariant::Secondary, cx)
+        let mut actions = div().flex().flex_row().gap(space::SM).child(
+            button(CHECK_ID, "Check now", ButtonVariant::Outline, cx)
                 .debug_selector(|| CHECK_ID.into())
-                .disabled(state.checking)
+                .semantic_disabled(state.checking)
                 .on_click(cx.listener(|_, _, _, cx| {
                     updater::check_in_background(updater::Trigger::Manual);
                     cx.notify();
                 })),
         );
+        if let Some(held) = &ready {
+            let verb = if held.switch_back { "switch" } else { "update" };
+            let label = if state.restarting {
+                "Restarting\u{2026}".to_owned()
+            } else {
+                format!("Restart to {verb} to {}", held.version)
+            };
+            actions = actions.child(
+                button(RESTART_ID, label, ButtonVariant::Primary, cx)
+                .debug_selector(|| RESTART_ID.into())
+                // As the panel had it: never while a removal runs, which an
+                // exit would stop partway through the marked list; and once
+                // pressed, until it fails.
+                .semantic_disabled(state.restarting || !Self::can_restart(cx))
+                .on_click(|_, _, cx| cx.defer(Self::restart)),
+            );
+        }
+        let status = status_line(&state, ready.as_ref());
+        let this_copy = card("This copy", chip, theme)
+            .child(field_with(
+                "Status",
+                Some(checked.into()),
+                vec![
+                    readable("updates-status", status.clone())
+                        .debug_selector(|| "updates-status".into())
+                        .child(status)
+                        .into_any_element(),
+                ],
+                theme,
+            ))
+            .child(field(
+                "Check now",
+                Some(on_its_own),
+                vec![actions.into_any_element()],
+                theme,
+            ));
 
         let mut pane = div()
             .flex()
             .flex_col()
             .gap(space::LG)
             .child(head(
-                &format!("PwrDisk {installed}"),
                 "Updates",
+                &format!("PwrDisk {installed}"),
                 lede,
                 None,
                 theme,
             ))
-            .child(card("Release channel", chip, theme).child(rows))
-            .child(card_plain(theme).child(field(
-                "Last check",
-                None,
-                vec![
-                    div()
-                        .debug_selector(|| "updates-status".into())
-                        .child(status)
-                        .into_any_element(),
-                    actions.into_any_element(),
-                ],
-                theme,
-            )));
+            .child(channel)
+            .child(this_copy);
         if let Some(note) = &self.note {
-            pane =
-                pane.child(div().text_color(theme.warning).child(note.clone()));
+            pane = pane.child(alert_note(note, theme));
         }
-        pane.child(hint(
-            "\u{2191}\u{2193} and enter pick a channel \u{b7} c checks \u{b7} \
-             r restarts into a download \u{b7} tab switches panes",
-            theme,
-        ))
+        // Omarchy's apps list their keys; on macOS and Windows the keys
+        // still work, and the help overlay names them.
+        if crate::chrome::Platform::current() == crate::chrome::Platform::Linux
+        {
+            pane = pane.child(hint(
+                "\u{2191}\u{2193}\u{2190}\u{2192} and enter pick a channel \
+                 \u{b7} c checks \u{b7} r restarts into a download \u{b7} \
+                 Ctrl+PageUp/PageDown switches panes",
+                theme,
+            ));
+        }
+        pane
+    }
+
+    /// One channel in the grid: picked, under the keys, or neither.
+    fn slot_tile(
+        &self,
+        index: usize,
+        choice: Slot,
+        current: Slot,
+        theme: &Theme,
+        cx: &Context<'_, Self>,
+    ) -> gpui_kit::Stateful<Div> {
+        let picked = choice == current;
+        let keyed = index == self.updates_row;
+        div()
+            .id(ElementId::Name(format!("update-slot-{index}").into()))
+            .debug_selector(move || format!("update-slot-{index}"))
+            .role(Role::RadioButton)
+            .aria_label(format!("{choice}: {}", slot_purpose(choice)))
+            .aria_toggled(if picked {
+                gpui_kit::accesskit::Toggled::True
+            } else {
+                gpui_kit::accesskit::Toggled::False
+            })
+            .focusable()
+            // One stop for the group, on the channel picked, as a radio
+            // group takes Tab; the arrows move within it.
+            .tab_stop(picked)
+            .on_key_down(cx.listener(
+                move |this, event: &KeyDownEvent, window, cx| {
+                    match event.keystroke.key.as_str() {
+                        "enter" | "space" => {
+                            this.updates_row = index;
+                            this.pick(choice, cx);
+                            cx.stop_propagation();
+                        }
+                        "up" | "down" | "left" | "right" => {
+                            this.updates_row = index;
+                            this.on_key(event, cx);
+                            window.focus(&this.focus, cx);
+                            cx.stop_propagation();
+                        }
+                        _ => {}
+                    }
+                },
+            ))
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(space::XXS)
+            .px(space::MD)
+            .py(space::SM)
+            .border_1()
+            .border_color(if picked {
+                theme.accent
+            } else if keyed {
+                theme.border
+            } else {
+                theme.divider()
+            })
+            .when(picked, |tile| tile.bg(theme.accent.opacity(0.10)))
+            .when(keyed && !picked, |tile| tile.bg(theme.hover_fill()))
+            .hover(|tile| tile.bg(theme.hover_fill()))
+            .cursor_pointer()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(space::SM)
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.bright)
+                            .child(choice.to_string()),
+                    )
+                    .when(picked, |name| {
+                        name.child(chip("Selected".into(), theme.accent, theme))
+                    }),
+            )
+            .child(
+                div()
+                    .text_size(text::CAPTION)
+                    .text_color(theme.secondary)
+                    .child(slot_purpose(choice)),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.updates_row = index;
+                this.pick(choice, cx);
+            }))
     }
 
     fn diagnostics_pane(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
@@ -610,7 +1218,7 @@ impl SettingsWindow {
         let mut this_copy = card("This copy", None, theme).child(field(
             "Version",
             None,
-            vec![model.version_line().into_any_element()],
+            vec![value_text(model.version_line())],
             theme,
         ));
         // Paths and Session have their own cards below.
@@ -623,7 +1231,7 @@ impl SettingsWindow {
                 this_copy = this_copy.child(field(
                     fact.label,
                     None,
-                    vec![fact.value.clone().into_any_element()],
+                    vec![value_text(fact.value.clone())],
                     theme,
                 ));
             }
@@ -660,7 +1268,7 @@ impl SettingsWindow {
                             cx,
                         )
                         .debug_selector(|| "diagnostics-open-settings".into())
-                        .disabled(
+                        .semantic_disabled(
                             !settings_dir
                                 .as_deref()
                                 .is_some_and(std::path::Path::exists),
@@ -689,7 +1297,7 @@ impl SettingsWindow {
                             cx,
                         )
                         .debug_selector(|| "diagnostics-open-logs".into())
-                        .disabled(log.is_none())
+                        .semantic_disabled(log.is_none())
                         .on_click(|_, _, cx| {
                             cx.defer(crate::logs_window::open);
                         })
@@ -709,7 +1317,7 @@ impl SettingsWindow {
                     card.child(field(
                         fact.label,
                         None,
-                        vec![fact.value.clone().into_any_element()],
+                        vec![value_text(fact.value.clone())],
                         theme,
                     ))
                 },
@@ -720,11 +1328,50 @@ impl SettingsWindow {
 
     fn about(&self, theme: &Theme, cx: &Context<'_, Self>) -> Div {
         let build = BuildInfo::current();
-        let trailing = div()
-            .flex()
+        let channel = updater::selection()
+            .resolve(&updater::installed_version())
+            .to_string();
+        let header = card_frame(theme)
+            .debug_selector(|| ABOUT_HEADER_ID.into())
             .flex_row()
             .items_center()
-            .gap(space::SM)
+            .gap(space::MD)
+            .p(space::MD)
+            .child(
+                img(crate::chrome::MARK.clone())
+                    .size(size::ABOUT_ICON)
+                    .flex_shrink_0(),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(space::XXS)
+                    .child(
+                        readable("version", format!("PwrDisk {}", build.version))
+                            .role(Role::Heading)
+                            .text_size(text::HEADING)
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.bright)
+                            .child(format!("PwrDisk {}", build.version)),
+                    )
+                    // One line, as the design draws it: a long branch
+                    // name ends in an ellipsis rather than wrapping.
+                    // The label keeps the whole line for assistive
+                    // technology when the painted one is cut short.
+                    .child(
+                        readable("build", build.header_line(&channel))
+                            .debug_selector(|| ABOUT_BUILD_LINE_ID.into())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(text::CAPTION)
+                            .text_color(theme.secondary)
+                            .child(build.header_line(&channel)),
+                    ),
+            )
             .when(!build.is_release(), |row| {
                 row.child(chip("Dev build".into(), theme.warning, theme))
             })
@@ -755,8 +1402,9 @@ impl SettingsWindow {
                     cx,
                 ));
             }
-            _ => source
-                .push("Detached HEAD: the commit names it.".into_any_element()),
+            _ => source.push(value_text(
+                "Detached HEAD: the commit names it.".to_owned(),
+            )),
         }
         match &build.commit {
             Some(commit) => {
@@ -767,15 +1415,15 @@ impl SettingsWindow {
                     cx,
                 ));
             }
-            None => source.push(
+            None => source.push(value_text(
                 "No commit recorded: this copy was built outside a git \
                  checkout."
-                    .into_any_element(),
-            ),
+                    .to_owned(),
+            )),
         }
         if let Some(line) = build.commit_line() {
             source.push(
-                div()
+                readable("commit-details", line.clone())
                     .text_color(theme.secondary)
                     .child(line)
                     .into_any_element(),
@@ -783,7 +1431,7 @@ impl SettingsWindow {
         }
         if let Some(line) = build.changes_line() {
             source.push(
-                div()
+                readable("build-changes", line.clone())
                     .text_color(theme.warning)
                     .child(line)
                     .into_any_element(),
@@ -855,21 +1503,9 @@ impl SettingsWindow {
                 None,
                 theme,
             ))
+            .child(header)
             .child(
-                card("This copy", Some(trailing.into_any_element()), theme)
-                    .child(field(
-                        "Version",
-                        None,
-                        vec![
-                            format!("PwrDisk {}", build.version)
-                                .into_any_element(),
-                            div()
-                                .text_color(theme.secondary)
-                                .child(build.build_line())
-                                .into_any_element(),
-                        ],
-                        theme,
-                    ))
+                card("This copy", None, theme)
                     .child(field(
                         "Source",
                         Some("Read by git when this copy was built."),
@@ -917,7 +1553,27 @@ impl SettingsWindow {
         } else {
             label
         };
+        // Several buttons read "Copy", so each is named for what it
+        // copies, and "Copied" says so too.
+        let name = match id {
+            COPY_DIAGNOSTICS_ID => "Copy diagnostics report",
+            "about-copy-checkout" => "Copy checkout path",
+            "about-copy-branch" => "Copy branch or tag",
+            "about-copy-commit" => "Copy commit",
+            "agents-copy-command" => "Copy the command line",
+            "agents-copy-claude" => "Copy the Claude Code command",
+            "agents-copy-codex" => "Copy the Codex command",
+            "agents-copy-json" => "Copy the MCP client JSON",
+            COPY_PROMPT_ID => "Copy the first prompt",
+            _ => label,
+        };
+        let name = if self.copied == Some(id) {
+            format!("Copied: {name}")
+        } else {
+            name.to_owned()
+        };
         button(id, label, ButtonVariant::Secondary, cx)
+            .accessibility_label(name)
             .debug_selector(move || id.into())
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.copy(id, text.clone(), cx);
@@ -933,12 +1589,47 @@ impl SettingsWindow {
         cx: &Context<'_, Self>,
     ) -> AnyElement {
         command_box(value.to_owned(), theme)
+            .id(ElementId::Name(format!("{id}-row").into()))
             .child(self.copy_button(id, "Copy", value.to_owned(), cx))
             .into_any_element()
     }
 }
 
 /// What each release channel slot is for, in the family's words.
+/// The answer to Check now, in the family's words: "You're up to date
+/// (0.14.0).", "Update ready: 0.15.0. Restart to install."
+fn status_line(
+    state: &updater::State,
+    ready: Option<&updater::Held>,
+) -> String {
+    use crate::updater::Outcome;
+    if state.checking {
+        return "Checking\u{2026}".to_owned();
+    }
+    match (&state.last, ready) {
+        (None, _) => "Not checked yet.".to_owned(),
+        (_, Some(held)) if held.switch_back => {
+            format!("{} is downloaded. Restart to switch.", held.version)
+        }
+        (_, Some(held)) => {
+            format!("Update ready: {}. Restart to install.", held.version)
+        }
+        (Some((_, outcome)), None) => match outcome {
+            Outcome::UpToDate(version) => {
+                format!("You're up to date ({version}).")
+            }
+            Outcome::Failed(why) => format!("Update check failed: {why}"),
+            Outcome::NotInstalled(_) => {
+                "This copy doesn't update itself.".to_owned()
+            }
+            Outcome::NothingPublished(slot) => {
+                format!("Nothing is published on {slot} yet.")
+            }
+            other => other.to_string(),
+        },
+    }
+}
+
 const fn slot_purpose(slot: Slot) -> &'static str {
     use crate::update_channel::{Track, Train};
     match (slot.train, slot.track) {
@@ -955,15 +1646,19 @@ const fn slot_purpose(slot: Slot) -> &'static str {
 /// action at the end.
 fn head(
     eyebrow: &str,
-    title: &'static str,
+    title: &str,
     lede: &'static str,
     action: Option<AnyElement>,
     theme: &Theme,
-) -> Div {
+) -> Stateful<Div> {
+    let title = SharedString::from(title.to_owned());
     div()
+        .id("settings-heading")
+        .role(Role::Group)
+        .aria_label(title.clone())
         .flex()
         .flex_col()
-        .gap(space::SM)
+        .gap(space::XS)
         .child(
             div()
                 .flex()
@@ -975,17 +1670,20 @@ fn head(
                         .flex()
                         .flex_col()
                         .flex_1()
+                        .gap(space::XXS)
                         .child(
                             div()
                                 .font_family(theme.mono_font.clone())
                                 .text_size(text::CAPTION)
-                                .text_color(theme.secondary)
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme.accent)
                                 .child(SharedString::from(
                                     eyebrow.to_uppercase(),
                                 )),
                         )
                         .child(
-                            div()
+                            readable("pane-title", title.clone())
+                                .role(Role::Heading)
                                 .text_size(text::HEADING)
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(theme.bright)
@@ -994,60 +1692,90 @@ fn head(
                 )
                 .children(action),
         )
-        .child(div().text_color(theme.foreground).child(lede))
+        .child(
+            readable("pane-description", lede)
+                .max_w(size::SETTINGS_LEDE)
+                .text_color(theme.secondary)
+                .child(lede),
+        )
 }
 
-/// A card: a heading row with something at its end, then rows.
+/// A card: a raised heading strip with something at its end, then rows,
+/// each of which draws the rule above it.
 fn card(
     title: &'static str,
     trailing: Option<AnyElement>,
     theme: &Theme,
-) -> Div {
-    card_plain(theme).child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(space::MD)
-            .px(space::MD)
-            .py(space::SM)
-            .border_b_1()
-            .border_color(theme.divider())
-            .child(
-                div()
-                    .flex_1()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(theme.bright)
-                    .child(title),
-            )
-            .children(trailing),
-    )
+) -> Stateful<Div> {
+    card_frame(theme)
+        .id(title)
+        .role(Role::Group)
+        .aria_label(title)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(space::MD)
+                .px(space::MD)
+                .py(space::SM)
+                .bg(theme.surface)
+                .child(
+                    readable("card-heading", title)
+                        .role(Role::Heading)
+                        .flex_1()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.bright)
+                        .child(title),
+                )
+                .children(trailing),
+        )
 }
 
+/// A card with no heading strip: its first row's rule is the card's top
+/// edge, so the card draws none of its own.
 fn card_plain(theme: &Theme) -> Div {
+    card_frame(theme).border_t_0()
+}
+
+fn card_frame(theme: &Theme) -> Div {
     div()
         .flex()
         .flex_col()
         .border_1()
-        .border_color(theme.border)
+        .border_color(theme.divider())
         .bg(theme.inset)
 }
 
-/// A labelled row: the label and what it is for on the left, values on the
-/// right, one under the other.
+/// A labelled row: the label and what it is for on the left, the values
+/// at the right, one under the other, as the family's Settings rows sit.
 fn field(
     label: &'static str,
     sub: Option<&'static str>,
     values: Vec<AnyElement>,
     theme: &Theme,
-) -> Div {
+) -> Stateful<Div> {
+    field_with(label, sub.map(SharedString::from), values, theme)
+}
+
+fn field_with(
+    label: &'static str,
+    sub: Option<SharedString>,
+    values: Vec<AnyElement>,
+    theme: &Theme,
+) -> Stateful<Div> {
     div()
+        .id(label)
+        .role(Role::Group)
+        .aria_label(label)
         .flex()
         .flex_row()
+        .items_center()
+        .flex_wrap()
         .gap(space::LG)
         .px(space::MD)
         .py(space::SM)
-        .border_b_1()
+        .border_t_1()
         .border_color(theme.divider())
         .child(
             div()
@@ -1057,13 +1785,13 @@ fn field(
                 .w(size::SETTINGS_LABEL)
                 .flex_shrink_0()
                 .child(
-                    div()
+                    readable("field-label", label)
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.bright)
                         .child(label),
                 )
                 .children(sub.map(|sub| {
-                    div()
+                    readable("field-description", sub.clone())
                         .text_size(text::CAPTION)
                         .text_color(theme.secondary)
                         .child(sub)
@@ -1074,10 +1802,13 @@ fn field(
                 .flex()
                 .flex_col()
                 // Buttons keep their own width; a command box spans it.
-                .items_start()
+                .items_end()
                 .gap(space::SM)
                 .flex_1()
-                .min_w_0()
+                // At least half the row, so a narrow window wraps the
+                // values below their label rather than crushing them.
+                .min_w(gpui_kit::relative(0.5))
+                .text_color(theme.bright)
                 .children(values),
         )
 }
@@ -1097,7 +1828,7 @@ fn command_box(value: String, theme: &Theme) -> Div {
         .border_color(theme.divider())
         .bg(theme.background)
         .child(
-            div()
+            readable("command-value", value.clone())
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
@@ -1109,8 +1840,8 @@ fn command_box(value: String, theme: &Theme) -> Div {
         )
 }
 
-fn mono(value: String, theme: &Theme) -> Div {
-    div()
+fn mono(value: String, theme: &Theme) -> Stateful<Div> {
+    readable("project-url", value.clone())
         .font_family(theme.mono_font.clone())
         .text_color(theme.foreground)
         .child(value)
@@ -1127,9 +1858,35 @@ fn chip(label: String, color: gpui_kit::Hsla, theme: &Theme) -> Div {
         .child(label)
 }
 
-fn hint(text_: &'static str, theme: &Theme) -> Div {
-    div()
+fn hint(text_: &'static str, theme: &Theme) -> Stateful<Div> {
+    readable("settings-hint", text_)
         .text_size(text::CAPTION)
         .text_color(theme.secondary)
         .child(text_)
+}
+
+/// A value read out as text, not just painted.
+fn value_text(value: String) -> AnyElement {
+    readable("value", value.clone())
+        .child(value)
+        .into_any_element()
+}
+
+/// A failed save or pick, announced as it appears.
+fn alert_note(note: &str, theme: &Theme) -> Stateful<Div> {
+    readable("settings-note", note.to_owned())
+        .role(Role::Alert)
+        .text_color(theme.warning)
+        .child(note.to_owned())
+}
+
+/// What Settings did, counted for the tests that hold it to doing it once.
+#[cfg(test)]
+pub mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// Reads of the saved removal limit.
+        pub static SAFETY_LOADS: Cell<usize> = const { Cell::new(0) };
+    }
 }

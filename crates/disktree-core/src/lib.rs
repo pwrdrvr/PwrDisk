@@ -6,13 +6,16 @@
 //! be built and tested without GPUI, a display, or a GPU.
 
 pub mod access;
+pub mod artifact;
 pub mod classify;
+pub mod cleanup;
 #[cfg(any(target_os = "macos", test))]
 mod clone_cache;
 pub mod deployment;
 pub mod export;
 pub mod filter;
 pub mod identity;
+pub mod index;
 pub mod insights;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -21,6 +24,7 @@ pub mod macos_services;
 mod mft;
 pub mod path_style;
 pub mod payload;
+pub mod planning;
 pub mod query;
 pub mod remote;
 pub mod remote_progress;
@@ -33,7 +37,14 @@ pub mod scan_preview;
 pub mod scan_threads;
 pub mod sharing;
 pub mod size;
+pub mod size_preferences;
 pub mod space;
+#[cfg(all(test, unix))]
+mod test_paths;
+#[cfg(test)]
+mod test_rng;
+#[cfg(all(test, unix))]
+mod test_tree;
 pub mod tree;
 pub mod treemap;
 #[cfg(windows)]

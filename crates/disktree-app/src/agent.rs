@@ -18,17 +18,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use disktree_core::path_style::PathStyle;
-use disktree_core::query;
 use disktree_core::removal::{Plan, RemovalMode, Target};
-use disktree_core::space::space_info;
 use disktree_core::tree::{Node, path_of};
 use disktree_link::{
-    FindRequest, FoundList, Incoming, Insight, Listener, Listing, Mark,
-    MarkRequest, Refused, Removal, Request, Response, ScanOptionsRequest,
-    SelectionEstimate, Space, State, TreeSummary, VERSION,
+    FindRequest, Incoming, Insight, Listener, Listing, Mark, MarkRequest,
+    Refused, Removal, Request, Response, ScanOptionsRequest, SelectionEstimate,
+    Space, State, TreeSummary, VERSION,
 };
 use gpui_kit::Context;
-use gpui_omarchy::Status;
 
 use crate::marks::{display_path, is_hidden};
 use crate::state::{Disktree, Screen, now_seconds};
@@ -49,14 +46,16 @@ pub struct Presence {
 #[derive(Debug)]
 pub struct AgentLink {
     mcp_host: Option<disktree_mcp::DesktopHost>,
-    listener: Listener,
+    pub(crate) listener: Listener,
     pub presence: Option<Presence>,
     /// A path to show once the scan an agent asked for lands.
     pending_show: Option<PathBuf>,
     /// The last removal, for an agent that asks what was freed.
     pub last_removal: Option<Removal>,
     pub(crate) removal_preview: Option<crate::agent_removal::PreparedRemoval>,
-    previews: HashMap<u64, crate::agent_removal::PreparedRemoval>,
+    pub(crate) previews: HashMap<u64, crate::agent_removal::PreparedRemoval>,
+    pub(crate) removal_operation: Option<disktree_link::RemovalOperation>,
+    pub(crate) removal_operation_epoch: u64,
 }
 
 impl AgentLink {
@@ -69,6 +68,8 @@ impl AgentLink {
             last_removal: None,
             removal_preview: None,
             previews: HashMap::new(),
+            removal_operation: None,
+            removal_operation_epoch: 0,
         }
     }
 }
@@ -83,24 +84,48 @@ const fn screen_name(screen: Screen) -> &'static str {
     }
 }
 
-/// The commands that connect each client, with the binary where it is.
-/// The executable's own path, so the command works from a bundle, a
-/// symlink on `PATH`, or a build directory alike.
-pub fn connect_commands(exe: &Path) -> Vec<(&'static str, String)> {
+/// One way to connect a client: an id for its Copy button, what it is
+/// called, and the text to paste.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Connect {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub text: String,
+}
+
+/// The ways to connect a client, with the binary where it is: the bare
+/// command line first, for any client that asks for a command, then the
+/// one-liners for the clients that have one. The executable's own path, so
+/// the command works from a bundle, a symlink on `PATH`, or a build
+/// directory alike.
+pub fn connect_commands(exe: &Path) -> Vec<Connect> {
     let exe = exe.display();
     vec![
-        (
-            "Claude Code",
-            format!("claude mcp add --scope user pwrdisk -- \"{exe}\" mcp"),
-        ),
-        ("Codex", format!("codex mcp add pwrdisk -- \"{exe}\" mcp")),
-        (
-            "Other MCP clients",
-            format!(
+        Connect {
+            id: "agents-copy-command",
+            label: "Command line",
+            text: format!("\"{exe}\" mcp"),
+        },
+        Connect {
+            id: "agents-copy-claude",
+            label: "Claude Code",
+            text: format!(
+                "claude mcp add --scope user pwrdisk -- \"{exe}\" mcp"
+            ),
+        },
+        Connect {
+            id: "agents-copy-codex",
+            label: "Codex",
+            text: format!("codex mcp add pwrdisk -- \"{exe}\" mcp"),
+        },
+        Connect {
+            id: "agents-copy-json",
+            label: "Other MCP clients (JSON)",
+            text: format!(
                 "{{\"mcpServers\": {{\"pwrdisk\": {{\"command\": \"{exe}\", \
                  \"args\": [\"mcp\"]}}}}}}"
             ),
-        ),
+        },
     ]
 }
 
@@ -109,6 +134,18 @@ pub fn connect_commands(exe: &Path) -> Vec<(&'static str, String)> {
 /// to.
 pub const FIRST_PROMPT: &str = "What is eating my disk? Use PwrDisk to \
 find out, and show me what could go before you mark anything.";
+
+fn presence_line(presence: Option<&Presence>) -> String {
+    presence.map_or_else(
+        || "No agent is connected to this window.".to_owned(),
+        |presence| {
+            format!(
+                "{} is connected \u{00b7} {}",
+                presence.client, presence.action
+            )
+        },
+    )
+}
 
 impl Disktree {
     /// Start answering agents on `listener`.
@@ -146,9 +183,13 @@ impl Disktree {
         let Some(agent) = &self.agent else {
             return false;
         };
+        // Every noted action stamps the presence, so its time says whether
+        // what Settings shows can have changed, without formatting it.
+        let before = agent.presence.as_ref().map(|presence| presence.at);
         let incoming = agent.listener.drain();
         if incoming.is_empty() {
             self.forget_departed_agent(cx);
+            self.tell_settings(before, cx);
             return true;
         }
         for item in incoming {
@@ -181,8 +222,43 @@ impl Disktree {
             }
         }
         self.forget_departed_agent(cx);
+        self.tell_settings(before, cx);
         cx.notify();
         true
+    }
+
+    /// Settings › Agents (MCP) shows who is connected: redraw it when that
+    /// line changes, and only then, since this runs every [`POLL`].
+    fn tell_settings(
+        &self,
+        before: Option<Instant>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let now = self
+            .agent
+            .as_ref()
+            .and_then(|agent| agent.presence.as_ref())
+            .map(|presence| presence.at);
+        if now != before {
+            cx.defer(crate::settings::agents_changed);
+        }
+    }
+
+    /// Whether an agent is connected, and who it is and what it last did,
+    /// as Settings says it.
+    pub fn agent_status(&self) -> (bool, String) {
+        match &self.agent {
+            Some(agent) => (
+                agent.presence.is_some(),
+                presence_line(agent.presence.as_ref()),
+            ),
+            None => (
+                false,
+                "This window cannot be driven here; an agent still scans \
+                 and marks on its own."
+                    .to_owned(),
+            ),
+        }
     }
 
     /// Once the last connection is gone, so is the presence.
@@ -236,13 +312,23 @@ impl Disktree {
                 if let Some(agent) = &mut self.agent {
                     agent.removal_preview = None;
                 }
+                // Inspection belongs to the scan and selection, not this
+                // connection. A new client cannot revoke another preview's
+                // prepared inspection; the worker still rechecks it.
                 self.note_agent(Some(client), "connected".to_string());
                 Response::State(self.agent_state())
             }
             Request::State => Response::State(self.agent_state()),
-            Request::PrepareRemoval { mode } => {
-                self.agent_prepare_removal(*mode)
-            }
+            Request::PrepareRemoval {
+                mode,
+                decisions,
+                files,
+            } => self.agent_prepare_removal(
+                *mode,
+                decisions.as_deref(),
+                *files,
+                cx,
+            ),
             Request::Remove(request) => self.agent_remove(request, cx),
             Request::Show { root, path } => self.agent_show(root, path, cx),
             Request::Scan { root, options } => {
@@ -250,6 +336,11 @@ impl Disktree {
             }
             Request::Ls { path, limit } => self.agent_ls(path, *limit),
             Request::Find(request) => self.agent_find(request),
+            Request::Estimate {
+                paths,
+                peer_scope,
+                peer_limit,
+            } => self.agent_estimate(paths, peer_scope.as_deref(), *peer_limit),
             Request::Mark { root, targets } => {
                 self.agent_marks(root, targets, cx)
             }
@@ -275,7 +366,7 @@ impl Disktree {
                 if self.marks.is_empty() {
                     return Response::error("nothing is marked");
                 }
-                self.screen = Screen::Review;
+                self.open_review(cx);
                 self.confirm_open = false;
                 self.note_agent(None, "opened the review screen".to_string());
                 cx.notify();
@@ -336,7 +427,7 @@ impl Disktree {
     }
 
     /// The node at `path` in the tree on screen, or why there is none.
-    fn agent_node(&self, path: &Path) -> Result<&Node, String> {
+    fn agent_node(&self, path: &Path) -> Result<Node<'_>, String> {
         let tree = self.tree.as_deref().ok_or_else(|| {
             if self.scan.is_some() {
                 "the window is still scanning; ask again when the state \
@@ -357,27 +448,82 @@ impl Disktree {
                 )
             )
         })?;
-        tree.descend(relative).map(|(_, node)| node).ok_or_else(|| {
-            format!(
-                "{} is not in the window's tree: it may be new, hidden, \
+        tree.root()
+            .descend(relative)
+            .map(|(_, node)| node)
+            .ok_or_else(|| {
+                format!(
+                    "{} is not in the window's tree: it may be new, hidden, \
                  below the depth limit, or on another filesystem",
-                display_path(path, self.home.as_deref(), PathStyle::Native)
-            )
-        })
+                    display_path(path, self.home.as_deref(), PathStyle::Native)
+                )
+            })
+    }
+
+    /// Estimate from the complete window tree without changing any state.
+    fn agent_estimate(
+        &self,
+        paths: &[PathBuf],
+        peer_scope: Option<&Path>,
+        peer_limit: usize,
+    ) -> Response {
+        if self.scan.is_some() || self.screen == Screen::Running {
+            return Response::error(
+                "Wait for the scan or removal to finish before estimating.",
+            );
+        }
+        let Some(tree) = self.tree.as_deref() else {
+            return Response::error("The window has no completed scan.");
+        };
+        // The tree still holds what was removed since the scan, at the
+        // scan's sizes: an estimate over it would price space already
+        // gone.
+        if let Some(path) = paths.iter().find(|path| {
+            self.was_removed(path)
+                || self.removed.below(path, PathStyle::Native) > 0
+        }) {
+            return Response::error(format!(
+                "{} {} since the scan; rescan before estimating it.",
+                display_path(path, self.home.as_deref(), PathStyle::Native),
+                if self.was_removed(path) {
+                    "was removed"
+                } else {
+                    "lost part of itself to a removal"
+                },
+            ));
+        }
+        let summary = self.agent_state().tree;
+        let context = disktree_core::planning::Context::of(
+            &self.root_path,
+            &self.options,
+            summary.as_ref().map_or(0, |tree| tree.scanned_at),
+            summary.as_ref().map_or(0, |tree| tree.unreadable),
+        );
+        match disktree_core::planning::estimate(
+            tree, context, paths, peer_scope, peer_limit,
+        ) {
+            Ok(report) => Response::Estimate(report),
+            Err(message) => Response::error(message),
+        }
     }
 
     /// What is in a directory of the tree on screen.
     fn agent_ls(&mut self, path: &Path, limit: usize) -> Response {
-        let listing = match self.agent_node(path) {
+        let mut listing = match self.agent_node(path) {
             Ok(node) => Listing::of(
                 &self.root_path,
-                self.tree.as_ref().map_or(0, |tree| tree.bytes),
+                self.tree.as_ref().map_or(0, |tree| tree.root().bytes),
                 path,
                 node,
                 limit,
             ),
             Err(message) => return Response::error(message),
         };
+        self.note_removal(&mut listing.entry, path);
+        for child in &mut listing.children {
+            let path = path.join(&child.name);
+            self.note_removal(child, &path);
+        }
         self.note_agent(
             None,
             format!(
@@ -390,22 +536,34 @@ impl Disktree {
 
     /// The largest entries of the tree on screen matching a description.
     fn agent_find(&mut self, request: &FindRequest) -> Response {
-        let filter = match request.filter() {
-            Ok(filter) => filter,
-            Err(message) => return Response::error(message),
-        };
         let from = request
             .path
             .clone()
             .unwrap_or_else(|| self.root_path.clone());
-        let found = match self.agent_node(&from) {
-            Ok(node) => {
-                FoundList::of(&query::find(&from, node, &filter, request.limit))
-            }
+        let mut found = match self.agent_node(&from) {
+            Ok(node) => match request.results(&from, node) {
+                Ok(found) => found,
+                Err(message) => return Response::error(message),
+            },
             Err(message) => return Response::error(message),
         };
+        for item in &mut found.matches {
+            self.note_removal(&mut item.entry, &item.path);
+        }
         self.note_agent(None, "searching the tree".to_string());
         Response::Found(found)
+    }
+
+    /// Say what a removal since the scan took of `path`: the tree keeps
+    /// it until a rescan, and its size is still the scan's.
+    fn note_removal(&self, entry: &mut disktree_link::Entry, path: &Path) {
+        if self.removed.is_empty() {
+            return;
+        }
+        entry.removed = self.was_removed(path);
+        if !entry.removed {
+            entry.removed_bytes = self.removed.below(path, PathStyle::Native);
+        }
     }
 
     /// Mark what the agent asks, measured from the tree on screen. A path
@@ -427,9 +585,25 @@ impl Disktree {
         for target in targets {
             // Without a tree yet, the agent's own measurement stands in;
             // `Marks::refresh` corrects it when the scan lands.
+            if self.was_removed(&target.path) {
+                refused.push(Refused {
+                    path: target.path.clone(),
+                    reason: "removed since the scan; it is still listed \
+                             until a rescan"
+                        .into(),
+                });
+                continue;
+            }
             let measured = if self.tree.is_some() {
                 match self.agent_node(&target.path) {
-                    Ok(node) => (node.bytes, node.is_dir()),
+                    // A directory part of which was removed frees only
+                    // the rest.
+                    Ok(node) => (
+                        node.bytes.saturating_sub(
+                            self.removed.below(&target.path, PathStyle::Native),
+                        ),
+                        node.is_dir(),
+                    ),
                     Err(reason) => {
                         refused.push(Refused {
                             path: target.path.clone(),
@@ -441,18 +615,17 @@ impl Disktree {
             } else {
                 (target.bytes, target.is_dir)
             };
-            if self.agent_mark(Target {
+            match self.agent_mark(Target {
                 hidden: is_hidden(&target.path, PathStyle::Native),
                 path: target.path.clone(),
                 bytes: measured.0,
                 is_dir: measured.1,
             }) {
-                marked += 1;
-            } else {
-                refused.push(Refused {
+                Ok(()) => marked += 1,
+                Err(reason) => refused.push(Refused {
                     path: target.path.clone(),
-                    reason: "the scanned root itself, or outside it".into(),
-                });
+                    reason,
+                }),
             }
         }
         self.leave_review_if_empty();
@@ -479,18 +652,24 @@ impl Disktree {
 
     /// Mark `target` for an agent: like a press of Space, except it never
     /// unmarks, and a path inside a marked directory is left alone rather
-    /// than toggled. Returns whether the path is marked afterwards.
-    fn agent_mark(&mut self, target: Target) -> bool {
+    /// than toggled. Err with the reason when it is not marked afterwards:
+    /// the guards refuse it, or it would take the list past the limit,
+    /// which only the person can go past.
+    fn agent_mark(&mut self, target: Target) -> Result<(), String> {
         if self.marks.contains(&target.path, PathStyle::Native) {
-            return true;
+            return Ok(());
         }
         if !target.path.starts_with(&self.root_path)
             || target.path == self.root_path
         {
-            return false;
+            return Err("the scanned root itself, or outside it".into());
         }
         if self.marked_ancestor(&target.path).is_some() {
-            return true;
+            return Ok(());
+        }
+        self.refusal_cache.replace(None);
+        if let Some(reason) = self.agent_mark_refusal(&target) {
+            return Err(reason);
         }
         self.space_baseline = self.space_baseline.or(self.space);
         let path = target.path.clone();
@@ -506,7 +685,7 @@ impl Disktree {
         for inner in &inside {
             self.marks.remove(inner, PathStyle::Native);
         }
-        true
+        Ok(())
     }
 
     /// Show `path`, rescanning from `root` first when the window is
@@ -580,24 +759,62 @@ impl Disktree {
         let Some(agent) = &mut self.agent else {
             return;
         };
-        let freed = space_info(&self.root_path)
-            .ok()
-            .zip(self.space_baseline)
-            .map(|(now, before)| {
-                now.available.saturating_sub(before.available)
-            });
+        let totals = self.run_list.totals();
+        // Use the same measurement and per-run baseline as the ledger.
+        let observed = self
+            .ledger
+            .cohorts()
+            .last()
+            .and_then(crate::ledger::Cohort::observed);
         agent.last_removal = Some(Removal {
             mode: match self.removal_mode {
                 RemovalMode::Trash => "trash".to_string(),
                 RemovalMode::Permanent => "permanent".to_string(),
+                RemovalMode::OwnerCleanup => "owner_cleanup".to_string(),
             },
-            removed: usize::try_from(self.run_summary.removed)
-                .unwrap_or(usize::MAX),
-            failed: self.run_summary.failed,
-            bytes: self.run_summary.bytes,
-            freed,
+            removed: totals.removed,
+            failed: totals.failed_all(),
+            bytes: totals.reported_done,
+            freed: observed.map(|delta| delta.max(0).unsigned_abs()),
+            observed,
             at: now_seconds(),
+            cleanup: self.cleanup_results.clone(),
         });
+    }
+
+    /// The removals since the scan on screen, for the agent: what it needs
+    /// to say how much a run of batches freed without a rescan.
+    fn agent_ledger(&self) -> Option<disktree_link::RemovalLedger> {
+        let cohorts = self.ledger.since(self.scans_done);
+        let totals = crate::ledger::Ledger::totals(cohorts)?;
+        let seconds = |at: std::time::SystemTime| {
+            at.duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs().cast_signed())
+        };
+        Some(disktree_link::RemovalLedger {
+            cohorts: cohorts
+                .iter()
+                .map(|cohort| disktree_link::RemovalCohort {
+                    mode: match cohort.mode {
+                        RemovalMode::Trash => "trash".to_string(),
+                        RemovalMode::Permanent => "permanent".to_string(),
+                        RemovalMode::OwnerCleanup => {
+                            "owner_cleanup".to_string()
+                        }
+                    },
+                    removed: cohort.removed,
+                    failed: cohort.failed,
+                    reported: cohort.reported,
+                    private: cohort.private,
+                    observed: cohort.observed(),
+                    started: seconds(cohort.started),
+                    finished: seconds(cohort.finished),
+                })
+                .collect(),
+            reported: totals.reported,
+            private: totals.private,
+            observed: totals.observed,
+        })
     }
 
     /// What the window shows, for the agent.
@@ -628,15 +845,21 @@ impl Disktree {
                 total: space.total,
                 free: space.free,
                 available: space.available,
+                native: space.native,
             }),
             removal: self
                 .agent
                 .as_ref()
                 .and_then(|agent| agent.last_removal.clone()),
+            removal_operation: self
+                .agent
+                .as_ref()
+                .and_then(|agent| agent.removal_operation.clone()),
+            removals: self.agent_ledger(),
             tree: self.tree.as_deref().map(|tree| TreeSummary {
-                bytes: tree.bytes,
-                files: tree.files,
-                dirs: u64::from(tree.dirs),
+                bytes: tree.root().bytes,
+                files: tree.root().files,
+                dirs: u64::from(tree.root().dirs),
                 scanned_at: self.scanned_at,
                 elapsed_ms: self.scan_elapsed.map_or(0, |elapsed| {
                     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
@@ -654,7 +877,7 @@ impl Disktree {
                         .map(|candidate| Insight {
                             path: path_of(
                                 &self.root_path,
-                                tree,
+                                tree.root(),
                                 &candidate.crumbs,
                                 PathStyle::Native,
                             ),
@@ -674,26 +897,29 @@ impl Disktree {
     ) -> SelectionEstimate {
         // Apparent lengths cannot project physical savings, and disabling
         // APFS metadata cannot establish that all listed blocks are private.
-        if self.options.apparent_size
+        if self.removal_mode == RemovalMode::OwnerCleanup
+            || self.options.apparent_size
             || (cfg!(target_os = "macos") && !self.options.apfs_clone_metadata)
         {
             return SelectionEstimate::unknown(plan);
         }
         let mut estimate = SelectionEstimate::of(plan);
+        if let Some(tree) = &self.tree {
+            let mut resolver = crate::marks::Resolver::new(
+                &self.root_path,
+                tree.root(),
+                PathStyle::Native,
+            );
+            let nodes: Vec<Node<'_>> = plan
+                .targets
+                .iter()
+                .filter_map(|target| resolver.resolve(&target.path))
+                .map(|(_, node)| node)
+                .collect();
+            estimate = estimate.with_shared(nodes);
+        }
         estimate.partial |=
             self.progress.errors > 0 || self.options.max_depth.is_some();
         estimate
-    }
-
-    /// Copy a connect command, and say so.
-    pub fn copy_connect_text(
-        &mut self,
-        text: String,
-        what: &str,
-        cx: &mut Context<'_, Self>,
-    ) {
-        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
-        self.notice = Some((format!("copied {what}"), Status::Success));
-        cx.notify();
     }
 }

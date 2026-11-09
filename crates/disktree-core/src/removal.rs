@@ -24,12 +24,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
+#[cfg(unix)]
+mod walk;
+#[cfg(unix)]
+pub(crate) use walk::inspect;
+
 #[cfg(test)]
 thread_local! {
     static NESTING_WORK: std::cell::Cell<usize> = const {
         std::cell::Cell::new(0)
     };
 }
+
+mod approval;
+pub use approval::ApprovalScope;
 
 /// One path the user asked to remove.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,6 +57,8 @@ pub enum RemovalMode {
     Permanent,
     /// Move to the desktop trash so the removal can be undone.
     Trash,
+    /// Execute an allowlisted owner command for its explicitly previewed scope.
+    OwnerCleanup,
 }
 
 impl RemovalMode {
@@ -56,6 +66,7 @@ impl RemovalMode {
         match self {
             Self::Permanent => "Delete permanently",
             Self::Trash => "Move to trash",
+            Self::OwnerCleanup => "Owner cleanup",
         }
     }
 
@@ -63,6 +74,7 @@ impl RemovalMode {
         match self {
             Self::Permanent => "rm -rf: unrecoverable",
             Self::Trash => "recoverable until the trash is emptied",
+            Self::OwnerCleanup => "owner-managed; no Trash recovery",
         }
     }
 }
@@ -85,6 +97,9 @@ pub struct Plan {
     pub blocked: Vec<Blocked>,
     /// The scanned root the targets were judged against.
     pub root: PathBuf,
+    /// The scan's captured measurement configuration. The worker retains
+    /// its accounting parameters and completes any filtered traversal.
+    pub scan_options: crate::scan::ScanOptions,
     /// Bytes the targets free on `root`'s volume; see [`Self::reclaim`].
     reclaim: u64,
     /// Bytes the targets free on other volumes; see [`Self::foreign`].
@@ -96,9 +111,27 @@ pub struct Plan {
     reclaim_estimate: Option<u64>,
     possible_bytes: Option<u64>,
     estimate_partial: bool,
+    /// Present only for a human-approved MCP operation.
+    approval_scope: Option<ApprovalScope>,
 }
 
 impl Plan {
+    /// Carry the preview's identity binding through to the removal worker.
+    pub fn bind_approval(
+        &mut self,
+        scope: ApprovalScope,
+    ) -> Result<(), String> {
+        scope.check(self)?;
+        self.approval_scope = Some(scope);
+        Ok(())
+    }
+
+    fn check_approval(&self) -> Result<(), String> {
+        self.approval_scope
+            .as_ref()
+            .map_or(Ok(()), |scope| scope.check(self))
+    }
+
     pub fn bytes(&self) -> u64 {
         self.targets.iter().map(|target| target.bytes).sum()
     }
@@ -165,6 +198,13 @@ impl Plan {
         self.estimate_partial = total.partial || local.partial;
     }
 
+    /// Target-root attribution from the same mount read as the guards.
+    pub fn attributed_targets(
+        &self,
+    ) -> impl Iterator<Item = (&Target, crate::space::Attribution)> {
+        self.targets.iter().zip(self.attribution.iter().copied())
+    }
+
     /// Bytes the targets free on other volumes, which the meter leaves out.
     pub const fn foreign(&self) -> u64 {
         self.foreign
@@ -213,10 +253,7 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
     for target in targets {
         let path = normalize(&target.path);
         let reason =
-            refuse(&path, &root, home.as_ref(), &mounts.points, &mounts.media)
-                .or_else(|| {
-                    linked(&path, &root, real_root.as_deref(), home.as_ref())
-                });
+            judge(&path, &root, real_root.as_deref(), home.as_ref(), mounts);
         if let Some(reason) = reason {
             plan.blocked.push(Blocked {
                 path: target.path.clone(),
@@ -283,20 +320,82 @@ fn plan_against(targets: &[Target], root: &Path, mounts: &MountTable) -> Plan {
     plan
 }
 
+/// Why the guards would keep `path` back from a removal under `root`.
+///
+/// `None` when they would let it through. The same judgement [`plan`]
+/// makes for each target, for one path, so the window can refuse a mark
+/// up front instead of offering one that Review would only keep back.
+pub fn refusal(path: &Path, root: &Path) -> Option<String> {
+    let root = normalize(root);
+    let home = std::env::home_dir().map(|home| Home::of(&home));
+    let real_root = fs::canonicalize(&root).ok();
+    judge(
+        &normalize(path),
+        &root,
+        real_root.as_deref(),
+        home.as_ref(),
+        &mount_points(),
+    )
+}
+
+/// One target against every guard: by spelling, then by where links lead.
+fn judge(
+    path: &Path,
+    root: &Path,
+    real_root: Option<&Path>,
+    home: Option<&Home>,
+    mounts: &MountTable,
+) -> Option<String> {
+    refuse(path, root, home, &mounts.points, &mounts.media)
+        .or_else(|| linked(path, root, real_root, home))
+        .or_else(|| {
+            // A root chosen through a link is legitimate, but must not
+            // disguise protected paths or mounts. Resolve parents only: a
+            // symlink is removed itself, never its destination.
+            let real = fs::canonicalize(path.parent()?)
+                .ok()?
+                .join(path.file_name()?);
+            if guard_key(&real) == guard_key(path) {
+                return None;
+            }
+            let real_home = home.map(|home| Home {
+                key: home.real.as_ref().unwrap_or(&home.key).clone(),
+                real: home.real.clone(),
+                id: home.id,
+            });
+            refuse(
+                &real,
+                real_root?,
+                real_home.as_ref(),
+                &mounts.points,
+                &mounts.media,
+            )
+        })
+}
+
+fn resolved_entry(path: &Path) -> Option<PathBuf> {
+    Some(
+        fs::canonicalize(path.parent()?)
+            .ok()?
+            .join(path.file_name()?),
+    )
+}
+
 /// Trees the operating system owns. A whole-disk scan shows them, because
 /// they are part of what fills the disk, but files there belong to packages
 /// and removing them by hand breaks the system; pacman, paccache,
 /// `journalctl --vacuum` or `brew cleanup` are the right tools. Refused even
-/// where permissions would allow it, and even inside them.
+/// where permissions would allow it, and even inside them, except for the
+/// scratch space in [`SCRATCH_TREES`].
 ///
 /// One list for every platform: a macOS tree never exists on Linux, and the
 /// other way round, so the extra entries cost nothing. On macOS `/etc`,
 /// `/var` and `/tmp` are links into `/private`, which a whole-disk scan
-/// reaches by its real name. `/Applications` is left out on purpose: moving
-/// an app to the Trash is how macOS uninstalls it, and the apps macOS ships
-/// live on the read-only system volume anyway.
+/// reaches by its real name. `/Applications` is a protected container
+/// instead: moving an individual third-party app to the Trash is how macOS
+/// uninstalls it, but removing the folder would take every app with it.
 #[cfg(not(windows))]
-const SYSTEM_TREES: [&str; 24] = [
+const SYSTEM_TREES: [&str; 29] = [
     "/bin",
     "/boot",
     "/dev",
@@ -313,6 +412,11 @@ const SYSTEM_TREES: [&str; 24] = [
     "/sys",
     "/usr",
     "/var/lib",
+    "/var/db",
+    "/var/spool",
+    "/var/mail",
+    "/var/run",
+    "/var/lock",
     "/efi",
     // Homebrew on Linux, where it lives outside every user's home.
     "/home/linuxbrew/.linuxbrew",
@@ -324,6 +428,78 @@ const SYSTEM_TREES: [&str; 24] = [
     "/opt/homebrew",
     "/Network",
 ];
+
+/// Shared containers must survive a cleanup, even when empty. Children
+/// are judged by their own guards, so this does not ban individual apps,
+/// temporary files, logs or data on removable media.
+#[cfg(not(windows))]
+const SYSTEM_CONTAINERS: [&str; 21] = [
+    "/Applications",
+    "/Applications/Utilities",
+    "/Volumes",
+    "/tmp",
+    "/private/tmp",
+    "/private/var/tmp",
+    "/var",
+    "/var/tmp",
+    "/var/cache",
+    "/var/log",
+    "/var/backups",
+    "/var/local",
+    "/var/opt",
+    "/opt",
+    "/srv",
+    // The root account's home is not a profile directly inside /home.
+    "/root",
+    "/mnt",
+    "/media",
+    "/lost+found",
+    "/nix",
+    "/gnu",
+];
+
+#[cfg(not(windows))]
+fn system_container(key: &Path) -> Option<&'static str> {
+    static KEYS: std::sync::LazyLock<Vec<(&str, PathBuf)>> =
+        std::sync::LazyLock::new(|| {
+            SYSTEM_CONTAINERS
+                .iter()
+                .flat_map(|name| {
+                    let key = guard_key(Path::new(name));
+                    // /tmp and /var/log may themselves be links. A scan
+                    // of their real parent must protect the same folder.
+                    let real = fs::canonicalize(name)
+                        .ok()
+                        .map(|real| (*name, guard_key(&real)));
+                    std::iter::once((*name, key)).chain(real)
+                })
+                .collect()
+        });
+    KEYS.iter()
+        .find(|(_, folder)| key == folder)
+        .map(|(name, _)| *name)
+}
+
+#[cfg(windows)]
+const fn system_container(_key: &Path) -> Option<&'static str> {
+    None
+}
+
+fn container_refusal(key: &Path) -> Option<String> {
+    system_container(key).map(|folder| format!(
+        "{folder} is a protected system folder; select individual items inside it"
+    ))
+}
+
+/// Scratch space inside a system tree. On macOS `/tmp` and `/var/tmp` are
+/// `/private/tmp` and `/private/var/tmp`, so the `/private` entry above would
+/// refuse what any user leaves there, though Linux leaves the same folders
+/// removable. What is inside them may be removed; the folders themselves
+/// stay refused under `/private`. The sticky bit still keeps one user from
+/// removing another's files. `/private/var/folders` stays refused: each
+/// user's `$TMPDIR` and caches there hold running apps' live state.
+#[cfg(not(windows))]
+const SCRATCH_TREES: [&str; 2] = ["/private/tmp", "/private/var/tmp"];
 
 /// How the guards compare paths: lexically normalized, and where the
 /// platform has more than one spelling for a place, in one of them.
@@ -369,13 +545,19 @@ fn windows_key(path: &Path) -> PathBuf {
 fn system_tree_keys() -> &'static [(String, PathBuf)] {
     static KEYS: std::sync::LazyLock<Vec<(String, PathBuf)>> =
         std::sync::LazyLock::new(|| {
-            system_trees()
-                .into_iter()
-                .map(|tree| {
-                    let key = guard_key(&tree);
-                    (tree.display().to_string(), key)
-                })
-                .collect()
+            let trees = system_trees();
+            let mut keys: Vec<_> = trees
+                .iter()
+                .map(|tree| (tree.display().to_string(), guard_key(tree)))
+                .collect();
+            // Preserve the original reason when a configured tree already
+            // covers the path; resolved aliases add protection elsewhere.
+            keys.extend(trees.iter().filter_map(|tree| {
+                fs::canonicalize(tree)
+                    .ok()
+                    .map(|real| (tree.display().to_string(), guard_key(&real)))
+            }));
+            keys
         });
     &KEYS
 }
@@ -383,6 +565,25 @@ fn system_tree_keys() -> &'static [(String, PathBuf)] {
 #[cfg(not(windows))]
 fn system_trees() -> Vec<PathBuf> {
     SYSTEM_TREES.iter().map(PathBuf::from).collect()
+}
+
+/// [`SCRATCH_TREES`] by guard key, computed once like the system trees.
+#[cfg(not(windows))]
+fn scratch_tree_keys() -> &'static [PathBuf] {
+    static KEYS: std::sync::LazyLock<Vec<PathBuf>> =
+        std::sync::LazyLock::new(|| {
+            SCRATCH_TREES
+                .iter()
+                .map(|tree| guard_key(Path::new(tree)))
+                .collect()
+        });
+    &KEYS
+}
+
+/// Windows' system trees have no scratch space inside them.
+#[cfg(windows)]
+const fn scratch_tree_keys() -> &'static [PathBuf] {
+    &[]
 }
 
 /// [`SYSTEM_TREES`] on Windows: Windows itself, installed programs and
@@ -406,6 +607,7 @@ fn system_trees() -> Vec<PathBuf> {
     // An empty or relative value would match too much or nothing at all.
     .filter(|tree| tree.is_absolute())
     .collect();
+    trees.extend(crate::windows::system_dirs());
     trees.extend(
         [
             "Windows",
@@ -416,6 +618,8 @@ fn system_trees() -> Vec<PathBuf> {
             "$Recycle.Bin",
             "Recovery",
             "Boot",
+            "EFI",
+            "Config.Msi",
             "bootmgr",
             // Windows' memory: turned off in Settings (`powercfg /h off` for
             // hibernation), never deleted by hand.
@@ -446,15 +650,68 @@ const SYSTEM_TOOLS: &str = "remove it with the tool that installed it";
 const SYSTEM_TOOLS: &str = "use Settings, or the program's own uninstaller";
 
 /// The system tree the path keyed `key` is in, if any. The home directory is
-/// never system, wherever it lives.
+/// never system, wherever it lives, and neither is what is inside the
+/// scratch space of [`SCRATCH_TREES`].
 fn system_tree(key: &Path, home: Option<&Path>) -> Option<&'static str> {
+    // These belong to every Windows drive, including data drives. Test
+    // them before the home exception: a profile may be at a drive's root.
+    if let Some(tree) = volume_system_tree(key) {
+        return Some(tree);
+    }
     if home.is_some_and(|home| key.starts_with(home)) {
+        return None;
+    }
+    if scratch_tree_keys()
+        .iter()
+        .any(|scratch| key != scratch && key.starts_with(scratch))
+    {
         return None;
     }
     system_tree_keys()
         .iter()
         .find(|(_, tree)| key.starts_with(tree))
         .map(|(name, _)| name.as_str())
+}
+
+#[cfg(windows)]
+fn volume_system_tree(key: &Path) -> Option<&'static str> {
+    let mut parts = key.components();
+    if !matches!(parts.next(), Some(Component::Prefix(prefix))
+        if is_volume_drive(prefix.kind()))
+        || parts.next() != Some(Component::RootDir)
+    {
+        return None;
+    }
+    let Component::Normal(name) = parts.next()? else {
+        return None;
+    };
+    match name.to_str()? {
+        "system volume information" => Some("System Volume Information"),
+        "$recycle.bin" => Some("$Recycle.Bin"),
+        "recovery" => Some("Recovery"),
+        "boot" => Some("Boot"),
+        "efi" => Some("EFI"),
+        "config.msi" => Some("Config.Msi"),
+        "bootmgr" => Some("bootmgr"),
+        "pagefile.sys" => Some("pagefile.sys"),
+        "hiberfil.sys" => Some("hiberfil.sys"),
+        "swapfile.sys" => Some("swapfile.sys"),
+        _ => None,
+    }
+}
+
+#[cfg(any(windows, test))]
+const fn is_volume_drive(prefix: std::path::Prefix<'_>) -> bool {
+    // A UNC share can expose any directory, not necessarily a volume root.
+    matches!(
+        prefix,
+        std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)
+    )
+}
+
+#[cfg(not(windows))]
+const fn volume_system_tree(_key: &Path) -> Option<&'static str> {
+    None
 }
 
 /// A system tree strictly inside the path keyed `key`: removing `/opt` takes
@@ -498,7 +755,12 @@ fn refuse(
 ) -> Option<String> {
     let key = guard_key(path);
     let root_key = guard_key(root);
-    let home_key = home.map(|home| home.key.as_path());
+    let home_key = home.map(|home| {
+        home.real
+            .as_deref()
+            .filter(|real| key.starts_with(real))
+            .unwrap_or(&home.key)
+    });
     if path.parent().is_none() {
         return Some("the filesystem root cannot be removed".into());
     }
@@ -511,18 +773,8 @@ fn refuse(
                 .into(),
         );
     }
-    if cfg!(windows)
-        && let Some(name) = path.components().find_map(|part| match part {
-            Component::Normal(name) => {
-                misread_by_win32(&name.to_string_lossy()).then_some(name)
-            }
-            _ => None,
-        })
-    {
-        return Some(format!(
-            "Windows would read {} as a different name, and remove that",
-            name.display()
-        ));
+    if let Some(reason) = windows_spelling_refusal(path) {
+        return Some(reason);
     }
     if home_key.is_some_and(|home| key == home)
         || home
@@ -531,20 +783,29 @@ fn refuse(
     {
         return Some("the home directory cannot be removed".into());
     }
-    // On Linux `/home` is usually a mount point of its own and refused as
-    // one; on macOS `/Users` is on the same volume as `/`, and removing it
+    // On Linux `/home` is often a mount point of its own and refused as
+    // one, though not always; on macOS `/Users` is on the same volume as `/`, and removing it
     // would empty the home directory before failing on `/Users` itself.
     if home_key.is_some_and(|home| home.starts_with(&key)) {
         return Some("it contains the home directory".into());
     }
+    // macOS keeps every account's home in /Users, on the same volume as
+    // the system, and nothing marks another account's home as special: a
+    // whole-disk scan shows /Users/guest or /Users/Shared as just a folder.
+    // So /Users and each folder in it are refused there, as on Windows.
+    //
     // Elevated through another account's credentials, home is that admin's,
     // and the user's own profile is just another folder; elevation opens
     // every other profile too. So on Windows each directory in the profiles
     // folder (`C:\Users\tobi`, `Public`, `Default`) is refused, taken from
     // Windows and not from home, whose parent could be anything. What is
     // inside a profile stays removable, as under one's own home.
-    if profiles_key().is_some_and(|profiles| is_profile(path, &key, profiles)) {
-        return Some("a user profile cannot be removed".into());
+    //
+    // Linux keeps them in /home, which is often a volume of its own and so
+    // refused as a mount point, but just as often a folder on `/`, where
+    // another account's home is a folder like any other.
+    if let Some(reason) = profile_refusal(path, &key, profiles_keys()) {
+        return Some(reason);
     }
     // By spelling too: the Data volume's root keeps its name as a key, while
     // everything under it is keyed as under `/`.
@@ -564,6 +825,9 @@ fn refuse(
         return Some(format!(
             "it contains {system}, which is part of the system"
         ));
+    }
+    if let Some(reason) = container_refusal(&key) {
+        return Some(reason);
     }
     if mounts.contains(&key) || is_mount_point(path) {
         return Some(
@@ -608,12 +872,31 @@ fn misread_by_win32(name: &str) -> bool {
     numbered || DEVICES.contains(&stem.as_str())
 }
 
+/// Resolve only after checking the original spelling: Win32 may strip a
+/// trailing dot or space from an ancestor while canonicalizing it.
+fn windows_spelling_refusal(path: &Path) -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let name = path.components().find_map(|part| match part {
+        Component::Normal(name) => {
+            misread_by_win32(&name.to_string_lossy()).then_some(name)
+        }
+        _ => None,
+    })?;
+    Some(format!(
+        "Windows would read {} as a different name, and remove that",
+        name.display()
+    ))
+}
+
 /// Why `path`, inside `root` as spelled, is somewhere else in fact, if it
 /// is. The guards compare spellings, and a link or junction on the way
 /// down makes a spelling inside the root name something outside it: the
 /// trash, and removal on Windows, follow it. Links above the root are the
 /// user's own choice of root, so the real path is compared with the real
-/// root. The home directory is looked for again by real path, too.
+/// root. Ownership and mount guards then judge the resolved entry in
+/// [`judge`]. The home directory is looked for again by real path, too.
 ///
 /// Anything that cannot be resolved passes: the removal of a path that is
 /// gone fails on its own.
@@ -623,8 +906,17 @@ fn linked(
     real_root: Option<&Path>,
     home: Option<&Home>,
 ) -> Option<String> {
-    let (parent, name) = (path.parent()?, path.file_name()?);
-    let real = guard_key(&fs::canonicalize(parent).ok()?.join(name));
+    linked_entry(path, root, real_root, home, &resolved_entry(path)?)
+}
+
+fn linked_entry(
+    path: &Path,
+    root: &Path,
+    real_root: Option<&Path>,
+    home: Option<&Home>,
+    real: &Path,
+) -> Option<String> {
+    let real = guard_key(real);
     if let (Some(real_root), Ok(rest)) = (real_root, path.strip_prefix(root))
         && real != guard_key(&real_root.join(rest))
     {
@@ -776,17 +1068,30 @@ static MOUNTS: std::sync::Mutex<MountCache> =
 /// empty, which is why the app primes it at start with
 /// [`prime_mount_points`].
 fn mount_points() -> Arc<MountTable> {
-    let mut cache = MOUNTS
+    cached_mount_points(&MOUNTS, std::time::Instant::now, read_mount_table)
+}
+
+// Explicit dependencies let tests change snapshots and time independently
+// of the host's mounts, without sharing the production cache.
+fn cached_mount_points(
+    cache: &'static std::sync::Mutex<MountCache>,
+    now: impl FnOnce() -> std::time::Instant,
+    read_mounts: impl FnOnce() -> MountTable + Send + 'static,
+) -> Arc<MountTable> {
+    let mut cached = cache
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let fresh = cache.read.is_some_and(|read| read.elapsed() < MOUNTS_FRESH);
-    if !fresh && !cache.refreshing {
-        cache.refreshing = true;
+    let now = now();
+    let fresh = cached
+        .read
+        .is_some_and(|read| now.saturating_duration_since(read) < MOUNTS_FRESH);
+    if !fresh && !cached.refreshing {
+        cached.refreshing = true;
         let spawned = thread::Builder::new()
             .name("disktree-mounts".into())
-            .spawn(|| {
-                let mounts = Arc::new(read_mount_table());
-                let mut cache = MOUNTS
+            .spawn(move || {
+                let mounts = Arc::new(read_mounts());
+                let mut cache = cache
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 cache.mounts = Some(mounts);
@@ -794,10 +1099,10 @@ fn mount_points() -> Arc<MountTable> {
                 cache.refreshing = false;
             });
         if spawned.is_err() {
-            cache.refreshing = false;
+            cached.refreshing = false;
         }
     }
-    cache.mounts.clone().unwrap_or_default()
+    cached.mounts.clone().unwrap_or_default()
 }
 
 /// Start reading the mount table, so it is there by the time anything is
@@ -849,16 +1154,84 @@ const fn windows_mount_points() -> Vec<PathBuf> {
 /// The key of the folder every user profile is in, `C:\Users` as
 /// installed; asked of Windows once, since it does not move while running.
 #[cfg(windows)]
-fn profiles_key() -> Option<&'static Path> {
-    static PROFILES: std::sync::LazyLock<Option<PathBuf>> =
+fn profiles_keys() -> &'static [PathBuf] {
+    static PROFILES: std::sync::LazyLock<Vec<PathBuf>> =
         std::sync::LazyLock::new(|| {
-            crate::windows::user_profiles_dir().map(|dir| guard_key(&dir))
+            crate::windows::user_profiles_dir()
+                .map(|dir| profiles_folder_keys(&dir))
+                .unwrap_or_default()
         });
-    PROFILES.as_deref()
+    &PROFILES
 }
 
-#[cfg(not(windows))]
-const fn profiles_key() -> Option<&'static Path> {
+/// `/Users`, by key. Fixed on macOS: the system and its installer put
+/// every account's home there, and a different home location is still a
+/// home only for its own account.
+#[cfg(target_os = "macos")]
+fn profiles_keys() -> &'static [PathBuf] {
+    static PROFILES: std::sync::LazyLock<Vec<PathBuf>> =
+        std::sync::LazyLock::new(|| profiles_folder_keys(Path::new("/Users")));
+    PROFILES.as_slice()
+}
+
+/// `/home`, and where it really is when it is a link: Fedora's atomic
+/// editions link it to `/var/home`, and a scan from either spelling shows
+/// the homes as folders directly in it. Taken from the filesystem layout
+/// rather than `/etc/passwd`, which lists service accounts whose homes are
+/// `/`, `/var/lib/...` or `/nonexistent`, misses accounts from LDAP or
+/// SSSD, and forgets a removed account whose files are still there.
+#[cfg(target_os = "linux")]
+fn profiles_keys() -> &'static [PathBuf] {
+    static PROFILES: std::sync::LazyLock<Vec<PathBuf>> =
+        std::sync::LazyLock::new(|| profiles_folder_keys(Path::new("/home")));
+    &PROFILES
+}
+
+/// The keys of `home` as spelled and, if a link leads elsewhere, as it
+/// really is.
+#[cfg(any(windows, target_os = "macos", target_os = "linux", all(test, unix)))]
+fn profiles_folder_keys(home: &Path) -> Vec<PathBuf> {
+    let mut keys = vec![guard_key(home)];
+    if let Ok(real) = fs::canonicalize(home) {
+        let real = guard_key(&real);
+        if !keys.contains(&real) {
+            keys.push(real);
+        }
+    }
+    keys
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+const fn profiles_keys() -> &'static [PathBuf] {
+    &[]
+}
+
+/// What one folder in the profiles folder is called where it is refused.
+#[cfg(windows)]
+const PROFILE: &str = "user profile";
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const PROFILE: &str = "user's home folder";
+/// Nowhere else has a profiles folder; never shown.
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+const PROFILE: &str = "";
+
+/// Why `path`, keyed `key`, is refused as a profiles folder or a profile
+/// in one, judged against every name the folder has.
+fn profile_refusal(
+    path: &Path,
+    key: &Path,
+    profiles: &[PathBuf],
+) -> Option<String> {
+    for profiles in profiles {
+        // The folder itself holds every account's home, the operator's
+        // included, wherever this process's own home happens to be.
+        if key == profiles {
+            return Some(format!("it holds every {PROFILE}"));
+        }
+        if is_profile(path, key, profiles) {
+            return Some(format!("a {PROFILE} cannot be removed"));
+        }
+    }
     None
 }
 
@@ -893,7 +1266,10 @@ pub fn is_mount_point(path: &Path) -> bool {
     let Some(parent) = path.parent() else {
         return true;
     };
-    match fs::symlink_metadata(parent) {
+    // Ancestor links are followed when looking up the entry. Compare its
+    // device with that actual parent, not an alias inode on another disk.
+    // The entry itself stays lstat'ed: removing a link never mounts its target.
+    match fs::metadata(parent) {
         Ok(parent_meta) => parent_meta.dev() != meta.dev(),
         // A directory whose parent cannot be stat'ed is not worth the risk.
         Err(_) => true,
@@ -1058,6 +1434,8 @@ fn home_trash_dir() -> Option<PathBuf> {
 /// What a running removal reports.
 #[derive(Clone, Debug)]
 pub enum RemovalEvent {
+    Cleanup(crate::cleanup::Report),
+    /// Batch preflight passed; the worker is starting target dispatch.
     Start {
         total: usize,
     },
@@ -1094,12 +1472,13 @@ impl RemovalHandle {
     }
 }
 
-/// App removals use the same limit for UI and MCP. Preflight completes
-/// before the worker removes any target, so a rejected batch does no work.
+/// App removals use the same limit for UI and MCP, each volume against its
+/// own ceiling. Preflight completes before the worker removes any target,
+/// so a rejected batch does no work.
 pub fn spawn_limited(
     plan: Plan,
     mode: RemovalMode,
-    limit: crate::removal_limit::Limit,
+    limit: crate::removal_limit::Ceilings,
 ) -> RemovalHandle {
     spawn_checked(plan, mode, Some(limit))
 }
@@ -1112,72 +1491,206 @@ pub fn spawn(plan: Plan, mode: RemovalMode) -> RemovalHandle {
 fn spawn_checked(
     plan: Plan,
     mode: RemovalMode,
-    limit: Option<crate::removal_limit::Limit>,
+    limit: Option<crate::removal_limit::Ceilings>,
+) -> RemovalHandle {
+    start(plan, mode, limit, None, |work| {
+        thread::Builder::new()
+            .name("disktree-remove".into())
+            .spawn(work)
+            .map(drop)
+    })
+}
+
+/// The confirmed cleanup decisions travel intact to the removal worker,
+/// which runs each step on its own and reports each one.
+pub fn spawn_cleanup(
+    approved: crate::cleanup::Approved,
+    limit: crate::removal_limit::Ceilings,
+) -> RemovalHandle {
+    start(
+        approved.plan.clone(),
+        RemovalMode::OwnerCleanup,
+        Some(limit),
+        Some(approved),
+        |work| {
+            thread::Builder::new()
+                .name("disktree-cleanup".into())
+                .spawn(work)
+                .map(drop)
+        },
+    )
+}
+
+/// Trash is looked for only when something will go there: a Trash run, or
+/// a cache cleanup where the person chose to delete files by Trash.
+pub(crate) fn backend_for(
+    mode: RemovalMode,
+    cleanup: Option<&crate::cleanup::Approved>,
+) -> TrashBackend {
+    let trash_steps = cleanup.is_some_and(|approved| {
+        approved.steps.iter().any(|step| {
+            matches!(
+                step,
+                crate::cleanup::Step::Files {
+                    action: crate::cleanup::Action::Trash,
+                    ..
+                }
+            )
+        })
+    });
+    if mode == RemovalMode::Trash || trash_steps {
+        detect_trash_backend()
+    } else {
+        TrashBackend::Unavailable
+    }
+}
+
+/// The work a removal thread runs, boxed so a test can hand it to a
+/// spawner that refuses it.
+type Work = Box<dyn FnOnce() + Send + 'static>;
+
+/// [`spawn_checked`] with the thread's start passed in, so a test can make
+/// it fail as a process out of threads would.
+fn start(
+    plan: Plan,
+    mode: RemovalMode,
+    limit: Option<crate::removal_limit::Ceilings>,
+    cleanup: Option<crate::cleanup::Approved>,
+    spawn: impl FnOnce(Work) -> io::Result<()>,
 ) -> RemovalHandle {
     let (sender, events) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
-    let backend = if mode == RemovalMode::Trash {
-        detect_trash_backend()
-    } else {
-        TrashBackend::Unavailable
-    };
+    let backend = backend_for(mode, cleanup.as_ref());
+    // Shared, not moved: a spawn that fails drops the work unrun, and the
+    // targets are still needed to report that each one failed.
+    let plan = Arc::new(plan);
 
-    let worker = thread::Builder::new()
-        .name("disktree-remove".into())
-        .spawn({
-            let sender = sender.clone();
-            move || {
-                if let Some(limit) = limit {
-                    let fresh = self::plan(&plan.targets, &plan.root);
-                    let checked = if fresh.blocked.is_empty() {
-                        crate::removal_limit::measured(&plan.targets)
-                            .and_then(|targets| limit.check(&targets))
-                    } else {
-                        Err("Removal guards changed before preflight; nothing was removed".into())
-                    };
-                    if let Err(reason) = checked {
-                        let _ = sender.send(RemovalEvent::Start {
-                            total: plan.targets.len(),
-                        });
-                        for target in &plan.targets {
-                            let _ = sender.send(RemovalEvent::Item {
-                                path: target.path.clone(),
-                                bytes: 0,
-                                outcome: Err(reason.clone()),
-                            });
-                        }
-                        let _ = sender.send(RemovalEvent::Done {
-                            removed: 0,
-                            bytes: 0,
-                            failed: plan.targets.len(),
-                        });
-                        return;
-                    }
+    let worker = spawn(Box::new({
+        let plan = Arc::clone(&plan);
+        let sender = sender.clone();
+        move || {
+            // Every path has a result, the skipped ones included.
+            if let Some(approved) = &cleanup {
+                for report in &approved.skipped {
+                    let _ = sender.send(RemovalEvent::Cleanup(report.clone()));
                 }
-                run(&plan, mode, backend, &worker_cancel, &sender);
             }
-        });
+            // A cleanup admits each step on its own measurement; only the
+            // capacity ceiling refuses the whole run.
+            let scope = plan.check_approval();
+            let scope_failed = scope.is_err();
+            let checked = scope.and_then(|()| {
+                if mode == RemovalMode::OwnerCleanup {
+                    cleanup
+                        .as_ref()
+                        .ok_or_else(|| {
+                            "Cache cleanup requires approved decisions"
+                                .to_string()
+                        })
+                        .and_then(|approved| {
+                            let default =
+                                crate::removal_limit::Ceilings::default();
+                            approved.admit(limit.as_ref().unwrap_or(&default))
+                        })
+                } else {
+                    crate::cleanup::check_raw(&plan.targets).map(|()| vec![])
+                }
+            });
+            let refusals = match checked {
+                Ok(refusals) => refusals,
+                Err(reason) => {
+                    if let Some(approved) = &cleanup {
+                        let issue = crate::cleanup::Issue::new(
+                            if scope_failed {
+                                crate::cleanup::Problem::Refused
+                            } else {
+                                crate::cleanup::Problem::OverLimit
+                            },
+                            reason.clone(),
+                        );
+                        for index in 0..plan.targets.len() {
+                            let _ = sender.send(RemovalEvent::Cleanup(
+                                approved.report(index, None, None, Err(&issue)),
+                            ));
+                        }
+                    }
+                    fail_all(&plan.targets, &reason, &sender);
+                    return;
+                }
+            };
+            if let Some(limit) =
+                limit.filter(|_| mode != RemovalMode::OwnerCleanup)
+            {
+                let fresh = self::plan(&plan.targets, &plan.root);
+                let checked = if fresh.blocked.is_empty() {
+                    limit.check_fresh(&plan.targets, &plan.scan_options)
+                } else {
+                    Err("Removal guards changed before preflight; nothing was removed".into())
+                };
+                if let Err(reason) = checked {
+                    fail_all(&plan.targets, &reason, &sender);
+                    return;
+                }
+            }
+            run(
+                &plan,
+                mode,
+                backend,
+                cleanup
+                    .as_ref()
+                    .map(|approved| (approved, refusals.as_slice())),
+                &worker_cancel,
+                &sender,
+            );
+        }
+    }));
+    // Without `Done` the app would wait on the Removing screen for good:
+    // the dropped sender reads the same as a worker with nothing new.
     if let Err(error) = worker {
-        let _ = sender.send(RemovalEvent::Item {
-            path: PathBuf::new(),
-            bytes: 0,
-            outcome: Err(format!(
-                "could not start the removal worker: {error}"
-            )),
-        });
+        fail_all(
+            &plan.targets,
+            &format!("could not start the removal worker: {error}"),
+            &sender,
+        );
     }
 
     RemovalHandle { events, cancel }
+}
+
+/// A whole run that removed nothing: every target failed for `reason`,
+/// then the end, so the run finishes and reads as failed, item by item.
+fn fail_all(
+    targets: &[Target],
+    reason: &str,
+    sender: &mpsc::Sender<RemovalEvent>,
+) {
+    for target in targets {
+        let _ = sender.send(RemovalEvent::Item {
+            path: target.path.clone(),
+            bytes: 0,
+            outcome: Err(reason.to_owned()),
+        });
+    }
+    let _ = sender.send(RemovalEvent::Done {
+        removed: 0,
+        bytes: 0,
+        failed: targets.len(),
+    });
 }
 
 fn run(
     plan: &Plan,
     mode: RemovalMode,
     backend: TrashBackend,
+    cleanup: Option<(
+        &crate::cleanup::Approved,
+        &[Option<crate::cleanup::Issue>],
+    )>,
     cancel: &AtomicBool,
     sender: &mpsc::Sender<RemovalEvent>,
 ) {
+    use crate::cleanup::{Action, Issue, Problem};
     let _ = sender.send(RemovalEvent::Start {
         total: plan.targets.len(),
     });
@@ -1194,34 +1707,43 @@ fn run(
     let home = std::env::home_dir().map(|home| Home::of(&home));
     let real_root = fs::canonicalize(&plan.root).ok();
 
-    for target in &plan.targets {
+    for (index, target) in plan.targets.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
+            // Stopped: what was not started says so, step by step.
+            if let Some((approved, _)) = cleanup {
+                for rest in index..plan.targets.len() {
+                    let _ = sender.send(RemovalEvent::Cleanup(
+                        approved.not_reached(rest),
+                    ));
+                }
+            }
             break;
         }
         // The /run/media exception must still hold when removal starts;
         // a disk may have been unmounted since the review was displayed.
-        let reason = target
-            .path
-            .starts_with("/run/media")
-            .then(|| {
-                refuse(
-                    &target.path,
-                    &plan.root,
-                    home.as_ref(),
-                    &mounts.points,
-                    &mounts.media,
-                )
-            })
-            .flatten()
-            .or_else(|| mounted(&target.path, &mounts.points))
-            .or_else(|| {
-                linked(
-                    &target.path,
-                    &plan.root,
-                    real_root.as_deref(),
-                    home.as_ref(),
-                )
-            });
+        let reason = judge(
+            &target.path,
+            &plan.root,
+            real_root.as_deref(),
+            home.as_ref(),
+            &mounts,
+        )
+        .or_else(|| mounted(&target.path, &mounts.points))
+        .or_else(|| {
+            plan.approval_scope
+                .as_ref()
+                .and_then(|scope| scope.check_target(index, target).err())
+        });
+        // Sample the scope's own volume, including when it differs from
+        // the scan's meter. Its parent remains after a cache root is cleared.
+        let sample = || {
+            target
+                .path
+                .parent()
+                .and_then(|path| crate::space::space_info(path).ok())
+                .map(|space| space.available)
+        };
+        let before = (mode == RemovalMode::OwnerCleanup).then(sample).flatten();
         let outcome = if let Some(reason) = reason {
             Err(io::Error::other(reason))
         } else {
@@ -1230,7 +1752,52 @@ fn run(
                     remove_permanently(&target.path, &plan.root)
                 }
                 RemovalMode::Trash => move_to_trash(&target.path, backend),
+                RemovalMode::OwnerCleanup => Ok(()),
             }
+        };
+        // A cleanup step: its own refusal, checks and action, with a typed
+        // reason. One step's failure never stops or changes the next.
+        let outcome = if let Some((approved, refusals)) = cleanup {
+            let step = outcome
+                .map_err(|error| {
+                    Issue::new(Problem::Refused, error.to_string())
+                })
+                .and_then(|()| {
+                    refusals.get(index).cloned().flatten().map_or(Ok(()), Err)
+                })
+                .and_then(|()| approved.preflight(index))
+                .and_then(|()| match approved.steps.get(index) {
+                    Some(crate::cleanup::Step::Owner(operation)) => {
+                        approved.prepared.execute(*operation, cancel)
+                    }
+                    Some(crate::cleanup::Step::Files { action, .. }) => {
+                        match action {
+                            Action::Trash => {
+                                move_to_trash(&target.path, backend)
+                            }
+                            _ => remove_permanently(&target.path, &plan.root),
+                        }
+                        .map_err(|error| {
+                            Issue::new(
+                                Problem::RemovalFailed,
+                                error.to_string(),
+                            )
+                        })
+                    }
+                    None => Err(Issue::new(
+                        Problem::Changed,
+                        "Missing cleanup step",
+                    )),
+                });
+            let _ = sender.send(RemovalEvent::Cleanup(approved.report(
+                index,
+                before,
+                sample(),
+                step.as_ref().copied(),
+            )));
+            step.map_err(|issue| io::Error::other(issue.description()))
+        } else {
+            outcome
         };
         if outcome.is_ok() {
             removed += 1;
@@ -1270,13 +1837,16 @@ fn mounted(path: &Path, mounts: &[PathBuf]) -> Option<String> {
     if is_mount_point(path) {
         return Some("it became a mount point since it was marked".into());
     }
-    mount_below(&guard_key(path), mounts).map(|mount| {
-        format!(
-            "{} is mounted inside it: removing it would reach into another \
+    let real = resolved_entry(path);
+    mount_below(&guard_key(real.as_deref().unwrap_or(path)), mounts).map(
+        |mount| {
+            format!(
+                "{} is mounted inside it: removing it would reach into another \
              filesystem",
-            mount.display()
-        )
-    })
+                mount.display()
+            )
+        },
+    )
 }
 
 /// `rm -rf --one-file-system` semantics: a symlink is unlinked, never
@@ -1723,10 +2293,364 @@ fn deletion_date() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
+#[cfg(all(test, unix))]
+mod path_oracle;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn limited_worker_removes_descendants_beyond_path_max() {
+        let tree = crate::test_tree::DeepTree::new();
+        let root = tree.selected.parent().expect("root");
+        let planned = plan(
+            &[Target {
+                path: tree.selected.clone(),
+                bytes: 1,
+                is_dir: true,
+                hidden: false,
+            }],
+            root,
+        );
+        assert!(planned.blocked.is_empty(), "{:?}", planned.blocked);
+        let handle = spawn_limited(
+            planned,
+            RemovalMode::Permanent,
+            crate::removal_limit::Ceilings::default(),
+        );
+        loop {
+            match handle
+                .events
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("worker completes")
+            {
+                RemovalEvent::Item { outcome, .. } => {
+                    outcome.expect("deep tree removed");
+                }
+                RemovalEvent::Done {
+                    removed, failed, ..
+                } => {
+                    assert_eq!((removed, failed), (1, 0));
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(!tree.selected.exists());
+        assert_eq!(
+            fs::read(root.join("keep")).expect("unmarked sibling"),
+            b"unmarked"
+        );
+    }
+
+    #[cfg(unix)]
+    fn scratch() -> TempDir {
+        // The macOS default lives in /private/var/folders, whose live
+        // per-user state is protected even through the /var alias.
+        #[cfg(target_os = "macos")]
+        return tempfile::tempdir_in("/private/tmp").expect("scratch fixture");
+        #[cfg(not(target_os = "macos"))]
+        TempDir::new().expect("scratch fixture")
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        /// Shared infrastructure folders survive even when empty. Their
+        /// contents are judged separately, never by a string prefix.
+        #[test]
+        #[cfg(not(windows))]
+        fn system_containers_cannot_be_marked(
+            folder in proptest::sample::select(vec![
+                "/Applications", "/Applications/Utilities", "/Volumes",
+                "/tmp", "/var/tmp", "/var/cache", "/var/log", "/srv",
+                "/mnt", "/media", "/opt", "/var", "/var/backups",
+                "/var/local", "/var/opt", "/lost+found", "/nix", "/gnu",
+                "/root",
+            ]),
+            trailing_slash in any::<bool>(),
+        ) {
+            let path = PathBuf::from(format!("{folder}{}",
+                if trailing_slash { "/./" } else { "" }));
+            prop_assert!(refuse(&normalize(&path), Path::new("/"), None,
+                &[], &[]).is_some(), "{}", path.display());
+        }
+
+        #[test]
+        #[cfg(not(windows))]
+        fn protecting_containers_does_not_protect_every_child(
+            folder in proptest::sample::select(vec![
+                "/Applications", "/Applications/Utilities", "/tmp",
+                "/var/tmp", "/srv", "/mnt", "/media", "/Volumes",
+            ]),
+            name in "[a-z]{1,20}\\.app",
+        ) {
+            let path = Path::new(folder).join(name);
+            prop_assert_eq!(refuse(&path, Path::new("/"), None, &[], &[]), None);
+        }
+
+        /// The on-disk directory, not the configured spelling, decides
+        /// which entry an alias exposes. /var/log may resolve below
+        /// /private, and /tmp may resolve to /private/tmp.
+        #[test]
+        #[cfg(unix)]
+        fn container_aliases_match_the_filesystem_identity(
+            folder in proptest::sample::select(vec![
+                "/Applications", "/tmp", "/var/tmp", "/var/log",
+                "/var/cache", "/srv", "/mnt", "/media",
+            ]),
+        ) {
+            prop_assume!(Path::new(folder).is_dir());
+            let real = fs::canonicalize(folder).expect("real folder");
+            let parent = real.parent().expect("parent");
+            let temp = scratch();
+            let root = temp.path().join("root");
+            std::os::unix::fs::symlink(parent, &root).expect("alias");
+            let path = root.join(real.file_name().expect("name"));
+            prop_assert_eq!(identity(&path, true), identity(Path::new(folder), true));
+            prop_assert!(judge(&path, &root, Some(parent), None,
+                &MountTable::default()).is_some(), "{}", path.display());
+        }
+
+        /// An explicit linked scan root changes spelling, not ownership.
+        /// The real directory's identity is the oracle for system trees
+        /// and profile folders. No system entry is created or removed.
+        #[test]
+        #[cfg(unix)]
+        fn recursive_guards_follow_directory_identity(
+            folder in proptest::sample::select(vec![
+                "/etc", "/usr", "/var/lib", "/System", "/Library",
+                "/private/var/folders", "/Users/Shared",
+            ]),
+        ) {
+            prop_assume!(Path::new(folder).is_dir());
+            let real = fs::canonicalize(folder).expect("real folder");
+            let parent = real.parent().expect("parent");
+            let temp = scratch();
+            let root = temp.path().join("root");
+            std::os::unix::fs::symlink(parent, &root).expect("alias");
+            let path = root.join(real.file_name().expect("name"));
+            prop_assert_eq!(identity(&path, true), identity(&real, true));
+            let mounts = MountTable::default();
+            prop_assert!(judge(&real, parent, Some(parent), None, &mounts).is_some());
+            prop_assert!(judge(&path, &root, Some(parent), None, &mounts).is_some(),
+                "{} exposes {}", path.display(), real.display());
+        }
+
+        #[test]
+        #[cfg(unix)]
+        fn mounts_inside_a_linked_scan_root_keep_their_guards(
+            name in "[a-z]{1,12}",
+            select_mount in any::<bool>(),
+        ) {
+            let temp = tempfile::tempdir_in("/tmp").expect("fixture");
+            let real = fs::canonicalize(temp.path()).expect("real root");
+            let parent = real.join(&name);
+            let mount = parent.join("disk");
+            fs::create_dir_all(&mount).expect("mount fixture");
+            let root = real.join("alias");
+            std::os::unix::fs::symlink(&real, &root).expect("alias");
+            let selected = if select_mount { mount.clone() } else { parent };
+            let path = root.join(selected.strip_prefix(&real).expect("inside"));
+            let mounts = MountTable {
+                points: vec![guard_key(&mount)],
+                ..MountTable::default()
+            };
+            prop_assert_eq!(identity(&path, true), identity(&selected, true));
+            prop_assert!(judge(&selected, &real, Some(&real), None, &mounts).is_some());
+            prop_assert!(judge(&path, &root, Some(&real), None, &mounts).is_some(),
+                "{}", path.display());
+        }
+
+        /// Volume-owned data is protected on every drive, regardless of
+        /// case or the verbatim prefix, but similarly named user folders
+        /// and copies below a user folder are not reserved.
+        #[test]
+        #[cfg(windows)]
+        fn windows_volume_metadata_is_protected_on_every_drive(
+            drive in b'A'..=b'Z',
+            folder in proptest::sample::select(vec![
+                "System Volume Information", "$Recycle.Bin", "Recovery",
+                "Boot", "EFI", "Config.Msi", "bootmgr", "pagefile.sys",
+                "hiberfil.sys", "swapfile.sys",
+            ]),
+            upper in any::<bool>(),
+            verbatim in any::<bool>(),
+            child in proptest::option::of("[a-z]{1,12}"),
+        ) {
+            let folder = if upper { folder.to_uppercase() } else { folder.to_owned() };
+            let root = PathBuf::from(format!("{}{}:\\",
+                if verbatim { r"\\?\" } else { "" }, char::from(drive)));
+            let mut path = root.join(&folder);
+            if let Some(child) = child { path.push(child); }
+            prop_assert!(system_tree(&guard_key(&path), None).is_some());
+            prop_assert_eq!(volume_system_tree(&guard_key(
+                &root.join(format!("{folder}-backup")))), None);
+            prop_assert_eq!(volume_system_tree(&guard_key(
+                &root.join("Documents").join(&folder))), None);
+        }
+
+        /// A share exposes an arbitrary directory. Only a drive prefix
+        /// establishes the root where volume metadata names are reserved.
+        #[test]
+        fn volume_metadata_requires_a_drive_prefix(
+            drive in any::<bool>(),
+            verbatim in any::<bool>(),
+            letter in b'A'..=b'Z',
+            server in "[a-z]{1,16}",
+            share in "[a-z]{1,16}",
+        ) {
+            use std::ffi::OsStr;
+            use std::path::Prefix;
+            let prefix = match (drive, verbatim) {
+                (true, false) => Prefix::Disk(letter),
+                (true, true) => Prefix::VerbatimDisk(letter),
+                (false, false) => Prefix::UNC(OsStr::new(&server), OsStr::new(&share)),
+                (false, true) => Prefix::VerbatimUNC(OsStr::new(&server), OsStr::new(&share)),
+            };
+            prop_assert_eq!(is_volume_drive(prefix), drive);
+        }
+
+        #[test]
+        #[cfg(windows)]
+        fn windows_share_contents_are_not_volume_metadata(
+            server in "[a-z]{1,16}",
+            share in "[a-z]{1,16}",
+            folder in proptest::sample::select(vec![
+                "System Volume Information", "$Recycle.Bin", "Recovery",
+                "Boot", "EFI", "Config.Msi", "bootmgr", "pagefile.sys",
+                "hiberfil.sys", "swapfile.sys",
+            ]),
+            upper in any::<bool>(),
+            verbatim in any::<bool>(),
+            child in proptest::option::of("[a-z]{1,12}"),
+        ) {
+            let root = PathBuf::from(if verbatim {
+                format!(r"\\?\UNC\{server}\{share}\")
+            } else { format!(r"\\{server}\{share}\") });
+            let mut path = root.join(if upper { folder.to_uppercase() } else { folder.to_owned() });
+            if let Some(child) = child { path.push(child); }
+            prop_assert_eq!(volume_system_tree(&guard_key(&path)), None);
+        }
+
+        /// Filesystem identity is the oracle: a scan through a symlink
+        /// to / must protect the same Applications directory as a direct
+        /// scan. Only links inside the fixture are created.
+        #[test]
+        #[cfg(target_os = "macos")]
+        fn applications_protection_follows_directory_identity(
+            via_link in any::<bool>(),
+            data_volume in any::<bool>(),
+            uppercase in any::<bool>(),
+            trailing_slash in any::<bool>(),
+        ) {
+            let temp = scratch();
+            let alias = temp.path().join("root");
+            std::os::unix::fs::symlink("/", &alias).expect("root alias");
+            let root = if via_link { alias.as_path() } else { Path::new("/") };
+            let folder = if uppercase { "APPLICATIONS" } else { "Applications" };
+            let path = root.join(if data_volume {
+                format!("System/Volumes/Data/{folder}")
+            } else { folder.to_owned() });
+            let path = if trailing_slash { path.join(".") } else { path };
+            // A case-sensitive startup volume need not have this spelling.
+            prop_assume!(identity(&path, true) == identity(Path::new("/Applications"), true));
+            let reason = judge(&normalize(&path), root,
+                fs::canonicalize(root).ok().as_deref(), None,
+                &MountTable::default());
+            prop_assert!(reason.is_some(), "{}", path.display());
+        }
+
+        /// A configured profiles folder can be a junction on Windows.
+        /// Resolving a scan root must protect the same directory entries.
+        #[test]
+        #[cfg(any(unix, windows))]
+        fn profile_aliases_preserve_directory_identity(
+            name in "user-[a-z]{1,12}",
+            depth in 0_usize..5,
+        ) {
+            check_profile_aliases(&name, depth);
+        }
+    }
+
+    #[test]
+    fn a_backup_share_does_not_establish_a_volume_root() {
+        use std::ffi::OsStr;
+        use std::path::Prefix;
+        let server = OsStr::new("nas");
+        let share = OsStr::new("backups");
+        assert!(!is_volume_drive(Prefix::UNC(server, share)));
+        assert!(!is_volume_drive(Prefix::VerbatimUNC(server, share)));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn unc_backup_folders_are_not_volume_metadata() {
+        for root in [r"\\nas\backups", r"\\?\UNC\nas\backups"] {
+            for path in [r"Recovery", r"BOOT", r"Recovery\archive", r"Boot\old"]
+            {
+                assert_eq!(
+                    volume_system_tree(&guard_key(&Path::new(root).join(path))),
+                    None,
+                    "{root}\\{path}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn applications_folder_is_protected_and_individual_apps_are_removable() {
+        let root = Path::new("/");
+        assert!(
+            refuse(Path::new("/Applications"), root, None, &[], &[]).is_some()
+        );
+        let planned = plan_against(
+            &[target(Path::new("/Applications"), 1)],
+            root,
+            &MountTable::default(),
+        );
+        assert!(planned.targets.is_empty());
+        assert_eq!(planned.blocked.len(), 1);
+        for path in [
+            "/Applications/PwrDisk.app",
+            "/Applications/Utilities/ThirdParty.app",
+            "/Applications-extra/PwrDisk.app",
+        ] {
+            assert_eq!(
+                refuse(Path::new(path), root, None, &[], &[]),
+                None,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_linked_scan_root_does_not_make_etc_removable() {
+        let temp = scratch();
+        let real = fs::canonicalize("/etc").expect("system config");
+        let root = temp.path().join("root");
+        std::os::unix::fs::symlink(real.parent().expect("parent"), &root)
+            .expect("root alias");
+        let selected = root.join(real.file_name().expect("name"));
+        assert_eq!(identity(&selected, true), identity(&real, true));
+        let planned = plan_against(
+            &[target(&selected, 1)],
+            &root,
+            &MountTable::default(),
+        );
+        assert!(planned.targets.is_empty());
+        assert!(planned.blocked[0].reason.contains("part of the system"));
+    }
 
     fn target(path: &Path, bytes: u64) -> Target {
         Target {
@@ -1743,8 +2667,16 @@ mod tests {
         system_tree(&guard_key(path), Some(&guard_key(home)))
     }
 
+    fn removable_tempdir() -> TempDir {
+        tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("removable fixture")
+    }
+
     fn tree() -> TempDir {
-        let temp = TempDir::new().expect("tempdir");
+        // The default macOS TMPDIR is protected system state. These tests
+        // need removable entries under every spelling of the root.
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("tempdir");
         fs::create_dir_all(temp.path().join("a/b")).expect("mkdir");
         fs::write(temp.path().join("a/one.bin"), vec![b'x'; 10])
             .expect("write");
@@ -1844,13 +2776,14 @@ mod tests {
             ..crate::scan::ScanOptions::default()
         };
         let tree = crate::scan::scan(scan_root, options.clone()).expect("scan");
+        let tree = tree.root();
         for name in ["one", "two", "original"] {
             assert!(
-                tree.children.iter().any(|child| &*child.name == name),
+                tree.children().iter().any(|child| child.name() == name),
                 "{name}"
             );
         }
-        assert!(!tree.children.iter().any(|child| &*child.name == "alias"));
+        assert!(!tree.children().iter().any(|child| child.name() == "alias"));
         assert_eq!(tree.files, 3);
         assert_eq!(tree.bytes, 12);
         assert!(
@@ -1869,21 +2802,22 @@ mod tests {
             .expect("unique");
         let tree = crate::scan::scan(scan_root, options).expect("rescan");
         let alias = tree
-            .children
+            .root()
+            .children()
             .iter()
-            .find(|child| &*child.name == "alias")
+            .find(|child| child.name() == "alias")
             .expect("alias retained");
         assert!(
             alias
-                .children
+                .children()
                 .iter()
-                .any(|child| &*child.name == "nested" && child.files == 1)
+                .any(|child| child.name() == "nested" && child.files == 1)
         );
     }
 
     #[test]
     fn removal_nesting_budget() {
-        let temp = TempDir::new().expect("tempdir");
+        let temp = removable_tempdir();
         let measure = |count| {
             let targets: Vec<_> = (0..count)
                 .map(|index| (index * 73) % count)
@@ -1912,7 +2846,7 @@ mod tests {
 
     #[test]
     fn nesting_keeps_component_boundaries_duplicates_and_output_order() {
-        let temp = TempDir::new().expect("tempdir");
+        let temp = removable_tempdir();
         let targets: Vec<_> =
             ["z", "ab", "a/deep", "a", "a", "ab/inner", "a/deeper/file"]
                 .map(|name| target(&temp.path().join(name), 1))
@@ -1941,7 +2875,7 @@ mod tests {
     #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn nesting_uses_guard_case_order_even_when_the_child_sorts_first() {
-        let temp = TempDir::new().expect("tempdir");
+        let temp = removable_tempdir();
         let parent = target(&temp.path().join("alpha"), 3);
         let child = target(&temp.path().join("ALPHA/child"), 1);
         let result = plan_against(
@@ -1977,26 +2911,54 @@ mod tests {
     /// be projected onto its free space.
     #[test]
     fn only_the_scanned_volumes_marks_are_projected() {
-        let table = "\
-/dev/mapper/root / btrfs rw,subvol=/@ 0 0
-/dev/mapper/root /home btrfs rw,subvol=/@home 0 0
-/dev/mapper/root /.snapshots btrfs rw,subvol=/@snapshots 0 0
-/dev/mapper/data /data ext4 rw 0 0
-";
+        // The table models volume identities, but removal still needs real,
+        // native absolute paths: `/home` is root-relative on Windows.
+        let temp = removable_tempdir();
+        let root = fs::canonicalize(temp.path()).expect("native root");
+        assert!(root.is_absolute());
+        let home = root.join("home");
+        let data = root.join("data");
+        let snapshots = root.join(".snapshots");
+        let junk = home.join("tobi/junk");
+        fs::create_dir_all(junk.join("deeper")).expect("nested tree");
+        fs::create_dir(&data).expect("other volume");
+        fs::create_dir_all(snapshots.join("7")).expect("snapshot");
+        fs::write(junk.join("own"), [b'x'; 40]).expect("own bytes");
+        fs::write(junk.join("deeper/file"), [b'x'; 60]).expect("nested bytes");
+        fs::write(data.join("junk"), [b'x'; 200]).expect("other bytes");
+        fs::write(snapshots.join("7/junk"), [b'x'; 400])
+            .expect("snapshot bytes");
+        let mount = |point, source: &str, fstype: &str, options: &str| {
+            crate::space::Mount {
+                point,
+                source: source.into(),
+                fstype: fstype.into(),
+                options: options.into(),
+            }
+        };
+        let other = mount(data.clone(), "other-disk", "ext4", "rw");
+        let table = vec![
+            mount(root.clone(), "root-disk", "btrfs", "rw,subvol=/@"),
+            mount(home, "root-disk", "btrfs", "rw,subvol=/@home"),
+            mount(
+                snapshots.clone(),
+                "root-disk",
+                "btrfs",
+                "rw,subvol=/@snapshots",
+            ),
+            other.clone(),
+        ];
         let mounts = MountTable {
-            points: crate::space::parse_mounts(table)
-                .iter()
-                .map(|mount| guard_key(&mount.point))
-                .collect(),
+            points: table.iter().map(|mount| guard_key(&mount.point)).collect(),
             media: Vec::new(),
-            mounts: Some(crate::space::parse_mounts(table)),
+            mounts: Some(table),
         };
         let marked = [
-            target(Path::new("/home/tobi/junk"), 100),
-            target(Path::new("/data/junk"), 200),
-            target(Path::new("/.snapshots/7/junk"), 400),
+            target(&junk, 100),
+            target(&data.join("junk"), 200),
+            target(&snapshots.join("7/junk"), 400),
         ];
-        let plan = plan_against(&marked, Path::new("/"), &mounts);
+        let plan = plan_against(&marked, &root, &mounts);
         assert!(
             plan.blocked.is_empty(),
             "a mark inside another volume is legal: {:?}",
@@ -2026,11 +2988,8 @@ mod tests {
 
         // A mark inside another is removed with it, so its bytes are counted
         // once here as they are in the total.
-        let nested = [
-            target(Path::new("/home/tobi/junk"), 100),
-            target(Path::new("/home/tobi/junk/deeper"), 60),
-        ];
-        let plan = plan_against(&nested, Path::new("/"), &mounts);
+        let nested = [target(&junk, 100), target(&junk.join("deeper"), 60)];
+        let plan = plan_against(&nested, &root, &mounts);
         assert_eq!(plan.covered.len(), 1);
         assert_eq!(plan.bytes(), 100);
         assert_eq!(plan.reclaim(), 100);
@@ -2038,14 +2997,17 @@ mod tests {
         // Where the table cannot place the paths, nothing is claimed: a
         // projection the meter cannot stand behind is worse than none.
         let partial = MountTable {
-            mounts: Some(crate::space::parse_mounts(
-                "/dev/mapper/data /data ext4 rw 0 0\n",
-            )),
+            mounts: Some(vec![other]),
             ..MountTable::default()
         };
-        let root = Path::new("/disktree-untabled");
-        let plan =
-            plan_against(&[target(&root.join("junk"), 50)], root, &partial);
+        let untabled = root.join("untabled");
+        fs::create_dir(&untabled).expect("unplaced root");
+        fs::write(untabled.join("junk"), [b'x'; 50]).expect("unplaced bytes");
+        let plan = plan_against(
+            &[target(&untabled.join("junk"), 50)],
+            &untabled,
+            &partial,
+        );
         assert_eq!(plan.bytes(), 50);
         assert_eq!(plan.reclaim(), 0);
         assert_eq!(plan.foreign(), 0);
@@ -2086,6 +3048,44 @@ mod tests {
         );
     }
 
+    // The filesystem decides what is a profile: a real directory whose
+    // parent is the profiles folder. A nonexistent example misses the rule.
+    fn check_profile_directory(name: &str, directory: bool, depth: usize) {
+        let temp = TempDir::new().expect("tempdir");
+        let profiles = temp.path().join("profiles");
+        fs::create_dir(&profiles).expect("profiles");
+        let mut path = profiles.clone();
+        for _ in 0..depth {
+            path.push(name);
+        }
+        fs::create_dir_all(path.parent().expect("parent")).expect("parents");
+        if directory {
+            fs::create_dir(&path).expect("profile");
+        } else {
+            fs::write(&path, b"file").expect("file");
+        }
+        let direct = identity(path.parent().expect("parent"), true)
+            == identity(&profiles, true);
+        let refused =
+            profile_refusal(&path, &guard_key(&path), &[guard_key(&profiles)]);
+        assert_eq!(refused.is_some(), directory && direct);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 32,
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+        #[test]
+        fn every_existing_profile_is_refused(
+            name in "[a-z]{1,12}", directory in proptest::bool::ANY,
+            depth in 1_usize..4,
+        ) {
+            check_profile_directory(&name, directory, depth);
+        }
+    }
+
     /// Removing a directory takes what is inside it, so the directories
     /// above home are refused too: in a whole-disk scan, `C:\Users` is an
     /// ordinary directory, and so is `/home` without a separate volume.
@@ -2098,17 +3098,7 @@ mod tests {
             reason.is_some_and(|reason| reason.contains("home directory")),
             "the home directory is inside it"
         );
-        assert_eq!(
-            refuse(
-                Path::new("/home/other"),
-                Path::new("/"),
-                Some(&home),
-                &[],
-                &[]
-            ),
-            None,
-            "a sibling of home is not above it"
-        );
+        check_profile_directory("other", true, 1);
     }
 
     #[test]
@@ -2276,20 +3266,85 @@ mod tests {
 
     #[test]
     fn the_mount_table_is_read_off_the_calling_thread_and_then_kept() {
-        prime_mount_points();
-        // The first read lands on its own thread; wait for it, briefly.
-        let mut mounts = mount_points();
-        for _ in 0..500 {
-            if !mounts.points.is_empty() {
-                break;
+        use std::sync::{Mutex, mpsc};
+        use std::time::{Duration, Instant};
+
+        // Other tests and processes can change the host's mounts. Exercise
+        // the real cache with an isolated, controlled source instead.
+        static CACHE: Mutex<MountCache> = Mutex::new(MountCache {
+            read: None,
+            mounts: None,
+            refreshing: false,
+        });
+        const WAIT: Duration = Duration::from_secs(5);
+
+        let points = Arc::new(Mutex::new(vec![PathBuf::from("root")]));
+        let read_snapshot = {
+            let points = Arc::clone(&points);
+            move || MountTable {
+                points: points.lock().expect("source").clone(),
+                ..MountTable::default()
             }
-            thread::sleep(std::time::Duration::from_millis(10));
-            mounts = mount_points();
-        }
+        };
+        let (started, reading) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let reader = read_snapshot.clone();
+        let pending = cached_mount_points(&CACHE, Instant::now, move || {
+            started.send(thread::current().id()).expect("started");
+            blocked.recv_timeout(WAIT).expect("release reader");
+            reader()
+        });
+        assert!(pending.points.is_empty(), "the first read is still blocked");
+        assert_ne!(
+            reading.recv_timeout(WAIT).expect("reader started"),
+            thread::current().id(),
+            "the caller never reads the mount table"
+        );
+        release.send(()).expect("release reader");
+
+        let deadline = Instant::now() + WAIT;
+        let (mounts, read) = loop {
+            let cache = CACHE.lock().expect("cache");
+            if let (Some(mounts), Some(read)) = (&cache.mounts, cache.read) {
+                assert!(!cache.refreshing, "the snapshot is fully published");
+                break (Arc::clone(mounts), read);
+            }
+            drop(cache);
+            assert!(Instant::now() < deadline, "the read must finish");
+            thread::sleep(Duration::from_millis(10));
+        };
+
         assert_eq!(
             mounts.points,
-            read_mount_table().points,
-            "the same table, cached"
+            vec![PathBuf::from("root")],
+            "the background read published its snapshot"
+        );
+        points
+            .lock()
+            .expect("source")
+            .push("temporary-image".into());
+        assert_ne!(
+            mounts.points,
+            read_snapshot().points,
+            "a new mount must not invalidate an earlier snapshot"
+        );
+
+        let (reread, unexpected) = mpsc::channel();
+        // Freeze request time at publication: scheduler delays must not
+        // turn this check of a fresh cache into an expiry test.
+        let kept = cached_mount_points(
+            &CACHE,
+            || read,
+            move || {
+                reread.send(()).expect("unexpected read");
+                read_snapshot()
+            },
+        );
+        assert!(Arc::ptr_eq(&mounts, &kept), "reuse the published snapshot");
+        assert_eq!(
+            unexpected.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected),
+            "a fresh cache drops the reader without starting it"
         );
     }
 
@@ -2388,7 +3443,7 @@ mod tests {
     #[test]
     fn permanent_removal_unlinks_nested_symlinks_without_following_them() {
         let temp = tree();
-        let outside = TempDir::new().expect("tempdir");
+        let outside = removable_tempdir();
         fs::write(outside.path().join("keep"), "x").expect("write");
         link_dir(outside.path(), &temp.path().join("a/link"));
         remove_permanently(&temp.path().join("a"), temp.path())
@@ -2417,7 +3472,7 @@ mod tests {
     #[test]
     fn permanent_removal_unlinks_a_symlink_instead_of_following_it() {
         let temp = tree();
-        let keep = TempDir::new().expect("tempdir");
+        let keep = removable_tempdir();
         fs::write(keep.path().join("precious.bin"), b"data").expect("write");
         let link = temp.path().join("link");
         link_dir(keep.path(), &link);
@@ -2433,7 +3488,7 @@ mod tests {
     #[cfg(unix)]
     fn permanent_removal_does_not_follow_a_link_put_on_the_way_down() {
         let temp = tree();
-        let keep = TempDir::new().expect("tempdir");
+        let keep = removable_tempdir();
         fs::create_dir(keep.path().join("x")).expect("mkdir");
         fs::write(keep.path().join("x/precious.bin"), b"data").expect("write");
         let marked = temp.path().join("a/b/x");
@@ -2449,7 +3504,7 @@ mod tests {
     #[test]
     fn a_target_reached_through_a_link_is_refused() {
         let temp = tree();
-        let keep = TempDir::new().expect("tempdir");
+        let keep = removable_tempdir();
         fs::write(keep.path().join("precious.bin"), b"data").expect("write");
         link_dir(keep.path(), &temp.path().join("link"));
 
@@ -2470,7 +3525,7 @@ mod tests {
     #[test]
     fn a_link_put_on_the_way_down_after_planning_stops_the_worker() {
         let temp = tree();
-        let keep = TempDir::new().expect("tempdir");
+        let keep = removable_tempdir();
         fs::create_dir(keep.path().join("x")).expect("mkdir");
         fs::write(keep.path().join("x/precious.bin"), b"data").expect("write");
         fs::create_dir(temp.path().join("a/b/x")).expect("mkdir");
@@ -2502,7 +3557,7 @@ mod tests {
         let temp = tree();
         let real = temp.path().join("data");
         fs::create_dir_all(real.join("home/user")).expect("mkdir");
-        let spelled = TempDir::new().expect("tempdir");
+        let spelled = removable_tempdir();
         link_dir(&real.join("home"), &spelled.path().join("home"));
         let home = Home::of(&spelled.path().join("home/user"));
         let root = fs::canonicalize(temp.path()).expect("real root");
@@ -2543,7 +3598,7 @@ mod tests {
     #[test]
     fn permanent_removal_follows_links_above_the_root() {
         let temp = tree();
-        let spelled = TempDir::new().expect("tempdir");
+        let spelled = removable_tempdir();
         let root = spelled.path().join("root");
         link_dir(temp.path(), &root);
 
@@ -2609,7 +3664,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn trash_names_avoid_collisions() {
-        let temp = TempDir::new().expect("tempdir");
+        let temp = removable_tempdir();
         let (first, first_name) = unique_name(temp.path(), "notes");
         assert_eq!(first_name, "notes");
         fs::write(&first, b"x").expect("write");
@@ -2623,8 +3678,8 @@ mod tests {
     #[test]
     fn the_xdg_trash_moves_a_file_and_records_where_it_came_from() {
         // A private trash directory keeps the test out of the real trash can.
-        let trash = TempDir::new().expect("tempdir");
-        let work = TempDir::new().expect("tempdir");
+        let trash = removable_tempdir();
+        let work = removable_tempdir();
         let file = work.path().join("doomed.bin");
         fs::write(&file, b"payload").expect("write");
 
@@ -2645,8 +3700,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_trash_info_path_is_restorable() {
-        let trash = TempDir::new().expect("tempdir");
-        let work = TempDir::new().expect("tempdir");
+        let trash = removable_tempdir();
+        let work = removable_tempdir();
         let file = work.path().join("with space.bin");
         fs::write(&file, b"x").expect("write");
         trash_into(&file, trash.path()).expect("trashed");
@@ -2711,11 +3766,69 @@ mod tests {
         assert!(root.join("a/one.bin").exists());
     }
 
+    #[test]
+    fn a_worker_that_cannot_start_ends_the_run_as_failed() {
+        let temp = tree();
+        let root = temp.path();
+        let plan = plan(
+            &[
+                target(&root.join("a/b"), 0),
+                target(&root.join("a/c.bin"), 20),
+            ],
+            root,
+        );
+        let paths: Vec<PathBuf> = plan
+            .targets
+            .iter()
+            .map(|target| target.path.clone())
+            .collect();
+        assert_eq!(paths.len(), 2);
+
+        // The spawner refuses the work as a process out of threads would,
+        // so every event below was sent before `start` returned.
+        let handle = start(plan, RemovalMode::Permanent, None, None, |_work| {
+            Err(io::Error::other("out of threads"))
+        });
+        let events: Vec<_> = std::iter::from_fn(|| handle.poll()).collect();
+
+        // No Start: dispatch never began. One failure per target and
+        // Done still let the window finish the attempt.
+        assert_eq!(events.len(), paths.len() + 1, "{events:?}");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, RemovalEvent::Start { .. }))
+        );
+        for (event, expected) in events[..paths.len()].iter().zip(&paths) {
+            match event {
+                RemovalEvent::Item {
+                    path,
+                    bytes: 0,
+                    outcome: Err(reason),
+                } => {
+                    assert_eq!(path, expected);
+                    assert!(reason.contains("out of threads"), "{reason}");
+                }
+                other => panic!("expected a failed item, got {other:?}"),
+            }
+        }
+        assert!(matches!(
+            events.last(),
+            Some(RemovalEvent::Done {
+                removed: 0,
+                bytes: 0,
+                failed: 2,
+            })
+        ));
+        assert!(root.join("a/b").exists());
+        assert!(root.join("a/c.bin").exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_trash_tool_is_called_with_the_path_after_a_separator() {
         use std::os::unix::fs::PermissionsExt as _;
-        let temp = TempDir::new().expect("tempdir");
+        let temp = removable_tempdir();
         let recording = temp.path().join("argv");
         let script = temp.path().join("fake-trash-put");
         fs::write(
@@ -2744,7 +3857,7 @@ mod tests {
     #[test]
     fn a_failing_trash_tool_reports_its_stderr() {
         use std::os::unix::fs::PermissionsExt as _;
-        let temp = TempDir::new().expect("tempdir");
+        let temp = removable_tempdir();
         let script = temp.path().join("angry-trash-put");
         fs::write(&script, "#!/bin/sh\necho 'no trash here' >&2\nexit 3\n")
             .expect("write");
@@ -2815,10 +3928,162 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_home_folders_are_refused() {
+        let root = Path::new("/");
+        let refused = |path: &str, root: &Path| {
+            refuse(Path::new(path), root, None, &[], &[])
+        };
+        // Whatever this process's home is, /Users holds every account's.
+        assert!(
+            refused("/Users", root)
+                .is_some_and(|reason| reason.contains("every user"))
+        );
+        // Shared ships with macOS, so it is there to be judged as a folder.
+        for spelling in ["/Users/Shared", "/users/shared"] {
+            assert!(
+                refused(spelling, root)
+                    .is_some_and(|reason| reason.contains("home folder")),
+                "{spelling} is an account's folder"
+            );
+        }
+        // The Data volume's spelling is judged as the same place.
+        let data = Path::new(crate::space::MACOS_DATA_VOLUME);
+        assert!(
+            refused("/System/Volumes/Data/Users/Shared", data)
+                .is_some_and(|reason| reason.contains("home folder"))
+        );
+        // Inside a home folder stays removable, as under one's own home.
+        assert_eq!(refused("/Users/Shared/old-installer.pkg", root), None);
+        assert_eq!(refused("/Users/nobody-is-here", root), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_home_folders_are_refused() {
+        let root = Path::new("/");
+        let refused = |path: &Path| refuse(path, root, None, &[], &[]);
+        // Whatever this process's home is, /home holds every account's,
+        // however it is spelled.
+        for spelling in ["/home", "/home/", "/home/.", "/usr/../home"] {
+            assert!(
+                refused(Path::new(spelling))
+                    .is_some_and(|reason| reason.contains("every user")),
+                "{spelling} holds every home"
+            );
+        }
+        // Each directory there is an account's, whoever's it is; a bare
+        // container may have none.
+        let homes = fs::read_dir("/home").into_iter().flatten().flatten();
+        let dirs = homes
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()));
+        for entry in dirs {
+            let home = entry.path();
+            assert!(
+                refused(&home)
+                    .is_some_and(|reason| reason.contains("home folder")),
+                "{} is an account's folder",
+                home.display()
+            );
+            // Inside a home folder stays removable, as under one's own.
+            assert_eq!(refused(&home.join("old-installer.tar")), None);
+        }
+        // Nothing there is no home folder.
+        assert_eq!(refused(Path::new("/home/nobody-is-here")), None);
+    }
+
+    /// Whole profiles are protected by identity, while directories inside
+    /// them and regular files in the container are judged separately.
+    #[cfg(any(unix, windows))]
+    fn check_profile_aliases(name: &str, depth: usize) {
+        let temp = removable_tempdir();
+        let temp = fs::canonicalize(temp.path()).expect("canonical");
+        let real = temp.join("Profiles");
+        let nested = (0..depth)
+            .fold(Path::new(name).join("Downloads"), |path, _| {
+                path.join("nested")
+            });
+        fs::create_dir_all(real.join(&nested)).expect("profile contents");
+        fs::write(real.join("notes.txt"), b"shared file").expect("file");
+        let link = temp.join("Users");
+        link_dir(&real, &link);
+        let keys = profiles_folder_keys(&link);
+        let profiles_id = identity(&real, true).expect("profiles identity");
+        assert_eq!(identity(&link, true), Some(profiles_id));
+        for folder in [&link, &real] {
+            for relative in [
+                Path::new(""),
+                Path::new(name),
+                nested.as_path(),
+                Path::new("notes.txt"),
+            ] {
+                let path = folder.join(relative);
+                let resolved = resolved_entry(&path).expect("real parent");
+                for path in [path, resolved] {
+                    let meta = fs::symlink_metadata(&path).expect("entry");
+                    let expected = identity(&path, true) == Some(profiles_id)
+                        || (meta.is_dir()
+                            && path
+                                .parent()
+                                .and_then(|parent| identity(parent, true))
+                                == Some(profiles_id));
+                    assert_eq!(
+                        profile_refusal(&path, &guard_key(&path), &keys)
+                            .is_some(),
+                        expected,
+                        "{}: {keys:?}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        // A real folder has one name.
+        assert_eq!(profiles_folder_keys(&real).len(), 1);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn junctioned_profiles_are_protected_after_parent_resolution() {
+        check_profile_aliases("user-a", 0);
+    }
+
+    #[test]
+    fn a_single_path_is_judged_as_a_plan_would() {
+        let temp = removable_tempdir();
+        let root = temp.path();
+        let inside = root.join("cache");
+        fs::create_dir(&inside).expect("mkdir");
+        assert_eq!(refusal(&inside, root), None);
+        assert!(
+            refusal(root, root)
+                .is_some_and(|reason| reason.contains("scanned root"))
+        );
+        let elsewhere = removable_tempdir();
+        assert!(
+            refusal(elsewhere.path(), root)
+                .is_some_and(|reason| reason.contains("outside"))
+        );
+        let planned = plan(
+            &[Target {
+                path: root.to_path_buf(),
+                bytes: 0,
+                is_dir: true,
+                hidden: false,
+            }],
+            root,
+        );
+        assert_eq!(
+            Some(planned.blocked[0].reason.clone()),
+            refusal(root, root),
+            "one judgement, two callers"
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_profiles_are_refused() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = removable_tempdir();
         let profiles = temp.path();
         fs::create_dir_all(profiles.join(r"tobi\Downloads")).expect("mkdir");
         fs::write(profiles.join("notes.txt"), b"x").expect("write");
@@ -2853,7 +4118,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[ignore = "puts a file in this Mac's real Trash"]
     fn the_macos_trash_takes_a_file_and_leaves_a_linked_target() {
-        let temp = TempDir::new().expect("tempdir");
+        let temp = removable_tempdir();
         let file = temp.path().join("disktree-trash-check.txt");
         fs::write(&file, b"x").expect("write");
         let keep = temp.path().join("keep.txt");
@@ -2873,7 +4138,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn a_name_that_is_not_utf8_is_refused_before_the_trash_sees_it() {
         use std::os::unix::ffi::OsStrExt as _;
-        let temp = TempDir::new().expect("tempdir");
+        let temp = removable_tempdir();
         let odd = temp
             .path()
             .join(std::ffi::OsStr::from_bytes(b"not-\xff-utf8"));
@@ -2939,6 +4204,87 @@ mod tests {
             assert_eq!(tree_of(Path::new(path), home), None, "{path}");
         }
     }
+
+    /// `/tmp` on macOS is `/private/tmp`: what a user leaves there is theirs
+    /// to remove, as on Linux, but the folder itself is the system's.
+    #[test]
+    #[cfg(not(windows))]
+    fn macos_scratch_space_is_removable_but_not_the_folders_themselves() {
+        let home = Path::new("/Users/tobi");
+        let macos = |path: &str| {
+            system_tree(
+                &guard_key_for(Path::new(path), true),
+                Some(&guard_key_for(home, true)),
+            )
+        };
+        for path in [
+            "/private/tmp/pwrdisk-review.kW8Ry1",
+            "/private/tmp/build/target/debug",
+            "/private/var/tmp/cache.bin",
+            // The same places by the Data volume's spelling, and by case.
+            "/System/Volumes/Data/private/tmp/pwrdisk-review",
+            "/PRIVATE/TMP/Build",
+        ] {
+            assert_eq!(macos(path), None, "{path}");
+        }
+        for path in [
+            "/private/tmp",
+            "/private/var/tmp",
+            "/System/Volumes/Data/private/tmp",
+            // A neighbour that only shares the spelling's start.
+            "/private/tmpfoo/x",
+            // Every user's `$TMPDIR` and caches stay refused.
+            "/private/var/folders/xy/T/item",
+            "/private/var/db/receipts",
+        ] {
+            assert_eq!(macos(path), Some("/private"), "{path}");
+        }
+    }
+
+    /// The whole guard, not only the tree lookup: in a whole-disk scan a
+    /// folder in `/private/tmp` is accepted and `/private/tmp` refused.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_whole_disk_scan_may_remove_what_is_in_private_tmp() {
+        let home = Home::of(Path::new("/Users/tobi"));
+        let root = Path::new("/");
+        assert_eq!(
+            refuse(
+                Path::new("/private/tmp/pwrdisk-guard-fixture"),
+                root,
+                Some(&home),
+                &[],
+                &[],
+            ),
+            None
+        );
+        let reason =
+            refuse(Path::new("/private/tmp"), root, Some(&home), &[], &[]);
+        assert!(
+            reason
+                .as_deref()
+                .is_some_and(|reason| reason
+                    .contains("part of the system under /private")),
+            "{reason:?}"
+        );
+    }
+
+    /// The whole plan, on a real entry: the link and mount checks pass a
+    /// folder in `/private/tmp` too, so a whole-disk scan may remove it.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_whole_disk_plan_accepts_a_real_entry_in_private_tmp() {
+        let temp =
+            tempfile::tempdir_in("/private/tmp").expect("scratch fixture");
+        let planned = plan(&[target(temp.path(), 1)], Path::new("/"));
+        assert!(planned.blocked.is_empty(), "{:?}", planned.blocked);
+        assert_eq!(planned.targets.len(), 1);
+
+        let planned =
+            plan(&[target(Path::new("/private/tmp"), 1)], Path::new("/"));
+        assert!(planned.targets.is_empty());
+    }
+
     #[test]
     fn limited_worker_refuses_the_entire_batch_before_removing_anything() {
         let temp = tree();
@@ -2953,7 +4299,7 @@ mod tests {
         let handle = spawn_limited(
             planned,
             RemovalMode::Permanent,
-            crate::removal_limit::Limit::default(),
+            crate::removal_limit::Limit::default().into(),
         );
         let mut done = None;
         for _ in 0..2000 {
@@ -2973,6 +4319,56 @@ mod tests {
         assert_eq!(done, Some((0, 2)));
         for path in paths {
             assert!(path.exists());
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 32, failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        // The lifecycle may reach dispatch only after batch admission.
+        // Either refusal path must end with one failure per target, no
+        // Start, and byte-identical files according to the filesystem.
+        #[test]
+        fn a_refused_attempt_never_announces_target_dispatch(
+            contents in proptest::collection::vec(1_usize..8192, 1..6),
+            cannot_spawn in proptest::bool::ANY,
+        ) {
+            let temp = removable_tempdir();
+            let targets: Vec<_> = contents.iter().enumerate().map(|(i, &size)| {
+                let path = temp.path().join(format!("artifact-{i}"));
+                fs::write(&path, vec![b'x'; size]).expect("fixture");
+                Target { path, bytes: u64::MAX / 8,
+                    is_dir: false, hidden: false }
+            }).collect();
+            let planned = plan(&targets, temp.path());
+            proptest::prop_assert_eq!(planned.targets.len(), targets.len());
+            let handle = start(planned, RemovalMode::Permanent,
+                Some(crate::removal_limit::Ceilings::default()), None, |work| {
+                    if cannot_spawn {
+                        Err(io::Error::other("fixture spawn refusal"))
+                    } else { work(); Ok(()) }
+                });
+            let events: Vec<_> = std::iter::from_fn(|| handle.poll()).collect();
+            proptest::prop_assert!(!events.iter().any(|event|
+                matches!(event, RemovalEvent::Start { .. })),
+                "dispatch never started");
+            proptest::prop_assert_eq!(events.len(), targets.len() + 1);
+            for (target, &size) in targets.iter().zip(&contents) {
+                proptest::prop_assert_eq!(
+                    fs::read(&target.path).expect("untouched"),
+                    vec![b'x'; size]);
+                proptest::prop_assert!(events.iter().any(|event|
+                    matches!(event, RemovalEvent::Item {
+                        path, outcome: Err(_), ..
+                    } if path == &target.path)), "each target failed");
+            }
+            proptest::prop_assert!(matches!(events.last(),
+                Some(RemovalEvent::Done { removed: 0, bytes: 0, failed })
+                    if *failed == targets.len()),
+                "terminal counts match refusal");
         }
     }
 }

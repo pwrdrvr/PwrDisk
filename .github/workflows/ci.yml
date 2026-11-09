@@ -11,11 +11,19 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A new push cancels a PR's stale run, but never main's: only main saves
+  # the Rust cache every PR starts from, and a cancelled job saves nothing.
+  # A newer main push waits instead, replacing any run already waiting.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
 
+# The Rust cache: every Rust job sets up through .github/actions/setup-rust,
+# which saves the cache only on main, so PR saves cannot evict the entries
+# every PR restores from the 10 GB store, and prunes extra toolchains first
+# so image updates keep the key. The reasons and numbers are in README.md
+# beside this file, under "The Rust cache".
 jobs:
   # The pull_request trigger stays path-unfiltered so every job reports on
   # every PR: a skipped job satisfies a required check, a missing one leaves
@@ -29,6 +37,7 @@ jobs:
   changes:
     name: Classify Changes
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     # pulls.listFiles needs pull-requests: read; no other job gets it.
     permissions:
       contents: read
@@ -112,6 +121,7 @@ jobs:
               path === "THIRD_PARTY_LICENSES" ||
               // Exercise changes to the gate and generator themselves.
               path === ".github/workflows/ci.yml" ||
+              path.startsWith(".github/actions/setup-rust/") ||
               path === "xtask/src/licenses.rs";
             const licensesImpacting = files.some((file) =>
               [file.filename, file.previous_filename].filter(Boolean)
@@ -143,9 +153,16 @@ jobs:
       - name: Test the classifier
         run: node --test scripts/ci/classify-changes.test.cjs
 
+      - name: Test Windows temporary storage configuration
+        run: node --test scripts/ci/windows-temp.test.cjs
+
+      - name: Test deadline model
+        run: node --test scripts/ci/test-budgets.test.cjs
+
   licenses:
     name: Check third-party licenses
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     needs: changes
     if: >-
       !cancelled() &&
@@ -153,11 +170,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: "1.97"
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: ./.github/actions/setup-rust
+        id: rust
         with:
           # The versioned binary cache below owns cargo-about.
           cache-bin: false
@@ -169,7 +183,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-about
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-about-0.9.2-rust-1.97
+          # The Rust that built it is part of the key, so a toolchain bump
+          # rebuilds the binary instead of restoring one it did not build.
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-about-0.9.2-rust-${{ steps.rust.outputs.toolchain }}
 
       - name: Install cargo-about
         if: steps.cargo-about.outputs.cache-hit != 'true'
@@ -182,6 +198,7 @@ jobs:
   check:
     name: Lint and test
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
@@ -200,19 +217,16 @@ jobs:
             libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
             libvulkan-dev libasound2-dev libssl-dev libzstd-dev
 
-      # Pinned: the lint gate denies clippy::all and ::pedantic, and a newer
-      # clippy's new lints are a change to make on purpose, not by surprise.
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      # The lint gate runs clippy and rustfmt.
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.97"
           components: clippy, rustfmt
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Lint
         run: cargo xtask lint
 
       - name: Test
+        timeout-minutes: 10
         run: cargo xtask test
 
   check-macos:
@@ -221,6 +235,7 @@ jobs:
     # either: gpui-kit builds GPUI with runtime shader compilation, so the
     # shaders compile when the app starts, not here.
     runs-on: macos-15
+    timeout-minutes: 30
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
@@ -229,17 +244,29 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.97"
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Exercise native device lifecycles before compiling the GUI graph.
+      # The full workspace gate repeats them alongside the deletion oracle.
+      - name: APFS image lifecycle
+        timeout-minutes: 10
+        run: cargo test -p disktree-core test_paths::disk_image -- --test-threads=1
 
       - name: Lint
         run: cargo xtask lint
 
+      # Workspace compilation used three minutes of the old ten-minute
+      # test step, leaving no room after the native APFS oracles passed.
+      - name: Compile macOS tests
+        timeout-minutes: 10
+        run: |
+          cargo build -p xtask
+          cargo test --workspace --no-run
+
       - name: Test
+        timeout-minutes: 15
         run: cargo xtask test
 
       # The app bundle, signed ad hoc, and the DMG release.yml cuts the same
@@ -254,6 +281,7 @@ jobs:
     # The bundle with the Icon Composer icon: Xcode 26's actool compiles it
     # into Assets.car, and the plist names it, which the job checks.
     runs-on: macos-26
+    timeout-minutes: 20
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
@@ -262,11 +290,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: "1.97"
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: ./.github/actions/setup-rust
 
       - name: Bundle
         run: cargo xtask bundle
@@ -281,36 +305,48 @@ jobs:
   windows:
     name: Lint and test (Windows)
     runs-on: windows-2025
+    timeout-minutes: 30
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
       !cancelled() &&
       (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
+      # The hosted runner's default TEMP is on C:, which can stall I/O.
+      - name: Use runner temporary storage
+        shell: pwsh
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          "TEMP=$env:TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:TMP" >> $env:GITHUB_ENV
+
       # Check out with the repository's own line endings, as on Linux.
       - run: git config --global core.autocrlf false
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Pinned with the Linux job, for the same reason. GPUI needs nothing
-      # beyond the Windows SDK the runner already has.
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      # GPUI needs nothing beyond the Windows SDK the runner already has.
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.97"
           components: clippy, rustfmt
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Lint
         run: cargo xtask lint
 
       - name: Test
+        timeout-minutes: 18
         run: cargo xtask test
 
+      # A debug build: build.rs embeds the icon in every profile, and Test
+      # has already compiled everything but the binary. A release build
+      # (thin LTO, one codegen unit) took over three minutes even with a
+      # warm cache; preview-build.yml and release.yml build that one.
       - name: Check embedded executable icon
         shell: pwsh
         run: |
-          cargo build --release --locked -p disktree-app
+          cargo build --locked -p disktree-app
           Add-Type @'
           using System;
           using System.Runtime.InteropServices;
@@ -320,7 +356,7 @@ jobs:
                   string file, int index, IntPtr[] large, IntPtr[] small, uint count);
           }
           '@
-          $exe = (Resolve-Path target/release/pwrdisk.exe).Path
+          $exe = (Resolve-Path target/debug/pwrdisk.exe).Path
           if ([ExecutableIcons]::ExtractIconEx($exe, -1, $null, $null, 0) -lt 1) {
             throw "pwrdisk.exe has no embedded icon"
           }
@@ -333,16 +369,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: Linux aarch64, runner: ubuntu-24.04-arm }
-          - { name: macOS x86_64, runner: macos-15-intel }
-          - { name: Windows aarch64, runner: windows-11-arm }
+          - { name: Linux aarch64, runner: ubuntu-24.04-arm, job_timeout: 15, test_timeout: 8 }
+          # Lifecycle (10), compile (15), gate (20), setup/cleanup (5).
+          - { name: macOS x86_64, runner: macos-15-intel, job_timeout: 50, test_timeout: 20 }
+          - { name: Windows aarch64, runner: windows-11-arm, job_timeout: 20, test_timeout: 15 }
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.job_timeout }}
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
       !cancelled() &&
       (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
     steps:
+      - name: Use runner temporary storage
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          "TEMP=$env:TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:TMP" >> $env:GITHUB_ENV
+
       - if: runner.os == 'Windows'
         run: git config --global core.autocrlf false
 
@@ -357,11 +405,24 @@ jobs:
             libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
             libvulkan-dev libasound2-dev libssl-dev libzstd-dev
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: "1.97"
+      - uses: ./.github/actions/setup-rust
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # A cold Intel build took 11 minutes before the APFS oracles started.
+      # Compile before either test step so neither spends its execution
+      # budget building core. Both execution deadlines stay unchanged.
+      - name: Compile Intel macOS tests
+        if: matrix.runner == 'macos-15-intel'
+        timeout-minutes: 15
+        run: |
+          cargo build -p xtask
+          cargo test --workspace --no-run
+          cargo test -p disktree-core test_paths::disk_image --no-run
+
+      - name: APFS image lifecycle
+        if: matrix.runner == 'macos-15-intel'
+        timeout-minutes: 10
+        run: cargo test -p disktree-core test_paths::disk_image -- --test-threads=1
 
       - name: Test
+        timeout-minutes: ${{ matrix.test_timeout }}
         run: cargo xtask test

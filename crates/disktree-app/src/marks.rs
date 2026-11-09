@@ -11,7 +11,7 @@ use std::sync::{Arc, Weak};
 
 use disktree_core::path_style::PathStyle;
 use disktree_core::removal::Target;
-use disktree_core::tree::{Metric, Node};
+use disktree_core::tree::{Facts, Metric, Node, Tree};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 #[cfg(test)]
@@ -31,6 +31,7 @@ pub mod work {
         pub static REVIEW_ROWS: Cell<usize> = const { Cell::new(0) };
         pub static COVERED_ROWS: Cell<usize> = const { Cell::new(0) };
         pub static BLOCKED_ROWS: Cell<usize> = const { Cell::new(0) };
+        pub static DISCARDED: Cell<usize> = const { Cell::new(0) };
     }
 
     pub fn step() {
@@ -50,6 +51,7 @@ pub mod work {
         REVIEW_ROWS.set(0);
         COVERED_ROWS.set(0);
         BLOCKED_ROWS.set(0);
+        DISCARDED.set(0);
     }
 }
 
@@ -68,7 +70,7 @@ pub struct Marks {
 /// alive while a new one is being displayed.
 #[derive(Debug)]
 struct ResolvedMarks {
-    tree: Weak<Node>,
+    tree: Weak<Tree>,
     root_path: PathBuf,
     metric: Metric,
     style: PathStyle,
@@ -188,6 +190,41 @@ impl Marks {
         &self.items
     }
 
+    /// Bytes of the items strictly below `path`, as they were recorded.
+    pub fn below(&self, path: &Path, style: PathStyle) -> u64 {
+        // Descendants sort right after `path`: walk only them.
+        let mut below = self
+            .index
+            .range::<PathKey, _>((
+                Excluded(PathKey::new(path, style)),
+                Unbounded,
+            ))
+            .take_while(|next| style.is_below(&next.path, path))
+            .map(|next| next.path.as_path())
+            .peekable();
+        if below.peek().is_none() {
+            return 0;
+        }
+        let below: FxHashSet<&Path> = below.collect();
+        self.items
+            .iter()
+            .filter(|item| below.contains(item.path.as_path()))
+            .map(|item| item.bytes)
+            .sum()
+    }
+
+    /// Take `gone`'s bytes out of every item that holds some of it: a
+    /// directory marked after part of it was removed frees only the rest.
+    pub fn discount(&mut self, gone: &Self, style: PathStyle) {
+        if gone.is_empty() {
+            return;
+        }
+        for item in &mut self.items {
+            item.bytes =
+                item.bytes.saturating_sub(gone.below(&item.path, style));
+        }
+    }
+
     pub const fn len(&self) -> usize {
         self.items.len()
     }
@@ -239,7 +276,7 @@ impl Marks {
     pub fn refresh(
         &mut self,
         root_path: &Path,
-        root: &Node,
+        root: Node<'_>,
         _metric: Metric,
         style: PathStyle,
     ) {
@@ -272,7 +309,7 @@ impl Marks {
     pub fn crumbs(
         &mut self,
         root_path: &Path,
-        tree: &Arc<Node>,
+        tree: &Arc<Tree>,
         metric: Metric,
         style: PathStyle,
     ) -> Arc<FxHashSet<Vec<usize>>> {
@@ -284,7 +321,7 @@ impl Marks {
         {
             return Arc::clone(&resolved.crumbs);
         }
-        let mut resolver = Resolver::new(root_path, tree, style);
+        let mut resolver = Resolver::new(root_path, tree.root(), style);
         let mut crumbs = FxHashSet::default();
         for item in &self.items {
             #[cfg(test)]
@@ -312,13 +349,15 @@ impl Marks {
 #[derive(Debug)]
 pub struct Resolver<'a> {
     root_path: &'a Path,
-    root: &'a Node,
+    root: Node<'a>,
     style: PathStyle,
-    indexes: FxHashMap<*const Node, FxHashMap<&'a str, usize>>,
+    /// Keyed by where a node's facts live, which is unique per node in
+    /// one tree: `Node` is a by-value cursor with no identity of its own.
+    indexes: FxHashMap<*const Facts, FxHashMap<&'a str, usize>>,
 }
 
 impl<'a> Resolver<'a> {
-    pub fn new(root_path: &'a Path, root: &'a Node, style: PathStyle) -> Self {
+    pub fn new(root_path: &'a Path, root: Node<'a>, style: PathStyle) -> Self {
         Self {
             root_path,
             root,
@@ -329,7 +368,7 @@ impl<'a> Resolver<'a> {
 
     /// Compare whole components with the scan's existing case-sensitive,
     /// lossy name semantics. The first equal child wins, as in a linear walk.
-    pub fn resolve(&mut self, path: &Path) -> Option<(Vec<usize>, &'a Node)> {
+    pub fn resolve(&mut self, path: &Path) -> Option<(Vec<usize>, Node<'a>)> {
         let relative = self.style.relative(self.root_path, path)?;
         let mut node = self.root;
         let mut crumbs = Vec::new();
@@ -338,19 +377,19 @@ impl<'a> Resolver<'a> {
             work::step();
             let children = self
                 .indexes
-                .entry(std::ptr::from_ref(node))
+                .entry(std::ptr::from_ref(node.facts()))
                 .or_insert_with(|| {
                     let mut children = FxHashMap::default();
-                    for (index, child) in node.children.iter().enumerate() {
+                    for (index, child) in node.children().iter().enumerate() {
                         #[cfg(test)]
                         work::step();
-                        children.entry(child.name.as_ref()).or_insert(index);
+                        children.entry(child.name()).or_insert(index);
                     }
                     children
                 });
             let index = *children.get(name.as_ref())?;
             crumbs.push(index);
-            node = &node.children[index];
+            node = node.children().at(index);
         }
         Some((crumbs, node))
     }
@@ -387,20 +426,43 @@ pub fn display_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use disktree_core::tree::{NodeKind, aggregate};
+    use disktree_core::tree::{Draft, NodeKind, aggregate};
 
-    fn file(name: &str, bytes: u64) -> Node {
-        Node::entry(name, NodeKind::File, bytes)
+    fn file(name: &str, bytes: u64) -> Draft {
+        Draft::entry(name, NodeKind::File, bytes)
     }
 
-    fn tree() -> Node {
-        let mut root = Node::directory("home");
-        let mut cache = Node::directory(".cache");
+    fn draft() -> Draft {
+        let mut root = Draft::directory("home");
+        let mut cache = Draft::directory(".cache");
         cache.children.push(file("blob.bin", 900));
         root.children.push(cache);
         root.children.push(file("notes.bin", 100));
+        root
+    }
+
+    fn tree() -> Tree {
+        let mut root = Tree::from(draft());
         aggregate(&mut root, Metric::Bytes);
         root
+    }
+
+    #[test]
+    fn below_sums_only_descendants_and_discount_leaves_the_rest() {
+        let mut gone = Marks::default();
+        gone.toggle(target("/home/tobi/a/b", 30), PathStyle::Native);
+        gone.toggle(target("/home/tobi/a/c/d", 20), PathStyle::Native);
+        gone.toggle(target("/home/tobi/ab", 7), PathStyle::Native);
+        let a = Path::new("/home/tobi/a");
+        assert_eq!(gone.below(a, PathStyle::Native), 50, "not the sibling ab");
+        assert_eq!(
+            gone.below(Path::new("/home/tobi/a/b"), PathStyle::Native),
+            0
+        );
+        let mut marks = Marks::default();
+        marks.toggle(target("/home/tobi/a", 100), PathStyle::Native);
+        marks.discount(&gone, PathStyle::Native);
+        assert_eq!(marks.items()[0].bytes, 50);
     }
 
     fn target(path: &str, bytes: u64) -> Target {
@@ -416,11 +478,11 @@ mod tests {
     fn refresh_resolution_budget() {
         let measure = |count| {
             let root_path = std::env::temp_dir().join("marks-budget");
-            let mut root = Node::directory("root");
+            let mut root = Draft::directory("root");
             let mut marks = Marks::default();
             for index in 0..count {
                 let name = format!("folder-{index:05}");
-                let mut dir = Node::directory(name.as_str());
+                let mut dir = Draft::directory(name.as_str());
                 dir.children.push(file("payload", 1));
                 root.children.push(dir);
                 marks.toggle(
@@ -433,12 +495,13 @@ mod tests {
                     PathStyle::Native,
                 );
             }
+            let root = Tree::from(root);
             work::reset();
             let start = std::time::Instant::now();
             for _ in 0..4 {
                 marks.refresh(
                     &root_path,
-                    &root,
+                    root.root(),
                     Metric::Bytes,
                     PathStyle::Native,
                 );
@@ -516,7 +579,7 @@ mod tests {
         let files =
             marks.crumbs(root_path, &root, Metric::Files, PathStyle::Native);
         assert!(!Arc::ptr_eq(&before, &files), "metric changes invalidate");
-        marks.refresh(root_path, &root, Metric::Files, PathStyle::Native);
+        marks.refresh(root_path, root.root(), Metric::Files, PathStyle::Native);
         let refreshed =
             marks.crumbs(root_path, &root, Metric::Files, PathStyle::Native);
         assert!(!Arc::ptr_eq(&files, &refreshed), "refresh invalidates");
@@ -537,16 +600,19 @@ mod tests {
         );
 
         let old_tree = Arc::downgrade(&root);
-        let mut replacement = (*root).clone();
+        // A tree's child lists are fixed once built: reorder a copy's draft.
+        let mut replacement = root.root().to_draft();
         replacement.children.reverse();
-        root = Arc::new(replacement);
+        root = Arc::new(Tree::from(replacement));
         assert!(old_tree.upgrade().is_none(), "old scan is released");
         assert!(
             marks
                 .crumbs(root_path, &root, Metric::Files, PathStyle::Native)
                 .contains(&vec![0])
         );
-        Arc::make_mut(&mut root).children.clear();
+        let mut emptied = root.root().to_draft();
+        emptied.children.clear();
+        root = Arc::new(Tree::from(emptied));
         assert!(
             marks
                 .crumbs(root_path, &root, Metric::Files, PathStyle::Native)
@@ -557,9 +623,17 @@ mod tests {
     #[test]
     fn resolver_preserves_scan_name_semantics() {
         let root_path = Path::new("/home/tobi");
-        let mut root = tree();
+        // A second entry of the same name after aggregation, as a scan
+        // that decoded two names to one lossy text would leave it.
+        let mut root = {
+            let mut tree = Tree::from(draft());
+            aggregate(&mut tree, Metric::Bytes);
+            tree.root().to_draft()
+        };
         root.children.push(file("notes.bin", 200));
-        let mut resolver = Resolver::new(root_path, &root, PathStyle::Native);
+        let root = Tree::from(root);
+        let mut resolver =
+            Resolver::new(root_path, root.root(), PathStyle::Native);
         let (crumbs, node) = resolver
             .resolve(&root_path.join("notes.bin"))
             .expect("file");
@@ -581,9 +655,11 @@ mod tests {
         use std::os::unix::ffi::OsStrExt as _;
         let root_path = Path::new("/synthetic");
         let name = std::ffi::OsStr::from_bytes(b"file-\xff");
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children.push(file(&name.to_string_lossy(), 1));
-        let mut resolver = Resolver::new(root_path, &root, PathStyle::Native);
+        let root = Tree::from(root);
+        let mut resolver =
+            Resolver::new(root_path, root.root(), PathStyle::Native);
         assert_eq!(
             resolver
                 .resolve(&root_path.join(name))
@@ -705,7 +781,7 @@ mod tests {
         assert!(!Arc::ptr_eq(&before, &after));
         assert_eq!(after.len(), 1);
         assert!(after.contains(&vec![0]));
-        marks.refresh(root_path, &root, Metric::Files, PathStyle::Native);
+        marks.refresh(root_path, root.root(), Metric::Files, PathStyle::Native);
         assert!(
             marks.contains(
                 Path::new("/home/tobi/gone/nested"),
@@ -778,6 +854,67 @@ mod tests {
         assert_eq!(marks.len(), 1);
     }
 
+    fn check_missing_mark_history(history: &[Option<u16>]) {
+        use disktree_core::scan::{ScanOptions, scan};
+        let temp = tempfile::tempdir().expect("tree");
+        let path = temp.path().join("marked");
+        let mut marks = Marks::default();
+        marks.toggle(
+            Target {
+                path: path.clone(),
+                bytes: 1,
+                is_dir: false,
+                hidden: false,
+            },
+            PathStyle::Native,
+        );
+        for &size in history {
+            if let Some(size) = size {
+                std::fs::write(&path, vec![0; usize::from(size)])
+                    .expect("write");
+            } else if path.exists() {
+                std::fs::remove_file(&path).expect("remove");
+            }
+            let tree = scan(
+                temp.path(),
+                ScanOptions {
+                    apparent_size: true,
+                    ..ScanOptions::default()
+                },
+            )
+            .expect("scan");
+            marks.refresh(
+                temp.path(),
+                tree.root(),
+                Metric::Bytes,
+                PathStyle::Native,
+            );
+            assert_eq!(marks.len(), 1, "refresh retains missing marks");
+            assert_eq!(marks.items()[0].path, path);
+            assert_eq!(marks.items()[0].bytes, u64::from(size.unwrap_or(0)));
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 32,
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+        #[test]
+        fn refresh_keeps_missing_marks_without_claiming_their_bytes(
+            history in proptest::collection::vec(
+                proptest::option::of(0_u16..128), 1..12)
+        ) {
+            check_missing_mark_history(&history);
+        }
+    }
+
+    #[test]
+    fn a_missing_mark_stays_at_zero_until_its_path_returns() {
+        check_missing_mark_history(&[Some(1), None, Some(2)]);
+    }
+
     #[test]
     fn refresh_re_reads_sizes_from_a_new_tree() {
         let root_path = Path::new("/home/tobi");
@@ -788,7 +925,7 @@ mod tests {
 
         // Removal bytes stay measured bytes even when the treemap shows files.
         for metric in [Metric::Bytes, Metric::Files] {
-            marks.refresh(root_path, &root, metric, PathStyle::Native);
+            marks.refresh(root_path, root.root(), metric, PathStyle::Native);
             assert_eq!(marks.items()[0].bytes, 900);
             assert!(marks.items()[0].is_dir);
             assert!(marks.items()[0].hidden, "the .cache mark is hidden");
@@ -803,8 +940,11 @@ mod tests {
     #[test]
     fn find_matches_whole_components_only() {
         let root = tree();
-        let mut resolver =
-            Resolver::new(Path::new("/home/tobi"), &root, PathStyle::Native);
+        let mut resolver = Resolver::new(
+            Path::new("/home/tobi"),
+            root.root(),
+            PathStyle::Native,
+        );
         assert!(resolver.resolve(Path::new("/home/tobi/.cache")).is_some());
         assert!(
             resolver
@@ -813,9 +953,13 @@ mod tests {
         );
         assert!(resolver.resolve(Path::new("/home/tobi/cache")).is_none());
         assert!(
-            Resolver::new(Path::new("/elsewhere"), &root, PathStyle::Native)
-                .resolve(Path::new("/home/tobi/notes.bin"))
-                .is_none()
+            Resolver::new(
+                Path::new("/elsewhere"),
+                root.root(),
+                PathStyle::Native
+            )
+            .resolve(Path::new("/home/tobi/notes.bin"))
+            .is_none()
         );
     }
 
@@ -850,19 +994,19 @@ mod tests {
                        depth: usize,
                        repeats: usize| {
             let root_path = std::env::temp_dir().join("marks-dimensions");
-            let mut root = Node::directory("root");
+            let mut root = Draft::directory("root");
             let mut marks = Marks::default();
             for index in 0..folders {
                 let name = format!("folder-{index:05}");
                 let mut child = file("payload", 1);
                 let mut relative = PathBuf::from(&name);
                 for _ in 1..depth {
-                    let mut parent = Node::directory("nested");
+                    let mut parent = Draft::directory("nested");
                     parent.children.push(child);
                     child = parent;
                     relative.push("nested");
                 }
-                let mut folder = Node::directory(name);
+                let mut folder = Draft::directory(name);
                 folder.children.push(child);
                 root.children.push(folder);
                 relative.push("payload");
@@ -878,12 +1022,13 @@ mod tests {
                     );
                 }
             }
+            let root = Tree::from(root);
             work::reset();
             let start = std::time::Instant::now();
             for _ in 0..repeats {
                 marks.refresh(
                     &root_path,
-                    &root,
+                    root.root(),
                     Metric::Bytes,
                     PathStyle::Native,
                 );
@@ -922,15 +1067,16 @@ mod tests {
             display_path(Path::new("/home/tobix"), Some(home), posix),
             "/home/tobix"
         );
-        let mut root = Node::directory("home");
+        let mut root = Draft::directory("home");
         root.children.push(file(r"a\b", 7));
+        let root = Tree::from(root);
         assert!(
-            Resolver::new(home, &root, posix)
+            Resolver::new(home, root.root(), posix)
                 .resolve(Path::new(r"/home/tobi/a\b"))
                 .is_some()
         );
         assert!(
-            Resolver::new(home, &root, posix)
+            Resolver::new(home, root.root(), posix)
                 .resolve(Path::new("/home/tobi/a/b"))
                 .is_none()
         );
@@ -991,21 +1137,22 @@ mod tests {
     fn posix_refresh_and_crumb_cache_keep_ambiguous_windows_names_distinct() {
         let style = PathStyle::Posix;
         let root_path = Path::new("/srv");
-        let mut root = Node::directory("srv");
-        let mut literal = Node::directory(r"logs\old");
+        let mut root = Draft::directory("srv");
+        let mut literal = Draft::directory(r"logs\old");
         literal.children.push(file("a:b", 7));
-        let mut nested = Node::directory("logs");
-        let mut old = Node::directory("old");
+        let mut nested = Draft::directory("logs");
+        let mut old = Draft::directory("old");
         old.children.push(file("a:b", 9));
         nested.children.push(old);
         root.children.extend([literal, nested]);
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         let root = Arc::new(root);
         let mut marks = Marks::default();
         for path in [r"/srv/logs\old/a:b", "/srv/logs/old/a:b"] {
             marks.toggle(target(path, 0), style);
         }
-        marks.refresh(root_path, &root, Metric::Bytes, style);
+        marks.refresh(root_path, root.root(), Metric::Bytes, style);
         assert_eq!(
             marks
                 .items()
@@ -1017,7 +1164,7 @@ mod tests {
         let crumbs = marks.crumbs(root_path, &root, Metric::Bytes, style);
         assert_eq!(crumbs.len(), 2);
         for item in marks.items() {
-            let (path, node) = Resolver::new(root_path, &root, style)
+            let (path, node) = Resolver::new(root_path, root.root(), style)
                 .resolve(&item.path)
                 .unwrap();
             assert!(crumbs.contains(&path));
@@ -1039,9 +1186,9 @@ mod tests {
     fn posix_crumb_cache_compares_root_text_in_the_host_namespace() {
         let style = PathStyle::Posix;
         let root_path = Path::new(r"/srv/a\b");
-        let mut root = Node::directory("root");
+        let mut root = Draft::directory("root");
         root.children.push(file("payload", 7));
-        let root = Arc::new(root);
+        let root = Arc::new(Tree::from(root));
         let mut marks = Marks::default();
         marks.toggle(target(r"/srv/a\b/payload", 7), style);
         assert_eq!(

@@ -32,8 +32,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN,
     FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_ID_EXTD_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO, FILE_LIST_DIRECTORY,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FileIdExtdDirectoryInfo, FindFirstVolumeW, FindNextVolumeW,
     FindVolumeClose, GetDiskFreeSpaceExW, GetFileInformationByHandleEx,
     GetVolumeInformationW, GetVolumePathNameW,
@@ -108,7 +108,7 @@ impl Entry {
         &self.name
     }
 
-    /// The name, moved out: the tree keeps it, so nothing copies it. The
+    /// The name, moved out: it is copied once, into the tree's names. The
     /// entry's other accessors keep working; `name`, `file_name` and
     /// `path` do not.
     pub fn take_name(&mut self) -> Box<str> {
@@ -255,6 +255,7 @@ pub fn read_dir(dir: &Path, volume: Option<u64>) -> io::Result<ReadDir> {
 /// Measure a single entry with the same allocation source as a directory
 /// scan. Metadata length would overcharge sparse and compressed files;
 /// listing the parent also avoids opening or following the entry itself.
+#[cfg(test)]
 pub fn allocated_size(path: &Path) -> io::Result<u64> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "Entry has no parent")
@@ -477,7 +478,17 @@ fn file_id(id: u128) -> Option<u64> {
 ///
 /// [MS-FSCC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/2d3333fe-fc98-4a6f-98a2-4bb805aff407
 pub fn identity(path: &Path) -> Option<(u64, u64)> {
-    let info = information(path)?;
+    identity_with(path, true)
+}
+
+/// Identity of the selected entry itself, including a dangling reparse
+/// point. Approval must bind the link that removal touches, not its target.
+pub fn entry_identity(path: &Path) -> Option<(u64, u64)> {
+    identity_with(path, false)
+}
+
+fn identity_with(path: &Path, follow: bool) -> Option<(u64, u64)> {
+    let info = information(path, follow)?;
     let index = info.file_index();
     (index != 0 && index != u64::MAX)
         .then(|| (info.volume_serial_number(), index))
@@ -495,14 +506,24 @@ pub fn walk_volume(canonical: &Path) -> Option<u64> {
     if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) {
         return None;
     }
-    information(canonical).map(|info| info.volume_serial_number())
+    information(canonical, true).map(|info| info.volume_serial_number())
 }
 
-/// What the file system says about `path`, following links.
-fn information(path: &Path) -> Option<winapi_util::file::Information> {
+/// Without reparse processing, Windows opens a handle to the link itself.
+/// Following callers keep their existing directory and home-guard identity.
+fn information(
+    path: &Path,
+    follow: bool,
+) -> Option<winapi_util::file::Information> {
+    let flags = FILE_FLAG_BACKUP_SEMANTICS
+        | if follow {
+            0
+        } else {
+            FILE_FLAG_OPEN_REPARSE_POINT
+        };
     let file = OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .custom_flags(flags)
         .open(path)
         .ok()?;
     winapi_util::file::information(&file).ok()
@@ -530,6 +551,7 @@ pub fn space_info(path: &Path) -> io::Result<SpaceInfo> {
         total,
         free,
         available,
+        native: None,
     })
 }
 
@@ -733,20 +755,37 @@ pub fn drive_letter(canonical: &Path) -> Option<char> {
 /// from Windows itself: it can be moved, so no path is assumed. `None`
 /// when Windows does not say.
 pub fn user_profiles_dir() -> Option<PathBuf> {
-    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_UserProfiles)
+}
+
+/// Shell locations can be redirected independently of the usual drive
+/// names and process environment. Protect the installed locations too.
+pub fn system_dirs() -> Vec<PathBuf> {
     use windows_sys::Win32::UI::Shell::{
-        FOLDERID_UserProfiles, SHGetKnownFolderPath,
+        FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX64,
+        FOLDERID_ProgramFilesX86, FOLDERID_System, FOLDERID_Windows,
     };
+    [
+        FOLDERID_Windows,
+        FOLDERID_System,
+        FOLDERID_ProgramData,
+        FOLDERID_ProgramFiles,
+        FOLDERID_ProgramFilesX64,
+        FOLDERID_ProgramFilesX86,
+    ]
+    .iter()
+    .filter_map(known_folder)
+    .collect()
+}
+
+fn known_folder(id: &windows_sys::core::GUID) -> Option<PathBuf> {
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::SHGetKnownFolderPath;
     let mut raw: *mut u16 = std::ptr::null_mut();
     // SAFETY: the id outlives the call, a null token means this user, and
     // `raw` receives a string the shell allocates, freed below either way.
     let result = unsafe {
-        SHGetKnownFolderPath(
-            &FOLDERID_UserProfiles,
-            0,
-            std::ptr::null_mut(),
-            &raw mut raw,
-        )
+        SHGetKnownFolderPath(id, 0, std::ptr::null_mut(), &raw mut raw)
     };
     let path = (result >= 0 && !raw.is_null()).then(|| {
         // SAFETY: on success `raw` is a NUL-terminated string, read up to

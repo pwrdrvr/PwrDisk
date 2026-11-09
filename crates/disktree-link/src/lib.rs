@@ -50,7 +50,7 @@ pub const SUPPORTED: bool = cfg!(any(unix, windows));
 
 /// Protocol version, bumped when a message changes shape. Both sides are
 /// built from one tree, so a mismatch means an old window is still open.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 10;
 
 /// Updating the GUI does not replace a process hosted by an MCP client.
 pub const RECONNECT_MCP: &str = "Updating PwrDisk's GUI does not restart its MCP server. In your MCP client, restart/reconnect the PwrDisk MCP server using `pwrdisk mcp` from the updated installation. If the GUI is outdated, quit and reopen the updated PwrDisk app.";
@@ -142,10 +142,50 @@ pub struct FindRequest {
     pub reclaimable: bool,
     pub name: Option<String>,
     pub before: Option<i64>,
+    /// Discover output boundaries without hiding nested artifact types.
+    #[serde(default)]
+    pub output_roots: bool,
     pub limit: usize,
 }
 
 impl FindRequest {
+    /// Preserve inventory boundary evidence on the wire. Ordinary listings
+    /// continue to report their existing full-path artifact assessment.
+    pub fn results(
+        &self,
+        path: &Path,
+        node: Node<'_>,
+    ) -> Result<FoundList, String> {
+        let found = self.query(path, node)?;
+        let mut list = FoundList::of(&found);
+        if self.output_roots {
+            for (row, (item_path, item)) in
+                list.matches.iter_mut().zip(&found.matches)
+            {
+                row.entry.artifact = disktree_core::artifact::output_detection(
+                    item_path,
+                    *item,
+                    item_path == path,
+                );
+            }
+        }
+        Ok(list)
+    }
+
+    /// One query implementation for the window and standalone MCP scans.
+    pub fn query<'a>(
+        &self,
+        path: &Path,
+        node: Node<'a>,
+    ) -> Result<disktree_core::query::Found<'a>, String> {
+        let filter = self.filter()?;
+        Ok(if self.output_roots {
+            disktree_core::query::find_outputs(path, node, &filter, self.limit)
+        } else {
+            disktree_core::query::find(path, node, &filter, self.limit)
+        })
+    }
+
     /// The filter this asks for, or why it cannot be one.
     pub fn filter(&self) -> Result<Filter, String> {
         let kind = Kind::named(&self.kind)
@@ -178,6 +218,7 @@ impl FindRequest {
 pub enum RemovalChoice {
     Trash,
     Permanent,
+    OwnerCleanup,
 }
 
 impl RemovalChoice {
@@ -185,12 +226,28 @@ impl RemovalChoice {
         match self {
             Self::Trash => disktree_core::removal::RemovalMode::Trash,
             Self::Permanent => disktree_core::removal::RemovalMode::Permanent,
+            Self::OwnerCleanup => {
+                disktree_core::removal::RemovalMode::OwnerCleanup
+            }
         }
     }
+    /// The phrase for raw modes. A cache cleanup's phrase depends on the
+    /// intents chosen; its preview carries it in `confirmation`.
     pub const fn confirmation(self) -> &'static str {
         match self {
             Self::Trash => "MOVE TO TRASH",
             Self::Permanent => "PERMANENTLY DELETE",
+            Self::OwnerCleanup => disktree_core::cleanup::RUN_OWNER_CLEANUP,
+        }
+    }
+
+    /// Whether `text` is a confirmation phrase this mode can have.
+    pub fn accepts(self, text: &str) -> bool {
+        match self {
+            Self::OwnerCleanup => {
+                disktree_core::cleanup::CONFIRMATIONS.contains(&text)
+            }
+            _ => text == self.confirmation(),
         }
     }
     pub const fn warning(self) -> &'static str {
@@ -200,6 +257,9 @@ impl RemovalChoice {
             }
             Self::Permanent => {
                 "Destructive: permanently deletes the listed paths. This cannot be undone through PwrDisk or Trash."
+            }
+            Self::OwnerCleanup => {
+                "Destructive cache cleanup, decided per path: Skip runs nothing; an owner choice invokes only the previewed owner command for its entire stated scope, including unselected siblings, with no Trash recovery; a delete_files choice deletes exactly that selected path directly, without its owner, by the stated Trash or permanent mode. A failed, unsupported or cancelled owner command never falls back to deleting files. Stop the owning tools before approval. Listed allocation is not guaranteed freed space; APFS snapshots, clones and open files can retain blocks."
             }
         }
     }
@@ -217,6 +277,33 @@ pub struct RemovalPreview {
     pub limit_percent: u8,
     pub volumes: Vec<disktree_core::removal_limit::Budget>,
     pub expires_in_seconds: u64,
+    /// Owner commands this preview would run, by actual scope. Empty for
+    /// raw removal modes.
+    pub cleanup: Vec<disktree_core::cleanup::Operation>,
+    /// Cache cleanup: one proposal per marked path, with what each offers.
+    #[serde(default)]
+    pub proposals: Vec<disktree_core::cleanup::Proposal>,
+    /// Cache cleanup: the decision for each proposal, in its order. Empty
+    /// until the person has chosen; such a preview cannot be confirmed.
+    #[serde(default)]
+    pub decisions: Vec<disktree_core::cleanup::Decision>,
+    /// Cache cleanup: how Delete files removes, when any path uses it.
+    #[serde(default)]
+    pub files: Option<RemovalChoice>,
+    /// The exact text that confirms this preview; empty when it cannot be
+    /// confirmed.
+    #[serde(default)]
+    pub confirmation: String,
+    /// Everything to show the person before they confirm, in words.
+    #[serde(default)]
+    pub consent: String,
+}
+
+/// The person's choice for one marked path in a cache cleanup.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathDecision {
+    pub path: PathBuf,
+    pub action: disktree_core::cleanup::Decision,
 }
 
 /// Supplied only after the agent obtains explicit user confirmation of
@@ -227,6 +314,12 @@ pub struct ConfirmedRemoval {
     pub mode: RemovalChoice,
     pub paths: Vec<PathBuf>,
     pub confirmation: String,
+    /// Rescan once the removal finishes. Without it the window keeps its
+    /// tree, with the removed paths shown as removed until a scan, which is
+    /// what an agent removing several batches wants: a rescan can take
+    /// minutes.
+    #[serde(default)]
+    pub rescan: bool,
 }
 
 /// What the agent asks of the window.
@@ -249,6 +342,13 @@ pub enum Request {
     /// The largest entries matching a description; answered with
     /// [`FoundList`].
     Find(FindRequest),
+    /// Read-only hypothetical selection, with bounded retained clone peers.
+    /// Does not change marks, navigation or a pending removal preview.
+    Estimate {
+        paths: Vec<PathBuf>,
+        peer_scope: Option<PathBuf>,
+        peer_limit: usize,
+    },
     /// Show `path` in the mosaic. `root` is the agent's scan root: when the
     /// window shows something else, it rescans from there first.
     Show { root: PathBuf, path: PathBuf },
@@ -265,7 +365,16 @@ pub enum Request {
     /// Open the review screen over what is marked.
     Review,
     /// Prepare a single-use intent; does not mark, navigate or remove.
-    PrepareRemoval { mode: RemovalChoice },
+    PrepareRemoval {
+        mode: RemovalChoice,
+        /// Cache cleanup only: one decision per marked path. Without them
+        /// the preview lists the proposals and cannot be confirmed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decisions: Option<Vec<PathDecision>>,
+        /// Cache cleanup only: Trash or Permanent for Delete files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        files: Option<RemovalChoice>,
+    },
     /// A destructive write, only after explicit confirmation of the preview.
     Remove(ConfirmedRemoval),
 }
@@ -281,22 +390,116 @@ pub struct Entry {
     pub category: String,
     /// Why its space can be had back, if it can.
     pub reclaim: Option<String>,
+    /// Artifact identity and cleanup assessment are independent. Missing
+    /// on older peers; neither detection nor suggestion approves removal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<disktree_core::artifact::Detection>,
     /// Newest write at or beneath it, Unix seconds; `0` when unknown.
     pub modified: i64,
     pub read_error: bool,
+    /// APFS clone sharing beneath it; absent when no file there is a clone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clones: Option<Clones>,
+    /// Removed since the scan, itself or with a directory holding it. The
+    /// window keeps the scanned tree until a rescan, so `bytes` is still
+    /// what the scan measured. Only a window sets it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
+    /// Scanned bytes of what was removed beneath it since the scan, when it
+    /// is not wholly removed; already inside `bytes`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub removed_bytes: u64,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_zero(bytes: &u64) -> bool {
+    *bytes == 0
+}
+
+/// How an entry's listed bytes split once APFS clones are accounted for.
+/// `bytes` stays the allocated total; this only annotates it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Clones {
+    /// Listed bytes outside clone files, plus clone files' private data.
+    pub private: u64,
+    /// Clone blocks other clones may hold, inside this scan or not.
+    pub shared: u64,
+    /// Bytes listed more than once beneath it, clones of one another.
+    pub repeated: u64,
+    /// What removing this entry alone frees, before snapshots: a group is
+    /// credited only when every clone APFS counts is beneath it.
+    pub lower: u64,
+    pub upper: u64,
+    /// Some clone facts are missing, or too many groups to track.
+    pub partial: bool,
+}
+
+impl Clones {
+    /// `4.0 KiB private · 12 MiB shared with other APFS clones`, as the
+    /// window and an agent's rows both read it; `None` without clone
+    /// blocks. The refcount counts clones outside the scan too, so the
+    /// wording never says the blocks are shared only within it.
+    pub fn split(&self) -> Option<String> {
+        use disktree_core::size::human_bytes;
+        (self.shared > 0).then(|| {
+            format!(
+                "{} private \u{00b7} {} shared with other APFS clones",
+                human_bytes(self.private),
+                human_bytes(self.shared)
+            )
+        })
+    }
+
+    pub fn of(node: Node<'_>) -> Option<Self> {
+        let sharing = node.sharing();
+        // Only clone files carry these facts: off macOS, in an apparent
+        // size scan or with clone metadata off there are none, and the
+        // entry reads exactly as it did before clones were reported.
+        if sharing.files == 0 {
+            return None;
+        }
+        let shared = sharing.shared_bytes().min(node.bytes);
+        Some(Self {
+            private: node.bytes - shared,
+            shared,
+            repeated: sharing.duplicate_bytes,
+            lower: sharing.reclaimable(node.bytes),
+            upper: sharing.possible(node.bytes),
+            partial: sharing.groups_truncated
+                || sharing.unknown_files > 0
+                || sharing.estimate.is_some_and(|estimate| estimate.partial),
+        })
+    }
 }
 
 impl Entry {
-    pub fn of(node: &Node) -> Self {
+    pub fn at(node: Node<'_>, path: &Path) -> Self {
+        let mut entry = Self::of(node);
+        entry.artifact = disktree_core::artifact::assess(
+            path,
+            disktree_core::path_style::PathStyle::Native,
+            node,
+        );
+        entry
+    }
+
+    pub fn of(node: Node<'_>) -> Self {
         Self {
-            name: node.name.to_string(),
+            name: node.name().to_string(),
             is_dir: node.is_dir(),
             bytes: node.bytes,
             files: node.files,
             category: node.category.name().to_string(),
             reclaim: node.reclaim.map(|reclaim| reclaim.label().to_string()),
+            artifact: None,
             modified: node.modified,
             read_error: node.read_error,
+            clones: Clones::of(node),
+            removed: false,
+            removed_bytes: 0,
         }
     }
 }
@@ -324,21 +527,25 @@ impl Listing {
         root: &Path,
         root_bytes: u64,
         path: &Path,
-        node: &Node,
+        node: Node<'_>,
         limit: usize,
     ) -> Self {
-        let children: Vec<Entry> =
-            node.children.iter().take(limit).map(Entry::of).collect();
-        let more = node.children.len().saturating_sub(limit);
+        let children: Vec<Entry> = node
+            .children()
+            .iter()
+            .take(limit)
+            .map(|child| Entry::at(child, &path.join(child.name())))
+            .collect();
+        let more = node.children().len().saturating_sub(limit);
         let more_bytes = node
-            .children
+            .children()
             .iter()
             .skip(limit)
             .map(|child| child.bytes)
             .sum();
         Self {
             path: path.to_path_buf(),
-            entry: Entry::of(node),
+            entry: Entry::at(node, path),
             root_bytes,
             root: root.to_path_buf(),
             children,
@@ -371,7 +578,7 @@ impl FoundList {
                 .iter()
                 .map(|(path, node)| Found {
                     path: path.clone(),
-                    entry: Entry::of(node),
+                    entry: Entry::at(*node, path),
                 })
                 .collect(),
             count: found.count,
@@ -430,6 +637,12 @@ pub struct SelectionEstimate {
     pub on_volume: u64,
     /// A limited scan, unmeasured allocation or incomplete sharing metadata.
     pub partial: bool,
+    /// Listed bytes of the selection in APFS clone blocks that other clones
+    /// may hold; [`Sharing::shared_bytes`] summed. Zero off APFS.
+    ///
+    /// [`Sharing::shared_bytes`]: disktree_core::sharing::Sharing::shared_bytes
+    #[serde(default)]
+    pub shared: u64,
 }
 
 impl SelectionEstimate {
@@ -440,7 +653,21 @@ impl SelectionEstimate {
             upper: Some(plan.possible_bytes()),
             on_volume: plan.reclaim(),
             partial: plan.estimate_partial(),
+            shared: 0,
         }
+    }
+
+    /// Accepted targets never nest, so their shares add up.
+    #[must_use]
+    pub fn with_shared<'a>(
+        mut self,
+        nodes: impl IntoIterator<Item = Node<'a>>,
+    ) -> Self {
+        self.shared = nodes
+            .into_iter()
+            .map(|node| node.sharing().shared_bytes().min(node.bytes))
+            .sum();
+        self
     }
 
     pub fn unknown(plan: &disktree_core::removal::Plan) -> Self {
@@ -460,6 +687,28 @@ pub struct Space {
     pub total: u64,
     pub free: u64,
     pub available: u64,
+    /// OS display counters; raw fields retain their protocol meaning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<disktree_core::space::NativeSpace>,
+}
+
+impl Space {
+    pub const fn display_used(self) -> u64 {
+        self.as_core().display_used()
+    }
+
+    pub const fn display_available(self) -> u64 {
+        self.as_core().display_available()
+    }
+
+    const fn as_core(self) -> disktree_core::space::SpaceInfo {
+        disktree_core::space::SpaceInfo {
+            total: self.total,
+            free: self.free,
+            available: self.available,
+            native: self.native,
+        }
+    }
 }
 
 /// What the last removal did, kept until the next one.
@@ -474,8 +723,53 @@ pub struct Removal {
     /// Free space gained on the volume, measured before and after; `None`
     /// when the volume could not be read.
     pub freed: Option<u64>,
+    /// Signed available-space delta for this run, including concurrent writes.
+    #[serde(default)]
+    pub observed: Option<i64>,
     /// Unix seconds when it finished.
     pub at: i64,
+    pub cleanup: Vec<disktree_core::cleanup::Report>,
+}
+
+/// Outcome of the exact previewed selection, including native UI removal.
+/// Kept after completion and rescans so an outstanding form can reconcile.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalOperation {
+    pub preview_id: String,
+    pub mode: RemovalChoice,
+    pub paths: Vec<PathBuf>,
+    pub finished: bool,
+    pub removed: usize,
+    pub failed: usize,
+    pub pending: usize,
+}
+
+/// One removal since the last scan, three ways.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalCohort {
+    /// `trash` or `permanent`.
+    pub mode: String,
+    pub removed: u64,
+    pub failed: usize,
+    /// Listed bytes of what was removed; a clone counts in every place.
+    pub reported: u64,
+    /// What the scan saw as only theirs; `None` when it could not say.
+    pub private: Option<u64>,
+    /// Free space after minus before, which other programs move too.
+    pub observed: Option<i64>,
+    /// Unix seconds.
+    pub started: i64,
+    pub finished: i64,
+}
+
+/// Every removal since the last scan, and their totals: `observed` runs
+/// from the first one's start to the last one's finish.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovalLedger {
+    pub cohorts: Vec<RemovalCohort>,
+    pub reported: u64,
+    pub private: Option<u64>,
+    pub observed: Option<i64>,
 }
 
 /// What the window shows.
@@ -501,6 +795,12 @@ pub struct State {
     pub estimate: Option<SelectionEstimate>,
     pub space: Option<Space>,
     pub removal: Option<Removal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removal_operation: Option<RemovalOperation>,
+    /// The removals since the scan on screen, which the tree already
+    /// leaves out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removals: Option<RemovalLedger>,
     /// The tree on screen, when there is one.
     pub tree: Option<TreeSummary>,
     /// The biggest things that could plausibly go, as the panel lists them.
@@ -535,6 +835,7 @@ pub enum Response {
     },
     Listing(Listing),
     Found(FoundList),
+    Estimate(disktree_core::planning::Report),
     RemovalPreview(RemovalPreview),
     Ok,
     Error {
@@ -572,6 +873,34 @@ fn decode<T: for<'de> Deserialize<'de>>(line: &str) -> std::io::Result<T> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn native_space_is_optional_and_preserves_raw_protocol_counters() {
+        let old = r#"{"total":100,"free":10,"available":8}"#;
+        let raw: Space = serde_json::from_str(old).expect("old protocol");
+        // The two reserved bytes remain physically free but unavailable to
+        // this user. Only the primary meter includes them in Used.
+        assert_eq!(raw.as_core().used(), 90);
+        assert_eq!(raw.display_used(), 92);
+        assert_eq!(raw.display_available(), 8);
+        let native = Space {
+            native: Some(disktree_core::space::NativeSpace {
+                used: Some(70),
+                available: Some(20),
+            }),
+            ..raw
+        };
+        let encoded = serde_json::to_string(&native).expect("encode");
+        let roundtrip: Space = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(roundtrip, native);
+        assert_eq!(roundtrip.free, 10);
+        assert_eq!(roundtrip.available, 8);
+        assert_eq!(roundtrip.as_core().used(), 90);
+        assert_eq!(roundtrip.display_used(), 92);
+        assert_eq!(roundtrip.display_available(), 8);
+        assert_eq!(roundtrip.as_core().native_used(), Some(70));
+        assert_eq!(roundtrip.as_core().reclaimable_available(), Some(20));
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn requests_round_trip_through_json_lines() {
@@ -588,6 +917,204 @@ mod tests {
         assert!(line.contains("\"op\":\"mark\""));
         let back: Request = decode(&line).expect("decode");
         assert_eq!(back, request);
+    }
+
+    /// A directory of `copies` files, each a clone of one group that APFS
+    /// says has `references` members.
+    fn clones(
+        copies: u64,
+        references: u32,
+        private: Option<u64>,
+    ) -> disktree_core::tree::Tree {
+        use disktree_core::sharing::{Allocation, CloneInfo};
+        use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+        let mut root = Draft::directory("root");
+        for index in 0..copies {
+            let mut dir = Draft::directory(format!("copy-{index}"));
+            let mut file = Draft::entry("data", NodeKind::File, 1000);
+            file.allocation = Some(Box::new(Allocation {
+                bytes: 1000,
+                identity: None,
+                links: 1,
+                followed: false,
+                clone: Some(CloneInfo {
+                    device: 1,
+                    id: 7,
+                    references,
+                    private_bytes: private,
+                    data_bytes: 1000,
+                }),
+            }));
+            dir.children.push(file);
+            root.children.push(dir);
+        }
+        root.children.push(Draft::entry(
+            "plain",
+            disktree_core::tree::NodeKind::File,
+            50,
+        ));
+        let mut root = Tree::from(root);
+        aggregate(&mut root, Metric::Bytes);
+        root
+    }
+
+    #[test]
+    fn a_full_clone_is_all_shared_and_frees_nothing_alone() {
+        let root = clones(3, 3, Some(0));
+        let copy = Clones::of(root.root().children().at(0)).expect("a clone");
+        assert_eq!(
+            copy,
+            Clones {
+                private: 0,
+                shared: 1000,
+                repeated: 0,
+                lower: 0,
+                upper: 0,
+                partial: false,
+            }
+        );
+        // Every member of this ID is beneath the root, but modified clones
+        // with other IDs can retain shared blocks even outside the scan.
+        let all = Clones::of(root.root()).expect("clones beneath");
+        assert_eq!((all.private, all.shared, all.repeated), (50, 3000, 2000));
+        assert_eq!((all.lower, all.upper), (50, 1050));
+        assert!(all.partial);
+    }
+
+    #[test]
+    fn a_member_outside_the_scan_keeps_the_group_from_being_credited() {
+        let root = clones(3, 4, Some(0));
+        let all = Clones::of(root.root()).expect("clones beneath");
+        assert_eq!((all.lower, all.upper), (50, 50));
+        assert_eq!(all.repeated, 2000);
+    }
+
+    #[test]
+    fn a_modified_clone_counts_its_private_bytes_only() {
+        let root = clones(3, 3, Some(300));
+        let copy = Clones::of(root.root().children().at(0)).expect("a clone");
+        assert_eq!((copy.private, copy.shared), (300, 700));
+        assert_eq!((copy.lower, copy.upper), (300, 1000));
+        assert!(!copy.partial);
+    }
+
+    #[test]
+    fn missing_clone_facts_are_partial() {
+        let mut root = clones(2, 0, Some(0));
+        assert!(
+            Clones::of(root.root().children().at(0))
+                .expect("a clone")
+                .partial
+        );
+        root = clones(2, 2, None);
+        let copy = Clones::of(root.root().children().at(0)).expect("a clone");
+        assert!(copy.partial);
+        // An unknown private size is never claimed as private.
+        assert_eq!((copy.private, copy.shared, copy.lower), (0, 1000, 0));
+    }
+
+    #[test]
+    fn entries_without_clones_carry_nothing_and_old_payloads_decode() {
+        let root = clones(1, 2, Some(0));
+        let plain = Entry::of(root.root().children().at(1));
+        assert_eq!(plain.name, "plain");
+        assert_eq!(plain.clones, None);
+        let line = serde_json::to_string(&plain).expect("encode");
+        assert!(!line.contains("clones"), "{line}");
+        // A version 4 entry has no `clones` key at all.
+        let old: Entry = serde_json::from_str(
+            r#"{"name":"a","is_dir":true,"bytes":1,"files":1,
+                "category":"other","reclaim":null,"modified":0,
+                "read_error":false}"#,
+        )
+        .expect("decode");
+        assert_eq!(old.clones, None);
+        let clone = Entry::of(root.root().children().at(0));
+        assert!(clone.clones.is_some());
+        let back: Entry =
+            serde_json::from_str(&serde_json::to_string(&clone).expect("enc"))
+                .expect("dec");
+        assert_eq!(back, clone);
+        let estimate: SelectionEstimate = serde_json::from_str(
+            r#"{"paths":[],"lower":0,"upper":0,"on_volume":0,
+                "partial":false}"#,
+        )
+        .expect("decode");
+        assert_eq!(estimate.shared, 0);
+    }
+
+    #[test]
+    fn listings_keep_vm_detection_separate_from_cleanup_suggestions() {
+        use disktree_core::artifact::{Artifact, Disposition};
+        use disktree_core::classify::classify_at;
+        use disktree_core::path_style::PathStyle;
+        use disktree_core::tree::{Draft, NodeKind, Tree};
+        let mut root = Draft::directory("project");
+        let mut dependencies = Draft::directory("node_modules");
+        dependencies.children.push(Draft::entry(
+            "package.js",
+            NodeKind::File,
+            10,
+        ));
+        root.children =
+            vec![dependencies, Draft::entry("guest.vmss", NodeKind::File, 20)];
+        let mut tree = Tree::from(root);
+        classify_at(&mut tree, Path::new("/project"), PathStyle::Posix);
+        let listing = Listing::of(
+            Path::new("/project"),
+            30,
+            Path::new("/project"),
+            tree.root(),
+            10,
+        );
+        let vm = listing
+            .children
+            .iter()
+            .find(|e| e.name == "guest.vmss")
+            .unwrap();
+        assert_eq!(vm.reclaim, None);
+        let d = vm.artifact.unwrap();
+        assert_eq!(d.kind, Artifact::VmSuspend);
+        assert_eq!(d.disposition, Disposition::Detected);
+        let dependencies = listing
+            .children
+            .iter()
+            .find(|e| e.name == "node_modules")
+            .unwrap();
+        assert_eq!(
+            dependencies.artifact.unwrap().disposition,
+            Disposition::Suggested
+        );
+        let encoded = serde_json::to_string(&listing).unwrap();
+        assert!(encoded.contains("\"disposition\":\"detected\""));
+        assert_eq!(serde_json::from_str::<Listing>(&encoded).unwrap(), listing);
+    }
+
+    #[test]
+    fn removed_status_round_trips_and_is_absent_when_nothing_went() {
+        let root = clones(1, 2, Some(0));
+        let plain = Entry::of(root.root().children().at(1));
+        assert!(!plain.removed && plain.removed_bytes == 0);
+        let line = serde_json::to_string(&plain).expect("encode");
+        assert!(!line.contains("removed"), "older peers see no new keys");
+        let old: Entry = serde_json::from_str(&line).expect("decode");
+        assert!(!old.removed && old.removed_bytes == 0);
+        for entry in [
+            Entry {
+                removed: true,
+                ..plain.clone()
+            },
+            Entry {
+                removed_bytes: 4096,
+                ..plain
+            },
+        ] {
+            let back: Entry = serde_json::from_str(
+                &serde_json::to_string(&entry).expect("encode"),
+            )
+            .expect("decode");
+            assert_eq!(back, entry);
+        }
     }
 
     #[test]

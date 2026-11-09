@@ -32,7 +32,7 @@ limit (5% per volume by default), including a fresh measurement on the worker.
 
 ```sh
 make build                      # release build
-make run                        # build and open the source/root chooser
+make run                        # opens a window: see Testing on a desktop
 make install                    # ~/.local: binary, desktop entry, icon
 make install PREFIX=/usr/local  # system-wide (needs root)
 make uninstall
@@ -84,10 +84,49 @@ done, and it must not fix anything: a red local run is the same signal CI gives.
 On Windows, where there is no make, run `cargo xtask lint`, `cargo xtask test`
 and `cargo build --release` directly; CI runs the gate on both systems.
 
-When Sandboxer MCP tools are available, run Linux builds, lint, tests and
-integration checks there. Start from `pwrdisk-base-us-east` in `us-east`;
-read [remote verification](docs/sandboxer.md) first. Use local checks when
-Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
+Run headless checks on the matching platform and in CI. For Linux builds
+and tests, use the existing commands in `.github/workflows/ci.yml`. Run
+SSH integration with `bun scripts/test-ssh.ts` and mount-namespace checks
+with `scripts/test-linux-mounts.sh`. Linux-only checks require a Linux
+host. If that platform is unavailable, report the unrun checks and rely
+on the relevant CI results. macOS and Windows changes use the headless
+gate (`cargo xtask lint`, `cargo xtask test`) on those systems and CI;
+anything needing a window follows
+[Testing on a desktop](#testing-on-a-desktop).
+
+The [Sandboxer verification process](docs/sandboxer.md) and its helper
+scripts are retained as reference. That workflow is dormant while another
+provider is evaluated; do not run its provider operations.
+
+## Testing on a desktop
+
+Never launch PwrDisk, or send synthetic input, on the operator's desktop.
+Keys and clicks from `osascript` or System Events, `cliclick`, AX actions,
+computer use, and moving or resizing windows land wherever the operator is
+working; they have landed in another app. That holds for screenshots,
+native accessibility checks and every other GUI check, and for `make run`
+or `cargo run` to look at a change. The window-harness tests (`make test`,
+`cargo xtask test`) are fine: they draw headless.
+
+* **Offscreen macOS PR pictures** may run on the host with the opt-in
+  `screenshots` feature and a contrived Fixtures image. This uses GPUI's
+  headless Metal renderer and macOS text; no on-screen window or OS input.
+  Read [docs/pr-screenshots.md](docs/pr-screenshots.md) for the commands.
+* **An on-screen macOS window** (screenshots, VoiceOver, native AX checks) runs
+  in the PwrSuiteLab headed E2E Tart VM through the PwrSuiteLab Control
+  MCP. Read [docs/headed-e2e-pwrsuitelab.md](docs/headed-e2e-pwrsuitelab.md)
+  before the first job. Without that MCP, stop and ask the operator: there
+  is no local fallback and no script fallback.
+* **Any other window**, such as a Linux or Windows GUI the lab cannot show:
+  ask the operator. Never the local desktop.
+* **Files, not the clipboard.** Lab VMs start with clipboard sharing off.
+  Inputs travel in the committed source a job stages and outputs come back
+  as collected artifacts; never ask the operator to paste into or copy
+  from the guest.
+* **Keep the lab out of this repository.** PwrDisk is public: no lab
+  detail goes in code, docs, commits or PRs. The last section of
+  [docs/headed-e2e-pwrsuitelab.md](docs/headed-e2e-pwrsuitelab.md) lists
+  what counts. Targets come from `lab_status` at run time.
 
 ## House rules
 
@@ -127,17 +166,24 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
    children when asked. Hardlink de-duplication zeroes a duplicate leaf's
    `bytes` while that pass runs; anything that patches a directory's `bytes`
    directly will be overwritten. `Node` is paid for tens of millions of
-   times, so `a_node_stays_small` holds its size.
+   times, so `a_node_stays_small` in `index.rs` holds its size.
 3. **A directory is only built when its own scan *and* every subdirectory task
    has finished.** That is the `+1` sentinel in `PendingDir::pending`. Building
    early silently drops whole subtrees — it has happened once.
 4. **Only paths under the scanned root may be removed**, and mount points, the
    root, the home directory, any directory holding it, and symlink targets are
-   refused. On Windows so is every directory directly in the profiles folder
-   Windows reports (`FOLDERID_UserProfiles`, usually `C:\Users`); what is
-   inside a profile stays removable.
+   refused. So are the profiles folder and every directory directly in it:
+   on Windows the one Windows reports (`FOLDERID_UserProfiles`, usually
+   `C:\Users`), on macOS `/Users`, on Linux `/home` (and its real path
+   when it is a link). What is inside a profile stays
+   removable. The window asks the guards before a mark is made
+   (`removal::refusal`), so a refused path is never offered for marking.
+   Shared system containers (including `/Applications`) are refused as a
+   whole while eligible children remain removable; see
+   [the protected-path policy](docs/protected-paths.md) when changing guards.
 5. **Marks are keyed by absolute path**, not tree position, so they survive a
-   re-scan; `Marks::refresh` re-reads their sizes and drops what is gone.
+   re-scan; `Marks::refresh` re-reads their sizes and keeps missing paths
+   marked at zero bytes, so they cannot claim space that is already gone.
 6. **The treemap is painted, not composed of elements.** Thousands of
    rectangles belong in one canvas callback; labels are shaped there too so they
    clip to their own tile.
@@ -175,7 +221,24 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
     confirmation for that operation. An expired or changed preview requires
     new confirmation. The app validates the intent and rechecks existing
     guards and its configured capacity limit for both UI and MCP removals.
+    Past the limit only the person can go: in the window, through Mark
+    anyway and then Review's second confirmation (a typed phrase by
+    default), which names each disk past the limit, with the worker
+    holding each of those disks to its confirmed share and every other
+    disk to the limit. An agent's mark past the limit is refused, and
+    agents keep the default limit when the window's is Off, on the
+    worker as at the preview: nothing the person confirms in Review
+    raises an agent's removal. `mark_guard.rs` holds the rule.
     Trash never falls back to permanent deletion. No headless or SSH removal.
+    Cache cleanup is for caches PwrDisk positively recognizes *and* can
+    clean better than by deleting them: an owner with a command here.
+    Nothing is held back for only looking like a cache (a name, a
+    `CACHEDIR.TAG`, a hatch, an owner without a command); that is an
+    ordinary removal. `cleanup/recognize.rs` holds the rule.
+    A cache cleanup is decided per marked path (Skip by default, the
+    owner's exact command, or Delete files); owner approval never approves
+    deleting files, which has its own consent, and a failed owner command
+    never falls back to it. See `docs/owner-cleanup.md`.
     A linked window's tree and marks remain the source of truth; `ls` and
     `find` read it without navigating. Only an explicit `show` request moves
     the view, and guidance requires the user to request that behavior.
@@ -198,6 +261,31 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
     the guards refuse, what removal does, or what a system hides from a
     scan updates the matching `references/<system>.md` in the same PR.
 
+15. **A tree owns a handful of buffers, by index.** Nodes live in one
+    vector, each directory's children a contiguous run of it, names in one
+    string and clone records in side tables, so dropping a tree frees eight
+    buffers instead of tens of millions of allocations. An allocation record
+    keeps only what its node does not say (`index/records.rs`): a clone with
+    one name reads its size from the node, so a placed leaf's `bytes` and
+    `inode` change only by hardlink de-duplication. A record is never
+    changed in place, which is what lets the files of a clone group share
+    one; a change that writes to a record must stop that. A node is read
+    through a `Node<'_>` cursor from its tree and written through `NodeMut`
+    or a whole-tree pass. Build with `Tree::build` (a `Draft` for tests and
+    small trees); a subtree moves to another tree only as a copy. A
+    finished tree keeps every subtree one contiguous run, which is what
+    lets `par_bottom_up` split it across workers without `unsafe`: only
+    the order *within* a block may change after it is built.
+
+16. **A bug fix states the rule it broke as a property, model or oracle
+    test, and confirms that test fails on the pre-fix code.** Do the same
+    for new guard, limit, accounting and path logic, and for state that
+    changes over time. Example tests alone check only what their author
+    expected. Here they have asserted the bug as correct, and passed only
+    because of a bug.
+    [docs/property-model-oracle-testing.md](docs/property-model-oracle-testing.md)
+    says what each kind is and how to write one.
+
 ## Where changes belong
 
 | change | where |
@@ -207,6 +295,7 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
 | joining, splitting or comparing a scanned path | `crates/disktree-core/src/path_style.rs` |
 | measurement, filtering, parallelism | `crates/disktree-core/src/scan.rs` |
 | what a node is, or a derived total | `crates/disktree-core/src/tree.rs` |
+| how a tree is held in memory, its buffers and parallel passes | `crates/disktree-core/src/index.rs` |
 | tile geometry, nesting, the merged tail | `crates/disktree-core/src/treemap.rs` |
 | anything that deletes, or refuses to | `crates/disktree-core/src/removal.rs` |
 | free space and projections | `crates/disktree-core/src/space.rs` |
@@ -215,20 +304,30 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
 | reading a whole NTFS drive from its file table | `crates/disktree-core/src/mft.rs` |
 | APFS clone hints and private-size system calls | `crates/disktree-core/src/macos.rs` — isolated `unsafe` |
 | clone sharing totals and conservative savings | `crates/disktree-core/src/sharing.rs` |
+| what git is asked about a checkout, when, and how many at once | `crates/disktree-app/src/git.rs` (the probe and its time limit), `crates/disktree-app/src/git_store.rs` (the queue, the bucket, the cache) |
 | a key, a screen transition, a mark | `crates/disktree-app/src/state.rs` |
+| what may be marked, Mark anyway, Review's over-limit confirmation | `crates/disktree-app/src/mark_guard.rs`, the settings in `safety.rs` |
+| cache cleanup: owners, proposals, decisions, per-path results | `crates/disktree-core/src/cleanup.rs` (model, allowlist), `crates/disktree-app/src/cleanup.rs` (window state), `cleanup_view.rs` (Review's proposals) |
+| Removing and Done: the run's list, its rows, following and running figures; the row anatomy Review shares | `crates/disktree-app/src/run_view.rs`, the model in `run_list.rs`, Review's `mark_row` in `views.rs` |
+| what the explore bar folds into ⋮ at each width, and ⋮'s keys | `crates/disktree-app/src/toolbar.rs` |
+| the legend as a filter: its chips and what they keep | `crates/disktree-app/src/legend.rs`, the rule in `crates/disktree-core/src/filter.rs` |
 | spacing, type and size | `crates/disktree-app/src/ui.rs` — tokens only, no `px` in layout |
 | the mosaic's painting or labels | `crates/disktree-app/src/treemap_view.rs` |
 | layout of a screen | `crates/disktree-app/src/views.rs` |
 | colours derived from the theme | `crates/disktree-app/src/palette.rs` |
 | the title strip, window controls, the client-side frame | `crates/disktree-app/src/chrome.rs` |
+| where the main window opens, and remembering it | `crates/disktree-app/src/window_frame.rs` |
+| which display a new window opens on | `crates/disktree-app/src/placement.rs` |
 | the menu bar, its shortcuts, the strip's menu off macOS | `crates/disktree-app/src/app_menu.rs`, the dropdown in `views.rs` |
 | Help's rows, Copy Diagnostics Info | `crates/disktree-app/src/help.rs`, the report in `diagnostics.rs` |
-| Settings (Updates, Diagnostics, About) | `crates/disktree-app/src/settings.rs` |
+| Settings (General, Updates, Safety, Agents (MCP), Diagnostics, About) | `crates/disktree-app/src/settings.rs` |
 | Changelog, License, Third-Party Notices, Logs windows | `doc_window.rs`, `logs_window.rs`, framed by `aux_window.rs` |
 | what goes in `main.log`, and where it lives | `crates/disktree-app/src/diag_log.rs` — never a scanned path |
 | `THIRD_PARTY_LICENSES` | `cargo xtask licenses` (cargo-about), then commit it; non-crate parts in `licenses/bundled.txt` |
 | the macOS icon, in any of its looks | `packaging/macos/` — the SVGs and `AppIcon.icon`, then `make dock-icons` |
 | checking, downloading and applying updates | `crates/disktree-app/src/updater.rs` |
+| what the window says about updates, and its notices: the toasts, the strip's ready chip | `crates/disktree-app/src/toasts.rs`, the chip in `views.rs` |
+| the MCP connect commands and the connected agent's status line | `crates/disktree-app/src/agent.rs` |
 | which release a release channel picks | `crates/disktree-app/src/update_channel.rs` |
 | release packaging, the DMG, `vpk` | `scripts/release/`, `xtask/src/bundle.rs`, `.github/workflows/release.yml` |
 | what an agent can ask of the window, and the answer | `crates/disktree-link/src/lib.rs` (messages), `crates/disktree-app/src/agent.rs` (handling) |
@@ -246,11 +345,17 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
   keys, including one that marks a directory, confirms the removal and checks
   the files are gone while unmarked neighbours are untouched, and one that
   drives the window over the real socket or pipe as `pwrdisk mcp` does.
+  Initialize them through `tests::init`, which applies a fixed theme without
+  native filesystem watching. Keep its control bindings aligned with
+  gpui-omarchy when updating that dependency; its normal `init` starts a
+  watcher that cannot wake GPUI's deterministic test executor safely.
 * `disktree-mcp` tests every tool as a function against a temporary tree,
   with a stand-in window on the socket or pipe for the linked cases;
   `disktree-link` tests the transport itself.
-* Rendering was verified by those tests and by running the app against a real
-  home directory; it has not been eyeballed in every theme and font size.
+* Rendering is verified by those tests and, where an on-screen macOS window
+  is needed, in the PwrSuiteLab VM against a contrived tree (see
+  [Testing on a desktop](#testing-on-a-desktop)); it has not been eyeballed
+  in every theme and font size.
 
 ## Pull requests
 
@@ -265,8 +370,10 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
   `--attach`, and before any later body edit.
 * **A PR that changes what the window shows has before/after screenshots**,
   of a contrived tree rather than a real disk;
-  [docs/pr-screenshots.md](docs/pr-screenshots.md) says how to make one. If
-  nothing can show the change, say why in the body and ask the operator.
+  [docs/pr-screenshots.md](docs/pr-screenshots.md) covers offscreen macOS
+  rendering and the lab fallback. Never open a window on the operator's
+  desktop. If nothing can show the change, say why in the body and ask
+  the operator.
 * **Scans are private data.** A real scan shows user names in paths,
   project and client names, volume names and sizes, and the chooser lists
   mounts and SSH hosts. Show any screenshot that is not 100% contrived to the
@@ -297,8 +404,13 @@ Sandboxer is unavailable. Verify macOS and Windows changes on those systems.
   (`add_todo`, with a `start_thread` action whose prompt stands alone), not a
   note in the PR body, a commit message or a code comment. The operator does
   not read those notes; a card can be tracked and started.
-* Before launching the app, check whether a PwrDisk window from this checkout
-  is already open and reuse it. Several checkouts and builds can run at once.
+* A PwrDisk window open on this machine belongs to the operator or another
+  thread: several checkouts and builds run here at once. Leave it alone, and
+  do not start another to look at a change; that runs in the lab, as
+  [Testing on a desktop](#testing-on-a-desktop) says, or in the explicitly
+  offscreen screenshot mode. That includes the
+  link: do not point a local `pwrdisk mcp` at it to test a change; the
+  `disktree-mcp` tests use a stand-in window.
 
 ## Agent instruction files
 

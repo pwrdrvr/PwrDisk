@@ -11,6 +11,9 @@
 // reach one. Ignored elsewhere.
 #![windows_subsystem = "windows"]
 
+#[cfg(all(feature = "screenshots", not(debug_assertions)))]
+compile_error!("the screenshots feature is only for debug builds");
+
 mod agent;
 mod agent_removal;
 mod app_menu;
@@ -18,6 +21,8 @@ mod appearance;
 mod aux_window;
 mod build_info;
 mod chrome;
+mod cleanup;
+mod cleanup_view;
 mod diag_log;
 mod diagnostics;
 mod doc_window;
@@ -25,24 +30,40 @@ mod doc_window;
 mod dock_icon;
 mod file_list;
 mod git;
+mod git_store;
 mod github_releases;
 mod help;
+mod ledger;
+mod legend;
 mod log_view;
+#[cfg(debug_assertions)]
+mod logs_fixture;
 mod logs_window;
+mod mark_guard;
 mod marks;
 mod palette;
+mod placement;
 mod power;
+mod raw_inspection;
+mod run_list;
+mod run_view;
 mod safety;
+#[cfg(any(test, feature = "screenshots"))]
+mod screenshots;
+mod semantics;
 mod settings;
 mod state;
 #[cfg(test)]
 mod tests;
+mod toasts;
+mod toolbar;
 mod treemap_view;
 mod ui;
 mod update_channel;
 mod updater;
 mod views;
 mod widgets;
+mod window_frame;
 
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
@@ -119,12 +140,32 @@ options:
 ";
 
 fn main() -> Result<()> {
+    // Must precede every normal startup hook, on macOS's main thread.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "offscreen-screenshots")
+    {
+        #[cfg(feature = "screenshots")]
+        return screenshots::run();
+        #[cfg(not(feature = "screenshots"))]
+        anyhow::bail!(
+            "offscreen screenshots require a debug build with \
+             --features screenshots (macOS only)"
+        );
+    }
     // First: Setup, updates and the uninstaller start pwrdisk.exe with a
     // hook argument, which this runs and then exits, before a console or a
     // window could appear.
     updater::run_startup_hooks();
     #[cfg(windows)]
     console::attach();
+    // Before main.log is opened, so the fixture never writes the real one.
+    #[cfg(debug_assertions)]
+    if let Some(outcome) = logs_fixture::run_if_asked() {
+        #[cfg(windows)]
+        console::detach();
+        return outcome;
+    }
     // After the hooks, which exit at once and have nothing to say; before
     // anything else, so a failure from here on is in main.log.
     diag_log::install();
@@ -141,6 +182,7 @@ fn main() -> Result<()> {
 }
 
 fn run() -> Result<()> {
+    disktree_core::size_preferences::initialize();
     // Dispatch before window creation: neither MCP mode launches a desktop,
     // keeping privileged work out of the host's child process tree.
     if std::env::args_os().nth(1).is_some_and(|arg| arg == "mcp") {
@@ -193,9 +235,9 @@ fn run() -> Result<()> {
                     "{}:{} — {} bytes, {} files, {} directories",
                     host,
                     snapshot.header.root.display(),
-                    snapshot.tree.bytes,
-                    snapshot.tree.files,
-                    snapshot.tree.dirs
+                    snapshot.tree.root().bytes,
+                    snapshot.tree.root().files,
+                    snapshot.tree.root().dirs
                 );
                 return Ok(());
             }
@@ -246,15 +288,21 @@ fn run() -> Result<()> {
             }
             let options = args.options.clone();
             let root_for_app = root.clone();
+            // Where the user left it, else centred on the display they are
+            // working on; inside the display either way. Below 900 by 600
+            // the treemap stops being readable, so ask the compositor not
+            // to go there, unless the display itself is smaller.
+            let place = window_frame::initial(
+                size(px(1440.), px(900.)),
+                size(px(900.), px(600.)),
+                cx,
+            );
             let window = cx
                 .open_window(
                     WindowOptions {
-                        window_bounds: Some(gpui_kit::WindowBounds::Windowed(
-                            gpui_kit::Bounds::new(
-                                gpui_kit::point(px(120.), px(90.)),
-                                size(px(1440.), px(900.)),
-                            ),
-                        )),
+                        window_bounds: Some(place.bounds),
+                        // GPUI reads the bounds relative to this display.
+                        display_id: place.display,
                         titlebar: Some(gpui_kit::TitlebarOptions {
                             title: Some(
                                 format!(
@@ -289,9 +337,7 @@ fn run() -> Result<()> {
                         // Left unset, the class is empty and that rule never
                         // matches.
                         app_id: Some("pwrdisk".to_owned()),
-                        // Below this the treemap stops being readable, so ask
-                        // the compositor not to go there.
-                        window_min_size: Some(size(px(900.), px(600.))),
+                        window_min_size: Some(place.min_size),
                         ..Default::default()
                     },
                     move |window, cx| {
@@ -304,6 +350,15 @@ fn run() -> Result<()> {
                             cx.observe_button_layout_changed(
                                 window,
                                 |_, _, cx| cx.notify(),
+                            )
+                            .detach();
+                            // Moving or resizing is noted; the quit hook
+                            // below writes it down.
+                            cx.observe_window_bounds(
+                                window,
+                                |_, window, cx| {
+                                    window_frame::remember(window, cx);
+                                },
                             )
                             .detach();
                             let mut app = if args.choose_root {
@@ -330,18 +385,27 @@ fn run() -> Result<()> {
                 )
                 .expect("open the PwrDisk window");
 
+            // Every route to quitting runs this, closing the window
+            // included, so the next launch opens where this one was left.
+            cx.on_app_quit(|_| {
+                window_frame::save();
+                async {}
+            })
+            .detach();
+
             // The treemap owns the keyboard from the first frame; there is no
             // text field to focus first.
             let _ = window.update(cx, |this, window, cx| {
                 let focus = this.focus.clone();
                 window.focus(&focus, cx);
             });
-            // A check that starts or finishes redraws the window and
-            // Settings › Updates, so they show it without waiting for input.
-            updater::install(cx, move |cx| {
-                let _ = window.update(cx, |_, _, cx| cx.notify());
-                settings::refresh(cx);
+            // A check that starts or finishes redraws the window, which
+            // answers it in a toast, and Settings › Updates; a download's
+            // percent only the toast.
+            let _ = window.update(cx, |this, _, cx| {
+                this.apply_update_fixture(cx);
             });
+            updater::install(cx, toasts::updater_changed);
             updater::check_in_background(updater::Trigger::Startup);
 
             // Listen for an agent. Another window already linked, or a

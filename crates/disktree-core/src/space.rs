@@ -25,9 +25,68 @@ pub struct SpaceInfo {
     pub free: u64,
     /// Free blocks this user may actually write; what `df -h` reports.
     pub available: u64,
+    /// Optional OS presentation counters, separate from raw removal samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<NativeSpace>,
+}
+
+/// Native volume/group usage and availability including reclaimable space.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub struct NativeSpace {
+    pub used: Option<u64>,
+    pub available: Option<u64>,
 }
 
 impl SpaceInfo {
+    /// Capacity unavailable to this user, including any filesystem reserve.
+    /// This complements the meter's free space, even on shared APFS pools.
+    pub const fn display_used(&self) -> u64 {
+        self.total.saturating_sub(self.display_available())
+    }
+
+    /// Free blocks this user can write now, without reclaiming other data.
+    pub const fn display_available(&self) -> u64 {
+        self.available
+    }
+
+    /// OS volume/group allocation, a separate scope from the capacity meter.
+    pub const fn native_used(&self) -> Option<u64> {
+        match self.native {
+            Some(NativeSpace {
+                used: Some(used), ..
+            }) if used <= self.total => Some(used),
+            _ => None,
+        }
+    }
+
+    /// OS capacity estimate including reclaimable data, never free space.
+    pub const fn reclaimable_available(&self) -> Option<u64> {
+        match self.native {
+            Some(NativeSpace {
+                available: Some(available),
+                ..
+            }) if available >= self.available && available <= self.total => {
+                Some(available)
+            }
+            _ => None,
+        }
+    }
+
+    /// Additional availability reported by the OS, never added a second time.
+    pub fn purgeable(&self) -> Option<u64> {
+        self.reclaimable_available()
+            .map(|available| available - self.available)
+    }
+
     /// Space in use, computed from `free` rather than `available` so the figure
     /// does not jump when a reserve is opened to root.
     pub const fn used(&self) -> u64 {
@@ -53,6 +112,20 @@ impl SpaceInfo {
             total: self.total,
             free,
             available,
+            native: self.native.map(|native| NativeSpace {
+                used: native
+                    .used
+                    .filter(|used| *used <= self.total)
+                    .map(|used| used.saturating_sub(bytes)),
+                // The marks might themselves be purgeable. Credit only raw
+                // free space exceeding what macOS already made available.
+                available: native
+                    .available
+                    .filter(|native| {
+                        *native >= self.available && *native <= self.total
+                    })
+                    .map(|native| native.max(available).min(self.total)),
+            }),
         }
     }
 }
@@ -94,11 +167,28 @@ pub fn space_info(path: &Path) -> io::Result<SpaceInfo> {
     } else {
         stat.f_frsize
     };
-    Ok(SpaceInfo {
+    let space = SpaceInfo {
         total: stat.f_blocks.saturating_mul(block),
         free: stat.f_bfree.saturating_mul(block),
         available: stat.f_bavail.saturating_mul(block),
-    })
+        native: None,
+    };
+    Ok(space)
+}
+
+/// OS-facing counters without changing the raw samples used by guards.
+pub fn display_space_info(path: &Path) -> io::Result<SpaceInfo> {
+    let space = space_info(path)?;
+    #[cfg(target_os = "macos")]
+    let space = SpaceInfo {
+        native: crate::macos::space_presentation(
+            path,
+            space.total,
+            space.available,
+        ),
+        ..space
+    };
+    Ok(space)
 }
 
 /// The volume a path is on, as Windows names it: `C:\`, a share, or the
@@ -428,10 +518,29 @@ pub fn mount_boundaries_for(root: &Path) -> Option<Vec<PathBuf>> {
         if !output.status.success() {
             return None;
         }
+        // Data's firmlinks are another namespace for the same entries;
+        // canonicalize keeps that spelling. A mount made through /Users
+        // must also bound a scan through /System/Volumes/Data/Users.
+        let alias = root
+            .strip_prefix(MACOS_DATA_VOLUME)
+            .ok()
+            .map(|below| Path::new("/").join(below));
         Some(
             parse_macos_mounts(&String::from_utf8_lossy(&output.stdout))
                 .into_iter()
-                .filter(|point| point != root && point.starts_with(root))
+                .filter(|point| point != root)
+                .filter_map(|point| {
+                    point
+                        .strip_prefix(root)
+                        .ok()
+                        .or_else(|| {
+                            alias.as_ref().and_then(|alias| {
+                                point.strip_prefix(alias).ok()
+                            })
+                        })
+                        .filter(|below| !below.as_os_str().is_empty())
+                        .map(|below| root.join(below))
+                })
                 .collect(),
         )
     }
@@ -678,8 +787,8 @@ pub const MACOS_DATA_VOLUME: &str = "/System/Volumes/Data";
 /// rules say, given where `root` really is (`canonical`).
 ///
 /// On macOS: `/Network`, an automount point that would reach for a server.
-/// The Data volume is restricted separately to its private service stores,
-/// so firmlinked directories are not visited again. The
+/// The Data volume's firmlink aliases are excluded separately, so their
+/// directories are not visited again. The
 /// paths are returned in `root`'s own spelling, because that is how the walk
 /// names what it finds.
 pub fn never_scanned(root: &Path, canonical: &Path) -> Vec<PathBuf> {
@@ -693,9 +802,9 @@ pub fn never_scanned(root: &Path, canonical: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// A Data mount below the root must expose only private service stores.
+/// A Data mount below the root needs its firmlink aliases excluded.
 /// Scanning Data directly still walks the entire volume once.
-pub fn data_services_only(root: &Path, canonical: &Path) -> Option<PathBuf> {
+pub fn data_volume_below(root: &Path, canonical: &Path) -> Option<PathBuf> {
     if !cfg!(target_os = "macos") {
         return None;
     }
@@ -704,6 +813,42 @@ pub fn data_services_only(root: &Path, canonical: &Path) -> Option<PathBuf> {
         .ok()
         .filter(|below| !below.as_os_str().is_empty())
         .map(|below| root.join(below))
+}
+
+/// Data-relative destinations in macOS's `/usr/share/firmlinks` table.
+///
+/// Exclude exactly these subtrees, not their parents: Data's `System` and
+/// `usr` can also contain files without a route through the system volume.
+pub fn parse_macos_firmlinks(table: &str) -> io::Result<Vec<PathBuf>> {
+    let invalid =
+        || io::Error::new(io::ErrorKind::InvalidData, "Invalid firmlink table");
+    let mut paths = Vec::new();
+    for line in table.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (source, destination) =
+            line.split_once('\t').ok_or_else(invalid)?;
+        let source = source.trim().strip_prefix('/').ok_or_else(invalid)?;
+        let destination = destination.trim();
+        if destination.contains('\t') {
+            return Err(invalid());
+        }
+        for path in [source, destination] {
+            if path.is_empty()
+                || Path::new(path).components().any(|part| {
+                    !matches!(part, std::path::Component::Normal(_))
+                })
+            {
+                return Err(invalid());
+            }
+        }
+        paths.push(PathBuf::from(destination));
+    }
+    if paths.is_empty() {
+        return Err(invalid());
+    }
+    Ok(paths)
 }
 
 /// The top of the disk `path` lives on: its mount point, from `statfs`.
@@ -994,6 +1139,7 @@ mod tests {
             total: 1000,
             free: 100,
             available: 80,
+            native: None,
         });
         let root = Path::new("/");
         let estimate = |path, disk, space, platform| {
@@ -1197,6 +1343,7 @@ portal /run/user/1000/doc fuse.portal rw 0 0
                 total: 100,
                 free: available,
                 available,
+                native: None,
             }),
         };
         let mut volumes = vec![
@@ -1545,10 +1692,7 @@ map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
             assert_eq!(skipped, vec![PathBuf::from("/Network")]);
             assert!(below_system.is_empty());
             assert_eq!(
-                data_services_only(
-                    Path::new("/spelling"),
-                    Path::new("/System")
-                ),
+                data_volume_below(Path::new("/spelling"), Path::new("/System")),
                 Some(PathBuf::from("/spelling/Volumes/Data"))
             );
         } else {
@@ -1557,18 +1701,110 @@ map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
         assert!(inside.is_empty());
         assert!(itself.is_empty(), "asking for it by name scans it");
         assert_eq!(
-            data_services_only(
+            data_volume_below(
                 Path::new(MACOS_DATA_VOLUME),
                 Path::new(MACOS_DATA_VOLUME)
             ),
             None
         );
         assert_eq!(
-            data_services_only(
+            data_volume_below(
                 Path::new("/Users/tobi"),
                 Path::new("/Users/tobi")
             ),
             None
+        );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        // A disk meter partitions physical capacity. Space macOS might
+        // reclaim and usage of just one APFS group cannot replace either
+        // side of that partition.
+        #[test]
+        fn disk_meter_partitions_capacity_without_crediting_reclaimable_space(
+            raw_free in 0_u64..1_000_000,
+            reserve in 0_u64..1_000_000,
+            purgeable in 1_u64..1_000_000,
+            auxiliary in 1_u64..1_000_000,
+            retained in 0_u64..1_000_000,
+            removal in 0_u64..4_000_000,
+        ) {
+            let total = raw_free + reserve + purgeable + auxiliary + retained;
+            let space = SpaceInfo {
+                total, free: raw_free + reserve, available: raw_free,
+                native: Some(NativeSpace {
+                    used: Some(purgeable + retained),
+                    available: Some(raw_free + purgeable),
+                }),
+            };
+            for (sample, expected_free) in [
+                (space, raw_free),
+                (space.after_removing(removal),
+                    (raw_free + removal).min(total)),
+            ] {
+                proptest::prop_assert_eq!(
+                    sample.display_available(), expected_free
+                );
+                proptest::prop_assert_eq!(
+                    sample.display_used() + sample.display_available(), total
+                );
+            }
+        }
+
+        // Exclusions must be exactly the destinations, including spaces
+        // and nested paths, rather than their top-level parents.
+        #[test]
+        fn firmlink_exclusions_preserve_each_destination(
+            destinations in proptest::collection::vec(
+                proptest::collection::vec("[a-zA-Z ]{1,12}", 1..5),
+                1..25,
+            ),
+        ) {
+            let destinations: Vec<_> = destinations.into_iter()
+                .map(|parts| parts.into_iter()
+                    .map(|part| format!("entry-{part}-end"))
+                    .collect::<Vec<_>>().join("/"))
+                .collect();
+            let table = destinations.iter().enumerate()
+                .fold(String::new(), |mut table, (index, path)| {
+                    use std::fmt::Write as _;
+                    writeln!(table, "/source-{index}\t{path}").unwrap();
+                    table
+                });
+            let expected: Vec<_> = destinations.iter()
+                .map(PathBuf::from).collect();
+            proptest::prop_assert_eq!(
+                parse_macos_firmlinks(&table).unwrap(), expected
+            );
+        }
+    }
+
+    #[test]
+    fn unusable_firmlink_maps_cannot_turn_into_empty_exclusions() {
+        for table in [
+            "",
+            "# no destinations",
+            "/Users",
+            "/Users\t",
+            "/Users\t/Users",
+            "/Users\t../Users",
+            "/Users\tUsers/../../x",
+            "/Users\tUsers\textra",
+            "Users\tUsers",
+            "/Users\tUsers\nmalformed",
+        ] {
+            assert!(parse_macos_firmlinks(table).is_err(), "{table:?}");
+        }
+        assert_eq!(
+            parse_macos_firmlinks(
+                "# comment\n/Users\tUsers\n\n/System/Library/AssetsV2\tSystem/Library/AssetsV2\n"
+            ).unwrap(),
+            vec![PathBuf::from("Users"), PathBuf::from("System/Library/AssetsV2")]
         );
     }
 
@@ -1605,6 +1841,7 @@ map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
             total: 1000,
             free: 100,
             available: 100,
+            native: None,
         };
         let after = space.after_removing(50);
         assert_eq!(after.available, 150);
@@ -1615,6 +1852,109 @@ map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
         assert_eq!(capped.available, 1000);
         assert_eq!(capped.used(), 0);
         assert!((capped.used_fraction() - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn native_group_usage_excludes_other_container_volumes() {
+        // Minimal shrunk model: one purgeable byte and one auxiliary byte.
+        let space = SpaceInfo {
+            total: 2,
+            free: 0,
+            available: 0,
+            native: Some(NativeSpace {
+                used: Some(1),
+                available: Some(1),
+            }),
+        };
+        assert_eq!(space.used(), 2);
+        assert_eq!(space.display_used(), 2);
+        assert_eq!(space.display_available(), 0);
+        assert_eq!(space.native_used(), Some(1));
+        assert_eq!(space.reclaimable_available(), Some(1));
+        assert_eq!(space.after_removing(1).display_available(), 1);
+        assert_eq!(space.after_removing(2).display_available(), 2);
+    }
+
+    #[test]
+    fn invalid_native_counters_fall_back_to_raw_measurements() {
+        let raw = SpaceInfo {
+            total: 100,
+            free: 10,
+            available: 8,
+            native: None,
+        };
+        for available in [0, 7, 101, u64::MAX] {
+            let space = SpaceInfo {
+                native: Some(NativeSpace {
+                    used: Some(101),
+                    available: Some(available),
+                }),
+                ..raw
+            };
+            assert_eq!(space.display_used(), raw.total - raw.available);
+            assert_eq!(space.display_available(), raw.available);
+            assert_eq!(space.native_used(), None);
+            assert_eq!(space.reclaimable_available(), None);
+            assert_eq!(space.purgeable(), None);
+            let after = space.after_removing(5);
+            assert_eq!(after.display_used(), after.total - after.available);
+            assert_eq!(after.display_available(), after.available);
+        }
+        let old: SpaceInfo =
+            serde_json::from_str(r#"{"total":100,"free":10,"available":8}"#)
+                .unwrap();
+        assert_eq!(old, raw);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        // OS volume/group use is an independent counter. Important-usage
+        // availability already includes purgeable allocation once; marking
+        // that same allocation cannot promise it a second time.
+        #[test]
+        fn native_display_and_projection_match_the_capacity_model(
+            raw_free in 0_u64..1_000_000,
+            purgeable in 1_u64..1_000_000,
+            auxiliary in 1_u64..1_000_000,
+            retained in 0_u64..1_000_000,
+            removal in 0_u64..4_000_000,
+        ) {
+            let total = raw_free + purgeable + auxiliary + retained;
+            let os_used = purgeable + retained;
+            let os_available = raw_free + purgeable;
+            let space = SpaceInfo {
+                total, free: raw_free, available: raw_free,
+                native: Some(NativeSpace {
+                    used: Some(os_used), available: Some(os_available),
+                }),
+            };
+            proptest::prop_assert_eq!(space.native_used(), Some(os_used));
+            proptest::prop_assert_eq!(
+                space.reclaimable_available(), Some(os_available)
+            );
+            let after = space.after_removing(removal);
+            let expected = os_available.max(
+                (raw_free + removal).min(total)
+            );
+            proptest::prop_assert_eq!(
+                after.reclaimable_available(), Some(expected)
+            );
+            proptest::prop_assert_eq!(
+                after.native_used(), Some(os_used.saturating_sub(removal))
+            );
+            // Raw counters remain the measurement used by removal guards
+            // and before/after reports, unaffected by presentation policy.
+            proptest::prop_assert_eq!(
+                after.available, (raw_free + removal).min(total)
+            );
+            proptest::prop_assert_eq!(
+                space.used(), purgeable + auxiliary + retained
+            );
+        }
     }
 
     #[test]

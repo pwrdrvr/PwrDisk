@@ -7,9 +7,10 @@
 //! * every directory is a `PendingDir` with an atomic completion counter and a
 //!   `+1` sentinel, so a directory is only built once its own scan *and* all of
 //!   its subdirectory tasks have finished,
-//! * children are handed to the parent as finished `Node`s and sizes are
-//!   aggregated bottom-up in one pass over the finished tree, which is also
-//!   where hardlinks are de-duplicated.
+//! * children are handed to the parent as finished nodes, appended to the
+//!   tree's buffers (see [`crate::index`]), and sizes are aggregated
+//!   bottom-up in one pass over the finished tree, which is also where
+//!   hardlinks are de-duplicated.
 //!
 //! What is added on top of dust's approach: live progress counters the UI can
 //! poll without locking, and cooperative cancellation so a re-scan can abandon
@@ -27,10 +28,13 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
 
 use rayon::Scope;
-use rustc_hash::FxHashSet;
+use rayon::prelude::*;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::scan_threads::{Admission, ControllerGuard, ScanThreads};
-use crate::tree::{Metric, Node, NodeKind, Seen, aggregate, aggregate_deduped};
+use crate::tree::{
+    Builder, Built, Metric, NodeKind, Seen, Tree, aggregate, aggregate_deduped,
+};
 
 /// Errors kept verbatim before the list is truncated; the count keeps rising.
 const MAX_ERROR_DETAIL: usize = 50;
@@ -67,6 +71,22 @@ pub struct ScanOptions {
     /// Directory admission for this scan; other scans have their own budget.
     #[serde(default)]
     pub threads: ScanThreads,
+}
+
+impl ScanOptions {
+    /// Removal includes every descendant and unlinks symbolic links themselves.
+    /// Keep the scan's size, hardlink, clone and scheduling parameters, while
+    /// removing display filters that could hide files the operation will touch.
+    #[must_use]
+    pub fn for_removal(&self) -> Self {
+        Self {
+            follow_links: false,
+            include_hidden: true,
+            one_filesystem: true,
+            max_depth: None,
+            ..self.clone()
+        }
+    }
 }
 
 // Existing SSH requests predate this optional local-macOS scan hint.
@@ -242,7 +262,7 @@ impl ScanProgress {
 #[derive(Debug)]
 pub struct ScanHandle {
     pub progress: Arc<ScanProgress>,
-    result: Receiver<io::Result<Node>>,
+    result: Receiver<io::Result<Tree>>,
 }
 
 /// A subtree already measured, reused by a wider scan instead of walked
@@ -252,7 +272,7 @@ pub struct Known {
     /// Where it is. Compared with the walk's own paths, so give it in the
     /// same form as the root (both canonical).
     pub path: PathBuf,
-    pub tree: Arc<Node>,
+    pub tree: Arc<Tree>,
 }
 
 impl ScanHandle {
@@ -275,10 +295,13 @@ impl ScanHandle {
             root_device: Mutex::new(None),
             foreign_mounts: OnceLock::new(),
             never_scanned: OnceLock::new(),
-            data_services: OnceLock::new(),
+            data_volume: OnceLock::new(),
+            data_error: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
-            root: Mutex::new(None),
+            accounted: Arc::new(Seen::new()),
+            require_complete: false,
+            leaves: None,
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
@@ -303,7 +326,7 @@ impl ScanHandle {
     }
 
     /// Take the finished tree, if the walk is done.
-    pub fn poll(&self) -> Option<io::Result<Node>> {
+    pub fn poll(&self) -> Option<io::Result<Tree>> {
         match self.result.try_recv() {
             Ok(outcome) => Some(outcome),
             Err(TryRecvError::Empty) => None,
@@ -320,7 +343,48 @@ impl ScanHandle {
 }
 
 /// Walk `root` and return the aggregated tree. Blocking.
-pub fn scan(root: &Path, options: ScanOptions) -> io::Result<Node> {
+pub fn scan(root: &Path, options: ScanOptions) -> io::Result<Tree> {
+    scan_accounted(root, options, Arc::new(Seen::new()), false, None)
+}
+
+/// The scanner and removal recheck share entry measurement, options and
+/// aggregation. Only a selection's identity set outlives a single root.
+pub(crate) struct SelectionScan {
+    options: ScanOptions,
+    accounted: Arc<Seen>,
+    leaves: Arc<LeafListings>,
+}
+
+impl SelectionScan {
+    pub(crate) fn new(
+        options: ScanOptions,
+        leaves: impl IntoIterator<Item = PathBuf>,
+    ) -> Self {
+        Self {
+            options,
+            accounted: Arc::new(Seen::new()),
+            leaves: Arc::new(LeafListings::new(leaves)),
+        }
+    }
+
+    pub(crate) fn scan(&self, path: &Path) -> io::Result<Tree> {
+        scan_accounted(
+            path,
+            self.options.clone(),
+            Arc::clone(&self.accounted),
+            true,
+            Some(Arc::clone(&self.leaves)),
+        )
+    }
+}
+
+fn scan_accounted(
+    root: &Path,
+    options: ScanOptions,
+    accounted: Arc<Seen>,
+    require_complete: bool,
+    leaves: Option<Arc<LeafListings>>,
+) -> io::Result<Tree> {
     let progress = Arc::new(ScanProgress::default());
     let context = Arc::new(WalkContext {
         known: None,
@@ -329,10 +393,13 @@ pub fn scan(root: &Path, options: ScanOptions) -> io::Result<Node> {
         root_device: Mutex::new(None),
         foreign_mounts: OnceLock::new(),
         never_scanned: OnceLock::new(),
-        data_services: OnceLock::new(),
+        data_volume: OnceLock::new(),
+        data_error: OnceLock::new(),
         data_device: OnceLock::new(),
         visited_dirs: Mutex::new(FxHashSet::default()),
-        root: Mutex::new(None),
+        accounted,
+        require_complete,
+        leaves,
         volume: OnceLock::new(),
         #[cfg(target_os = "macos")]
         clone_cache: crate::clone_cache::Cache::default(),
@@ -356,13 +423,19 @@ struct WalkContext {
     /// Directories no scan enters, on any volume setting: see
     /// [`crate::space::never_scanned`].
     never_scanned: OnceLock<FxHashSet<PathBuf>>,
-    /// A second Data mount exposes private stores, never firmlink aliases.
-    data_services: OnceLock<PathBuf>,
+    /// A second Data mount exposes its files except firmlink aliases.
+    data_volume: OnceLock<PathBuf>,
+    /// An unreadable firmlink map must not silently hide Data-only files.
+    data_error: OnceLock<io::Error>,
     data_device: OnceLock<Option<u64>>,
     /// Directories already entered, so followed symlinks cannot loop.
     visited_dirs: Mutex<FxHashSet<(u64, u64)>>,
-    /// Set by the root's `complete`, read after the scope joins.
-    root: Mutex<Option<Node>>,
+    /// Shared only for one complete selection, never across operations.
+    accounted: Arc<Seen>,
+    /// Incomplete rechecks must not consume identities from later targets.
+    require_complete: bool,
+    /// Raw metadata is cached only for this selection's explicit leaves.
+    leaves: Option<Arc<LeafListings>>,
     /// Serial number of the root's volume, on Windows, for a walk that
     /// cannot leave it: every listing takes it instead of asking. See
     /// [`crate::windows::walk_volume`].
@@ -390,7 +463,7 @@ impl WalkContext {
     ///
     /// The entry's path is built only where it is used: most entries are
     /// files, and a disk has millions of them. The name is moved out of
-    /// the entry last, so nothing copies it.
+    /// the entry last, so it is copied only once, into the tree's names.
     fn classify(&self, dir: &Path, entry: &mut impl Listed) -> Classified {
         let listing = match entry.listing() {
             Ok(listing) => listing,
@@ -408,6 +481,27 @@ impl WalkContext {
 
         let kind = match listing {
             Listing::Symlink => {
+                // The listing can still measure a link whose full path is
+                // too long for lstat. Never ask its destination for facts.
+                #[cfg(unix)]
+                if !self.options.follow_links {
+                    return match entry.facts(
+                        dir,
+                        self.options.apparent_size,
+                        self,
+                    ) {
+                        Ok(facts) => self.leaf(
+                            entry.take_name(),
+                            NodeKind::Symlink,
+                            facts,
+                        ),
+                        Err(error) => {
+                            self.progress
+                                .record_error(&entry.entry_path(dir), &error);
+                            Classified::Unreadable
+                        }
+                    };
+                }
                 let path = entry.entry_path(dir);
                 return self.classify_symlink(&path, entry.take_name());
             }
@@ -438,9 +532,13 @@ impl WalkContext {
         {
             return Classified::Skipped;
         }
-        if self.data_services.get() == Some(&path) {
-            // `/` presents the system volume beside Data. This one mount
-            // exception is constrained by the whitelist in `walk`.
+        if self.data_volume.get() == Some(&path) {
+            // `/` presents the system volume beside Data. Exclude only
+            // known firmlink destinations, retaining Data-only contents.
+            if let Some(error) = self.data_error.get() {
+                self.progress.record_error(&path, error);
+                return Classified::Unreadable;
+            }
             return Classified::Subdirectory {
                 path,
                 name: entry.take_name(),
@@ -457,8 +555,7 @@ impl WalkContext {
             }
         }
         // Read at most once per directory: macOS needs it for the dataless
-        // flag, and the device check below wherever the mount table cannot
-        // be read, which on macOS is everywhere.
+        // flag, and the device check below when the mount table is unavailable.
         let directory_cell = std::cell::OnceCell::new();
         let directory = || directory_cell.get_or_init(|| entry.directory());
         if EVICTED_IS_KNOWN
@@ -468,21 +565,20 @@ impl WalkContext {
         {
             return Classified::Skipped;
         }
-        // Memoized: the subtree a narrower scan already measured is taken
-        // whole after mount boundaries, since a cached subtree cannot make
-        // crossing a mount allowed.
+        // Widening can introduce exclusions below the cached root (for
+        // example Data/usr/local). Walk again so those paths are filtered
+        // before their nodes and allocation can enter the new tree.
         if let Some(known) = &self.known
             && known.path == path
+            && self.never_scanned.get().is_none_or(|never| {
+                !never.iter().any(|excluded| excluded.starts_with(&path))
+            })
         {
-            let mut tree = (*known.tree).clone();
-            tree.name = entry.take_name();
-            return Classified::Entry(tree);
+            return Classified::Known(entry.take_name());
         }
         if self.options.one_filesystem && self.foreign_mounts.get().is_none() {
-            let device = if let Some(data) = self
-                .data_services
-                .get()
-                .filter(|data| path.starts_with(data))
+            let device = if let Some(data) =
+                self.data_volume.get().filter(|data| path.starts_with(data))
             {
                 *self.data_device.get_or_init(|| {
                     fs::metadata(data).map(|meta| device_of(&meta)).ok()
@@ -690,8 +786,10 @@ struct Named {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 impl Listed for Named {
-    fn entry_path(&self, _dir: &Path) -> PathBuf {
-        self.entry.path()
+    fn entry_path(&self, dir: &Path) -> PathBuf {
+        // A Linux listing may have been opened through its descriptor;
+        // display, boundary checks and tree paths keep the logical spelling.
+        dir.join(self.entry.file_name())
     }
 
     fn name(&self) -> &str {
@@ -855,8 +953,10 @@ fn list(
     path: &Path,
     _volume: Option<u64>,
     _clones: bool,
+    _clone_flags: bool,
+    _listed_dirs: bool,
 ) -> io::Result<impl Iterator<Item = io::Result<Named>>> {
-    let entries = fs::read_dir(path)?;
+    let entries = read_directory(path)?;
     Ok(entries.map(|entry| {
         entry.map(|entry| Named {
             name: entry.file_name().into_string().map_or_else(
@@ -868,13 +968,67 @@ fn list(
     }))
 }
 
+#[cfg(not(any(windows, target_os = "macos")))]
+fn read_directory(path: &Path) -> io::Result<fs::ReadDir> {
+    let result = fs::read_dir(path);
+    #[cfg(target_os = "linux")]
+    if result.as_ref().is_err_and(|error| {
+        error.raw_os_error()
+            == Some(rustix::io::Errno::NAMETOOLONG.raw_os_error())
+    }) {
+        use std::os::fd::AsRawFd as _;
+        let dir = open_directory(path)?;
+        // ReadDir owns the opened stream; its DirEntries retain that stream
+        // and stat relative to it after this temporary descriptor is closed.
+        return fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+    }
+    result
+}
+
+/// Keep ordinary listings to one open. Only paths beyond `PATH_MAX` need
+/// component-relative opens; both scan and recheck use this same reader.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn open_directory(path: &Path) -> io::Result<std::os::fd::OwnedFd> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    match open(path, flags, Mode::empty()) {
+        Ok(dir) => Ok(dir),
+        Err(rustix::io::Errno::NAMETOOLONG) => {
+            let mut dir = None;
+            for component in path.components() {
+                dir = Some(if let Some(parent) = &dir {
+                    openat(parent, component.as_os_str(), flags, Mode::empty())?
+                } else {
+                    open(component.as_os_str(), flags, Mode::empty())?
+                });
+            }
+            dir.ok_or_else(|| io::Error::other("No directory components"))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn list(
     path: &Path,
     _volume: Option<u64>,
     clones: bool,
+    clone_flags: bool,
+    listed_dirs: bool,
 ) -> io::Result<crate::macos::ReadDir> {
-    crate::macos::read_dir(path, clones)
+    use crate::macos::Clones;
+    let mut entries = crate::macos::read_dir(
+        path,
+        match (clones, clone_flags) {
+            (false, _) => Clones::Off,
+            (true, false) => Clones::Ids,
+            (true, true) => Clones::Flags,
+        },
+    )?;
+    if listed_dirs {
+        entries.use_listed_directories();
+    }
+    Ok(entries)
 }
 
 #[cfg(windows)]
@@ -882,6 +1036,8 @@ fn list(
     path: &Path,
     volume: Option<u64>,
     _clones: bool,
+    _clone_flags: bool,
+    _listed_dirs: bool,
 ) -> io::Result<crate::windows::ReadDir> {
     crate::windows::read_dir(path, volume)
 }
@@ -895,7 +1051,9 @@ enum Classified {
         followed: bool,
     },
     /// A leaf that contributes size.
-    Entry(Node),
+    Entry(Leaf),
+    /// The directory [`Known`] holds, copied in under this name.
+    Known(Box<str>),
     /// Filtered out, or a symlink we chose not to follow.
     Skipped,
     /// Collection failed, rather than an intentional filter.
@@ -904,29 +1062,32 @@ enum Classified {
 
 /// One directory being walked, plus the counter that decides when it is done.
 #[derive(Debug)]
-struct PendingDir {
+struct PendingDir<'h> {
     path: PathBuf,
     parent: Option<Arc<Self>>,
     /// Starts at 1 for the directory itself; one more per subdirectory task.
     /// When it reaches zero the directory is complete.
     pending: AtomicUsize,
     /// The node so far, moved out whole once the directory is complete.
-    partial: Mutex<Partial>,
+    partial: Mutex<Partial<'h>>,
     read_error: AtomicBool,
     depth: usize,
     followed: bool,
+    /// Whether its listing asks for APFS sharing flags; see
+    /// [`subdirectory_flags`].
+    clone_flags: bool,
 }
 
 /// What a directory's node is made of before it is built: the name the
 /// listing gave it, and the files found directly in it plus the finished
 /// subdirectories handed back up.
 #[derive(Debug, Default)]
-struct Partial {
+struct Partial<'h> {
     name: Box<str>,
-    children: Vec<Node>,
+    children: Vec<Built<'h>>,
 }
 
-impl PendingDir {
+impl<'h> PendingDir<'h> {
     const fn new(
         path: PathBuf,
         name: Box<str>,
@@ -944,6 +1105,7 @@ impl PendingDir {
             read_error: AtomicBool::new(false),
             depth,
             followed: false,
+            clone_flags: true,
         }
     }
 
@@ -953,35 +1115,32 @@ impl PendingDir {
     /// `bytes` is left at zero on purpose: the walk cannot know the
     /// aggregate, and [`crate::tree::aggregate`] derives it from the children
     /// once every child is present.
-    fn build(&self) -> Node {
+    fn build(&self, builder: &'h Builder) -> Built<'h> {
         let partial = std::mem::take(&mut *lock(&self.partial));
-        Node {
-            name: partial.name,
-            kind: NodeKind::Directory,
-            bytes: 0,
-            files: 0,
-            dirs: 1,
-            inode: None,
-            allocation: self.followed.then(|| {
-                Box::new(crate::sharing::Allocation {
-                    bytes: 0,
-                    identity: None,
-                    links: 1,
-                    followed: true,
-                    clone: None,
-                })
-            }),
-            sharing: None,
+        let facts = crate::tree::Facts {
             read_error: self.read_error.load(Ordering::Relaxed),
-            modified: 0,
-            category: crate::classify::Category::Other,
-            reclaim: None,
-            children: partial.children,
-        }
+            ..crate::tree::Facts::directory()
+        };
+        let allocation = self.followed.then_some(crate::sharing::Allocation {
+            bytes: 0,
+            identity: None,
+            links: 1,
+            followed: true,
+            clone: None,
+        });
+        builder.directory(&partial.name, facts, allocation, partial.children)
     }
 }
 
-fn scan_blocking(root: &Path, context: &Arc<WalkContext>) -> io::Result<Node> {
+/// Where the walk's finished nodes go: the tree they are made in, and
+/// the root once the last directory completes.
+struct Sink<'h> {
+    builder: &'h Builder,
+    /// Set by the root's `signal_done`, read after the scope joins.
+    root: Mutex<Option<Built<'h>>>,
+}
+
+fn scan_blocking(root: &Path, context: &Arc<WalkContext>) -> io::Result<Tree> {
     let _ = context.progress.preview_root.set(root.to_path_buf());
     let owned = fixed_pool(context.options.threads)?;
     let pool = owned.as_ref().unwrap_or_else(|| &WALK_POOL);
@@ -1008,7 +1167,10 @@ fn scan_on_pool(
     root: &Path,
     context: &Arc<WalkContext>,
     pool: &rayon::ThreadPool,
-) -> io::Result<Node> {
+) -> io::Result<Tree> {
+    if context.require_complete && !fs::symlink_metadata(root)?.is_dir() {
+        return scan_entry(root, context, pool);
+    }
     let root_meta = fs::metadata(root)?;
     if !root_meta.is_dir() {
         return Err(io::Error::new(
@@ -1026,13 +1188,23 @@ fn scan_on_pool(
     ) {
         let _ = context.progress.volume_used.set(used);
     }
-    if let Some(data) = crate::space::data_services_only(root, canonical) {
-        let _ = context.data_services.set(data);
+    let mut never = crate::space::never_scanned(root, canonical);
+    if let Some(data) = crate::space::data_volume_below(root, canonical) {
+        match fs::read_to_string("/usr/share/firmlinks")
+            .and_then(|table| crate::space::parse_macos_firmlinks(&table))
+        {
+            Ok(aliases) => {
+                never.extend(aliases.iter().map(|alias| data.join(alias)));
+            }
+            Err(error) => {
+                let _ = context.data_error.set(error);
+            }
+        }
+        let _ = context.data_volume.set(data);
     }
-    if let Some(data) = context.data_services.get() {
+    if let Some(data) = context.data_volume.get() {
         let _ = context.progress.service_root.set(data.clone());
     }
-    let mut never = crate::space::never_scanned(root, canonical);
     // Hidden-entry and depth filters can leave an alias as the only route
     // to files. Keep every mount view when either filter is active.
     if context.options.include_hidden && context.options.max_depth.is_none() {
@@ -1046,7 +1218,15 @@ fn scan_on_pool(
     if context.options.one_filesystem {
         *lock(&context.root_device) = Some(device_of(&root_meta));
         if let Some(foreign) = crate::space::mount_boundaries_for(canonical) {
-            let _ = context.foreign_mounts.set(foreign.into_iter().collect());
+            // The mount table names real paths, but entries retain the
+            // chosen root's spelling. Translate once here so checking a
+            // boundary needs no metadata that could trigger an automount.
+            let foreign = foreign
+                .iter()
+                .filter_map(|path| path.strip_prefix(canonical).ok())
+                .map(|below| root.join(below))
+                .collect();
+            let _ = context.foreign_mounts.set(foreign);
         }
     }
     // Reading the file table is far faster than any walk, where the
@@ -1065,10 +1245,11 @@ fn scan_on_pool(
                 return Err(crate::mft::cancelled());
             }
             progress.finalizing.store(true, Ordering::Relaxed);
-            let node = finish_tree(node, &context.options, pool);
+            let node = finish_tree(node, canonical, context, pool)?;
             // The reader counted every file on the volume; the tree may
             // hold fewer.
-            progress.settle(node.files, u64::from(node.dirs), node.bytes);
+            let root = node.root();
+            progress.settle(root.files, u64::from(root.dirs), root.bytes);
             return Ok(node);
         }
         // The reader gave up, or never started: the walk counts from nothing.
@@ -1090,13 +1271,236 @@ fn scan_on_pool(
         lock(&context.visited_dirs).insert(key);
     }
 
+    let context: &WalkContext = context;
+    // Building ends with parallel relayout too. Keep it on the selected
+    // pool so fixed budgets and isolation from the UI cover that phase.
+    let tree = pool.install(|| {
+        Tree::try_build(|builder| {
+            let sink = Sink {
+                builder,
+                root: Mutex::new(None),
+            };
+            walk_tree(root, context, pool, &sink)?;
+            let node = lock(&sink.root).take();
+            node.ok_or_else(|| {
+                io::Error::other(format!("{} produced no tree", root.display()))
+            })
+        })
+    })?;
+    context.progress.finalizing.store(true, Ordering::Relaxed);
+    finish_tree(tree, canonical, context, pool)
+}
+
+#[cfg(all(test, unix))]
+pub(crate) mod leaf_work {
+    use std::cell::Cell;
+    thread_local! {
+        static WORK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    }
+    pub fn reset() {
+        WORK.set((0, 0));
+    }
+    pub fn opened() {
+        WORK.set((WORK.get().0 + 1, WORK.get().1));
+    }
+    pub fn entry() {
+        WORK.set((WORK.get().0, WORK.get().1 + 1));
+    }
+    pub fn snapshot() -> (usize, usize) {
+        WORK.get()
+    }
+}
+
+/// Only selected leaves are retained, regardless of how many unselected
+/// siblings share their parents. This cache never survives an operation.
+struct LeafListings {
+    wanted: FxHashMap<PathBuf, FxHashSet<PathBuf>>,
+    parents: Mutex<FxHashMap<PathBuf, io::Result<ParentLeaves>>>,
+}
+
+type ParentLeaves = FxHashMap<PathBuf, io::Result<Leaf>>;
+
+impl LeafListings {
+    fn new(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        let mut wanted = FxHashMap::<PathBuf, FxHashSet<PathBuf>>::default();
+        for path in paths {
+            if let Some(parent) = path.parent() {
+                wanted.entry(parent.to_path_buf()).or_default().insert(path);
+            }
+        }
+        Self {
+            wanted,
+            parents: Mutex::default(),
+        }
+    }
+
+    fn leaf(&self, path: &Path, context: &WalkContext) -> io::Result<Leaf> {
+        let parent =
+            path.parent().ok_or_else(|| io::Error::other("No parent"))?;
+        let wanted = self
+            .wanted
+            .get(parent)
+            .ok_or_else(|| io::Error::other("Unregistered selected leaf"))?;
+        let mut parents = lock(&self.parents);
+        let listed = parents
+            .entry(parent.to_path_buf())
+            .or_insert_with(|| selected_leaves(parent, wanted, context));
+        let result = match listed {
+            Ok(leaves) => leaves.get(path).map_or_else(
+                || {
+                    Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "Selected entry disappeared",
+                    ))
+                },
+                copy_leaf,
+            ),
+            Err(error) => Err(copy_error(error)),
+        };
+        drop(parents);
+        result
+    }
+}
+
+fn copy_error(error: &io::Error) -> io::Error {
+    io::Error::new(error.kind(), error.to_string())
+}
+
+fn copy_leaf(leaf: &io::Result<Leaf>) -> io::Result<Leaf> {
+    leaf.as_ref().cloned().map_err(copy_error)
+}
+
+/// Read metadata through the walk's normal listing/classifier, once per
+/// parent. Alias spellings need at most one more pass, indexed by identity.
+fn selected_leaves(
+    parent: &Path,
+    wanted: &FxHashSet<PathBuf>,
+    context: &WalkContext,
+) -> io::Result<ParentLeaves> {
+    let mut leaves = ParentLeaves::default();
+    for entry in leaf_listing(parent, context)? {
+        let mut entry = entry?;
+        let path = entry.entry_path(parent);
+        if wanted.contains(&path) {
+            leaves.insert(path, selected_leaf(parent, &mut entry, context));
+        }
+    }
+    let aliases: FxHashMap<_, _> = wanted
+        .iter()
+        .filter(|path| !leaves.contains_key(*path))
+        .filter_map(|path| leaf_key(path).map(|key| (path, key)))
+        .collect();
+    if !aliases.is_empty() {
+        let keys: FxHashSet<_> = aliases.values().collect();
+        let mut found = FxHashMap::default();
+        for entry in leaf_listing(parent, context)? {
+            let mut entry = entry?;
+            let Some(key) = leaf_key(&entry.entry_path(parent)) else {
+                continue;
+            };
+            if keys.contains(&key) && !found.contains_key(&key) {
+                found.insert(key, selected_leaf(parent, &mut entry, context));
+                if found.len() == keys.len() {
+                    break;
+                }
+            }
+        }
+        for (path, key) in aliases {
+            if let Some(leaf) = found.get(&key) {
+                leaves.insert(path.clone(), copy_leaf(leaf));
+            }
+        }
+    }
+    Ok(leaves)
+}
+
+fn leaf_listing(
+    parent: &Path,
+    context: &WalkContext,
+) -> io::Result<impl Iterator<Item = io::Result<impl Listed>>> {
+    let clones =
+        context.options.apfs_clone_metadata && !context.options.apparent_size;
+    #[cfg(all(test, unix))]
+    leaf_work::opened();
+    Ok(list(parent, None, clones, true, false)?.inspect(|_| {
+        #[cfg(all(test, unix))]
+        leaf_work::entry();
+    }))
+}
+
+fn selected_leaf(
+    parent: &Path,
+    entry: &mut impl Listed,
+    context: &WalkContext,
+) -> io::Result<Leaf> {
+    match context.classify(parent, entry) {
+        Classified::Entry(leaf) => Ok(leaf),
+        _ => Err(io::Error::other("Cannot measure selected entry")),
+    }
+}
+
+/// Raw cached leaves acquire their hardlink charge only when accepted.
+/// A refused target must never consume an identity from a later target.
+fn scan_entry(
+    path: &Path,
+    context: &WalkContext,
+    pool: &rayon::ThreadPool,
+) -> io::Result<Tree> {
+    let listings = context
+        .leaves
+        .as_ref()
+        .ok_or_else(|| io::Error::other("Missing selected leaf listing"))?;
+    let leaf = listings.leaf(path, context)?;
+    let tree = Tree::build(|builder| {
+        builder.leaf(&leaf.name, leaf.facts, leaf.allocation)
+    });
+    finish_tree(tree, path, context, pool)
+}
+
+#[cfg(unix)]
+type LeafKey = (u64, u64);
+#[cfg(not(unix))]
+type LeafKey = PathBuf;
+
+/// Alternate case/Unicode spellings name the same filesystem entry.
+/// Never resolve a symlink's destination for this comparison.
+#[cfg_attr(
+    not(unix),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "Unix identity lookup can fail; keep one cross-platform API"
+    )
+)]
+fn leaf_key(path: &Path) -> Option<LeafKey> {
+    #[cfg(unix)]
+    {
+        fs::symlink_metadata(path)
+            .ok()
+            .and_then(|meta| file_identity(&meta))
+    }
+    #[cfg(windows)]
+    {
+        Some(crate::windows::guard_key(path))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Some(path.to_path_buf())
+    }
+}
+
+/// Walk from `root` on `pool`, leaving the finished root in `sink`.
+fn walk_tree(
+    root: &Path,
+    context: &WalkContext,
+    pool: &rayon::ThreadPool,
+    sink: &Sink<'_>,
+) -> io::Result<()> {
     let root_dir = Arc::new(PendingDir::new(
         root.to_path_buf(),
         file_name(root),
         None,
         0,
     ));
-    let context: &WalkContext = context;
     pool.install(|| {
         let mut threads = context.options.threads.normalized();
         threads.max_threads =
@@ -1119,31 +1523,34 @@ fn scan_on_pool(
             // Pool-sized fixed scans need no admission lock or ready queue. Keep
             // existing core callers on Rayon's direct scheduling path.
             rayon::scope(|scope| {
-                dispatch_fixed(scope, &root_dir, context);
+                dispatch_fixed(scope, &root_dir, context, sink);
             });
         } else {
             let admission =
                 Arc::new(Admission::new(root_dir, threads.max_threads));
             // The controller owns no Rayon worker and is joined before finishing
             // the tree, where entry throughput no longer describes useful work.
-            let _controller = ControllerGuard::spawn(
-                threads,
-                Arc::clone(&admission),
-                Arc::clone(&context.progress),
-            )?;
-            rayon::scope(|scope| {
-                dispatch(scope, admission.start(), context, &admission);
-            });
+            thread::scope(|controller| {
+                let _controller = ControllerGuard::spawn(
+                    controller,
+                    threads,
+                    Arc::clone(&admission),
+                    Arc::clone(&context.progress),
+                )?;
+                rayon::scope(|scope| {
+                    dispatch(
+                        scope,
+                        admission.start(),
+                        context,
+                        &admission,
+                        sink,
+                    );
+                });
+                Ok::<(), io::Error>(())
+            })?;
         }
-        Ok::<(), io::Error>(())
-    })?;
-
-    let node = lock(&context.root).take();
-    let node = node.ok_or_else(|| {
-        io::Error::other(format!("{} produced no tree", root.display()))
-    })?;
-    context.progress.finalizing.store(true, Ordering::Relaxed);
-    Ok(finish_tree(node, &context.options, pool))
+        Ok(())
+    })
 }
 
 /// The walk's workers, and the file table reader's. Listing directories
@@ -1151,8 +1558,9 @@ fn scan_on_pool(
 /// them only queue: on Windows a home directory of 3.4 million files
 /// walked in 6.5 s on 16 threads and 8.1 s on all 24. That cap was
 /// measured on one 24-thread NTFS laptop; another disk or CPU may want
-/// another. Elsewhere the default count. A pool of its own on every
-/// platform all the same: work the UI hands the global pool, such as
+/// another. macOS uses its measured heterogeneous-core budget. A pool of
+/// its own on every platform all the same: work the UI hands the global
+/// pool, such as
 /// re-ranking a tree, must not queue behind a scan's blocking reads.
 static WALK_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     let threads = if cfg!(windows) {
@@ -1160,6 +1568,8 @@ static WALK_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     } else {
         rayon::current_num_threads()
     };
+    #[cfg(target_os = "macos")]
+    let threads = crate::macos::walk_threads(threads);
     rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .thread_name(|index| format!("disktree-walk-{index}"))
@@ -1182,8 +1592,8 @@ struct Tally {
 }
 
 impl Tally {
-    const fn add(&mut self, node: &Node) {
-        if node.is_dir() {
+    const fn add(&mut self, node: &crate::tree::Facts) {
+        if node.kind.is_dir() {
             // A subtree taken whole from an earlier scan.
             self.files += node.files;
             self.dirs += node.dirs as u64;
@@ -1205,14 +1615,15 @@ impl Tally {
 /// Read one directory, spawn a task per subdirectory, then report completion.
 ///
 /// Flat tasks inside the scope: the worker stack never grows with tree depth.
-fn dispatch_fixed<'scope>(
+fn dispatch_fixed<'scope, 'h: 'scope>(
     scope: &Scope<'scope>,
-    dir: &Arc<PendingDir>,
+    dir: &Arc<PendingDir<'h>>,
     context: &'scope WalkContext,
+    sink: &'scope Sink<'h>,
 ) {
-    for child in walk(dir, context) {
+    for child in walk(dir, context, sink) {
         scope.spawn(move |scope| {
-            dispatch_fixed(scope, &child, context);
+            dispatch_fixed(scope, &child, context, sink);
         });
     }
 }
@@ -1220,43 +1631,59 @@ fn dispatch_fixed<'scope>(
 /// Read one directory, spawn a task per subdirectory, then report completion.
 ///
 /// Flat tasks inside the scope: the worker stack never grows with tree depth.
-fn dispatch<'scope>(
+fn dispatch<'scope, 'h: 'scope>(
     scope: &Scope<'scope>,
-    jobs: Vec<Arc<PendingDir>>,
+    jobs: Vec<Arc<PendingDir<'h>>>,
     context: &'scope WalkContext,
-    admission: &Arc<Admission<Arc<PendingDir>>>,
+    admission: &Arc<Admission<Arc<PendingDir<'h>>>>,
+    sink: &'scope Sink<'h>,
 ) {
     for dir in jobs {
         let admission = Arc::clone(admission);
         scope.spawn(move |scope| {
             let mut next = Some(dir);
             while let Some(dir) = next.take() {
-                let children = walk(&dir, context);
+                let children = walk(&dir, context, sink);
                 let mut jobs = admission.complete(children);
                 // Continue locally into one ready descendant; only surplus
                 // jobs are offered to other workers. A running directory is
                 // never split, and a retirement returns from this loop.
                 next = jobs.pop();
-                dispatch(scope, jobs, context, &admission);
+                dispatch(scope, jobs, context, &admission, sink);
             }
         });
     }
 }
 
-fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
+fn walk<'h>(
+    dir: &Arc<PendingDir<'h>>,
+    context: &WalkContext,
+    sink: &Sink<'h>,
+) -> Vec<Arc<PendingDir<'h>>> {
     if context.cancelled() {
         // Queued jobs still own a pending token even when no I/O is needed.
-        signal_done(dir, context);
+        signal_done(dir, sink);
         return Vec::new();
     }
-    let mut subdirs: Vec<Arc<PendingDir>> = Vec::new();
-    let mut leaves: Vec<Node> = Vec::new();
+    let mut subdirs: Vec<PendingDir<'h>> = Vec::new();
+    // Gathered first and added to the tree under one lock: every worker
+    // appends to the same buffers.
+    let mut found: Vec<Leaf> = Vec::new();
+    let mut leaves: Vec<Built<'h>> = Vec::new();
     let mut tally = Tally::default();
 
+    let clones =
+        context.options.apfs_clone_metadata && !context.options.apparent_size;
     match list(
         &dir.path,
         context.volume.get().copied(),
-        context.options.apfs_clone_metadata && !context.options.apparent_size,
+        clones,
+        dir.clone_flags,
+        // The bulk listing describes the covered directory at a mount.
+        // With boundaries checked by path, no mounted root reaches the
+        // directory metadata checks and ordinary entries need no stat.
+        context.options.one_filesystem
+            && context.foreign_mounts.get().is_some(),
     ) {
         Ok(entries) => {
             for entry in entries {
@@ -1265,13 +1692,6 @@ fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
                 }
                 match entry {
                     Ok(mut entry) => {
-                        if context.data_services.get() == Some(&dir.path)
-                            && !crate::macos_services::is_service_name(
-                                entry.name(),
-                            )
-                        {
-                            continue;
-                        }
                         match context.classify(&dir.path, &mut entry) {
                             Classified::Subdirectory {
                                 path,
@@ -1286,9 +1706,20 @@ fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
                                     dir.depth + 1,
                                 );
                                 child.followed = followed;
-                                subdirs.push(Arc::new(child));
+                                subdirs.push(child);
                             }
-                            Classified::Entry(node) => {
+                            Classified::Entry(leaf) => {
+                                tally.add(&leaf.facts);
+                                found.push(leaf);
+                            }
+                            Classified::Known(name) => {
+                                let known = context
+                                    .known
+                                    .as_ref()
+                                    .expect("only a known path is reused");
+                                let node = sink
+                                    .builder
+                                    .copy_named(known.tree.root(), &name);
                                 tally.add(&node);
                                 leaves.push(node);
                             }
@@ -1314,6 +1745,9 @@ fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
         }
     }
     tally.flush(&context.progress, &dir.path);
+    let clone_flags = !clones
+        || always_flags()
+        || subdirectory_flags(dir.clone_flags, &found);
 
     // A depth-limited scan still measures what is directly in the directory,
     // it just does not descend further.
@@ -1321,32 +1755,86 @@ fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
         .options
         .max_depth
         .is_none_or(|max_depth| dir.depth < max_depth);
-    // Sized once for the leaves and every subdirectory to come, before any
-    // subdirectory task can push its node: otherwise that first push
-    // doubles a list just sized to the leaves, and the slack stays in the
-    // finished tree. The leaves are copied, not moved: the list they grew
-    // in carries up to twice their size in slack, and moving it in whole
-    // made a home directory walk a second slower (measured, 5 interleaved
-    // pairs).
+    // Allocate exactly once before publishing any child tasks. Files are
+    // packed straight into this block, avoiding an intermediate vector
+    // while retaining only the space the pending directory actually needs.
     let spawned = if descend { subdirs.len() } else { 0 };
     {
         let mut partial = lock(&dir.partial);
-        partial.children.reserve_exact(leaves.len() + spawned);
+        partial
+            .children
+            .reserve_exact(leaves.len() + found.len() + spawned);
         partial.children.extend(leaves);
+        sink.builder.extend_leaves(
+            found
+                .iter()
+                .map(|leaf| (&*leaf.name, leaf.facts, leaf.allocation)),
+            &mut partial.children,
+        );
     }
+    drop(found);
     let mut children = Vec::new();
     if descend {
-        for subdir in subdirs {
+        for mut subdir in subdirs {
             if context.cancelled() {
                 break;
             }
             dir.pending.fetch_add(1, Ordering::AcqRel);
-            children.push(subdir);
+            subdir.clone_flags = clone_flags;
+            children.push(Arc::new(subdir));
         }
     }
 
-    signal_done(dir, context);
+    signal_done(dir, sink);
     children
+}
+
+/// Every listing asks for sharing flags while this is set, as before
+/// listings could leave them out: what tests compare the listing policy
+/// against. Only the cost differs, so other tests may run beside it.
+#[cfg(test)]
+pub(crate) static ALWAYS_FLAGS: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+fn always_flags() -> bool {
+    ALWAYS_FLAGS.load(Ordering::Relaxed)
+}
+
+#[cfg(not(test))]
+const fn always_flags() -> bool {
+    false
+}
+
+/// Whether the subdirectories of a directory whose files are `found`
+/// list their files' APFS sharing flags. Without them a file whose clone
+/// group the scan has not met is read on its own, as most clones are
+/// anyway to measure their private size, and a file never cloned is read
+/// for nothing; per file that read cost about twice what the flags cost a
+/// clone in a listing (on a home Library, a folder of checkouts and agent
+/// worktrees). Folders resemble their parents, so a directory whose files
+/// are clones two to one or more lists its subdirectories without the
+/// flags, and others with. A directory of no files passes its own on.
+fn subdirectory_flags(own: bool, found: &[Leaf]) -> bool {
+    let (mut clones, mut plain) = (0_usize, 0_usize);
+    for leaf in found
+        .iter()
+        .filter(|leaf| leaf.facts.kind == NodeKind::File)
+    {
+        if leaf
+            .allocation
+            .as_ref()
+            .is_some_and(|allocation| allocation.clone.is_some())
+        {
+            clones += 1;
+        } else {
+            plain += 1;
+        }
+    }
+    if clones + plain == 0 {
+        own
+    } else {
+        2 * plain >= clones
+    }
 }
 
 /// Report that one task for `dir` is done: either its own scan, or one of its
@@ -1355,36 +1843,52 @@ fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
 /// This is the whole reason for the `+1` sentinel: a directory is only built
 /// once its own scan *and* every subdirectory task has finished, no matter
 /// which of them lands last.
-fn signal_done(dir: &Arc<PendingDir>, context: &WalkContext) {
+fn signal_done<'h>(dir: &Arc<PendingDir<'h>>, sink: &Sink<'h>) {
     if dir.pending.fetch_sub(1, Ordering::AcqRel) != 1 {
         return;
     }
-    let node = dir.build();
+    let node = dir.build(sink.builder);
     let Some(parent) = &dir.parent else {
-        *lock(&context.root) = Some(node);
+        *lock(&sink.root) = Some(node);
         return;
     };
     lock(&parent.partial).children.push(node);
-    signal_done(parent, context);
+    signal_done(parent, sink);
 }
 
 /// Charge a hardlinked file once, derive every aggregate from the result,
 /// then classify. On the walk's pool: the UI's own work on the global pool
 /// must not queue behind a scan finishing.
 fn finish_tree(
-    mut node: Node,
-    options: &ScanOptions,
+    mut tree: Tree,
+    root: &Path,
+    context: &WalkContext,
     pool: &rayon::ThreadPool,
-) -> Node {
+) -> io::Result<Tree> {
+    if context.require_complete
+        && pool.install(|| tree.par_nodes().any(|node| node.read_error))
+    {
+        return Err(io::Error::other(
+            "Cannot enforce removal limit: part of the selection is unreadable",
+        ));
+    }
     pool.install(|| {
-        if options.dedup_hardlinks {
-            aggregate_deduped(&mut node, options.metric, &Seen::new());
+        if context.options.dedup_hardlinks {
+            aggregate_deduped(
+                &mut tree,
+                context.options.metric,
+                &context.accounted,
+            );
         } else {
-            aggregate(&mut node, options.metric);
+            aggregate(&mut tree, context.options.metric);
         }
-        crate::classify::classify(&mut node);
+        crate::classify::classify_at(
+            &mut tree,
+            root,
+            crate::path_style::PathStyle::Native,
+        );
     });
-    node
+    Ok(tree)
 }
 
 /// A leaf. Its identity is kept only when `track` says the walk could meet
@@ -1395,28 +1899,38 @@ fn leaf_node(
     kind: NodeKind,
     facts: Facts,
     track: bool,
-) -> Node {
-    let mut node = Node::entry(name, kind, facts.size);
+) -> Leaf {
+    let mut node = crate::tree::Facts::entry(kind, facts.size);
     if track {
         node.inode = facts
             .identity
             .and_then(|(device, file)| Some((device, NonZeroU64::new(file)?)));
     }
     node.modified = facts.modified;
-    if facts.clone_info.is_some()
+    let allocation = (facts.clone_info.is_some()
         || facts.links > 1
         || facts.followed
-        || (track && cfg!(unix))
-    {
-        node.allocation = Some(Box::new(crate::sharing::Allocation {
-            bytes: facts.size,
-            identity: facts.identity,
-            links: facts.links,
-            followed: facts.followed,
-            clone: facts.clone_info,
-        }));
+        || (track && cfg!(unix)))
+    .then_some(crate::sharing::Allocation {
+        bytes: facts.size,
+        identity: facts.identity,
+        links: facts.links,
+        followed: facts.followed,
+        clone: facts.clone_info,
+    });
+    Leaf {
+        name,
+        facts: node,
+        allocation,
     }
-    node
+}
+
+/// A leaf as the listing found it, before it goes into the tree.
+#[derive(Clone)]
+struct Leaf {
+    name: Box<str>,
+    facts: crate::tree::Facts,
+    allocation: Option<crate::sharing::Allocation>,
 }
 
 /// Last write time in Unix seconds, from the metadata the walk already has:
@@ -1562,12 +2076,46 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+#[cfg(all(test, target_os = "macos"))]
+mod path_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree::Metric;
+    use crate::tree::{Metric, Node};
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn subdirectories_list_sharing_flags_unless_clones_outnumber_files() {
+        let leaf = |kind, clone: bool| Leaf {
+            name: "leaf".into(),
+            facts: crate::tree::Facts::entry(kind, 4096),
+            allocation: clone.then(|| crate::sharing::Allocation {
+                bytes: 4096,
+                identity: None,
+                links: 1,
+                followed: false,
+                clone: Some(crate::sharing::CloneInfo::default()),
+            }),
+        };
+        let files = |clones: usize, plain: usize| {
+            let mut found: Vec<Leaf> = (0..clones)
+                .map(|_| leaf(NodeKind::File, true))
+                .chain((0..plain).map(|_| leaf(NodeKind::File, false)))
+                .collect();
+            found.push(leaf(NodeKind::Symlink, false));
+            found
+        };
+        // No files: as the directory itself was listed.
+        for own in [false, true] {
+            assert_eq!(subdirectory_flags(own, &files(0, 0)), own);
+        }
+        assert!(subdirectory_flags(false, &files(0, 1)));
+        assert!(subdirectory_flags(false, &files(2, 1)));
+        assert!(!subdirectory_flags(true, &files(3, 1)));
+        assert!(!subdirectory_flags(true, &files(5, 0)));
+    }
 
     #[test]
     fn optional_service_failures_remain_errors_without_requesting_access() {
@@ -1626,22 +2174,273 @@ mod tests {
         assert!(!disabled.apfs_clone_metadata);
     }
 
-    fn scan_dir(root: &Path, options: &ScanOptions) -> Node {
+    #[test]
+    fn default_scan_and_recheck_have_identical_parameters() {
+        let options = ScanOptions::default();
+        assert_eq!(
+            serde_json::to_value(&options).expect("scan options"),
+            serde_json::to_value(options.for_removal()).expect("recheck")
+        );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        // Traversal must cover what removal touches. Every other parameter
+        // is captured from the original scan, rather than silently defaulted.
+        #[test]
+        fn recheck_preserves_all_accounting_and_worker_parameters(
+            apparent_size in proptest::bool::ANY,
+            clones in proptest::bool::ANY,
+            dedup in proptest::bool::ANY,
+            hidden in proptest::bool::ANY,
+            follow in proptest::bool::ANY,
+            one_volume in proptest::bool::ANY,
+            depth in proptest::option::of(0_usize..8),
+            workers in 1_usize..8,
+        ) {
+            let options = ScanOptions {
+                apparent_size, apfs_clone_metadata: clones,
+                follow_links: follow, include_hidden: hidden,
+                one_filesystem: one_volume, max_depth: depth,
+                dedup_hardlinks: dedup,
+                threads: ScanThreads { max_threads: workers,
+                    ..ScanThreads::default() },
+                ..ScanOptions::default()
+            };
+            let complete = options.for_removal();
+            proptest::prop_assert!(!complete.follow_links);
+            proptest::prop_assert!(complete.include_hidden);
+            proptest::prop_assert!(complete.one_filesystem);
+            proptest::prop_assert_eq!(complete.max_depth, None);
+            let mut original = serde_json::to_value(options).expect("options");
+            let mut recheck = serde_json::to_value(complete).expect("recheck");
+            for key in ["follow_links", "include_hidden", "one_filesystem",
+                "max_depth"] {
+                original.as_object_mut().expect("options").remove(key);
+                recheck.as_object_mut().expect("recheck").remove(key);
+            }
+            proptest::prop_assert_eq!(original, recheck);
+        }
+    }
+
+    fn scan_dir(root: &Path, options: &ScanOptions) -> Tree {
         scan(root, options.clone()).expect("scan")
     }
 
-    fn child<'a>(node: &'a Node, name: &str) -> &'a Node {
-        node.children
+    fn child<'a>(node: Node<'a>, name: &str) -> Node<'a> {
+        node.children()
             .iter()
-            .find(|child| &*child.name == name)
+            .find(|child| child.name() == name)
             .unwrap_or_else(|| {
-                panic!("no child named {name} in {:?}", node.name)
+                panic!("no child named {name} in {:?}", node.name())
             })
     }
 
     #[cfg(unix)]
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 24,
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        // The second Data namespace must retain every non-firmlink file,
+        // including new names and private siblings of nested firmlinks.
+        // stat supplies the allocation oracle; aliases and mounts stay out.
+        #[test]
+        fn data_only_files_match_the_allocation_oracle(
+            sizes in proptest::collection::vec(1_usize..20_000, 4),
+            name in "[a-z]{1,12}",
+        ) {
+            let temp = TempDir::new().expect("fixture");
+            let root = temp.path();
+            let data = root.join("Data");
+            let user = write(root, "Users/me/file", 1234);
+            let aliases = ["Users", "System/Library/AssetsV2"];
+            let asset = write(root, "System/Library/AssetsV2/file", 4321);
+            for (alias, original) in aliases.iter().zip([&user, &asset]) {
+                let to = data.join(alias).join("file");
+                fs::create_dir_all(to.parent().unwrap()).unwrap();
+                fs::hard_link(original, to).unwrap();
+            }
+            let mut measured = vec![user, asset];
+            for (path, size) in [
+                format!("Data/.{name}/file"),
+                format!("Data/{name}/file"),
+                "Data/System/Library/private-store/file".into(),
+                "Data/top-level-file".into(),
+            ].iter().zip(sizes) {
+                measured.push(write(root, path, size));
+            }
+            write(root, "Data/nested-mount/file", 9999);
+            let context = Arc::new(WalkContext {
+                known: None,
+                options: ScanOptions { dedup_hardlinks: false, ..ScanOptions::default() },
+                progress: Arc::new(ScanProgress::default()),
+                root_device: Mutex::new(None),
+                foreign_mounts: OnceLock::from(FxHashSet::from_iter([
+                    data.clone(), data.join("nested-mount"),
+                ])),
+                never_scanned: OnceLock::from(aliases.iter()
+                    .map(|alias| data.join(alias)).collect::<FxHashSet<_>>()),
+                data_volume: OnceLock::from(data),
+                data_error: OnceLock::new(),
+                data_device: OnceLock::new(),
+                visited_dirs: Mutex::new(FxHashSet::default()),
+                accounted: Arc::new(Seen::new()),
+                require_complete: false,
+                leaves: None,
+                volume: OnceLock::new(),
+                #[cfg(target_os = "macos")]
+                clone_cache: crate::clone_cache::Cache::default(),
+            });
+            let tree = scan_blocking(root, &context).expect("scan");
+            let expected: u64 = measured.iter().map(|path| {
+                allocated_bytes(&fs::metadata(path).unwrap()).unwrap()
+            }).sum();
+            proptest::prop_assert_eq!(tree.root().bytes, expected);
+            let data = child(tree.root(), "Data");
+            proptest::prop_assert!(data.child_named("Users").is_none());
+            proptest::prop_assert!(
+                data.child_named("nested-mount").is_none()
+            );
+            proptest::prop_assert!(child(child(data, "System"), "Library")
+                .child_named("AssetsV2").is_none());
+        }
+    }
+
+    #[cfg(unix)]
+    fn cached_scan_snapshot(
+        node: Node<'_>,
+        path: &Path,
+    ) -> std::collections::BTreeMap<PathBuf, (u64, u64, u32)> {
+        let mut result = std::collections::BTreeMap::from([(
+            path.to_path_buf(),
+            (node.bytes, node.files, node.dirs),
+        )]);
+        for child in node.children() {
+            result
+                .extend(cached_scan_snapshot(child, &path.join(child.name())));
+        }
+        result
+    }
+
+    #[cfg(unix)]
+    fn assert_cached_firmlink_widening_matches_cold_scan(
+        name: &str,
+        depth: usize,
+        bytes: usize,
+        dedup: bool,
+    ) {
+        let temp = TempDir::new().expect("fixture");
+        let root = temp.path().canonicalize().expect("canonical root");
+        let data = root.join("Data");
+        let cached = data.join("usr");
+        let mut alias = PathBuf::from("usr");
+        for _ in 0..depth {
+            alias.push("nested");
+        }
+        alias.push(name);
+        let ordinary =
+            write(&root, &alias.join("file").to_string_lossy(), bytes);
+        let duplicate = data.join(&alias).join("file");
+        fs::create_dir_all(duplicate.parent().unwrap()).unwrap();
+        fs::hard_link(ordinary, duplicate).unwrap();
+        // Excluding `local` must retain `local-copy` and private siblings.
+        write(
+            &root,
+            &format!(
+                "Data/{}/private",
+                alias.with_file_name(format!("{name}-copy")).display()
+            ),
+            bytes,
+        );
+        write(&cached, "share/private", bytes);
+        let options = ScanOptions {
+            dedup_hardlinks: dedup,
+            apfs_clone_metadata: false,
+            ..ScanOptions::default()
+        };
+        // A direct scan sees the alias legitimately. Only widening to the
+        // System/Data namespace introduces the new exclusion beneath it.
+        let known =
+            Arc::new(scan(&cached, options.clone()).expect("narrow scan"));
+        let wide = |known| {
+            let context = Arc::new(WalkContext {
+                known,
+                options: options.clone(),
+                progress: Arc::new(ScanProgress::default()),
+                root_device: Mutex::new(None),
+                foreign_mounts: OnceLock::from(FxHashSet::from_iter([
+                    data.clone()
+                ])),
+                never_scanned: OnceLock::from(FxHashSet::from_iter([
+                    data.join(&alias)
+                ])),
+                data_volume: OnceLock::from(data.clone()),
+                data_error: OnceLock::new(),
+                data_device: OnceLock::new(),
+                visited_dirs: Mutex::new(FxHashSet::default()),
+                accounted: Arc::new(Seen::new()),
+                require_complete: false,
+                leaves: None,
+                volume: OnceLock::new(),
+                #[cfg(target_os = "macos")]
+                clone_cache: crate::clone_cache::Cache::default(),
+            });
+            scan_blocking(&root, &context).expect("wide scan")
+        };
+        let cold = wide(None);
+        let reused = wide(Some(Known {
+            path: cached,
+            tree: known,
+        }));
+
+        // Compare every path and aggregate, since hardlink deduplication
+        // could otherwise hide duplicate tiles by zeroing their bytes.
+        let cold = cached_scan_snapshot(cold.root(), &root);
+        assert!(!cold.contains_key(&data.join(alias)));
+        assert_eq!(cached_scan_snapshot(reused.root(), &root), cold);
+    }
+
+    #[cfg(unix)]
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 32,
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        #[test]
+        fn cached_firmlink_widening_matches_the_cold_scan_oracle(
+            name in "[a-z]{1,8}",
+            depth in 0_usize..4,
+            bytes in 1_usize..8192,
+            dedup in proptest::bool::ANY,
+        ) {
+            assert_cached_firmlink_widening_matches_cold_scan(
+                &name, depth, bytes, dedup);
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn a_second_data_mount_counts_private_stores_without_its_user_aliases() {
+    fn cached_data_usr_cannot_restore_an_excluded_descendant() {
+        // The shrunk oracle failure, then the reported usr/local shape.
+        for name in ["a", "local"] {
+            assert_cached_firmlink_widening_matches_cold_scan(
+                name, 0, 1, false,
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_second_data_mount_keeps_data_only_files_without_its_user_aliases() {
         let temp = TempDir::new().expect("tempdir");
         let root = temp.path();
         let ordinary = write(root, "Users/me/document", 100);
@@ -1653,37 +2452,80 @@ mod tests {
         let index = write(root, "Data/.Spotlight-V100/index", 4567);
         let duplicate = data.join(".Spotlight-V100/another-name");
         fs::hard_link(&index, &duplicate).expect("hardlink inside a store");
-        write(root, "Data/not-a-private-store/blob", 9999);
+        let other = write(root, "Data/not-a-private-store/blob", 9999);
         let context = Arc::new(WalkContext {
             known: None,
             options: ScanOptions::default(),
             progress: Arc::new(ScanProgress::default()),
             root_device: Mutex::new(None),
-            // The Data mount is an explicit boundary on modern macOS. Only
-            // its whitelisted private stores may cross it.
+            // The Data mount is an explicit boundary on modern macOS;
+            // its firmlink aliases are excluded, not its other contents.
             foreign_mounts: OnceLock::from(FxHashSet::from_iter(
                 [data.clone()],
             )),
-            never_scanned: OnceLock::new(),
-            data_services: OnceLock::from(data),
+            never_scanned: OnceLock::from(FxHashSet::from_iter([
+                data.join("Users")
+            ])),
+            data_volume: OnceLock::from(data),
+            data_error: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
-            root: Mutex::new(None),
+            accounted: Arc::new(Seen::new()),
+            require_complete: false,
+            leaves: None,
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
         });
         let tree = scan_blocking(root, &context).expect("scan");
+        let tree = tree.root();
         let size = |path: &Path| {
             allocated_bytes(&fs::metadata(path).expect("metadata"))
                 .expect("Unix allocation")
         };
-        assert_eq!(tree.bytes, size(&ordinary) + size(&history) + size(&index));
-        let data = child(&tree, "Data");
-        assert_eq!(data.children.len(), 2);
+        assert_eq!(
+            tree.bytes,
+            size(&ordinary) + size(&history) + size(&index) + size(&other)
+        );
+        let data = child(tree, "Data");
+        assert_eq!(data.children().len(), 3);
         assert_eq!(child(data, ".fseventsd").bytes, size(&history));
         assert_eq!(child(data, ".Spotlight-V100").bytes, size(&index));
         assert_eq!(context.progress.snapshot().errors, 0);
+    }
+
+    #[test]
+    fn an_unknown_firmlink_map_reports_incomplete_instead_of_empty_data() {
+        let temp = TempDir::new().unwrap();
+        write(temp.path(), "Data/private/file", 1234);
+        let context = Arc::new(WalkContext {
+            known: None,
+            options: ScanOptions::default(),
+            progress: Arc::new(ScanProgress::default()),
+            root_device: Mutex::new(None),
+            foreign_mounts: OnceLock::new(),
+            never_scanned: OnceLock::new(),
+            data_volume: OnceLock::from(temp.path().join("Data")),
+            data_error: OnceLock::from(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Firmlink map is unavailable",
+            )),
+            data_device: OnceLock::new(),
+            visited_dirs: Mutex::new(FxHashSet::default()),
+            accounted: Arc::new(Seen::new()),
+            require_complete: false,
+            leaves: None,
+            volume: OnceLock::new(),
+            #[cfg(target_os = "macos")]
+            clone_cache: crate::clone_cache::Cache::default(),
+        });
+        let tree = scan_blocking(temp.path(), &context).unwrap();
+        assert!(tree.root().read_error);
+        assert_eq!(context.progress.snapshot().errors, 1);
+        assert!(
+            context.progress.snapshot().messages[0]
+                .contains("Firmlink map is unavailable")
+        );
     }
 
     #[test]
@@ -1729,10 +2571,69 @@ mod tests {
             let mut settings = options();
             settings.threads.max_threads = threads;
             let tree = scan_dir(temp.path(), &settings);
+            let tree = tree.root();
             assert_eq!(tree.files, 96);
             assert_eq!(tree.dirs, 193);
             assert_eq!(tree.bytes, (1..=96).sum::<u64>());
         }
+    }
+
+    /// An occupied global pool must not delay a scan with its own budget.
+    /// A child process isolates the blocked pool from other parallel tests.
+    #[test]
+    fn fixed_scan_finishes_while_the_global_pool_is_busy() {
+        const CHILD: &str = "DISKTREE_TEST_BUSY_GLOBAL_POOL";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("test executable"),
+            )
+            .args([
+                "--exact",
+                "scan::tests::fixed_scan_finishes_while_the_global_pool_is_busy",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("RAYON_NUM_THREADS", "1")
+            .output()
+            .expect("isolated test");
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let temp = TempDir::new().expect("tempdir");
+        // Above relayout's sequential cutoff, so it must schedule work.
+        let files = 16 * 1024;
+        for index in 0..files {
+            fs::File::create(temp.path().join(format!("f{index}")))
+                .expect("file");
+        }
+        let (ready, started) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        rayon::spawn(move || {
+            let _ = ready.send(());
+            let _ = blocked.recv();
+        });
+        started.recv().expect("global worker blocked");
+        let root = temp.path().to_path_buf();
+        let (finished, result) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut settings = options();
+            settings.threads.max_threads = 1;
+            let _ = finished.send(scan(&root, settings));
+        });
+        let scanned = result.recv_timeout(std::time::Duration::from_secs(10));
+        // Release before asserting, including the failing pre-fix case.
+        drop(release);
+        worker.join().expect("scan worker");
+        let tree = scanned
+            .expect("a fixed scan must not wait for the global pool")
+            .expect("scan");
+        assert_eq!(tree.root().files, files);
     }
 
     #[test]
@@ -1749,30 +2650,45 @@ mod tests {
             root_device: Mutex::new(None),
             foreign_mounts: OnceLock::new(),
             never_scanned: OnceLock::new(),
-            data_services: OnceLock::new(),
+            data_volume: OnceLock::new(),
+            data_error: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
-            root: Mutex::new(None),
+            accounted: Arc::new(Seen::new()),
+            require_complete: false,
+            leaves: None,
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
         });
-        let root = Arc::new(PendingDir::new(
-            temp.path().to_path_buf(),
-            file_name(temp.path()),
-            None,
-            0,
-        ));
-        let queued = walk(&root, &context);
-        assert_eq!(queued.len(), 128);
-        assert!(lock(&context.root).is_none());
-        progress.cancel();
-        for dir in queued {
-            assert!(walk(&dir, &context).is_empty());
-        }
-        let tree = lock(&context.root).take().expect("root completed");
-        assert_eq!(tree.children.len(), 128);
-        assert!(tree.children.iter().all(|child| child.children.is_empty()));
+        let tree = Tree::build(|builder| {
+            let sink = Sink {
+                builder,
+                root: Mutex::new(None),
+            };
+            let root = Arc::new(PendingDir::new(
+                temp.path().to_path_buf(),
+                file_name(temp.path()),
+                None,
+                0,
+            ));
+            let queued = walk(&root, &context, &sink);
+            assert_eq!(queued.len(), 128);
+            assert!(lock(&sink.root).is_none());
+            progress.cancel();
+            for dir in queued {
+                assert!(walk(&dir, &context, &sink).is_empty());
+            }
+            let root = lock(&sink.root).take();
+            root.expect("root completed")
+        });
+        let tree = tree.root();
+        assert_eq!(tree.children().len(), 128);
+        assert!(
+            tree.children()
+                .iter()
+                .all(|child| child.children().is_empty())
+        );
     }
 
     #[test]
@@ -1784,12 +2700,13 @@ mod tests {
         write(root, "b/three.bin", 500);
 
         let tree = scan_dir(root, &options());
+        let tree = tree.root();
         assert_eq!(tree.bytes, 3500);
         assert_eq!(tree.files, 3);
         assert_eq!(tree.dirs, 4, "root, a, a/nested, b");
-        assert_eq!(child(&tree, "a").bytes, 3000);
-        assert_eq!(child(child(&tree, "a"), "nested").bytes, 2000);
-        assert_eq!(child(&tree, "b").bytes, 500);
+        assert_eq!(child(tree, "a").bytes, 3000);
+        assert_eq!(child(child(tree, "a"), "nested").bytes, 2000);
+        assert_eq!(child(tree, "b").bytes, 500);
     }
 
     #[test]
@@ -1801,7 +2718,8 @@ mod tests {
         write(root, "medium.bin", 100);
 
         let tree = scan_dir(root, &options());
-        let names: Vec<&str> = tree.children.iter().map(|c| &*c.name).collect();
+        let tree = tree.root();
+        let names: Vec<&str> = tree.children().iter().map(Node::name).collect();
         assert_eq!(names, vec!["large.bin", "medium.bin", "small.bin"]);
     }
 
@@ -1813,6 +2731,7 @@ mod tests {
         write(root, "sub/deep.bin", 300);
 
         let tree = scan_dir(root, &options());
+        let tree = tree.root();
         assert_eq!(tree.own_bytes(), 700);
         assert_eq!(tree.own_files(), 1);
         assert_eq!(tree.bytes, 1000);
@@ -1827,6 +2746,7 @@ mod tests {
         fs::hard_link(&original, root.join("link.bin")).expect("hard link");
 
         let deduped = scan_dir(root, &options());
+        let deduped = deduped.root();
         assert_eq!(deduped.bytes, 4096);
         assert_eq!(deduped.files, 2, "both names still exist");
 
@@ -1837,7 +2757,7 @@ mod tests {
                 ..options()
             },
         );
-        assert_eq!(counted.bytes, 8192);
+        assert_eq!(counted.root().bytes, 8192);
     }
 
     #[test]
@@ -1848,8 +2768,9 @@ mod tests {
         write(root, "visible.bin", 100);
 
         let default = scan_dir(root, &options());
+        let default = default.root();
         assert_eq!(default.bytes, 1000);
-        assert_eq!(child(&default, ".cache").bytes, 900);
+        assert_eq!(child(default, ".cache").bytes, 900);
 
         let without = scan_dir(
             root,
@@ -1858,7 +2779,7 @@ mod tests {
                 ..options()
             },
         );
-        assert_eq!(without.bytes, 100);
+        assert_eq!(without.root().bytes, 100);
     }
 
     /// Explorer's hidden attribute counts as hidden, as `AppData` has it.
@@ -1883,7 +2804,7 @@ mod tests {
                 ..options()
             },
         );
-        assert_eq!(without.bytes, 100);
+        assert_eq!(without.root().bytes, 100);
     }
 
     /// A link to a directory: a symbolic link on Unix, a junction on
@@ -1910,10 +2831,11 @@ mod tests {
         assert!(link_dir(outside.path(), &root.join("link")), "a link");
 
         let tree = scan_dir(root, &options());
+        let tree = tree.root();
         // Only the real file's bytes; the link itself holds just its target
         // string, and its 5000-byte destination is outside this tree.
         assert!(tree.bytes < 200, "{}", tree.bytes);
-        let link = child(&tree, "link");
+        let link = child(tree, "link");
         assert_eq!(link.kind, NodeKind::Symlink);
         assert!(link.bytes < 100, "a link holds only its target string");
     }
@@ -1932,7 +2854,7 @@ mod tests {
                 ..options()
             },
         );
-        assert_eq!(tree.bytes, 42);
+        assert_eq!(tree.root().bytes, 42);
     }
 
     /// Disk usage is what the volume allocated, not the length: whole
@@ -1959,10 +2881,11 @@ mod tests {
         file.sync_all().expect("sync");
         drop(file);
         let tree = scan_dir(temp.path(), &ScanOptions::default());
+        let tree = tree.root();
         assert!(tree.bytes >= 100_000, "{}", tree.bytes);
         assert_eq!(tree.bytes % 512, 0, "{}", tree.bytes);
         let apparent = scan_dir(temp.path(), &options());
-        assert_eq!(apparent.bytes, 100_000);
+        assert_eq!(apparent.root().bytes, 100_000);
     }
 
     #[test]
@@ -1980,14 +2903,15 @@ mod tests {
                 ..options()
             },
         );
+        let tree = tree.root();
         assert_eq!(tree.own_bytes(), 10);
-        let a = child(&tree, "a");
+        let a = child(tree, "a");
         assert_eq!(
             a.bytes, 20,
             "direct files at the cut-off depth still count"
         );
         assert!(
-            a.children.iter().all(|child| !child.is_dir()),
+            a.children().iter().all(|child| !child.is_dir()),
             "descending stopped at depth 1"
         );
         assert_eq!(a.files, 1);
@@ -2003,8 +2927,9 @@ mod tests {
         write(root, "one/huge.bin", 100_000);
 
         let tree = scan_dir(root, &options());
-        assert_eq!(child(&tree, "one").bytes, 100_000);
-        assert_eq!(tree.children[0].name.as_ref(), "one");
+        let tree = tree.root();
+        assert_eq!(child(tree, "one").bytes, 100_000);
+        assert_eq!(tree.children().at(0).name(), "one");
 
         let by_files = scan_dir(
             root,
@@ -2013,8 +2938,9 @@ mod tests {
                 ..options()
             },
         );
-        assert_eq!(by_files.children[0].name.as_ref(), "many");
-        assert_eq!(by_files.children[0].files, 5);
+        let by_files = by_files.root().children().at(0);
+        assert_eq!(by_files.name(), "many");
+        assert_eq!(by_files.files, 5);
     }
 
     #[cfg(unix)]
@@ -2040,19 +2966,23 @@ mod tests {
             root_device: Mutex::new(None),
             foreign_mounts: OnceLock::new(),
             never_scanned: OnceLock::new(),
-            data_services: OnceLock::new(),
+            data_volume: OnceLock::new(),
+            data_error: OnceLock::new(),
             data_device: OnceLock::new(),
             visited_dirs: Mutex::new(FxHashSet::default()),
-            root: Mutex::new(None),
+            accounted: Arc::new(Seen::new()),
+            require_complete: false,
+            leaves: None,
             volume: OnceLock::new(),
             #[cfg(target_os = "macos")]
             clone_cache: crate::clone_cache::Cache::default(),
         });
         let tree = scan_blocking(root, &context).expect("scan still succeeds");
+        let tree = tree.root();
         let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o700));
 
         assert_eq!(tree.bytes, if readable.is_err() { 11 } else { 33 });
-        let node = child(&tree, "locked");
+        let node = child(tree, "locked");
         if readable.is_err() {
             assert!(node.read_error);
             assert!(tree.read_error, "unknown contents affect ancestor totals");
@@ -2061,7 +2991,7 @@ mod tests {
             assert_eq!(
                 crate::macos_services::usage(
                     root,
-                    &tree,
+                    tree,
                     &context.options,
                     &locked
                 ),
@@ -2095,6 +3025,7 @@ mod tests {
             thread::sleep(std::time::Duration::from_millis(1));
         }
         let tree = outcome.expect("the scan finished").expect("a tree");
+        let tree = tree.root();
         assert_eq!(tree.bytes, 3072);
 
         let snapshot = handle.progress.snapshot();
@@ -2150,14 +3081,15 @@ mod tests {
             }
             thread::sleep(std::time::Duration::from_millis(2));
         };
+        let tree = tree.root();
         let reused = tree.child_named("inner").expect("inner is in the tree");
-        assert_eq!(reused.files, known.files, "b.bin was never read");
-        assert_eq!(reused.bytes, known.bytes);
+        assert_eq!(reused.files, known.root().files, "b.bin was never read");
+        assert_eq!(reused.bytes, known.root().bytes);
         assert!(
             tree.child_named("outside.bin").is_some(),
             "the rest was walked"
         );
-        assert_eq!(tree.files, known.files + 1);
+        assert_eq!(tree.files, known.root().files + 1);
     }
 
     /// A real whole-disk scan, run by hand: `cargo test -p disktree-core
@@ -2170,17 +3102,18 @@ mod tests {
         let root = crate::space::volume_root_for(&home).expect("a volume root");
         let started = std::time::Instant::now();
         let tree = scan(&root, ScanOptions::default()).expect("scan");
+        let tree = tree.root();
         println!("root {} in {:.1?}", root.display(), started.elapsed());
         println!(
             "total {} files {}",
             crate::size::human_bytes(tree.bytes),
             tree.files
         );
-        for child in tree.children.iter().take(14) {
+        for child in tree.children().iter().take(14) {
             println!(
                 "  {:>10}  {}",
                 crate::size::human_bytes(child.bytes),
-                child.name
+                child.name()
             );
         }
         let skipped =
@@ -2189,7 +3122,7 @@ mod tests {
         for needle in ["c", "cache", "node_modules", "zzzz"] {
             let started = std::time::Instant::now();
             let found =
-                crate::filter::filter(&tree, &[], needle).expect("needle");
+                crate::filter::filter(tree, &[], needle).expect("needle");
             println!(
                 "filter {needle:?}: {} matches, {} in {:.1?}",
                 found.count,

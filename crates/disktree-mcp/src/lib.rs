@@ -10,8 +10,11 @@
 //! [`Session`] holds what one connected agent knows; [`server`] is the
 //! protocol around it.
 
+mod cargo_outputs;
 pub mod desktop;
+mod outputs;
 pub mod report;
+mod retention;
 pub mod server;
 pub mod session;
 pub mod skills;
@@ -43,7 +46,8 @@ pub fn serve_standalone() -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let server = server::Server::new(Session::standalone());
+        let server =
+            server::Server::new(Session::standalone()).with_saved_size_units();
         let running = server.serve(rmcp::transport::stdio()).await?;
         running.waiting().await?;
         Ok(())

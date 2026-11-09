@@ -30,7 +30,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: "1.97"
   # `0.12.0-pr.12` on a PR, `0.12.0-dev.34` on dispatch. xtask and vpk stamp
   # packages with it; Cargo.toml is left alone so `--locked` still holds.
   PREVIEW_SUFFIX: ${{ github.event.pull_request.number && format('pr.{0}', github.event.pull_request.number) || format('dev.{0}', github.run_number) }}
@@ -71,12 +70,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-apple-darwin, x86_64-apple-darwin
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build PwrDisk.app (universal)
         env:
@@ -225,17 +221,22 @@ jobs:
     env:
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
+      - name: Use runner temporary storage
+        shell: pwsh
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          "TEMP=$env:TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:TMP" >> $env:GITHUB_ENV
+
       - run: git config --global core.autocrlf false
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: ./.github/actions/setup-rust
 
       - name: Build (unsigned)
         run: cargo build --release --locked -p disktree-app
@@ -274,6 +275,15 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
+      - name: Use runner temporary storage
+        shell: pwsh
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          "TEMP=$env:TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:TMP" >> $env:GITHUB_ENV
+
       - name: Download pack input
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

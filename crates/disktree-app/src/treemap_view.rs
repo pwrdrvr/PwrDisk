@@ -12,12 +12,13 @@
 use std::rc::Rc;
 
 use disktree_core::treemap::Rect;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Bounds, ContentMask, Context, Corners, Edges, Font, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, MouseDownEvent, MouseMoveEvent,
     ParentElement as _, Pixels, Point, ScrollWheelEvent, SharedString, Size,
-    StatefulInteractiveElement as _, Styled, TextAlign, TextRun, Window,
-    canvas, div, pattern_slash, px, quad,
+    StatefulInteractiveElement as _, StrikethroughStyle, Styled, TextAlign,
+    TextRun, Window, canvas, div, pattern_slash, px, quad, underline_y_offset,
 };
 use gpui_omarchy::{ActiveTheme, Theme};
 
@@ -47,6 +48,8 @@ pub struct TileDeco {
     pub marked: bool,
     /// Inside another marked directory, so it goes with its parent.
     pub covered: bool,
+    /// Removed since the scan: kept in place, drawn as gone.
+    pub removed: bool,
     pub hovered: bool,
     pub selected: bool,
 }
@@ -76,19 +79,26 @@ pub fn preview(
     window: &Window,
     cx: &Context<'_, Disktree>,
 ) -> impl IntoElement {
-    use disktree_core::tree::{Node, NodeKind};
+    use disktree_core::tree::{Facts, NodeKind, Tree};
     use disktree_core::treemap::{LayoutOptions, layout};
-    let mut root = Node::directory("preview");
     // These are display buckets, never exposed through state.tree/path_at.
-    for entry in &preview.entries {
-        let mut node =
-            Node::entry(entry.name.as_str(), NodeKind::File, entry.bytes);
-        node.files = entry.files;
-        root.children.push(node);
-    }
+    let root = Tree::build(|builder| {
+        let buckets = preview
+            .entries
+            .iter()
+            .map(|entry| {
+                let facts = Facts {
+                    files: entry.files,
+                    ..Facts::entry(NodeKind::File, entry.bytes)
+                };
+                builder.leaf(entry.name.as_str(), facts, None)
+            })
+            .collect();
+        builder.directory("preview", Facts::directory(), None, buckets)
+    });
     let area = app.treemap_size.get();
     let tiles = layout(
-        &root,
+        root.root(),
         &[],
         Rect::new(0., 0., area.width.as_f32(), area.height.as_f32()),
         app.options.metric,
@@ -100,19 +110,10 @@ pub fn preview(
     );
     let mut mosaic = Mosaic::default();
     for tile in tiles {
-        let Some(node) = root.resolve(tile.crumbs()) else {
+        let Some(node) = root.root().resolve(tile.crumbs()) else {
             continue;
         };
-        mosaic.labels.push(Label {
-            text: node.name.to_string(),
-            rect: tile.rect,
-            header: None,
-            depth: 0,
-            dim: false,
-            marked: false,
-            size_text: crate::widgets::short_value(node, app.options.metric),
-        });
-        mosaic.tiles.push(TileDeco {
+        let decoration = TileDeco {
             rect: tile.rect,
             depth: 0,
             category: Category::Other,
@@ -122,9 +123,22 @@ pub fn preview(
             unreadable: false,
             marked: false,
             covered: false,
+            removed: false,
             hovered: false,
             selected: false,
+        };
+        mosaic.labels.push(Label {
+            text: node.name().to_string(),
+            found: None,
+            rect: tile.rect,
+            header: None,
+            depth: 0,
+            dim: false,
+            marked: false,
+            size_text: crate::widgets::short_value(node, app.options.metric),
+            decoration: decoration.clone(),
         });
+        mosaic.tiles.push(decoration);
     }
     mosaic_inner(mosaic, app, window, cx, false)
 }
@@ -153,6 +167,8 @@ fn mosaic_inner(
     } = mosaic;
     let canvas_origin = Rc::clone(&origin);
     let canvas_measured = Rc::clone(&measured);
+    // A hand over a tile a click would open: the selection, clicked again.
+    let opens = interactive && app.click_opens_hovered();
 
     div()
         .id("disktree-treemap")
@@ -163,6 +179,7 @@ fn mosaic_inner(
         .min_w_0()
         .overflow_hidden()
         .bg(theme.inset)
+        .when(opens, Styled::cursor_pointer)
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             if interactive && !hovered {
                 this.on_mouse_leave(cx);
@@ -226,6 +243,7 @@ struct Colors {
     /// Fills per age bucket, then per depth.
     age: Vec<[Hsla; DEPTHS]>,
     marked_fill: Hsla,
+    removed_fill: Hsla,
     /// The surface a filtered-out fill steps back toward.
     inset: Hsla,
 }
@@ -234,7 +252,7 @@ struct Colors {
 const DEPTHS: usize = 5;
 
 /// Every category, in the order [`category_index`] numbers them.
-const CATEGORIES: [Category; 11] = [
+const CATEGORIES: [Category; 15] = [
     Category::Code,
     Category::AgentScratch,
     Category::Toolchain,
@@ -243,8 +261,12 @@ const CATEGORIES: [Category; 11] = [
     Category::Media,
     Category::Documents,
     Category::Cache,
+    Category::Temporary,
+    Category::DiagnosticLogs,
+    Category::Trash,
     Category::FilesystemEvents,
     Category::Spotlight,
+    Category::VirtualMachine,
     Category::Other,
 ];
 
@@ -265,7 +287,7 @@ impl Colors {
                 palette::label_color(theme, 0),
                 palette::label_color(theme, 1),
             ],
-            label_dim: palette::label_color(theme, 1).opacity(0.5),
+            label_dim: theme.secondary,
             hover_border: theme.bright.opacity(0.55),
             selected_border: palette::highlight(theme),
             marked_border: theme.danger,
@@ -290,11 +312,17 @@ impl Colors {
                 })
                 .collect(),
             marked_fill: palette::mix(theme.inset, theme.danger, 0.16),
+            // Almost the surface itself: the space is still drawn where
+            // the scan found it, but nothing is left there to act on.
+            removed_fill: palette::mix(theme.inset, theme.secondary, 0.12),
             inset: theme.inset,
         }
     }
 
     fn fill(&self, tile: &TileDeco) -> Hsla {
+        if tile.removed {
+            return self.removed_fill;
+        }
         // Marked, or inside something marked: it all goes together.
         if tile.marked || tile.covered {
             return self.marked_fill;
@@ -311,6 +339,27 @@ impl Colors {
             Filtered::Holds => palette::mix(fill, self.inset, 0.55),
             Filtered::Out => palette::mix(fill, self.inset, 0.82),
         }
+    }
+
+    fn label_inks(
+        &self,
+        tile: &TileDeco,
+        dim: bool,
+        marked: bool,
+    ) -> (Hsla, Hsla, Hsla) {
+        let fill = self.fill(tile);
+        let preferred = if marked {
+            self.marked_label
+        } else if dim {
+            self.label_dim
+        } else {
+            self.label(tile.depth)
+        };
+        (
+            fill,
+            palette::ink_on(preferred, fill, 4.5),
+            palette::ink_on(self.label_dim, fill, 4.5),
+        )
     }
 
     const fn label(&self, depth: u32) -> Hsla {
@@ -333,6 +382,7 @@ fn paint_tiles(
     // slivers of it showing in the gaps between them.
     let mut outlines: Vec<(u8, Bounds<Pixels>, f32, Hsla)> = Vec::new();
     for tile in tiles {
+        let fill = colors.fill(tile);
         let rect = view.project(tile.rect);
         if rect.w <= 0.5 || rect.h <= 0.5 {
             continue;
@@ -344,7 +394,7 @@ fn paint_tiles(
         window.paint_quad(quad(
             quad_bounds,
             Corners::default(),
-            colors.fill(tile),
+            fill,
             none,
             colors.hover_border,
             solid,
@@ -357,6 +407,7 @@ fn paint_tiles(
         if tile.reclaimable
             && !tile.marked
             && !tile.covered
+            && !tile.removed
             && tile.filtered == Filtered::Shown
         {
             window.paint_quad(quad(
@@ -374,6 +425,7 @@ fn paint_tiles(
         if tile.depth == 0
             && tile.age_bucket.is_none()
             && tile.filtered != Filtered::Out
+            && !tile.removed
         {
             let strip = Bounds::new(
                 quad_bounds.origin,
@@ -401,26 +453,30 @@ fn paint_tiles(
                 ),
                 Size::new(px(4.), px(4.)),
             );
+            let warning = palette::boundary_on(colors.warning, fill, 3.0);
             window.paint_quad(quad(
                 mark,
                 Corners::default(),
-                colors.warning,
+                warning,
                 none,
-                colors.warning,
+                warning,
                 solid,
             ));
         }
 
         // Ranked so the most important ring is painted last, on top.
         let outline = if tile.selected {
-            Some((3, 2.0, colors.selected_border))
+            Some((3, 3.0, colors.selected_border))
         } else if tile.hovered {
             Some((2, 1.0, colors.hover_border))
         } else if tile.marked {
             Some((1, 2.0, colors.marked_border))
         } else {
             None
-        };
+        }
+        .map(|(rank, width, preferred)| {
+            (rank, width, palette::boundary_on(preferred, fill, 3.0))
+        });
         if let Some((rank, width, color)) = outline {
             outlines.push((rank, quad_bounds, width, color));
         }
@@ -482,6 +538,9 @@ fn paint_labels(
     let text_inset = name_size * 0.25;
     let min_width = name_size * 3.3;
     let size_gap = name_size * 0.67;
+    // Strike and underline are read as state, so they stay visible at the
+    // smallest interface zoom rather than thinning to a hairline.
+    let decoration = (name_size * 0.08).max(px(1.));
 
     for label in labels {
         // A subdivided directory's name lives in the band it reserved; a leaf's
@@ -497,13 +556,8 @@ fn paint_labels(
             mask.origin.x + text_padding,
             mask.origin.y + text_inset,
         );
-        let color = if label.marked {
-            colors.marked_label
-        } else if label.dim {
-            colors.label_dim
-        } else {
-            colors.label(label.depth)
-        };
+        let (fill, color, value_color) =
+            colors.label_inks(&label.decoration, label.dim, label.marked);
         // The first level is set in bold in its band: it names a region.
         let weight = if label.depth == 0 && label.header.is_some() {
             FontWeight::BOLD
@@ -518,6 +572,14 @@ fn paint_labels(
                 ..font.clone()
             },
             color,
+            // Glyph backgrounds keep hatch out of both names and values.
+            background_color: Some(fill),
+            // Marked, or going with a mark: struck through, the usual sign
+            // for something on its way out, and one that costs no width.
+            strikethrough: label.marked.then_some(StrikethroughStyle {
+                thickness: decoration,
+                color: Some(color),
+            }),
             ..TextRun::default()
         };
         let line = text_system.shape_line(
@@ -538,6 +600,36 @@ fn paint_labels(
                     window,
                     cx,
                 );
+                // The part of a name the find text matched is underlined, so
+                // a match reads as one without its colour. Painted here, not
+                // as a text run's underline: GPUI sets that below the
+                // baseline, which the slim band of a deeper directory clips
+                // away. This one rises to stay inside the label's region.
+                if let Some(found) = label
+                    .found
+                    .clone()
+                    .filter(|found| found.end <= label.text.len())
+                {
+                    let left = origin.x + line.x_for_index(found.start);
+                    let right = origin.x + line.x_for_index(found.end);
+                    let top = underline_top(
+                        origin.y
+                            + underline_y_offset(
+                                name_line_height,
+                                line.ascent,
+                                line.descent,
+                            ),
+                        mask.origin.y + mask.size.height,
+                        decoration,
+                    );
+                    window.paint_quad(gpui_kit::fill(
+                        Bounds::new(
+                            Point::new(left, top),
+                            Size::new(right - left, decoration),
+                        ),
+                        color,
+                    ));
+                }
 
                 if label.size_text.is_empty() {
                     return;
@@ -546,7 +638,8 @@ fn paint_labels(
                 let size_run = TextRun {
                     len: label.size_text.len(),
                     font: font.clone(),
-                    color: colors.label_dim,
+                    color: value_color,
+                    background_color: Some(fill),
                     ..TextRun::default()
                 };
                 let size_line = text_system.shape_line(
@@ -610,6 +703,12 @@ fn paint_labels(
     }
 }
 
+/// The top of a find match's underline: where GPUI would put it, raised
+/// as far as needed to stay inside the region the label may draw in.
+fn underline_top(natural: Pixels, bottom: Pixels, thickness: Pixels) -> Pixels {
+    natural.min(bottom - thickness)
+}
+
 fn to_window(rect: &Rect, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
     Bounds::new(
         Point::new(bounds.origin.x + px(rect.x), bounds.origin.y + px(rect.y)),
@@ -624,6 +723,104 @@ fn rem_px(rems: f32, rem_size: Pixels) -> Pixels {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercise the production fill/ink path, including the deeper age ramp,
+    /// filtered and marked combinations the upstream diagnostic omitted.
+    #[test]
+    fn actual_tile_states_keep_text_and_boundaries_readable() {
+        let mut custom = Theme::flexoki_light();
+        custom.bright = gpui_kit::rgb(0x0088_8888).into();
+        custom.foreground = custom.bright;
+        custom.secondary = custom.bright;
+        custom.warning = custom.bright;
+        custom.danger = custom.bright;
+        for theme in [Theme::tokyo_night(), Theme::flexoki_light(), custom] {
+            let colors = Colors::new(&theme);
+            for category in CATEGORIES {
+                for age_bucket in std::iter::once(None).chain((0..5).map(Some))
+                {
+                    for depth in 0..=4 {
+                        for filtered in
+                            [Filtered::Shown, Filtered::Holds, Filtered::Out]
+                        {
+                            for (marked, covered, removed) in [
+                                (false, false, false),
+                                (true, false, false),
+                                (false, true, false),
+                                (false, false, true),
+                            ] {
+                                let tile = TileDeco {
+                                    rect: Rect::new(0., 0., 300., 200.),
+                                    depth,
+                                    category,
+                                    age_bucket,
+                                    reclaimable: true,
+                                    filtered,
+                                    unreadable: true,
+                                    marked,
+                                    covered,
+                                    removed,
+                                    hovered: true,
+                                    selected: true,
+                                };
+                                let (fill, name, value) = colors.label_inks(
+                                    &tile,
+                                    filtered == Filtered::Out || removed,
+                                    marked || covered,
+                                );
+                                for ink in [name, value] {
+                                    assert!(
+                                        palette::contrast(ink, fill) >= 4.5,
+                                        "{category:?} age {age_bucket:?} \
+                                         depth {depth} {filtered:?} marked \
+                                         {marked} covered {covered} removed \
+                                         {removed}"
+                                    );
+                                    assert!(
+                                        (ink.a - 1.0).abs() < f32::EPSILON,
+                                        "text never relies on dim alpha"
+                                    );
+                                }
+                                for preferred in [
+                                    colors.selected_border,
+                                    colors.hover_border,
+                                    colors.marked_border,
+                                    colors.warning,
+                                ] {
+                                    assert!(
+                                        palette::contrast(
+                                            palette::boundary_on(
+                                                preferred, fill, 3.0
+                                            ),
+                                            fill
+                                        ) >= 3.0
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let fill = palette::highlight(&theme);
+            assert!(
+                palette::contrast(palette::on_highlight(&theme), fill) >= 4.5
+            );
+            assert!(
+                palette::contrast(
+                    palette::ink_on(theme.secondary, theme.background, 4.5),
+                    theme.background
+                ) >= 4.5
+            );
+        }
+    }
+
+    /// A slim band would clip GPUI's own underline position, so the
+    /// underline rises to stay inside; where there is room it is unmoved.
+    #[test]
+    fn a_find_underline_stays_inside_its_label() {
+        assert_eq!(underline_top(px(17.), px(16.), px(1.)), px(15.));
+        assert_eq!(underline_top(px(17.), px(22.), px(1.)), px(17.));
+    }
 
     #[test]
     fn named_categories_use_their_own_paint_colors() {

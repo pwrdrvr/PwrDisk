@@ -67,13 +67,14 @@ never permits grouping or cross-file metadata reuse.
 
 An 8 MiB original and two full clones retain 24 MiB of listed allocation.
 Marking only the two copies estimates 0 B. Marking all three estimates
-8 MiB, once, before snapshot/open-file effects. A retained hardlink prevents
+0 to 8 MiB, partial: a modified clone with another ID can retain shared
+blocks even outside the scan. A retained hardlink prevents
 crediting its inode, even if that inode owns the tree's nonzero weight.
 Followed symlinks cannot authorize freeing their targets' file data.
 
 The private-size attribute measures the data fork. In the real resource-fork
 fixture it remains zero while all-fork allocation grows by 4 KiB. The
-complete clone group's range is therefore 8 MiB to 8 MiB + 4 KiB; the lone
+complete clone group's range is therefore 0 to 8 MiB + 4 KiB; the lone
 copy's range is 0 to 4 KiB. That unmeasured fork allocation never inflates the
 meter's lower estimate. Bounds describe scan observations, not guaranteed
 changes to volume free space: snapshots, open files and filesystem changes

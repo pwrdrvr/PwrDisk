@@ -16,7 +16,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use disktree_core::classify::Category;
 use disktree_core::insights::{Candidate, worth_a_look};
-use disktree_core::query::{self, Kind};
+#[cfg(test)]
+use disktree_core::query;
+use disktree_core::query::Kind;
 use disktree_core::removal::{
     Plan, Target, detect_trash_backend, normalize, plan,
 };
@@ -24,9 +26,10 @@ use disktree_core::scan::{ScanHandle, ScanOptions};
 use disktree_core::sharing::{self, Estimate};
 use disktree_core::size::{human_bytes, human_count, share};
 use disktree_core::space::{
-    SpaceInfo, device_for, space_info, volume_root_for, volumes,
+    SpaceInfo, device_for, display_space_info as space_info, volume_root_for,
+    volumes,
 };
-use disktree_core::tree::{Node, path_of};
+use disktree_core::tree::{Node, Tree, path_of};
 use disktree_link::{
     ConfirmedRemoval, FindRequest, FoundList, Insight, Link, Listing,
     MarkRequest, RemovalChoice, RemovalPreview, Request, Response,
@@ -35,7 +38,10 @@ use disktree_link::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::report::{age, children, describe, display, matches};
+use crate::report::{age, children, clone_summary, describe, display, matches};
+
+#[cfg(all(test, target_os = "macos"))]
+mod ranking_tests;
 
 /// The measurement context survives a window scan being reused by an agent.
 fn scan_context(tree: &TreeSummary) -> String {
@@ -64,6 +70,20 @@ const fn allocation_caveat() -> &'static str {
     } else {
         ""
     }
+}
+
+/// Windows separators stay readable; controls cannot disguise another row.
+fn approval_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                character.escape_default().to_string()
+            } else {
+                character.to_string()
+            }
+        })
+        .collect()
 }
 
 /// How many findings a scan report lists.
@@ -124,7 +144,7 @@ pub type Launcher = Box<dyn Fn(&Path) -> io::Result<()> + Send>;
 #[derive(Debug)]
 pub struct Scan {
     pub root: PathBuf,
-    pub tree: Arc<Node>,
+    pub tree: Arc<Tree>,
     pub options: ScanOptions,
     /// Unix seconds when the tree landed.
     pub at: i64,
@@ -190,6 +210,47 @@ pub struct LsParams {
     pub show: bool,
 }
 
+/// Ranking metric; values remain scan-derived, before retention.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, serde::Serialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum RankBy {
+    #[default]
+    Private,
+    ReclaimLower,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RankParams {
+    /// Explicit candidates from one completed scan; 1 to 50 paths.
+    /// Relative paths use the reported session path base; `~` uses the
+    /// server's home. Without a path base, use absolute paths or `~/…`.
+    pub paths: Vec<PathBuf>,
+    /// Private allocation (default), or standalone reclaim lower bound.
+    /// Neither metric predicts immediate free space; null sorts last.
+    #[serde(default)]
+    pub by: RankBy,
+}
+
+/// A hypothetical selection; the marked cart is never used or modified.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EstimateParams {
+    /// 1 to 200 paths from one completed scan. Overlaps are covered once.
+    /// Relative paths use the reported session path base; `~` uses the
+    /// server's home. Without a path base, use absolute paths or `~/…`.
+    pub paths: Vec<PathBuf>,
+    /// Group retained clones by direct child directories of this scanned
+    /// directory. Default: the selected paths' common parent. Widen this
+    /// scope to search elsewhere in the scan; no owner discovery outside it.
+    /// Relative paths use the reported session path base.
+    pub peer_scope: Option<PathBuf>,
+    /// Maximum directory peers, default 10, at most 20. Zero skips peers.
+    pub peer_limit: Option<usize>,
+}
+
 /// What kind of entry `pwrdisk_find` matches; [`Kind`] as a parameter.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq,
@@ -226,6 +287,12 @@ pub enum CategoryName {
     Media,
     Documents,
     Cache,
+    Temporary,
+    DiagnosticLogs,
+    Trash,
+    Fsevents,
+    Spotlight,
+    VirtualMachines,
     Other,
 }
 
@@ -240,6 +307,12 @@ impl From<CategoryName> for Category {
             CategoryName::Media => Self::Media,
             CategoryName::Documents => Self::Documents,
             CategoryName::Cache => Self::Cache,
+            CategoryName::Temporary => Self::Temporary,
+            CategoryName::DiagnosticLogs => Self::DiagnosticLogs,
+            CategoryName::Trash => Self::Trash,
+            CategoryName::Fsevents => Self::FilesystemEvents,
+            CategoryName::Spotlight => Self::Spotlight,
+            CategoryName::VirtualMachines => Self::VirtualMachine,
             CategoryName::Other => Self::Other,
         }
     }
@@ -251,6 +324,7 @@ impl From<CategoryName> for Category {
 pub enum RemovalModeName {
     Trash,
     Permanent,
+    OwnerCleanup,
 }
 
 impl From<RemovalModeName> for RemovalChoice {
@@ -258,15 +332,65 @@ impl From<RemovalModeName> for RemovalChoice {
         match mode {
             RemovalModeName::Trash => Self::Trash,
             RemovalModeName::Permanent => Self::Permanent,
+            RemovalModeName::OwnerCleanup => Self::OwnerCleanup,
+        }
+    }
+}
+
+/// The person's choice for one marked path in a cache cleanup.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupActionName {
+    /// Do nothing to this path.
+    Skip,
+    /// Run exactly the owner command the proposal showed.
+    Owner,
+    /// Delete exactly this path directly, without its owner. Only when the
+    /// person chose it for this path; never suggest it on your own.
+    DeleteFiles,
+}
+
+impl From<CleanupActionName> for disktree_core::cleanup::Decision {
+    fn from(action: CleanupActionName) -> Self {
+        match action {
+            CleanupActionName::Skip => Self::Skip,
+            CleanupActionName::Owner => Self::Owner,
+            CleanupActionName::DeleteFiles => Self::DeleteFiles,
         }
     }
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct CleanupDecisionParam {
+    /// A marked path, exactly as the proposals listed it.
+    pub path: PathBuf,
+    pub action: CleanupActionName,
+}
+
+/// How Delete files removes. No default: the person picks.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesModeName {
+    Trash,
+    Permanent,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RemovalPreviewParams {
-    /// Required: trash (possibly recoverable) or permanent (cannot be undone).
+    /// Required: `owner_cleanup` for recognized caches, trash or permanent for
+    /// ordinary paths. Without `decisions`, `owner_cleanup` lists one
+    /// proposal per marked path and cannot be confirmed.
     pub mode: RemovalModeName,
+    /// `owner_cleanup` only: the person's choice for every marked path,
+    /// each named exactly once.
+    #[serde(default)]
+    pub decisions: Option<Vec<CleanupDecisionParam>>,
+    /// `owner_cleanup` only, and required when any decision is
+    /// `delete_files`: trash or permanent, as the person chose.
+    #[serde(default)]
+    pub delete_files_mode: Option<FilesModeName>,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
@@ -274,13 +398,22 @@ pub struct RemovalPreviewParams {
 pub struct RemoveParams {
     /// Single-use ID returned by `pwrdisk_removal_preview`. Expires in 5 minutes.
     pub preview_id: String,
-    /// Must match the mode the user explicitly approved from the preview.
+    /// Exact mode from the preview, presented for human approval.
     pub mode: RemovalModeName,
-    /// Exact ordered path list returned by the preview and approved by the user.
+    /// Exact ordered path list from the preview, presented for human approval.
     pub paths: Vec<PathBuf>,
-    /// Only after explicit user confirmation: MOVE TO TRASH or PERMANENTLY DELETE,
-    /// matching the preview. Approval to mark is not approval to remove.
+    /// The exact operation text the preview returned. This binds the intent;
+    /// it is not human consent. The MCP client asks the person separately
+    /// before executing. Examples: MOVE TO TRASH, PERMANENTLY DELETE,
+    /// RUN OWNER CLEANUP or RUN OWNER CLEANUP AND DELETE CACHE FILES.
+    /// Marking is not approval.
     pub confirmation: String,
+    /// Rescan once the removal finishes. Default false, so the next batch
+    /// can be found and marked at once; a rescan of a large volume takes
+    /// minutes. Until one, removed paths are still listed, and the window
+    /// refuses to mark them.
+    #[serde(default)]
+    pub rescan: bool,
 }
 
 /// What `pwrdisk_find` takes.
@@ -328,6 +461,7 @@ impl FindParams {
             before: self
                 .older_than_days
                 .map(|days| now - i64::from(days) * 86_400),
+            output_roots: false,
             limit: self.limit.unwrap_or(25).clamp(1, MAX_LIMIT),
         }
     }
@@ -378,7 +512,7 @@ pub struct Session {
     /// When a window was last started from here, so one that is slow to
     /// come up is not started twice.
     launched: Option<Instant>,
-    pending_removal: Option<RemovalPreview>,
+    pending_removal: Option<(RemovalPreview, Instant)>,
     window_policy: WindowPolicy,
 }
 
@@ -630,12 +764,13 @@ impl Session {
         );
         let _ = writeln!(out, " \u{00b7} {}", scan_context(tree));
         if let Some(space) = facts.space {
-            let used = space.total.saturating_sub(space.free);
+            let used = space.display_used();
             let _ = writeln!(
                 out,
-                "Volume {}{}: {} free of {}, {:.0}% used. This scan holds \
-                 {:.0}% of what is used; the rest is outside {} or is not \
-                 files (snapshots, other volumes, swap).",
+                "Volume {}{}: {} available of {}, {:.0}% used. This scan is \
+                 {:.0}% of what is used. File allocation and OS usage \
+                 measure different things; files outside {} and filesystem \
+                 metadata also affect disk use.",
                 volume_root_for(&facts.root).map_or_else(
                     || "?".to_string(),
                     |root| root.display().to_string()
@@ -644,7 +779,7 @@ impl Session {
                     .device
                     .as_deref()
                     .map_or_else(String::new, |device| format!(" ({device})")),
-                human_bytes(space.available),
+                human_bytes(space.display_available()),
                 human_bytes(space.total),
                 share(used, space.total.max(1)),
                 share(tree.bytes, used.max(1)),
@@ -652,6 +787,9 @@ impl Session {
             );
         }
         out.push_str(allocation_caveat());
+        if let Some(line) = clone_summary(&facts.top.entry) {
+            out.push_str(&line);
+        }
         out.push_str("Top level, largest first:\n");
         out.push_str(&children(&facts.top, now));
         if !facts.insights.is_empty() {
@@ -736,15 +874,16 @@ impl Session {
         let relative = path
             .strip_prefix(&scan.root)
             .map_err(|_| "unreachable: prefix was checked".to_string())?;
-        let (crumbs, node) = scan.tree.descend(relative).ok_or_else(|| {
-            format!(
-                "{} is not in the scan of {}: it may be new, hidden, below \
+        let (crumbs, node) =
+            scan.tree.root().descend(relative).ok_or_else(|| {
+                format!(
+                    "{} is not in the scan of {}: it may be new, hidden, below \
                  the depth limit, or on another filesystem. Scan again if \
                  it should be there.",
-                self.show(&path),
-                self.show(&scan.root)
-            )
-        })?;
+                    self.show(&path),
+                    self.show(&scan.root)
+                )
+            })?;
         Ok(Located {
             scan,
             path,
@@ -803,10 +942,148 @@ impl Session {
         let found = self.locate(path)?;
         Ok(Listing::of(
             &found.scan.root,
-            found.scan.tree.bytes,
+            found.scan.tree.root().bytes,
             &found.path,
             found.node,
             limit,
+        ))
+    }
+
+    /// Estimate without adopting or handing over marks from either side.
+    fn estimate_report_for(
+        &self,
+        params: &EstimateParams,
+    ) -> Result<disktree_core::planning::Report, String> {
+        use disktree_core::planning::{self, Context};
+        if params.paths.is_empty() || params.paths.len() > planning::MAX_PATHS {
+            return Err(format!("Supply 1 to {} paths.", planning::MAX_PATHS));
+        }
+        let paths = params
+            .paths
+            .iter()
+            .map(|p| self.absolute(p))
+            .collect::<Result<Vec<_>, _>>()?;
+        let peer_scope = params
+            .peer_scope
+            .as_ref()
+            .map(|p| self.absolute(p))
+            .transpose()?;
+        let peer_limit =
+            params.peer_limit.unwrap_or(10).min(planning::MAX_PEERS);
+        // A normal connection hands over marks and Hello clears an intent.
+        // This independent State/Estimate exchange does neither and never
+        // adopts window marks or falls back to stale local trees on failure.
+        let report = if let Some((mut link, _)) = self.outputs_link()? {
+            match link
+                .call(&Request::Estimate {
+                    paths,
+                    peer_scope,
+                    peer_limit,
+                })
+                .map_err(|e| e.to_string())?
+            {
+                Response::Estimate(report) => report,
+                Response::Error { message } => return Err(message),
+                other => return Err(unexpected(&other)),
+            }
+        } else {
+            if self.link.is_some() || self.window.is_some() {
+                return Err("The linked window is unavailable; reconnect before estimating its tree.".into());
+            }
+            let scan = self
+                .scans
+                .iter()
+                .rev()
+                .find(|scan| {
+                    paths.iter().all(|path| path.starts_with(&scan.root))
+                })
+                .or_else(|| {
+                    self.scans
+                        .iter()
+                        .rev()
+                        .find(|scan| paths[0].starts_with(&scan.root))
+                })
+                .or_else(|| self.scans.last())
+                .ok_or_else(|| {
+                    "Nothing is scanned yet. Call pwrdisk_scan first."
+                        .to_string()
+                })?;
+            planning::estimate(
+                &scan.tree,
+                Context::of(
+                    &scan.root,
+                    &scan.options,
+                    scan.at,
+                    scan.unreadable,
+                ),
+                &paths,
+                peer_scope.as_deref(),
+                peer_limit,
+            )?
+        };
+        Ok(report)
+    }
+
+    pub fn estimate_paths(
+        &self,
+        params: &EstimateParams,
+    ) -> Result<String, String> {
+        let report = self.estimate_report_for(params)?;
+        let json =
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+        Ok(format!(
+            "Read-only hypothetical selection; marks, scan root, navigation and removal intents are unchanged. All byte values are bytes. listed_bytes is apparent logical size only when context.apparent_size=true; otherwise it is reported allocation including repeated clone allocation. private_allocation is scan-derived, and reclaim is the selected union before retention. {}\n{json}\nPeer rows are alternatives, not additive savings. Additional bounds subtract the original selection's opposite bound. with_all_returned_peers evaluates their union once. Peers are clone-holder directories to inspect, not removal recommendations. Clone IDs cannot enumerate all extent owners, particularly after modification. references_not_seen_in_scan counts unresolved references without owner paths, never known peers; filtered or truncated scans cannot establish that count. Peer candidates are direct children of peers.scope; widen peer_scope explicitly to inspect another part of this scan.",
+            retention_notice()
+        ))
+    }
+
+    /// Rank explicit candidates without marks or clone-peer discovery.
+    pub fn rank(&self, params: &RankParams) -> Result<String, String> {
+        if params.paths.is_empty() || params.paths.len() > 50 {
+            return Err(
+                "Supply 1 to 50 candidate paths from one complete scan.".into(),
+            );
+        }
+        let selection = self.estimate_report_for(&EstimateParams {
+            paths: params.paths.clone(),
+            peer_scope: None,
+            peer_limit: Some(0),
+        })?;
+        let mut candidates = Vec::new();
+        for path in &params.paths {
+            let report = self.estimate_report_for(&EstimateParams {
+                paths: vec![path.clone()],
+                peer_scope: None,
+                peer_limit: Some(0),
+            })?;
+            if report.context != selection.context {
+                return Err("Scan context changed during ranking; inspect status and rank again.".into());
+            }
+            candidates.push(report);
+        }
+        let candidates: Vec<_> = rank_candidates(candidates, params.by)
+            .into_iter()
+            .map(|candidate| {
+                let report = candidate.estimate;
+                serde_json::json!({
+                    "value": candidate.value,
+                    "paths": report.accepted,
+                    "refused": report.refused,
+                    "listed_bytes": report.listed_bytes,
+                    "apparent_size": report.context.apparent_size,
+                    "private_allocation": report.private_allocation,
+                    "reclaim": report.reclaim,
+                    "metadata_complete": report.metadata_complete,
+                    "scan_complete": report.scan_complete,
+                })
+            })
+            .collect();
+        let json = serde_json::to_string_pretty(&serde_json::json!({
+            "rank_by": params.by, "candidates": candidates, "selection_union": selection,
+        })).map_err(|e| e.to_string())?;
+        Ok(format!(
+            "Read-only candidate ranking, known values descending; null is unavailable, never zero. Candidate estimates are alternatives, not additive; selection_union evaluates the full set once. Private allocation is not immediate recovered space. Reclaim lower bounds are before retention, not guaranteed savings. Ownership and cleanup method are not established by ranking: inspect classification with pwrdisk_find/ls, prefer the owning tool, and check worktree status before proposing it. Never remove worktrees just to unlock clone groups.\n{json}\n{}",
+            retention_notice()
         ))
     }
 
@@ -832,6 +1109,9 @@ impl Session {
                 human_bytes(listing.root_bytes)
             );
         }
+        if let Some(line) = clone_summary(&listing.entry) {
+            out.push_str(&line);
+        }
         out.push_str(&children(&listing, now));
         if params.show {
             out.push_str("Window: not shown. Listings never move the view; use pwrdisk_show only when the user asks to see a path.\n");
@@ -851,10 +1131,15 @@ impl Session {
                 other => Err(unexpected(&other)),
             };
         }
-        let filter = request.filter()?;
-        let scope: Vec<(PathBuf, &Node)> = if let Some(path) = &request.path {
-            let located = self.locate(path)?;
-            vec![(located.path, located.node)]
+        self.found_local(request)
+    }
+
+    fn find_scope(
+        &self,
+        path: Option<&Path>,
+    ) -> Result<Vec<Located<'_>>, String> {
+        if let Some(path) = path {
+            Ok(vec![self.locate(path)?])
         } else {
             if self.scans.is_empty() {
                 return Err("Nothing is scanned yet. Call pwrdisk_scan first."
@@ -862,7 +1147,8 @@ impl Session {
             }
             // A scan inside another one holds the same entries again; the
             // outer scan already counts them.
-            self.scans
+            Ok(self
+                .scans
                 .iter()
                 .filter(|scan| {
                     !self.scans.iter().any(|outer| {
@@ -870,13 +1156,20 @@ impl Session {
                             && scan.root.starts_with(&outer.root)
                     })
                 })
-                .map(|scan| (scan.root.clone(), &*scan.tree))
-                .collect()
-        };
+                .map(|scan| Located {
+                    scan,
+                    path: scan.root.clone(),
+                    node: scan.tree.root(),
+                    crumbs: Vec::new(),
+                })
+                .collect())
+        }
+    }
+
+    fn found_local(&self, request: &FindRequest) -> Result<FoundList, String> {
         let mut all = FoundList::default();
-        for (path, node) in &scope {
-            let found =
-                FoundList::of(&query::find(path, node, &filter, request.limit));
+        for located in self.find_scope(request.path.as_deref())? {
+            let found = request.results(&located.path, located.node)?;
             all.matches.extend(found.matches);
             all.count += found.count;
             all.bytes += found.bytes;
@@ -885,6 +1178,440 @@ impl Session {
             .sort_by_key(|found| std::cmp::Reverse(found.entry.bytes));
         all.matches.truncate(request.limit);
         Ok(all)
+    }
+
+    /// Read a separate link without Hello, mark handover or navigation.
+    fn outputs_link(&self) -> Result<Option<(Link, State)>, String> {
+        if self.window_policy == WindowPolicy::Disabled {
+            return Ok(None);
+        }
+        let Ok(mut link) = Link::connect_at(&self.socket) else {
+            if self.window_policy == WindowPolicy::Required
+                || self.link.is_some()
+                || self.window.is_some()
+            {
+                return Err("The linked window is unavailable; reconnect before reading its tree.".into());
+            }
+            return Ok(None);
+        };
+        let state =
+            match link.call(&Request::State).map_err(|e| e.to_string())? {
+                Response::State(state) => state,
+                other => return Err(unexpected(&other)),
+            };
+        if state.version != VERSION {
+            return Err(disktree_link::protocol_mismatch(
+                state.version,
+                VERSION,
+            ));
+        }
+        if let Some(host) = &state.remote {
+            return Err(disktree_link::remote_refusal(host));
+        }
+        if state.scanning || state.tree.is_none() {
+            return Err(
+                "Wait for a completed window scan before querying outputs."
+                    .into(),
+            );
+        }
+        Ok(Some((link, state)))
+    }
+
+    /// Keep the snapshot that produced each match. Looking up its path later
+    /// could select an overlapping scan with different measurements/options.
+    fn output_matches(
+        &self,
+        source: &mut Option<(Link, State)>,
+        request: &FindRequest,
+    ) -> Result<OutputMatches, String> {
+        use crate::outputs::ScanContext;
+        let mut all = OutputMatches::default();
+        let scopes = if let Some((link, state)) = source {
+            let found = match link
+                .call(&Request::Find(request.clone()))
+                .map_err(|e| e.to_string())?
+            {
+                Response::Found(found) => found,
+                Response::Error { message } => return Err(message),
+                other => return Err(unexpected(&other)),
+            };
+            vec![(found, ScanContext::try_from(&*state)?)]
+        } else {
+            self.find_scope(request.path.as_deref())?
+                .into_iter()
+                .map(|located| {
+                    Ok((
+                        request.results(&located.path, located.node)?,
+                        ScanContext::from(located.scan),
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?
+        };
+        let mut count = 0;
+        for (found, context) in scopes {
+            count += found.count;
+            all.matches.extend(found.matches.into_iter().map(|found| {
+                OutputMatch {
+                    found,
+                    context: context.clone(),
+                }
+            }));
+        }
+        all.matches
+            .sort_by_key(|item| std::cmp::Reverse(item.found.entry.bytes));
+        all.matches.truncate(request.limit);
+        all.truncated = count > all.matches.len();
+        Ok(all)
+    }
+
+    fn output_listing(
+        &self,
+        source: &mut Option<(Link, State)>,
+        path: &Path,
+    ) -> Result<(Listing, crate::outputs::ScanContext), String> {
+        use crate::outputs::ScanContext;
+        if let Some((link, state)) = source {
+            match link
+                .call(&Request::Ls {
+                    path: path.into(),
+                    limit: 0,
+                })
+                .map_err(|e| e.to_string())?
+            {
+                Response::Listing(listing) => {
+                    Ok((listing, ScanContext::try_from(&*state)?))
+                }
+                Response::Error { message } => Err(message),
+                other => Err(unexpected(&other)),
+            }
+        } else {
+            let found = self.locate(path)?;
+            Ok((
+                Listing::of(
+                    &found.scan.root,
+                    found.scan.tree.root().bytes,
+                    &found.path,
+                    found.node,
+                    0,
+                ),
+                ScanContext::from(found.scan),
+            ))
+        }
+    }
+
+    fn cargo_candidates(
+        &self,
+        source: &mut Option<(Link, State)>,
+        path: Option<&Path>,
+    ) -> Result<(std::collections::BTreeMap<PathBuf, Vec<PathBuf>>, bool), String>
+    {
+        use crate::outputs::MARKER_LIMIT;
+        let mut roots =
+            std::collections::BTreeMap::<PathBuf, Vec<PathBuf>>::new();
+        let mut truncated = false;
+        for (name, kind) in
+            [(".rustc_info.json", "file"), (".fingerprint", "dir")]
+        {
+            let request = FindRequest {
+                path: path.map(Path::to_path_buf),
+                kind: kind.into(),
+                name: Some(name.into()),
+                limit: MARKER_LIMIT,
+                ..FindRequest::default()
+            };
+            let found = self.output_matches(source, &request)?;
+            truncated |= found.truncated;
+            for item in found.matches {
+                let boundary = path.unwrap_or(&item.context.root);
+                let item = item.found;
+                if item.entry.name != name || item.entry.removed {
+                    continue;
+                }
+                let Some(parent) = item.path.parent() else {
+                    continue;
+                };
+                if kind == "file" {
+                    if parent.starts_with(boundary) {
+                        roots.entry(parent.into()).or_default();
+                    }
+                } else {
+                    // Native and cross-compilation profiles; metadata, not
+                    // a profile/triple spelling, decides which root is real.
+                    for root in parent.ancestors().skip(1).take(2) {
+                        if root.starts_with(boundary) {
+                            roots
+                                .entry(root.into())
+                                .or_default()
+                                .push(parent.into());
+                        }
+                    }
+                }
+            }
+        }
+        Ok((roots, truncated))
+    }
+
+    fn checked_output(
+        candidate: &crate::outputs::Candidate,
+        deadline: Instant,
+    ) -> Result<crate::outputs::OutputRow, String> {
+        use crate::outputs::{self, Identification};
+        let path = &candidate.path;
+        let entry = &candidate.entry;
+        if entry.read_error
+            || entry.removed
+            || entry.removed_bytes > 0
+            || matches!(
+                entry.category.as_str(),
+                "git" | "virtual machines" | "fsevents" | "spotlight"
+            )
+        {
+            return Err("Unreadable, removed or protected-owner context".into());
+        }
+        let cargo = candidate
+            .cargo_profiles
+            .as_ref()
+            .map(|profiles| {
+                crate::cargo_outputs::evidence(path, profiles).ok_or(
+                    "Insufficient readable Cargo metadata (bounded inspection)",
+                )
+            })
+            .transpose()?;
+        let tracking = crate::outputs::git_tracking(path, deadline)
+            .ok_or("Git tracking check unavailable or timed out")?;
+        if tracking == "contains_tracked_files" {
+            return Err(
+                "Contains Git-tracked files; mixed source/output".into()
+            );
+        }
+        let evidence = Identification {
+            strength: candidate.strength(),
+            classification: if cargo.is_some() {
+                None
+            } else {
+                entry.artifact
+            },
+            cargo,
+        };
+        let mut output = outputs::output(
+            path.clone(),
+            entry,
+            now(),
+            evidence,
+            candidate.output_type,
+            tracking,
+        );
+        let context = &candidate.context;
+        output.scan_root.clone_from(&context.root);
+        output.scanned_at = context.scanned_at;
+        output.apparent_size = context.apparent_size;
+        output.scan_unreadable = context.unreadable;
+        output.scan_hidden_included = context.include_hidden;
+        output.scan_max_depth = context.max_depth;
+        output.scan_depth_limit_known = context.depth_limit_known;
+        output.scan_one_filesystem = context.one_filesystem;
+        Ok(output)
+    }
+
+    fn output_contexts(
+        &self,
+        source: Option<&(Link, State)>,
+    ) -> Vec<crate::outputs::ScanContext> {
+        use crate::outputs::ScanContext;
+        if let Some((_, state)) = source {
+            return ScanContext::try_from(state).into_iter().collect();
+        }
+        self.scans.iter().map(ScanContext::from).collect()
+    }
+
+    fn output_candidates(
+        &self,
+        source: &mut Option<(Link, State)>,
+        params: &crate::outputs::Params,
+    ) -> Result<(Vec<crate::outputs::Candidate>, bool), String> {
+        use crate::outputs::{Candidate, MARKER_LIMIT, OutputType};
+        let path =
+            params.path.as_ref().map(|p| self.absolute(p)).transpose()?;
+        let request = FindRequest {
+            path: path.clone(),
+            kind: "dir".into(),
+            output_roots: true,
+            min_bytes: params.min_bytes.unwrap_or(0),
+            before: params
+                .older_than_days
+                .map(|d| now() - i64::from(d) * 86_400),
+            category: params.category.map(|c| Category::from(c).name().into()),
+            name: params.name.clone(),
+            limit: MARKER_LIMIT,
+            ..FindRequest::default()
+        };
+        let generic = params.minimum_evidence
+            < crate::outputs::Strength::Metadata
+            && (params.types.is_empty()
+                || params.types.iter().any(|t| *t != OutputType::Cargo));
+        let found = if generic {
+            self.output_matches(source, &request)?
+        } else {
+            OutputMatches::default()
+        };
+        let mut truncated = found.truncated;
+        let mut candidates: Vec<_> = found
+            .matches
+            .into_iter()
+            .filter_map(|item| {
+                let f = item.found;
+                OutputType::of(&f.entry, &f.path).map(|output_type| Candidate {
+                    path: f.path,
+                    entry: f.entry,
+                    context: item.context,
+                    output_type,
+                    cargo_profiles: None,
+                })
+            })
+            .collect();
+        if params
+            .family
+            .is_none_or(|f| f == crate::outputs::Family::Rust)
+            && (params.types.is_empty()
+                || params.types.iter().any(|t| t.accepts(OutputType::Cargo)))
+        {
+            let (cargo, limited) =
+                self.cargo_candidates(source, path.as_deref())?;
+            truncated |= limited || cargo.len() > crate::outputs::ROOT_LIMIT;
+            for (path, profiles) in
+                cargo.into_iter().take(crate::outputs::ROOT_LIMIT)
+            {
+                let (listing, context) = self.output_listing(source, &path)?;
+                candidates.push(Candidate {
+                    path,
+                    entry: listing.entry,
+                    context,
+                    output_type: OutputType::Cargo,
+                    cargo_profiles: Some(profiles),
+                });
+            }
+        }
+        Ok((candidates, truncated))
+    }
+
+    pub fn find_outputs(
+        &self,
+        params: &crate::outputs::Params,
+    ) -> Result<String, String> {
+        use crate::outputs::{self, Excluded, ROOT_LIMIT, Report};
+        let mut source = self.outputs_link()?;
+        if source.is_none() && self.scans.is_empty() {
+            return Err(
+                "Nothing is scanned yet. Call pwrdisk_scan first.".into()
+            );
+        }
+        if let Some(path) = &params.path {
+            let path = self.absolute(path)?;
+            if let Some((_, state)) = &source {
+                if !path.starts_with(&state.root) {
+                    return Err(
+                        "The requested path is outside the window tree.".into(),
+                    );
+                }
+            } else {
+                self.locate(&path)?;
+            }
+        }
+        let (mut candidates, discovery_truncated) =
+            self.output_candidates(&mut source, params)?;
+        let at = now();
+        candidates.retain(|c| {
+            outputs::passes(
+                params,
+                c.output_type,
+                &c.path,
+                c.entry.bytes,
+                (c.entry.modified > 0).then_some(c.entry.modified),
+                c.strength(),
+                at,
+            ) && params.category.is_none_or(|kind| {
+                Category::from(kind).name() == c.entry.category
+            })
+        });
+        // Apply requested priority before expensive live checks as well as
+        // pagination. A bounded query must not inspect arbitrary path order.
+        match params.order {
+            outputs::Order::Oldest => candidates.sort_by_key(|c| {
+                (
+                    if c.entry.modified > 0 {
+                        c.entry.modified
+                    } else {
+                        i64::MAX
+                    },
+                    std::cmp::Reverse(c.entry.bytes),
+                    c.path.clone(),
+                )
+            }),
+            outputs::Order::Largest => candidates.sort_by_key(|c| {
+                (
+                    std::cmp::Reverse(c.entry.bytes),
+                    if c.entry.modified > 0 {
+                        c.entry.modified
+                    } else {
+                        i64::MAX
+                    },
+                    c.path.clone(),
+                )
+            }),
+        }
+        let mut report = Report {
+            scans: self.output_contexts(source.as_ref()),
+            order: params.order,
+            discovered_roots: candidates.len(),
+            inspected_roots: 0,
+            discovery_truncated,
+            inspection_truncated: candidates.len() > ROOT_LIMIT,
+            candidate_roots: 0,
+            metadata_verified_roots: 0,
+            by_type: Vec::new(),
+            metadata_capable_types: vec![outputs::OutputType::Cargo],
+            matching_roots: 0,
+            matching_listed_bytes: 0,
+            next_offset: None,
+            outputs: Vec::new(),
+            excluded_count: 0,
+            excluded: Vec::new(),
+        };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for candidate in candidates.into_iter().take(ROOT_LIMIT) {
+            if Instant::now() >= deadline {
+                report.inspection_truncated = true;
+                break;
+            }
+            report.inspected_roots += 1;
+            match Self::checked_output(&candidate, deadline) {
+                Ok(output) => report.outputs.push(output),
+                Err(reason) => report.excluded.push(Excluded {
+                    path: candidate.path,
+                    listed_bytes: Some(candidate.entry.bytes),
+                    reason,
+                }),
+            }
+        }
+        if let Some((link, before)) = &mut source {
+            let after =
+                link.call(&Request::State).map_err(|e| e.to_string())?;
+            if !matches!(after, Response::State(after) if !after.scanning
+                && after.root == before.root && after.tree == before.tree
+                && after.removals == before.removals)
+            {
+                return Err(
+                    "The window tree changed during discovery; query again."
+                        .into(),
+                );
+            }
+        }
+        let report = outputs::finish(report, params, at);
+        let json =
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+        Ok(format!(
+            "Read-only typed output candidates. Name hints, recognized layouts and live metadata verification are distinct; none establishes disposability or inactivity. Cargo always requires compiler/fingerprint metadata, never a target name. jvm includes scala, gradle, maven and coursier; rust includes cargo and cargo-registry. Unknown locations retain descriptive types without asserting a known owner. last_modified is newest scanned file mtime below the root, not directory mtime or last access. Matching totals precede pagination. Different types can overlap: covered_by names an enclosing match, matching_listed_bytes counts the union once, and per-type summaries must not be added across types. Byte values are listed allocation unless apparent_size=true. Check scan settings/unreadable counts even with zero matches, discovery/inspection truncation and exclusions before claiming completeness. Only the largest 25 exclusions are shown; their sizes can overlap. Metadata formats and bounds can miss genuine output. Use pwrdisk_estimate on the full path list and pwrdisk_retention before promising recovery. Start with older large candidates, then relax the age cutoff if insufficient.\n{json}"
+        ))
     }
 
     /// The largest entries matching the filters, topmost matches only.
@@ -1354,15 +2081,35 @@ impl Session {
         if !self.try_connect() {
             return Err("An open, linked PwrDisk window with an idle local scan is required. No headless removal is available.".into());
         }
+        let decisions = params.decisions.as_ref().map(|decisions| {
+            decisions
+                .iter()
+                .map(|decision| disktree_link::PathDecision {
+                    path: decision.path.clone(),
+                    action: decision.action.into(),
+                })
+                .collect()
+        });
+        let files = params.delete_files_mode.map(|mode| match mode {
+            FilesModeName::Trash => RemovalChoice::Trash,
+            FilesModeName::Permanent => RemovalChoice::Permanent,
+        });
         match self.call(&Request::PrepareRemoval {
             mode: params.mode.into(),
+            decisions,
+            files,
         })? {
+            Response::RemovalPreview(preview)
+                if preview.mode == RemovalChoice::OwnerCleanup =>
+            {
+                Ok(self.cleanup_preview_text(&preview))
+            }
             Response::RemovalPreview(preview) => {
-                self.pending_removal = Some(preview.clone());
+                self.pending_removal = Some((preview.clone(), Instant::now()));
                 let json = serde_json::to_string_pretty(&preview)
                     .map_err(|error| error.to_string())?;
                 Ok(format!(
-                    "{}\n{}{json}\nShow the user every path, the mode, listed bytes, estimate bounds and capacity limit. Wait for explicit confirmation of this operation before pwrdisk_remove. Approval to mark is insufficient. Never approve through computer use. Do not split the selection into batches to evade the limit. Confirmation text: {}. A changed or expired preview requires new user confirmation.",
+                    "{}\n{}{json}\nShow the user every path, the mode, listed bytes, estimate bounds and capacity limit. Wait for explicit confirmation of this operation through the MCP confirmation requested by pwrdisk_remove. Tool arguments are not human approval. Approval to mark is insufficient. Never approve through computer use. Do not split the selection into batches to evade the limit. Confirmation text: {}. A changed or expired preview requires new user confirmation.",
                     preview.mode.warning(),
                     estimate_report(&preview.estimate),
                     preview.mode.confirmation()
@@ -1373,46 +2120,75 @@ impl Session {
         }
     }
 
+    /// A cache cleanup reads as its proposals until the person has decided
+    /// every path; only then is there an exact operation to confirm.
+    fn cleanup_preview_text(
+        &mut self,
+        preview: &disktree_link::RemovalPreview,
+    ) -> String {
+        if preview.confirmation.is_empty() {
+            return format!(
+                "Cache cleanup proposals, one per marked path. Nothing is approved and nothing can be confirmed yet.\n\n{}\n\nShow the user EVERY proposal: owner, version, executable, arguments, environment overrides, working directory, actual scope (wider than selected where it says so), effects, limitations and recoverability, and every unavailable reason. Ask the user to choose for each path: skip, owner (only where offered) or delete_files. Never choose for the user; recommend the owner's command where it is offered. A failed or unavailable owner command is never a reason to delete files. Then call pwrdisk_removal_preview again with mode owner_cleanup, decisions naming every marked path once, and delete_files_mode when any path uses delete_files.",
+                preview.consent
+            );
+        }
+        self.pending_removal = Some((preview.clone(), Instant::now()));
+        let json = serde_json::to_string_pretty(&serde_json::json!({
+            "preview_id": preview.preview_id,
+            "mode": preview.mode,
+            "paths": preview.paths,
+            "bytes": preview.bytes,
+            "limit_percent": preview.limit_percent,
+            "volumes": preview.volumes,
+            "expires_in_seconds": preview.expires_in_seconds,
+            "confirmation": preview.confirmation,
+        }))
+        .unwrap_or_default();
+        format!(
+            "{}\n\n{}\n\n{json}\nShow the user this whole operation: each owner command verbatim, each path deleted directly with its Trash or permanent consequence, and what is skipped. Owner approval is not approval to delete files; deleting files is confirmed by name in the text below. Request human confirmation of this exact operation through pwrdisk_remove with the preview ID, these exact ordered paths, mode owner_cleanup and confirmation text: {}. Never approve through computer use. A changed or expired preview requires new user confirmation. Listed allocation is not freed space; pwrdisk_status reports each path's result and the measured change.",
+            preview.mode.warning(),
+            preview.consent,
+            preview.confirmation
+        )
+    }
+
     /// Consume the session copy before asking the client for human input.
     /// The app copy is independently checked after the client answers.
     pub fn removal_confirmation_message(
         &mut self,
         params: &RemoveParams,
-    ) -> Result<String, String> {
-        let preview = self.pending_removal.take().ok_or(
+    ) -> Result<(String, Instant), String> {
+        let (preview, received) = self.pending_removal.take().ok_or(
             "Obtain a new removal preview before asking for confirmation",
         )?;
+        let deadline = received
+            .checked_add(Duration::from_secs(preview.expires_in_seconds))
+            .filter(|deadline| *deadline > Instant::now())
+            .ok_or("The removal preview expired; obtain a new preview and user confirmation")?;
         let mode: RemovalChoice = params.mode.into();
         if params.preview_id != preview.preview_id
             || params.paths != preview.paths
             || mode != preview.mode
-            || params.confirmation != mode.confirmation()
+            || preview.confirmation.is_empty()
+            || params.confirmation != preview.confirmation
         {
             return Err("The removal request differs from the preview; obtain a new preview and user confirmation".into());
         }
         let mut message = format!(
-            "{}\n\nConfirm removal of {} listed path(s), measured {}.\nCapacity limit: {}% of each volume.\n\nPaths:\n",
+            "Request: {}\nScan root:\n\n    {}\n\nApproval expires within {} seconds; this request is single use.\n\n{}\n\nConfirm removal of {} listed path(s), measured {}.\nCapacity limit: {}% of each volume.\n\nPaths:\n",
+            preview.preview_id,
+            approval_path(&preview.root),
+            deadline.saturating_duration_since(Instant::now()).as_secs(),
             mode.warning(),
             preview.paths.len(),
             human_bytes(preview.bytes),
             preview.limit_percent,
         );
         for path in &preview.paths {
-            // Keep Windows separators readable while exposing control
-            // characters that could otherwise disguise the path list.
-            let shown: String = path
-                .to_string_lossy()
-                .chars()
-                .map(|character| {
-                    if character.is_control() {
-                        character.escape_default().to_string()
-                    } else {
-                        character.to_string()
-                    }
-                })
-                .collect();
-            let _ = writeln!(message, "  {shown}");
+            // Indented code keeps path Markdown literal on messaging cards.
+            let _ = writeln!(message, "    {}", approval_path(path));
         }
+        message.push('\n');
         for volume in &preview.volumes {
             let _ = writeln!(
                 message,
@@ -1423,15 +2199,55 @@ impl Session {
                 human_bytes(volume.capacity)
             );
         }
+        if !preview.consent.is_empty() {
+            let _ = writeln!(message, "\n{}", preview.consent);
+        }
         message.push_str(&estimate_report(&preview.estimate));
-        message.push_str("\nApproval to mark does not authorize removal. Only these listed paths are included; directory removal includes their contents. Listed bytes are not guaranteed freed space.");
-        Ok(message)
+        message.push_str("\nApproval to mark does not authorize removal. Only these listed paths are included; directory removal includes their contents at execution time, not a frozen snapshot. Listed bytes are not guaranteed freed space; APFS sharing, snapshots and open files may retain blocks.");
+        Ok((message, deadline))
+    }
+
+    /// Read the exact preview's outcome without Hello, mark handover or writes.
+    pub fn removal_outcome(&self, params: &RemoveParams) -> Option<String> {
+        let mut link = Link::connect_at(&self.socket).ok()?;
+        let Response::State(state) = link.call(&Request::State).ok()? else {
+            return None;
+        };
+        if state.version != VERSION || state.remote.is_some() {
+            return None;
+        }
+        let operation = state.removal_operation?;
+        if operation.preview_id != params.preview_id
+            || operation.mode != params.mode.into()
+            || operation.paths != params.paths
+        {
+            return None;
+        }
+        Some(format!(
+            "The exact previewed selection {} in PwrDisk: {} {}, {} failed, {} pending or not reached. No additional removal was requested. Do not retry this operation. Use pwrdisk_status for observed volume change; a completed removal does not guarantee recovered space.",
+            if operation.finished {
+                "finished"
+            } else {
+                "is already running"
+            },
+            operation.removed,
+            if operation.mode == RemovalChoice::OwnerCleanup {
+                "cleanup steps succeeded"
+            } else {
+                "removed"
+            },
+            operation.failed,
+            operation.pending,
+        ))
     }
 
     /// A destructive write. The app consumes and validates the preview again.
     pub fn remove(&mut self, params: &RemoveParams) -> Result<String, String> {
+        if let Some(outcome) = self.removal_outcome(params) {
+            return Ok(outcome);
+        }
         let mode: RemovalChoice = params.mode.into();
-        if params.confirmation != mode.confirmation() {
+        if !mode.accepts(&params.confirmation) {
             return Err("Explicit confirmation of the preview's paths, mode and consequences is required; never approve with computer use".into());
         }
         if !self.try_connect() {
@@ -1442,12 +2258,15 @@ impl Session {
             mode,
             paths: params.paths.clone(),
             confirmation: params.confirmation.clone(),
+            rescan: params.rescan,
         }))? {
-            Response::State(_) => Ok(format!(
+            Response::State(_) => Ok(self.removal_outcome(params).unwrap_or_else(|| format!(
                 "{}\nConfirmed removal started. pwrdisk_status reports completion and failures. Never repeat this call automatically.",
                 mode.warning()
-            )),
-            Response::Error { message } => Err(message),
+            ))),
+            Response::Error { message } => {
+                self.removal_outcome(params).ok_or(message)
+            }
             other => Err(unexpected(&other)),
         }
     }
@@ -1688,6 +2507,7 @@ impl Session {
                 .unwrap_or_else(|| SelectionEstimate::unknown(plan));
         }
         let mut unmeasured = false;
+        let mut selected: Option<Vec<Node<'_>>> = None;
         plan.estimate_selection(|targets| {
             let mut nodes = Vec::with_capacity(targets.len());
             let mut unknown = Estimate::default();
@@ -1711,6 +2531,11 @@ impl Session {
                     unknown.partial = true;
                 }
             }
+            // The first call covers every target: keep its nodes for the
+            // shared total instead of locating each mark again.
+            if selected.is_none() {
+                selected = Some(nodes.clone());
+            }
             let measured = sharing::estimate(nodes);
             Estimate {
                 lower: measured.lower,
@@ -1718,7 +2543,8 @@ impl Session {
                 partial: measured.partial || unknown.partial,
             }
         });
-        let mut estimate = SelectionEstimate::of(plan);
+        let mut estimate = SelectionEstimate::of(plan)
+            .with_shared(selected.unwrap_or_default());
         if unmeasured {
             estimate.upper = None;
         }
@@ -1768,11 +2594,11 @@ impl Session {
                 let after = space.after_removing(estimate.on_volume);
                 let _ = writeln!(
                     out,
-                    "Projects {} on {}: {} free now, {} after.",
+                    "Projects {} on {}: {} available now, at least {} after.",
                     human_bytes(estimate.on_volume),
                     device_for(&root).unwrap_or_else(|| self.show(&root)),
-                    human_bytes(space.available),
-                    human_bytes(after.available),
+                    human_bytes(space.display_available()),
+                    human_bytes(after.display_available()),
                 );
             }
             None => {
@@ -1834,7 +2660,11 @@ impl Session {
         // otherwise deletes; the agent has to say which before the user
         // presses Enter.
         let backend = detect_trash_backend();
-        let how = if backend.is_available() {
+        let how = if self.marks.iter().any(|target| {
+            disktree_core::cleanup::inspection_reason(&target.path).is_some()
+        }) {
+            "Caches go through Cache cleanup: after Check owners the user chooses, for each path, Skip, the owner's exact command, or Delete files, which has its own tick in the confirmation. Unavailable or unsupported owners are reported per path and never fall back to deleting files".into()
+        } else if backend.is_available() {
             format!(
                 "Enter moves the marks to {}, where they can be recovered \
                  and their space comes back only once it is emptied; \
@@ -1870,6 +2700,8 @@ impl Session {
             self.client
         );
         out.push_str(&system_line());
+        out.push_str(retention_notice());
+        out.push('\n');
         out.push_str(&self.window_line());
         out.push('\n');
         if self.scans.is_empty() {
@@ -1892,8 +2724,8 @@ impl Session {
                     "  {}  {} \u{00b7} {} files \u{00b7} {} \u{00b7} took \
                      {:.1} s",
                     self.show(&scan.root),
-                    human_bytes(scan.tree.bytes),
-                    human_count(scan.tree.files),
+                    human_bytes(scan.tree.root().bytes),
+                    human_count(scan.tree.root().files),
                     age(now, scan.at),
                     scan.elapsed.as_secs_f64(),
                 );
@@ -1902,23 +2734,32 @@ impl Session {
         if let Some(removal) =
             self.window.as_ref().and_then(|state| state.removal.clone())
         {
+            for report in &removal.cleanup {
+                let _ = writeln!(out, "{}", report.description());
+            }
             let _ = writeln!(
                 out,
-                "Last removal: {} \u{00b7} {} removed \u{00b7} {} failed \
-                 \u{00b7} {} marked \u{00b7} {} \u{00b7} {}",
+                "Last removal: {} \u{00b7} {} {} \u{00b7} {} failed \
+                 \u{00b7} {} reported \u{00b7} {} observed volume change \u{00b7} {}",
                 removal.mode,
                 removal.removed,
+                if removal.mode == "owner_cleanup" {
+                    "cleanup steps succeeded"
+                } else {
+                    "removed"
+                },
                 removal.failed,
                 human_bytes(removal.bytes),
-                removal.freed.map_or_else(
-                    || "freed space not measured".to_string(),
-                    |freed| format!(
-                        "{} freed on the volume",
-                        human_bytes(freed)
-                    )
-                ),
+                crate::report::observed(removal.observed),
                 age(now, removal.at),
             );
+        }
+        if let Some(ledger) = self
+            .window
+            .as_ref()
+            .and_then(|state| state.removals.as_ref())
+        {
+            out.push_str(&crate::report::ledger(ledger, now));
         }
         if self.marks.is_empty() {
             out.push_str("Marked: nothing.\n");
@@ -1995,8 +2836,43 @@ fn version_notice(window: &State) -> String {
     }
 }
 
+struct RankedCandidate {
+    value: Option<u64>,
+    estimate: disktree_core::planning::Report,
+}
+
+fn rank_candidates(
+    reports: Vec<disktree_core::planning::Report>,
+    by: RankBy,
+) -> Vec<RankedCandidate> {
+    let mut ranked: Vec<_> = reports
+        .into_iter()
+        .map(|estimate| {
+            let value = if estimate.accepted.is_empty() {
+                None
+            } else {
+                match by {
+                    RankBy::Private => estimate
+                        .private_allocation
+                        .filter(|_| estimate.metadata_complete),
+                    RankBy::ReclaimLower => {
+                        estimate.reclaim.as_ref().map(|bounds| bounds.lower)
+                    }
+                }
+            };
+            RankedCandidate { value, estimate }
+        })
+        .collect();
+    ranked.sort_by_key(|candidate| std::cmp::Reverse(candidate.value));
+    ranked
+}
+
+const fn retention_notice() -> &'static str {
+    "Retention preflight: not performed by the scan or estimate. Before promising recovered space, use pwrdisk_retention for each selected volume on macOS and read the system skill reference. Snapshot presence is a retention risk, not proof of bytes held by these paths; absence does not rule out other snapshots or open files. Immediate recovered bytes are unknown, even for private allocation and reclaim lower bounds."
+}
+
 fn estimate_report(estimate: &SelectionEstimate) -> String {
-    format!(
+    let mut out = format!(
         "Selected-set reclaim estimate: {}–{}{}. Before snapshots, open files \
          and changes since the scan; actual freed space can be lower.\n",
         human_bytes(estimate.lower),
@@ -2008,7 +2884,21 @@ fn estimate_report(estimate: &SelectionEstimate) -> String {
         } else {
             ""
         },
-    )
+    );
+    out.push_str(retention_notice());
+    out.push('\n');
+    // APFS reference counts include clones outside the scan, which can
+    // never be selected: say why the estimate is below the listed bytes.
+    if estimate.shared > 0 {
+        let _ = writeln!(
+            out,
+            "{} of the selection is APFS clone blocks. They count only when \
+             every clone of them is selected; a clone left unselected, or \
+             outside this scan, keeps them.",
+            human_bytes(estimate.shared)
+        );
+    }
+    out
 }
 
 /// Every volume a person would call a disk, fullest first.
@@ -2026,7 +2916,7 @@ fn volumes_report() -> String {
                     out,
                     "  {}  {} free of {} ({:.0}% used){}",
                     volume.point.display(),
-                    human_bytes(space.available),
+                    human_bytes(space.display_available()),
                     human_bytes(space.total),
                     f64::from(space.used_fraction()) * 100.0,
                     volume
@@ -2077,11 +2967,22 @@ fn worth_listing(volume: &disktree_core::space::Volume) -> bool {
 }
 
 /// Where a path landed in a scan held here.
+struct OutputMatch {
+    found: disktree_link::Found,
+    context: crate::outputs::ScanContext,
+}
+
+#[derive(Default)]
+struct OutputMatches {
+    matches: Vec<OutputMatch>,
+    truncated: bool,
+}
+
 struct Located<'a> {
     scan: &'a Scan,
     path: PathBuf,
     crumbs: Vec<usize>,
-    node: &'a Node,
+    node: Node<'a>,
 }
 
 /// What a scan report is made of, whichever side did the walking.
@@ -2099,9 +3000,9 @@ impl ScanFacts {
         Self {
             root: scan.root.clone(),
             tree: TreeSummary {
-                bytes: scan.tree.bytes,
-                files: scan.tree.files,
-                dirs: u64::from(scan.tree.dirs),
+                bytes: scan.tree.root().bytes,
+                files: scan.tree.root().files,
+                dirs: u64::from(scan.tree.root().dirs),
                 scanned_at: scan.at,
                 elapsed_ms: u64::try_from(scan.elapsed.as_millis())
                     .unwrap_or(u64::MAX),
@@ -2113,13 +3014,14 @@ impl ScanFacts {
                 total: space.total,
                 free: space.free,
                 available: space.available,
+                native: space.native,
             }),
             device: scan.device.clone(),
             top: Listing::of(
                 &scan.root,
-                scan.tree.bytes,
+                scan.tree.root().bytes,
                 &scan.root,
-                &scan.tree,
+                scan.tree.root(),
                 TOP,
             ),
             insights: scan
@@ -2128,7 +3030,7 @@ impl ScanFacts {
                 .map(|candidate| Insight {
                     path: path_of(
                         &scan.root,
-                        &scan.tree,
+                        scan.tree.root(),
                         &candidate.crumbs,
                         disktree_core::path_style::PathStyle::Native,
                     ),
@@ -2155,6 +3057,7 @@ fn unexpected(response: &Response) -> String {
             Response::Marked { .. } => "marked",
             Response::Listing(_) => "listing",
             Response::Found(_) => "found",
+            Response::Estimate(_) => "estimate",
             Response::RemovalPreview(_) => "removal_preview",
             Response::Ok => "ok",
             Response::Error { .. } => "error",
@@ -2179,7 +3082,7 @@ pub fn run_scan(root: PathBuf, options: ScanOptions) -> Result<Scan, String> {
     })?;
     let snapshot = handle.progress.snapshot();
     let at = now();
-    let insights = worth_a_look(&tree, at, INSIGHTS);
+    let insights = worth_a_look(tree.root(), at, INSIGHTS);
     Ok(Scan {
         space: space_info(&root).ok(),
         device: device_for(&root),
@@ -2196,6 +3099,7 @@ pub fn run_scan(root: PathBuf, options: ScanOptions) -> Result<Scan, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use disktree_core::tree::Draft;
     #[cfg(any(unix, windows))]
     use disktree_link::{Incoming, Listener, Mark, Refused, Removal};
     #[cfg(any(unix, windows))]
@@ -2222,7 +3126,10 @@ mod tests {
     /// A small tree on disk: a cache, a build directory, a checkout with a
     /// large file, and a stray download.
     fn fixture() -> tempfile::TempDir {
-        let temp = tempfile::TempDir::new().expect("tempdir");
+        // macOS's default TMPDIR lives in protected /private/var/folders.
+        // Marks here must exercise removable entries, not a root alias.
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("tempdir");
         for (path, bytes) in [
             (".cache/pip/blob.bin", 400_000_usize),
             ("src/app/target/debug/app", 300_000),
@@ -2237,6 +3144,704 @@ mod tests {
             std::fs::write(&file, vec![b'x'; bytes]).expect("write");
         }
         temp
+    }
+
+    fn typed_output_fixture() -> tempfile::TempDir {
+        // The oracle declares temporary locations inside this tree. A system
+        // /tmp or Windows Temp ancestor would supply unrelated inherited
+        // context and let an enclosing temporary root cover those locations.
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        for path in [
+            ".cache/project/target/scala-3.3/classes/blob",
+            ".cache/scala-project/.gradle/caches/version/blob",
+            ".cache/.m2/repository/org/demo/blob",
+            ".cache/coursier/blob",
+            ".cache/pip/tmp/session/blob",
+            "js/node_modules/package/blob",
+            "js/node_modules/package/target/scala-2.13/classes/org/invented/deep/nested/leaf/blob",
+            "frontend/.next/cache/blob",
+            ".cargo/registry/index/blob",
+            "ordinary/target/notes.txt",
+            "private/tmp/claude-501/blob",
+            "private/tmp/recent-agent/blob",
+            "repo/.git/node_modules/unique",
+            "guest.utm/node_modules/unique",
+            ".fseventsd/node_modules/unique",
+            ".Spotlight-V100/node_modules/unique",
+        ] {
+            let file = temp.path().join(path);
+            std::fs::create_dir_all(file.parent().expect("parent"))
+                .expect("mkdir");
+            std::fs::write(file, b"invented payload").expect("payload");
+        }
+        std::fs::File::options()
+            .write(true)
+            .open(temp.path().join("private/tmp/claude-501/blob"))
+            .expect("old scratch")
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(UNIX_EPOCH + Duration::from_secs(100_000)),
+            )
+            .expect("scratch age");
+        cargo_fixture(&temp.path().join(".cache/custom-rust"), 100_000);
+        temp
+    }
+
+    #[test]
+    fn generic_output_queries_match_the_family_and_subtype_oracle() {
+        use crate::outputs::{OutputType as T, Params, Strength};
+        use std::collections::BTreeSet;
+        let temp = typed_output_fixture();
+        let root = temp.path().canonicalize().expect("root");
+        let expected = [
+            (".cache/project/target/scala-3.3", T::Scala),
+            (".cache/scala-project/.gradle/caches", T::Gradle),
+            (".cache/.m2/repository", T::Maven),
+            (".cache/coursier", T::Coursier),
+            (".cache/pip", T::Python),
+            (".cache/pip/tmp", T::Temporary),
+            (".cache/custom-rust", T::Cargo),
+            (".cargo/registry", T::CargoRegistry),
+            ("js/node_modules", T::NodeModules),
+            ("js/node_modules/package/target/scala-2.13", T::Scala),
+            ("frontend/.next", T::Frontend),
+            (".cache", T::CacheLocation),
+            ("private/tmp", T::Temporary),
+        ];
+        let mut session = unlinked(&root);
+        scanned(&mut session, &root);
+        let all = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    limit: Some(200),
+                    ..Params::default()
+                })
+                .expect("all types"),
+        );
+        let paths = |r: &serde_json::Value| {
+            r["outputs"]
+                .as_array()
+                .expect("outputs")
+                .iter()
+                .map(|o| PathBuf::from(o["path"].as_str().expect("path")))
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            paths(&all),
+            expected.iter().map(|(p, _)| root.join(p)).collect()
+        );
+        assert!(
+            all["outputs"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .any(|o| !o["covered_by"].is_null())
+        );
+        for selector in [
+            T::Cargo,
+            T::Scala,
+            T::Jvm,
+            T::Rust,
+            T::Javascript,
+            T::Python,
+            T::Temporary,
+        ] {
+            let report = cargo_json(
+                &session
+                    .find_outputs(&Params {
+                        types: vec![selector],
+                        limit: Some(200),
+                        ..Params::default()
+                    })
+                    .expect("typed query"),
+            );
+            let wanted: BTreeSet<_> = expected
+                .iter()
+                .filter(|(_, kind)| {
+                    *kind == selector
+                        || match selector {
+                            T::Jvm => {
+                                [T::Scala, T::Gradle, T::Maven, T::Coursier]
+                                    .contains(kind)
+                            }
+                            T::Rust => {
+                                [T::Cargo, T::CargoRegistry].contains(kind)
+                            }
+                            T::Javascript => {
+                                [T::NodeModules, T::Frontend].contains(kind)
+                            }
+                            _ => false,
+                        }
+                })
+                .map(|(p, _)| root.join(p))
+                .collect();
+            assert_eq!(paths(&report), wanted, "{selector:?}");
+        }
+        let family = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    family: Some(crate::outputs::Family::Jvm),
+                    ..Params::default()
+                })
+                .expect("family query"),
+        );
+        assert_eq!(
+            paths(&family),
+            expected
+                .iter()
+                .filter(|(_, kind)| [
+                    T::Scala,
+                    T::Gradle,
+                    T::Maven,
+                    T::Coursier
+                ]
+                .contains(kind))
+                .map(|(p, _)| root.join(p))
+                .collect()
+        );
+        let old_scratch = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    types: vec![T::Temporary],
+                    older_than_days: Some(30),
+                    ..Params::default()
+                })
+                .expect("older scratch beneath a fresh temporary parent"),
+        );
+        assert_eq!(
+            paths(&old_scratch),
+            BTreeSet::from([root.join("private/tmp/claude-501")])
+        );
+        assert_eq!(old_scratch["outputs"][0]["evidence"]["strength"], "name");
+        let metadata = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    minimum_evidence: Strength::Metadata,
+                    ..Params::default()
+                })
+                .expect("metadata query"),
+        );
+        assert_eq!(
+            paths(&metadata),
+            BTreeSet::from([root.join(".cache/custom-rust")])
+        );
+        let scala_name = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    name: Some("SCALA".into()),
+                    ..Params::default()
+                })
+                .expect("name filter"),
+        );
+        assert_eq!(
+            paths(&scala_name),
+            BTreeSet::from([
+                root.join(".cache/project/target/scala-3.3"),
+                root.join(".cache/scala-project"),
+                root.join("js/node_modules/package/target/scala-2.13")
+            ])
+        );
+        let named_project = scala_name["outputs"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|row| {
+                row["path"].as_str()
+                    == root.join(".cache/scala-project").to_str()
+            })
+            .expect("matching cache location");
+        assert_eq!(named_project["output_type"], "cache-location");
+        assert_eq!(named_project["evidence"]["strength"], "name");
+        assert!(session.marks().is_empty());
+    }
+
+    #[test]
+    fn narrowing_an_output_query_preserves_nearer_hints_and_subtypes() {
+        use crate::outputs::{OutputType as T, Params};
+        let temp = typed_output_fixture();
+        let root = temp.path().canonicalize().expect("root");
+        let mut session = unlinked(&root);
+        scanned(&mut session, &root);
+        for (path, wanted) in [
+            (".cache/project/target/scala-3.3/classes", T::Scala),
+            (".cache/pip/tmp/session", T::Temporary),
+            (
+                "js/node_modules/package/target/scala-2.13/classes/org/invented/deep/nested/leaf",
+                T::Scala,
+            ),
+            (".cache/scala-project/.gradle/caches/version", T::Gradle),
+            (".cache/.m2/repository/org/demo", T::Maven),
+        ] {
+            let path = root.join(path);
+            let scoped = cargo_json(
+                &session
+                    .find_outputs(&Params {
+                        path: Some(path.clone()),
+                        types: vec![wanted],
+                        ..Params::default()
+                    })
+                    .expect("scoped query"),
+            );
+            let row = &scoped["outputs"][0];
+            assert_eq!(
+                row["path"],
+                path.to_string_lossy().as_ref(),
+                "{scoped}"
+            );
+            assert_eq!(
+                row["output_type"],
+                serde_json::to_value(wanted).expect("kind")
+            );
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn generic_output_inventory_agrees_with_the_link_and_keeps_both_carts() {
+        use crate::outputs::Params;
+        let temp = typed_output_fixture();
+        let root = temp.path().canonicalize().expect("root");
+        let socket = endpoint(&root);
+        let mut session = Session::detached(socket.clone(), None);
+        scanned(&mut session, &root);
+        let params = Params {
+            limit: Some(200),
+            ..Params::default()
+        };
+        let own = cargo_json(&session.find_outputs(&params).expect("local"));
+        let window = FakeWindow::open(&socket, &root);
+        let kept = Target {
+            path: root.join("ordinary"),
+            bytes: 1,
+            is_dir: true,
+            hidden: false,
+        };
+        session.marks.push(kept.clone());
+        let linked =
+            cargo_json(&session.find_outputs(&params).expect("linked"));
+        let identity = |r: &serde_json::Value| {
+            r["outputs"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .map(|o| {
+                    (
+                        o["path"].clone(),
+                        o["output_type"].clone(),
+                        o["evidence"]["strength"].clone(),
+                        o["listed_bytes"].clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(identity(&own), identity(&linked));
+        assert_eq!(
+            own["matching_listed_bytes"],
+            linked["matching_listed_bytes"]
+        );
+        assert_eq!(session.marks(), [kept]);
+        assert!(session.link.is_none() && session.window.is_none());
+        assert!(window.marks().is_empty());
+        assert!(window.asked().iter().all(|r| matches!(
+            r,
+            Request::State | Request::Find(_) | Request::Ls { .. }
+        )));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn output_inventory_refuses_peers_that_cannot_express_output_boundaries() {
+        use crate::outputs::Params;
+        let temp = typed_output_fixture();
+        let root = temp.path().canonicalize().expect("root");
+        let scan = run_scan(root.clone(), apparent()).expect("scan");
+        let socket = endpoint(&root);
+        let window = FakeWindow::with_tree(
+            &socket,
+            FakeTree {
+                protocol: VERSION - 1,
+                root,
+                tree: Arc::clone(&scan.tree),
+                marks: vec![],
+                remote: None,
+                busy: false,
+                options: scan.options.clone(),
+                unreadable: 0,
+                removed: Vec::new(),
+            },
+        );
+        let mut session = Session::detached(socket, None);
+        session.store_scan(scan);
+        let error = session
+            .find_outputs(&Params::default())
+            .expect_err("an older peer cannot silently ignore output_roots");
+        assert!(error.contains("restart/reconnect"), "{error}");
+        assert!(matches!(window.asked().as_slice(), [Request::State]));
+        assert!(session.link.is_none() && session.window.is_none());
+    }
+
+    fn cargo_fixture(root: &Path, modified: u64) {
+        let crate_dir = root.join("debug/.fingerprint/demo-0123456789abcdef");
+        std::fs::create_dir_all(&crate_dir).expect("crate dir");
+        std::fs::create_dir(root.join("debug/deps")).expect("deps");
+        for (path, data) in [
+            (
+                root.join(".rustc_info.json"),
+                r#"{"rustc_fingerprint":1,"outputs":{},"successes":{}}"#,
+            ),
+            (
+                crate_dir.join("lib-demo.json"),
+                r#"{"rustc":1,"features":"[]","target":2,"profile":3,"path":4,"deps":[]}"#,
+            ),
+        ] {
+            std::fs::write(&path, data).expect("write metadata");
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .expect("metadata")
+                .set_times(
+                    std::fs::FileTimes::new().set_modified(
+                        UNIX_EPOCH + Duration::from_secs(modified),
+                    ),
+                )
+                .expect("contrived file age");
+        }
+    }
+
+    fn cargo_json(text: &str) -> serde_json::Value {
+        serde_json::from_str(text.split_once('\n').expect("JSON response").1)
+            .expect("inventory JSON")
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn cargo_inference_stays_inside_each_completed_scan() {
+        use crate::outputs::{OutputType, Params};
+        for name in ["target", "invented-output"] {
+            for cross in [false, true] {
+                let temp = tempfile::tempdir().expect("fixture");
+                let output =
+                    temp.path().canonicalize().expect("root").join(name);
+                cargo_fixture(&output, 100_000);
+                if cross {
+                    std::fs::create_dir(output.join("invented-triple"))
+                        .expect("triple");
+                    std::fs::rename(
+                        output.join("debug"),
+                        output.join("invented-triple/debug"),
+                    )
+                    .expect("cross profile");
+                }
+                let profile = output.join(if cross {
+                    "invented-triple/debug"
+                } else {
+                    "debug"
+                });
+                for root in [&output, &profile] {
+                    let socket_dir = tempfile::tempdir().expect("socket");
+                    let socket = endpoint(socket_dir.path());
+                    let mut session = Session::detached(socket.clone(), None);
+                    scanned(&mut session, root);
+                    for linked in [false, true] {
+                        let _window =
+                            linked.then(|| FakeWindow::open(&socket, root));
+                        // With one completed scan, omitting its explicit
+                        // scope must produce the same roots and exclusions.
+                        let scoped = cargo_json(
+                            &session
+                                .find_outputs(&Params {
+                                    path: Some(root.clone()),
+                                    types: vec![OutputType::Cargo],
+                                    ..Params::default()
+                                })
+                                .expect("explicit scan scope"),
+                        );
+                        let implicit = cargo_json(
+                            &session
+                                .find_outputs(&Params {
+                                    types: vec![OutputType::Cargo],
+                                    ..Params::default()
+                                })
+                                .expect("implicit scope is the completed scan"),
+                        );
+                        for key in [
+                            "matching_roots",
+                            "matching_listed_bytes",
+                            "excluded",
+                        ] {
+                            assert_eq!(
+                                implicit[key], scoped[key],
+                                "{name}, cross={cross}, linked={linked}"
+                            );
+                        }
+                        for key in ["outputs", "excluded"] {
+                            for row in implicit[key].as_array().expect("rows") {
+                                assert!(
+                                    Path::new(
+                                        row["path"].as_str().expect("path")
+                                    )
+                                    .starts_with(root)
+                                );
+                            }
+                        }
+                        assert_eq!(
+                            implicit["metadata_verified_roots"],
+                            u64::from(root == &output)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_output_scans_match_their_single_snapshot_oracles() {
+        use crate::outputs::{OutputType, Params};
+        for outer_apparent in [false, true] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let root = temp.path().canonicalize().expect("root");
+            let modules = root.join("project/node_modules");
+            let blob = modules.join("pkg/blob");
+            std::fs::create_dir_all(blob.parent().expect("parent"))
+                .expect("directories");
+            std::fs::write(&blob, b"x").expect("old bytes");
+            std::fs::File::options()
+                .write(true)
+                .open(&blob)
+                .expect("blob")
+                .set_times(
+                    std::fs::FileTimes::new().set_modified(
+                        UNIX_EPOCH + Duration::from_secs(100_000),
+                    ),
+                )
+                .expect("old file time");
+            let mut outer = unlinked(&root);
+            let mut scan = run_scan(
+                root.clone(),
+                ScanOptions {
+                    apparent_size: outer_apparent,
+                    include_hidden: false,
+                    max_depth: Some(6),
+                    one_filesystem: false,
+                    ..ScanOptions::default()
+                },
+            )
+            .expect("outer scan");
+            scan.at = 1_600_000_000;
+            scan.unreadable = 3;
+            outer.store_scan(scan);
+            std::fs::write(&blob, vec![b'y'; 131_071]).expect("new bytes");
+            let mut inner = unlinked(&root);
+            let mut scan = run_scan(
+                modules.clone(),
+                ScanOptions {
+                    apparent_size: !outer_apparent,
+                    ..ScanOptions::default()
+                },
+            )
+            .expect("inner scan");
+            scan.at = 1_700_000_000;
+            scan.unreadable = 7;
+            inner.store_scan(scan);
+            let mut oracles = Vec::new();
+            for scoped in [false, true] {
+                for min_bytes in [None, Some(2), Some(65_536)] {
+                    for older_than_days in [None, Some(30)] {
+                        let params = Params {
+                            path: scoped.then(|| modules.clone()),
+                            types: vec![OutputType::NodeModules],
+                            min_bytes,
+                            older_than_days,
+                            ..Params::default()
+                        };
+                        let reference = if scoped { &inner } else { &outer };
+                        let report = cargo_json(
+                            &reference
+                                .find_outputs(&params)
+                                .expect("single snapshot oracle"),
+                        );
+                        oracles.push((params, report));
+                    }
+                }
+            }
+            outer.scans.extend(inner.scans);
+            for (params, expected) in oracles {
+                let actual = cargo_json(
+                    &outer
+                        .find_outputs(&params)
+                        .expect("overlapping snapshots"),
+                );
+                for key in
+                    ["matching_roots", "matching_listed_bytes", "by_type"]
+                {
+                    assert_eq!(actual[key], expected[key], "{params:?}");
+                }
+                let rows = |report: &serde_json::Value| {
+                    report["outputs"]
+                        .as_array()
+                        .expect("rows")
+                        .iter()
+                        .map(|row| {
+                            let mut row = row.clone();
+                            row.as_object_mut()
+                                .expect("row")
+                                .remove("evidence_checked_at");
+                            // Derived wall-clock age can cross a day while
+                            // comparing snapshots; file mtime stays exact.
+                            row.as_object_mut()
+                                .expect("row")
+                                .remove("age_days");
+                            row
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(rows(&actual), rows(&expected), "{params:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn cargo_inventory_matches_filesystem_evidence_not_target_names() {
+        use crate::outputs::{OutputType, Params};
+        let temp = tempfile::tempdir().expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let old = root.join("custom-output");
+        let new = root.join("project/target");
+        cargo_fixture(&old, 100_000);
+        cargo_fixture(&new, 200_000);
+        // Two point names alone used to be sufficient for the Rust artifact
+        // label; neither a misleading parent nor a skeleton is positive ID.
+        std::fs::create_dir_all(root.join("decoy/target/debug/deps"))
+            .expect("decoy");
+        std::fs::create_dir_all(root.join("decoy/target/debug/.fingerprint"))
+            .expect("decoy");
+        std::fs::write(root.join("decoy/target/README.md"), "user source")
+            .expect("source");
+        let mut session = unlinked(&root);
+        scanned(&mut session, &root);
+        let text = session
+            .find_outputs(&Params {
+                types: vec![OutputType::Cargo],
+                ..Params::default()
+            })
+            .expect("inventory");
+        let report = cargo_json(&text);
+        assert_eq!(report["metadata_verified_roots"], 2, "{text}");
+        assert_eq!(
+            report["outputs"][0]["path"],
+            old.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            report["outputs"][1]["path"],
+            new.to_string_lossy().as_ref()
+        );
+        assert_eq!(report["outputs"][0]["last_modified"], 100_000);
+        assert_eq!(report["discovery_truncated"], false);
+        assert_eq!(report["inspection_truncated"], false);
+        assert!(report["excluded_count"].as_u64().expect("excluded") > 0);
+        let scoped = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    path: Some(root.join("project")),
+                    types: vec![OutputType::Cargo],
+                    ..Params::default()
+                })
+                .expect("scoped"),
+        );
+        assert_eq!(scoped["metadata_verified_roots"], 1);
+        assert_eq!(
+            scoped["outputs"][0]["path"],
+            new.to_string_lossy().as_ref()
+        );
+        assert!(session.marks().is_empty());
+    }
+
+    #[test]
+    fn cargo_empty_results_preserve_scan_limits_and_protected_owners() {
+        use crate::outputs::{OutputType, Params};
+        let temp = tempfile::tempdir().expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        for owner in ["repo/.git", "guest.utm", ".fseventsd", ".Spotlight-V100"]
+        {
+            cargo_fixture(&root.join(owner).join("target"), 100_000);
+        }
+        let mut session = unlinked(&root);
+        let mut scan = run_scan(root, apparent()).expect("scan");
+        scan.unreadable = 3;
+        session.store_scan(scan);
+        let report = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    types: vec![OutputType::Cargo],
+                    ..Params::default()
+                })
+                .expect("inventory"),
+        );
+        assert_eq!(report["metadata_verified_roots"], 0, "{report}");
+        assert_eq!(report["scans"][0]["unreadable"], 3);
+        assert_eq!(report["scans"][0]["include_hidden"], true);
+        assert!(report["excluded_count"].as_u64().expect("excluded") >= 4);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn cargo_inventory_has_the_same_identity_on_the_link_without_any_writes() {
+        use crate::outputs::{OutputType, Params};
+        let temp = tempfile::tempdir().expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        cargo_fixture(&root.join("invented-output"), 100_000);
+        let socket = endpoint(&root);
+        let mut session = Session::detached(socket.clone(), None);
+        scanned(&mut session, &root);
+        let own = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    types: vec![OutputType::Cargo],
+                    ..Params::default()
+                })
+                .expect("local"),
+        );
+        let window = FakeWindow::open(&socket, &root);
+        let kept = Target {
+            path: root.join("keep"),
+            bytes: 1,
+            is_dir: true,
+            hidden: false,
+        };
+        session.marks.push(kept.clone());
+        let linked = cargo_json(
+            &session
+                .find_outputs(&Params {
+                    types: vec![OutputType::Cargo],
+                    ..Params::default()
+                })
+                .expect("linked"),
+        );
+        assert_eq!(
+            own["metadata_verified_roots"],
+            linked["metadata_verified_roots"]
+        );
+        for field in [
+            "path",
+            "listed_bytes",
+            "last_modified",
+            "evidence",
+            "git_tracking",
+        ] {
+            assert_eq!(
+                own["outputs"][0][field], linked["outputs"][0][field],
+                "{field}"
+            );
+        }
+        assert_eq!(session.marks(), [kept]);
+        assert!(session.link.is_none());
+        assert!(session.window.is_none());
+        assert!(window.marks().is_empty());
+        assert!(window.asked().iter().all(|request| matches!(
+            request,
+            Request::State | Request::Ls { .. } | Request::Find(_)
+        )));
     }
 
     /// Apparent sizes, so the numbers are the bytes written, not blocks.
@@ -2272,13 +3877,13 @@ mod tests {
         use disktree_core::sharing::{Allocation, CloneInfo};
         use disktree_core::tree::{Metric, NodeKind, aggregate};
         const MIB: u64 = 1024 * 1024;
-        let mut tree = Node::directory("fixture");
+        let mut tree = Draft::directory("fixture");
         for index in 0..11 {
             let name = format!("worktree-{index:02}");
             std::fs::create_dir(root.join(&name)).expect("fixture directory");
-            let mut dir = Node::directory(name);
+            let mut dir = Draft::directory(name);
             let bytes = 10 * 1024 * MIB - 50 * MIB;
-            let mut clone = Node::entry("shared", NodeKind::File, bytes);
+            let mut clone = Draft::entry("shared", NodeKind::File, bytes);
             clone.allocation = Some(Box::new(Allocation {
                 bytes,
                 identity: None,
@@ -2293,10 +3898,14 @@ mod tests {
                 }),
             }));
             dir.children.push(clone);
-            dir.children
-                .push(Node::entry("private", NodeKind::File, 50 * MIB));
+            dir.children.push(Draft::entry(
+                "private",
+                NodeKind::File,
+                50 * MIB,
+            ));
             tree.children.push(dir);
         }
+        let mut tree = Tree::from(tree);
         aggregate(&mut tree, Metric::Bytes);
         Scan {
             root: root.into(),
@@ -2332,14 +3941,14 @@ mod tests {
         let scan = worktrees(&root);
         let mut session = unlinked(&root);
         let mut paths = Vec::new();
-        for node in &scan.tree.children {
-            let root = root.join(node.name.as_ref());
+        for node in scan.tree.root().children() {
+            let root = root.join(node.name());
             std::fs::write(root.join("shared"), b"synthetic allocation")
                 .expect("fixture volume identity");
             paths.push(root.join("shared"));
             session.store_scan(Scan {
                 root,
-                tree: Arc::new(node.clone()),
+                tree: Arc::new(Tree::copy_of(node)),
                 options: ScanOptions::default(),
                 at: now(),
                 elapsed: Duration::ZERO,
@@ -2353,13 +3962,10 @@ mod tests {
             .mark(&PathsParams { paths })
             .expect("mark across scans");
         let bytes = 10 * 1024 * 1024 * 1024 - 50 * 1024 * 1024;
-        let range = format!("{}–{}", human_bytes(bytes), human_bytes(bytes));
+        let range = format!("0 B–{}", human_bytes(bytes));
         assert!(report.contains(&range), "{report}");
         assert_eq!(report.matches("Selected-set reclaim estimate:").count(), 1);
-        assert!(
-            report.contains(&format!("Projects {}", human_bytes(bytes))),
-            "{report}"
-        );
+        assert!(report.contains("Projects 0 B"), "{report}");
     }
 
     #[test]
@@ -2368,9 +3974,13 @@ mod tests {
             .expect("fixture");
         let root = temp.path().canonicalize().expect("root");
         let scan = worktrees(&root);
-        let paths: Vec<_> = scan.tree.children[..10]
+        let paths: Vec<_> = scan
+            .tree
+            .root()
+            .children()
             .iter()
-            .map(|node| root.join(node.name.as_ref()))
+            .take(10)
+            .map(|node| root.join(node.name()))
             .collect();
         let mut session = unlinked(&root);
         session.store_scan(scan);
@@ -2456,6 +4066,74 @@ mod tests {
     }
 
     #[test]
+    fn every_core_category_survives_json_and_query_filtering() {
+        use disktree_core::tree::NodeKind;
+
+        let mut root = Draft::directory("fixture");
+        for category in Category::LEGEND.into_iter().chain([Category::Other]) {
+            let mut leaf = Draft::entry(
+                format!("item-{}", category.name().replace(' ', "-")),
+                NodeKind::File,
+                1024,
+            );
+            leaf.category = category;
+            root.children.push(leaf);
+        }
+        let tree = Tree::from(root);
+        for category in Category::LEGEND.into_iter().chain([Category::Other]) {
+            let params: FindParams =
+                serde_json::from_value(serde_json::json!({
+                    "category": category.name().replace(' ', "-"),
+                    "kind": "file"
+                }))
+                .expect("every reported kind is a parameter");
+            let filter = params.request(None, 0).filter().expect("filter");
+            assert_eq!(filter.category, Some(category));
+            let found = query::find(
+                Path::new("fixture"),
+                tree.root(),
+                &filter,
+                MAX_LIMIT,
+            );
+            assert_eq!(found.count, 1);
+            assert_eq!(found.matches[0].1.category, category);
+        }
+    }
+
+    #[test]
+    fn find_accepts_temporary_category_and_excludes_other_kinds() {
+        let temp = fixture();
+        let temporary = temp.path().join("private/tmp/claude-501");
+        for path in [
+            temporary.clone(),
+            temp.path().join(".cache/claude-501"),
+            temp.path().join(".claude/claude-501"),
+        ] {
+            std::fs::create_dir_all(&path).expect("contrived directory");
+            std::fs::write(path.join("notes"), "invented data")
+                .expect("contents");
+        }
+        let params: FindParams = serde_json::from_value(serde_json::json!({
+            "category": "temporary",
+            "kind": "dir",
+            "name": "claude-501"
+        }))
+        .expect("temporary category");
+        let mut session = unlinked(temp.path());
+        scanned(&mut session, temp.path());
+        let request = params.request(None, now());
+        assert_eq!(
+            request.filter().expect("core filter").category,
+            Some(Category::Temporary)
+        );
+        let found = session.found(&request).expect("find");
+        assert_eq!(found.count, 1);
+        assert_eq!(found.matches[0].path, temporary);
+        let report = session.find(&params).expect("report");
+        assert!(report.starts_with("1 match "), "{report}");
+    }
+
+    #[test]
     fn find_filters_by_kind_size_name_and_reclaim() {
         let temp = fixture();
         let mut session = unlinked(temp.path());
@@ -2480,9 +4158,10 @@ mod tests {
                 ..FindParams::default()
             })
             .expect("find");
-        // The topmost reclaimable directory, once, without its contents.
+        // A manifest does not make a standalone profile binary disposable.
+        // Keep the topmost cache once, without its contents.
         assert!(reclaim.contains(".cache/"), "{reclaim}");
-        assert!(reclaim.contains("target/"), "{reclaim}");
+        assert!(!reclaim.contains("target/"), "{reclaim}");
         assert!(!reclaim.contains("blob.bin"), "{reclaim}");
 
         let named = session
@@ -2584,6 +4263,340 @@ mod tests {
         assert!(review.contains("Nothing is marked"), "{review}");
     }
 
+    fn estimate_json(text: &str) -> disktree_core::planning::Report {
+        let (_, json) = text.split_once('\n').expect("JSON after introduction");
+        serde_json::Deserializer::from_str(json)
+            .into_iter()
+            .next()
+            .expect("report")
+            .expect("valid report")
+    }
+
+    #[test]
+    fn ranking_prefers_private_data_to_large_clones_and_keeps_unknown_last() {
+        use disktree_core::planning::{self, Context};
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let scan = clone_copies_with_plain(&root, 3, 6 * 1024 * 1024);
+        let mut context = Context::of(&root, &scan.options, scan.at, 0);
+        // Synthetic clone metadata on every test host; no real clone probe.
+        context.clone_metadata = true;
+        let estimate = |name: &str| {
+            planning::estimate(
+                &scan.tree,
+                context.clone(),
+                &[root.join(name)],
+                None,
+                0,
+            )
+            .expect("estimate")
+        };
+        let clone = estimate("copy-a");
+        let plain = estimate("plain");
+        assert!(clone.listed_bytes > plain.listed_bytes);
+        let mut unknown = clone.clone();
+        unknown.private_allocation = None;
+        unknown.reclaim = None;
+        let mut incomplete = clone.clone();
+        incomplete.metadata_complete = false;
+        for by in [RankBy::Private, RankBy::ReclaimLower] {
+            let ranked = rank_candidates(
+                vec![unknown.clone(), clone.clone(), plain.clone()],
+                by,
+            );
+            assert!(ranked[0].value.expect("plain") > 0);
+            assert_eq!(ranked[0].estimate.accepted, [root.join("plain")]);
+            assert_eq!(ranked[1].value, Some(0), "known clone zero");
+            assert_eq!(ranked[2].value, None, "unknown is not zero");
+        }
+        assert_eq!(
+            rank_candidates(vec![incomplete], RankBy::Private)[0].value,
+            None
+        );
+        let union =
+            planning::estimate(&scan.tree, context, &copies(&root), None, 0)
+                .expect("union");
+        let union = union.reclaim.expect("union bounds");
+        assert_eq!(union.lower, 0);
+        assert!(union.partial);
+        assert!(union.upper > clone.reclaim.expect("alone bounds").upper);
+    }
+
+    /// Proposals inform; only a preview of the person's decisions can be
+    /// confirmed, and only by its own phrase, which names deleting files.
+    #[test]
+    fn cache_proposals_cannot_be_confirmed_until_every_path_is_decided() {
+        use disktree_core::cleanup::{
+            DELETE_CACHE_FILES, Decision, Issue, Problem, Proposal,
+            RUN_OWNER_CLEANUP,
+        };
+        let temp = fixture();
+        let mut session = unlinked(temp.path());
+        let path = temp.path().join("Downloads");
+        let undecided = RemovalPreview {
+            preview_id: String::new(),
+            root: temp.path().to_path_buf(),
+            mode: RemovalChoice::OwnerCleanup,
+            paths: vec![],
+            bytes: 0,
+            estimate: disktree_link::SelectionEstimate::unknown(
+                &disktree_core::removal::Plan::default(),
+            ),
+            limit_percent: 5,
+            volumes: vec![],
+            expires_in_seconds: 300,
+            cleanup: vec![],
+            proposals: vec![Proposal {
+                selected: path.clone(),
+                bytes: 7,
+                is_dir: true,
+                hint: Some("cache".into()),
+                owner: None,
+                operations: vec![],
+                issue: Some(Issue::new(Problem::UnknownOwner, "no owner")),
+                delete: None,
+                delete_issue: None,
+            }],
+            decisions: vec![],
+            files: None,
+            confirmation: String::new(),
+            consent: "1. proposal".into(),
+        };
+        let text = session.cleanup_preview_text(&undecided);
+        assert!(text.contains("Nothing is approved"), "{text}");
+        assert!(text.contains("Never choose for the user"));
+        assert!(session.pending_removal.is_none(), "nothing to confirm");
+
+        let decided = RemovalPreview {
+            preview_id: "decided".into(),
+            paths: vec![path.clone()],
+            decisions: vec![Decision::DeleteFiles],
+            files: Some(RemovalChoice::Permanent),
+            confirmation: DELETE_CACHE_FILES.into(),
+            consent: "Delete files directly, not through their owner (1)"
+                .into(),
+            ..undecided
+        };
+        let text = session.cleanup_preview_text(&decided);
+        assert!(text.contains(DELETE_CACHE_FILES));
+        assert!(
+            text.contains("Owner approval is not approval to delete files")
+        );
+        let owner_only = RemoveParams {
+            preview_id: "decided".into(),
+            mode: RemovalModeName::OwnerCleanup,
+            paths: vec![path],
+            confirmation: RUN_OWNER_CLEANUP.into(),
+            rescan: false,
+        };
+        assert!(
+            session.removal_confirmation_message(&owner_only).is_err(),
+            "owner approval does not confirm deleting files"
+        );
+        session.cleanup_preview_text(&decided);
+        let message = session
+            .removal_confirmation_message(&RemoveParams {
+                confirmation: DELETE_CACHE_FILES.into(),
+                ..owner_only
+            })
+            .expect("exact phrase");
+        assert!(message.0.contains("Delete files directly"));
+
+        // Bounded property over every elapsed second: expiry and single-use
+        // consumption must hold independently of the human's form answer.
+        for elapsed in 0..=600 {
+            session.pending_removal = Some((
+                decided.clone(),
+                Instant::now()
+                    .checked_sub(Duration::from_secs(elapsed))
+                    .expect("fixture clock"),
+            ));
+            let params = RemoveParams {
+                preview_id: decided.preview_id.clone(),
+                mode: RemovalModeName::OwnerCleanup,
+                paths: decided.paths.clone(),
+                confirmation: decided.confirmation.clone(),
+                rescan: false,
+            };
+            assert_eq!(
+                session.removal_confirmation_message(&params).is_ok(),
+                elapsed < decided.expires_in_seconds,
+                "elapsed={elapsed}"
+            );
+            assert!(session.pending_removal.is_none());
+            assert!(session.removal_confirmation_message(&params).is_err());
+        }
+
+        let params: RemovalPreviewParams =
+            serde_json::from_value(serde_json::json!({
+                "mode": "owner_cleanup",
+                "decisions": [{"path": "/x", "action": "delete_files"}],
+                "delete_files_mode": "permanent"
+            }))
+            .expect("decisions parse");
+        assert_eq!(
+            params.decisions.expect("one")[0].action,
+            CleanupActionName::DeleteFiles
+        );
+    }
+
+    #[test]
+    fn ranking_is_read_only_and_apparent_measurements_are_unavailable() {
+        let temp = fixture();
+        let mut session = unlinked(temp.path());
+        scanned(&mut session, temp.path());
+        let before = session.marks.clone();
+        let text = session
+            .rank(&RankParams {
+                paths: vec![
+                    temp.path().join("Downloads"),
+                    temp.path().join("notes"),
+                ],
+                by: RankBy::Private,
+            })
+            .expect("rank");
+        let (_, json) = text.split_once('\n').expect("JSON");
+        let value: serde_json::Value = serde_json::Deserializer::from_str(json)
+            .into_iter()
+            .next()
+            .expect("value")
+            .expect("JSON");
+        assert!(value["candidates"][0]["value"].is_null());
+        assert!(
+            value["selection_union"]["context"]["apparent_size"]
+                .as_bool()
+                .expect("mode")
+        );
+        assert_eq!(session.marks, before);
+        assert!(session.pending_removal.is_none());
+        assert!(
+            session
+                .rank(&RankParams {
+                    paths: vec![],
+                    by: RankBy::Private
+                })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn hypothetical_selection_preserves_the_offline_cart_and_scan() {
+        let temp = fixture();
+        let mut session = unlinked(temp.path());
+        scanned(&mut session, temp.path());
+        let kept = Target {
+            path: temp.path().join("notes"),
+            bytes: 123,
+            is_dir: true,
+            hidden: false,
+        };
+        session.marks.push(kept.clone());
+        let root = session.scans[0].root.clone();
+        let at = session.scans[0].at;
+        let text = session
+            .estimate_paths(&EstimateParams {
+                paths: vec![
+                    temp.path().join("Downloads"),
+                    temp.path().join("Downloads"),
+                ],
+                ..EstimateParams::default()
+            })
+            .expect("estimate");
+        let report = estimate_json(&text);
+        assert_eq!(report.accepted, [temp.path().join("Downloads")]);
+        assert_eq!(report.covered.len(), 1);
+        assert!(report.reclaim.is_none(), "apparent fixture");
+        assert_eq!(session.marks(), [kept]);
+        assert_eq!(session.scans.len(), 1);
+        assert_eq!(session.scans[0].root, root);
+        assert_eq!(session.scans[0].at, at);
+        assert!(session.link.is_none());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn hypothetical_selection_reads_the_window_without_greeting_or_handover() {
+        let temp = fixture();
+        let socket = endpoint(temp.path());
+        let window_root = temp.path().join("src");
+        let mut session = Session::detached(socket.clone(), None);
+        // A stale, broader local tree and offline cart must not be adopted.
+        scanned(&mut session, temp.path());
+        let window = FakeWindow::open(&socket, &window_root);
+        let kept = Target {
+            path: temp.path().join("Downloads"),
+            bytes: 1,
+            is_dir: true,
+            hidden: false,
+        };
+        session.marks.push(kept.clone());
+        let text = session
+            .estimate_paths(&EstimateParams {
+                paths: vec![
+                    window_root.join("app"),
+                    temp.path().join("Downloads"),
+                ],
+                ..EstimateParams::default()
+            })
+            .expect("window estimate");
+        let report = estimate_json(&text);
+        assert_eq!(report.context.root, window_root);
+        assert_eq!(report.accepted.len(), 1);
+        assert_eq!(report.refused.len(), 1);
+        assert_eq!(session.marks(), [kept]);
+        assert!(window.marks().is_empty());
+        assert!(session.link.is_none());
+        assert!(session.window.is_none());
+        assert!(matches!(
+            window.asked().as_slice(),
+            [Request::State, Request::Estimate { .. }]
+        ));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn hypothetical_selection_refuses_remote_or_old_peers_without_local_fallback()
+     {
+        for remote in [true, false] {
+            let temp = fixture();
+            let scan =
+                run_scan(temp.path().to_path_buf(), apparent()).expect("scan");
+            let socket = endpoint(temp.path());
+            let window = FakeWindow::with_tree(
+                &socket,
+                FakeTree {
+                    protocol: if remote { VERSION } else { VERSION - 1 },
+                    root: scan.root.clone(),
+                    tree: Arc::clone(&scan.tree),
+                    marks: vec![],
+                    remote: remote.then(|| "contrived-host".into()),
+                    busy: false,
+                    options: scan.options.clone(),
+                    unreadable: 0,
+                    removed: Vec::new(),
+                },
+            );
+            let mut session = Session::detached(socket, None);
+            session.store_scan(scan);
+            let error = session
+                .estimate_paths(&EstimateParams {
+                    paths: vec![temp.path().join("Downloads")],
+                    ..EstimateParams::default()
+                })
+                .expect_err("cannot substitute local tree");
+            assert!(
+                error.contains(if remote {
+                    "SSH host"
+                } else {
+                    "restart/reconnect"
+                }),
+                "{error}"
+            );
+            assert!(matches!(window.asked().as_slice(), [Request::State]));
+        }
+    }
+
     /// A stand-in for the window: holds a real tree of the fixture, answers
     /// over the real socket the way the app does, and records what it was
     /// asked.
@@ -2599,7 +4612,7 @@ mod tests {
     struct FakeTree {
         protocol: u32,
         root: PathBuf,
-        tree: Arc<Node>,
+        tree: Arc<Tree>,
         marks: Vec<Mark>,
         /// The SSH host the window shows, as a window on one answers.
         remote: Option<String>,
@@ -2607,11 +4620,63 @@ mod tests {
         busy: bool,
         options: ScanOptions,
         unreadable: u64,
+        /// What a removal since the scan took, with its scanned bytes: the
+        /// window keeps it in the tree and flags it, as the app does.
+        removed: Vec<(PathBuf, u64)>,
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn stand_in_history_uses_the_retained_scan_clock() {
+        let fake = FakeTree {
+            protocol: VERSION,
+            root: PathBuf::from("invented"),
+            tree: Arc::new(Tree::from(Draft::directory("invented"))),
+            marks: vec![],
+            remote: None,
+            busy: false,
+            options: apparent(),
+            unreadable: 0,
+            removed: vec![],
+        };
+        // State reads expose the same recorded scan and removal events. The
+        // independent timeline catches clock reads even within one second.
+        for screen in ["explore", "review", "running", "done"] {
+            let state = fake.state(screen);
+            let scanned_at = state.tree.expect("retained tree").scanned_at;
+            let ledger = state.removals.expect("recorded removals");
+            assert_eq!(
+                ledger.cohorts[0].started,
+                scanned_at + 115,
+                "reading state must not move a historical event"
+            );
+            assert_eq!(ledger.cohorts[0].finished, scanned_at + 120);
+            assert_eq!(
+                state.removal.expect("last removal").at,
+                ledger.cohorts[0].finished
+            );
+        }
     }
 
     #[cfg(any(unix, windows))]
     impl FakeTree {
+        fn note_removal(&self, entry: &mut disktree_link::Entry, path: &Path) {
+            entry.removed =
+                self.removed.iter().any(|(gone, _)| path.starts_with(gone));
+            if !entry.removed {
+                entry.removed_bytes = self
+                    .removed
+                    .iter()
+                    .filter(|(gone, _)| gone.starts_with(path))
+                    .map(|(_, bytes)| bytes)
+                    .sum();
+            }
+        }
+
         fn state(&self, screen: &str) -> State {
+            // A retained fixture tree and its historical removal ledger must
+            // remain identical across reads, including second boundaries.
+            let scanned_at = 1_600_000_000;
             let targets: Vec<_> = self
                 .marks
                 .iter()
@@ -2629,7 +4694,7 @@ mod tests {
                         .path
                         .strip_prefix(&self.root)
                         .ok()
-                        .and_then(|relative| self.tree.descend(relative))
+                        .and_then(|relative| self.tree.root().descend(relative))
                         .map(|(_, node)| node)
                 }))
             });
@@ -2644,19 +4709,37 @@ mod tests {
                 estimate: Some(SelectionEstimate::of(&plan)),
                 marks: self.marks.clone(),
                 space: None,
+                removal_operation: None,
                 removal: Some(Removal {
                     mode: "trash".into(),
                     removed: 2,
                     failed: 0,
                     bytes: 700_000,
-                    freed: Some(690_000),
-                    at: now() - 120,
+                    freed: Some(0),
+                    observed: Some(-28_311_552),
+                    at: scanned_at + 120,
+                    cleanup: vec![],
+                }),
+                removals: Some(disktree_link::RemovalLedger {
+                    cohorts: vec![disktree_link::RemovalCohort {
+                        mode: "trash".into(),
+                        removed: 2,
+                        failed: 0,
+                        reported: 700_000,
+                        private: Some(650_000),
+                        observed: Some(-28_311_552),
+                        started: scanned_at + 115,
+                        finished: scanned_at + 120,
+                    }],
+                    reported: 700_000,
+                    private: Some(650_000),
+                    observed: Some(-28_311_552),
                 }),
                 tree: Some(TreeSummary {
-                    bytes: self.tree.bytes,
-                    files: self.tree.files,
-                    dirs: u64::from(self.tree.dirs),
-                    scanned_at: now() - 30,
+                    bytes: self.tree.root().bytes,
+                    files: self.tree.root().files,
+                    dirs: u64::from(self.tree.root().dirs),
+                    scanned_at,
                     elapsed_ms: 1_500,
                     unreadable: self.unreadable,
                     apparent_size: self.options.apparent_size,
@@ -2693,40 +4776,66 @@ mod tests {
                     Response::State(self.state("explore"))
                 }
                 Request::Ls { path, limit } => {
-                    let Some((_, node)) = path
-                        .strip_prefix(&self.root)
-                        .ok()
-                        .and_then(|relative| self.tree.descend(relative))
+                    let Some((_, node)) =
+                        path.strip_prefix(&self.root).ok().and_then(
+                            |relative| self.tree.root().descend(relative),
+                        )
                     else {
                         return Response::error("not in the window's tree");
                     };
-                    Response::Listing(Listing::of(
+                    let mut listing = Listing::of(
                         &self.root,
-                        self.tree.bytes,
+                        self.tree.root().bytes,
                         path,
                         node,
                         *limit,
-                    ))
+                    );
+                    self.note_removal(&mut listing.entry, path);
+                    for child in &mut listing.children {
+                        self.note_removal(child, &path.join(&child.name));
+                    }
+                    Response::Listing(listing)
                 }
                 Request::Find(request) => {
-                    let filter = match request.filter() {
-                        Ok(filter) => filter,
-                        Err(message) => return Response::error(message),
-                    };
-                    let found = query::find(
+                    let found =
+                        match request.results(&self.root, self.tree.root()) {
+                            Ok(found) => found,
+                            Err(message) => return Response::error(message),
+                        };
+                    let mut found = found;
+                    for item in &mut found.matches {
+                        self.note_removal(&mut item.entry, &item.path);
+                    }
+                    Response::Found(found)
+                }
+                Request::Estimate {
+                    paths,
+                    peer_scope,
+                    peer_limit,
+                } => {
+                    let context = disktree_core::planning::Context::of(
                         &self.root,
-                        &self.tree,
-                        &filter,
-                        request.limit,
+                        &self.options,
+                        1,
+                        self.unreadable,
                     );
-                    Response::Found(FoundList::of(&found))
+                    match disktree_core::planning::estimate(
+                        &self.tree,
+                        context,
+                        paths,
+                        peer_scope.as_deref(),
+                        *peer_limit,
+                    ) {
+                        Ok(report) => Response::Estimate(report),
+                        Err(message) => Response::error(message),
+                    }
                 }
                 Request::Mark { targets, .. } => {
                     let mut refused = Vec::new();
                     for target in targets {
                         let node =
                             target.path.strip_prefix(&self.root).ok().and_then(
-                                |relative| self.tree.descend(relative),
+                                |relative| self.tree.root().descend(relative),
                             );
                         let Some((_, node)) = node else {
                             refused.push(Refused {
@@ -2800,6 +4909,7 @@ mod tests {
                 busy,
                 options: apparent(),
                 unreadable: 0,
+                removed: Vec::new(),
             };
             Self::with_tree(socket, fake)
         }
@@ -2875,19 +4985,25 @@ mod tests {
                 busy: false,
                 options: ScanOptions::default(),
                 unreadable: 0,
+                removed: Vec::new(),
             },
         );
-        let paths: Vec<_> = scan.tree.children[..10]
+        let paths: Vec<_> = scan
+            .tree
+            .root()
+            .children()
             .iter()
-            .map(|node| root.join(node.name.as_ref()))
+            .take(10)
+            .map(|node| root.join(node.name()))
             .collect();
         let mut session = Session::detached(socket, None);
         // The agent's old scan has no sharing facts; the window owns truth.
         let mut stale = scan;
-        let mut tree = (*stale.tree).clone();
-        for dir in &mut tree.children {
+        let mut draft = stale.tree.root().to_draft();
+        for dir in &mut draft.children {
             dir.children[0].allocation = None;
         }
+        let mut tree = Tree::from(draft);
         disktree_core::tree::aggregate(
             &mut tree,
             disktree_core::tree::Metric::Bytes,
@@ -2927,6 +5043,7 @@ mod tests {
                         upper: Some(u64::MAX),
                         on_volume: u64::MAX,
                         partial: false,
+                        shared: 0,
                     });
                 }
             }
@@ -2977,6 +5094,7 @@ mod tests {
                 busy: false,
                 options: apparent(),
                 unreadable: 0,
+                removed: Vec::new(),
             },
         );
         let mut session = Session::detached(socket, None);
@@ -3033,6 +5151,7 @@ mod tests {
                         ..ScanOptions::default()
                     },
                     unreadable,
+                    removed: Vec::new(),
                 },
             );
             let mut session = Session::detached(socket, None);
@@ -3084,13 +5203,14 @@ mod tests {
             tree::{Metric, NodeKind, aggregate},
         };
         // Only a synthetic tree represents /; no scan, write or mark of real data.
-        let mut root = Node::directory("/");
-        let mut private = Node::directory("private");
-        let mut tmp = Node::directory("tmp");
+        let mut root = Draft::directory("/");
+        let mut private = Draft::directory("private");
+        let mut tmp = Draft::directory("tmp");
         tmp.children
-            .push(Node::entry("fixture", NodeKind::File, 123));
+            .push(Draft::entry("fixture", NodeKind::File, 123));
         private.children.push(tmp);
         root.children.push(private);
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         classify(&mut root);
         let tree = Arc::new(root);
@@ -3109,6 +5229,7 @@ mod tests {
                         busy: false,
                         options: apparent(),
                         unreadable: 0,
+                        removed: Vec::new(),
                     },
                 )
             });
@@ -3163,6 +5284,7 @@ mod tests {
             total: 1_000_000,
             free: 500_000,
             available: 500_000,
+            native: None,
         });
         let report = session.scan_report(&facts);
         assert!(report.contains("1.9 MiB"), "{report}");
@@ -3172,6 +5294,369 @@ mod tests {
             "{report}"
         );
         assert!(report.contains("not guaranteed freed space"), "{report}");
+    }
+
+    /// Three directories, each holding one full clone of a group APFS
+    /// counts `references` members of, beside a plain directory.
+    fn clone_copies(root: &Path, references: u32) -> Scan {
+        clone_copies_with_plain(root, references, 12 * 1024 * 1024)
+    }
+
+    fn clone_copies_with_plain(
+        root: &Path,
+        references: u32,
+        plain_bytes: u64,
+    ) -> Scan {
+        use disktree_core::sharing::{Allocation, CloneInfo};
+        use disktree_core::tree::{Metric, NodeKind, aggregate};
+        const MIB: u64 = 1024 * 1024;
+        let mut tree = Draft::directory("fixture");
+        for name in ["copy-a", "copy-b", "copy-c", "plain"] {
+            std::fs::create_dir(root.join(name)).expect("fixture directory");
+            let mut dir = Draft::directory(name);
+            let mut file = Draft::entry(
+                "data",
+                NodeKind::File,
+                if name == "plain" {
+                    plain_bytes
+                } else {
+                    12 * MIB
+                },
+            );
+            if name != "plain" {
+                file.allocation = Some(Box::new(Allocation {
+                    bytes: 12 * MIB,
+                    identity: None,
+                    links: 1,
+                    followed: false,
+                    clone: Some(CloneInfo {
+                        device: 1,
+                        id: 9,
+                        references,
+                        private_bytes: Some(0),
+                        data_bytes: 12 * MIB,
+                    }),
+                }));
+            }
+            dir.children.push(file);
+            tree.children.push(dir);
+        }
+        let mut tree = Tree::from(tree);
+        aggregate(&mut tree, Metric::Bytes);
+        Scan {
+            root: root.into(),
+            tree: Arc::new(tree),
+            options: ScanOptions::default(),
+            at: now(),
+            elapsed: Duration::ZERO,
+            unreadable: 0,
+            space: None,
+            device: None,
+            insights: vec![],
+        }
+    }
+
+    fn copies(root: &Path) -> Vec<PathBuf> {
+        ["copy-a", "copy-b", "copy-c"]
+            .iter()
+            .map(|name| root.join(name))
+            .collect()
+    }
+
+    #[test]
+    fn clone_rows_split_shared_bytes_and_a_complete_group_has_partial_bounds() {
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let mut session = unlinked(&root);
+        let report = session.store_scan(clone_copies(&root, 3));
+        assert!(
+            report.contains("APFS clones: 36 MiB of this is shared"),
+            "{report}"
+        );
+        assert!(
+            report.contains("\u{2248} 24 MiB is counted again"),
+            "{report}"
+        );
+        let listing = session
+            .ls(&LsParams {
+                path: root.clone(),
+                limit: None,
+                show: false,
+            })
+            .expect("ls");
+        let row = |name: &str| {
+            listing
+                .lines()
+                .find(|line| line.contains(&format!(" {name}/ ")))
+                .unwrap_or_else(|| panic!("{name} in {listing}"))
+                .to_string()
+        };
+        for name in ["copy-a", "copy-b", "copy-c"] {
+            assert!(
+                row(name).contains(
+                    "0 B private \u{00b7} 12 MiB shared with other APFS \
+                     clones \u{00b7} frees \u{2248} 0 B alone"
+                ),
+                "{listing}"
+            );
+        }
+        assert!(
+            row("plain").ends_with("  plain/  1 files \u{00b7} age unknown")
+        );
+        let found = session
+            .find(&FindParams {
+                path: Some(root.clone()),
+                kind: Some(KindName::Dir),
+                ..FindParams::default()
+            })
+            .expect("find");
+        assert_eq!(found.matches("shared with other APFS clones").count(), 3);
+
+        let one = session
+            .mark(&PathsParams {
+                paths: vec![root.join("copy-a")],
+            })
+            .expect("mark one");
+        assert!(one.contains("estimate: 0 B\u{2013}0 B"), "{one}");
+        assert!(one.contains("12 MiB of the selection is APFS clone"));
+        assert!(!one.contains("Frees"), "{one}");
+        session.unmark(&PathsParams::default()).expect("unmark");
+        let all = session
+            .mark(&PathsParams {
+                paths: copies(&root),
+            })
+            .expect("mark all");
+        assert!(all.contains("estimate: 0 B\u{2013}12 MiB"), "{all}");
+        assert!(all.contains("36 MiB of the selection is APFS clone"));
+    }
+
+    /// Three 10 GiB worktrees sharing all but 100 MiB each. `modified`
+    /// puts the private 100 MiB inside the clone file (a rewritten
+    /// clone); otherwise it is a separate, ordinary file beside a full
+    /// clone.
+    fn worktree_trio(root: &Path, modified: bool) -> Scan {
+        use disktree_core::sharing::{Allocation, CloneInfo};
+        use disktree_core::tree::{Metric, NodeKind, aggregate};
+        const MIB: u64 = 1024 * 1024;
+        let mut tree = Draft::directory("fixture");
+        for name in ["wt-a", "wt-b", "wt-c"] {
+            std::fs::create_dir(root.join(name)).expect("fixture directory");
+            let mut dir = Draft::directory(name);
+            let (bytes, private) = if modified {
+                (10_240 * MIB, 100 * MIB)
+            } else {
+                (10_140 * MIB, 0)
+            };
+            let mut file = Draft::entry("objects", NodeKind::File, bytes);
+            file.allocation = Some(Box::new(Allocation {
+                bytes,
+                identity: None,
+                links: 1,
+                followed: false,
+                clone: Some(CloneInfo {
+                    device: 1,
+                    id: 77,
+                    references: 3,
+                    private_bytes: Some(private),
+                    data_bytes: bytes,
+                }),
+            }));
+            dir.children.push(file);
+            if !modified {
+                dir.children.push(Draft::entry(
+                    "own",
+                    NodeKind::File,
+                    100 * MIB,
+                ));
+            }
+            tree.children.push(dir);
+        }
+        let mut tree = Tree::from(tree);
+        aggregate(&mut tree, Metric::Bytes);
+        Scan {
+            root: root.into(),
+            tree: Arc::new(tree),
+            options: ScanOptions::default(),
+            at: now(),
+            elapsed: Duration::ZERO,
+            unreadable: 0,
+            space: None,
+            device: None,
+            insights: vec![],
+        }
+    }
+
+    #[test]
+    fn marking_a_worktree_trio_keeps_shared_blocks_out_of_the_lower_bound() {
+        const MIB: u64 = 1024 * 1024;
+        for modified in [false, true] {
+            let temp =
+                tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+                    .expect("fixture");
+            let root = temp.path().canonicalize().expect("root");
+            let mut session = unlinked(&root);
+            session.store_scan(worktree_trio(&root, modified));
+            let mut seen = Vec::new();
+            for name in ["wt-a", "wt-b", "wt-c"] {
+                let report = session
+                    .mark(&PathsParams {
+                        paths: vec![root.join(name)],
+                    })
+                    .expect("mark");
+                let mut plan = plan(session.marks(), &root);
+                let estimate = session.selection_estimate(&mut plan);
+                assert_eq!(estimate.on_volume, estimate.lower, "{report}");
+                seen.push((estimate.lower, estimate.upper));
+            }
+            // Each worktree's own 100 MiB is measured; completing the ID
+            // adds only possible savings because other IDs can share blocks.
+            let lower: Vec<u64> =
+                seen.iter().map(|(lower, _)| *lower).collect();
+            assert_eq!(
+                lower,
+                [100 * MIB, 200 * MIB, 300 * MIB],
+                "modified={modified}"
+            );
+            if !modified {
+                // The full group's shared data enters the upper bound once.
+                let upper: Vec<_> =
+                    seen.iter().map(|(_, upper)| *upper).collect();
+                assert_eq!(
+                    upper,
+                    [Some(100 * MIB), Some(200 * MIB), Some(10_440 * MIB)]
+                );
+            }
+            eprintln!("modified={modified}: {seen:?}");
+        }
+    }
+
+    #[test]
+    fn a_clone_outside_the_scan_keeps_every_shared_block() {
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let mut session = unlinked(&root);
+        session.store_scan(clone_copies(&root, 4));
+        let all = session
+            .mark(&PathsParams {
+                paths: copies(&root),
+            })
+            .expect("mark all");
+        assert!(all.contains("estimate: 0 B\u{2013}0 B"), "{all}");
+        assert!(all.contains("outside this scan, keeps them"), "{all}");
+        session.unmark(&PathsParams::default()).expect("unmark");
+        let plain = session
+            .mark(&PathsParams {
+                paths: vec![root.join("plain")],
+            })
+            .expect("mark plain");
+        assert!(plain.contains("estimate: 12 MiB\u{2013}12 MiB"), "{plain}");
+        assert!(!plain.contains("APFS clone"), "{plain}");
+    }
+
+    /// The reproduction behind the clone rows: `cp -c -R` twice and a plain
+    /// `cp -R`, scanned for real. Skipped where the temporary directory
+    /// cannot clone (not APFS).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn real_apfs_clones_read_as_shared_and_free_nothing_alone() {
+        const MIB: u64 = 1_000_000;
+        // The system-tree guard refuses canonical /private, so stay in the
+        // checkout, which is APFS on any Mac that builds this.
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let src = root.join("src");
+        std::fs::create_dir(&src).expect("mkdir");
+        for index in 0..12_u8 {
+            // Distinct, incompressible-enough content per file.
+            let data: Vec<u8> = (0..MIB)
+                .map(|i| (i as u8).wrapping_mul(31).wrapping_add(index))
+                .collect();
+            std::fs::write(src.join(format!("f{index}.bin")), data)
+                .expect("write");
+        }
+        let copy = |flags: &[&str], to: &str| {
+            std::process::Command::new("cp")
+                .args(flags)
+                .arg(&src)
+                .arg(root.join(to))
+                .status()
+                .expect("cp")
+                .success()
+        };
+        if !copy(&["-c", "-R"], "clone-a") {
+            eprintln!("skipped: {} cannot clone files", root.display());
+            return;
+        }
+        assert!(copy(&["-c", "-R"], "clone-b"));
+        assert!(copy(&["-R"], "plain"));
+        let scan =
+            run_scan(root.clone(), ScanOptions::default()).expect("scan");
+        let listing = Listing::of(
+            &scan.root,
+            scan.tree.root().bytes,
+            &root,
+            scan.tree.root(),
+            10,
+        );
+        let entry = |name: &str| {
+            listing
+                .children
+                .iter()
+                .find(|child| child.name == name)
+                .unwrap_or_else(|| panic!("{name}"))
+                .clone()
+        };
+        let clone = entry("clone-a").clones.expect("clone facts");
+        assert!(clone.private <= 8 * 1024, "{clone:?}");
+        assert!(clone.shared >= 12 * MIB - 64 * 1024, "{clone:?}");
+        assert_eq!(entry("plain").clones, None);
+        let mut session = unlinked(&root);
+        session.store_scan(scan);
+        let marked = |session: &mut Session, name: &str| {
+            let report = session
+                .mark(&PathsParams {
+                    paths: vec![root.join(name)],
+                })
+                .expect("mark");
+            session.unmark(&PathsParams::default()).expect("unmark");
+            let mut plan = plan(
+                &[Target {
+                    path: root.join(name),
+                    bytes: entry(name).bytes,
+                    is_dir: true,
+                    hidden: false,
+                }],
+                &root,
+            );
+            (report, session.selection_estimate(&mut plan))
+        };
+        let (report, estimate) = marked(&mut session, "clone-a");
+        assert!(estimate.lower < 64 * 1024, "{report}");
+        assert!(
+            report.contains("of the selection is APFS clone"),
+            "{report}"
+        );
+        let (report, estimate) = marked(&mut session, "plain");
+        assert!(estimate.lower >= 12 * MIB, "{report}");
+        assert!(!report.contains("APFS clone"), "{report}");
+
+        // Without allocated blocks there is nothing to split.
+        let mut apparent = unlinked(&root);
+        let report = apparent.store_scan(
+            run_scan(
+                root.clone(),
+                ScanOptions {
+                    apparent_size: true,
+                    ..ScanOptions::default()
+                },
+            )
+            .expect("apparent scan"),
+        );
+        assert!(!report.contains("private"), "{report}");
+        assert!(!report.contains("APFS clones:"), "{report}");
     }
 
     #[cfg(any(unix, windows))]
@@ -3211,7 +5696,7 @@ mod tests {
             })
             .expect("find over the link");
         assert!(reclaim.contains(".cache/"), "{reclaim}");
-        assert!(reclaim.contains("target/"), "{reclaim}");
+        assert!(!reclaim.contains("target/"), "{reclaim}");
 
         // The window measures the mark; a path it does not have is refused.
         let plan = session
@@ -3253,6 +5738,13 @@ mod tests {
         let status = session.status();
         assert!(status.contains("Claude Code"), "{status}");
         assert!(status.contains("Last removal: trash"), "{status}");
+        assert!(
+            status.contains("-27 MiB observed volume change"),
+            "{status}"
+        );
+        assert!(!status.contains("0 B freed"), "{status}");
+        assert!(status.contains("Removed since the scan"), "{status}");
+        assert!(status.contains("Total: 684 KiB reported"), "{status}");
         assert!(status.contains("scanned "), "{status}");
         assert!(!status.contains("Scans: none yet"), "{status}");
 
@@ -3276,6 +5768,68 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
+    fn listings_say_what_the_window_removed_since_its_scan() {
+        let temp = fixture();
+        let socket = endpoint(temp.path());
+        let mut fake = FakeTree {
+            protocol: VERSION,
+            root: temp.path().to_path_buf(),
+            tree: Arc::new(
+                disktree_core::scan::scan(temp.path(), apparent())
+                    .expect("scan"),
+            ),
+            marks: Vec::new(),
+            remote: None,
+            busy: false,
+            options: apparent(),
+            unreadable: 0,
+            removed: Vec::new(),
+        };
+        fake.removed = vec![(temp.path().join(".cache/pip"), 400_000)];
+        let _window = FakeWindow::with_tree(&socket, fake);
+        let mut session = Session::detached(socket, None);
+        session.set_client("claude-code");
+
+        let root = session
+            .ls(&LsParams {
+                path: temp.path().to_path_buf(),
+                limit: Some(10),
+                show: false,
+            })
+            .expect("ls");
+        let cache = root
+            .lines()
+            .find(|line| line.contains(".cache/"))
+            .expect("still listed");
+        assert!(
+            cache.contains("of it removed since the scan"),
+            "part of it went: {root}"
+        );
+        let notes = root.lines().find(|l| l.contains("notes/")).unwrap();
+        assert!(!notes.contains("removed"), "neighbours unchanged: {root}");
+
+        let inside = session
+            .ls(&LsParams {
+                path: temp.path().join(".cache"),
+                limit: Some(10),
+                show: false,
+            })
+            .expect("ls");
+        let pip = inside.lines().find(|l| l.contains("pip/")).unwrap();
+        assert!(pip.contains("removed since the scan"), "{inside}");
+        assert!(!pip.contains("of it removed"), "it went whole: {inside}");
+
+        let found = session
+            .find(&FindParams {
+                name: Some("blob".into()),
+                ..FindParams::default()
+            })
+            .expect("find");
+        assert!(found.contains("removed since the scan"), "{found}");
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
     fn with_a_window_open_marks_live_there_and_review_opens_it() {
         let temp = fixture();
         let socket = endpoint(temp.path());
@@ -3396,7 +5950,7 @@ mod tests {
         assert!(status.contains("pwrdisk_scan"), "{status}");
         let report = session.plan_report();
         for path in &paths {
-            assert!(report.contains(&path.display().to_string()), "{report}");
+            assert!(report.contains(&session.show(path)), "{report}");
         }
         assert_eq!(session.marks().len(), 2);
         assert!(session.link.is_none());
@@ -3842,6 +6396,24 @@ mod tests {
                 .expect_err("no desktop access")
                 .contains("Standalone")
         );
+        // Every read-only entry point must keep using the standalone tree,
+        // including newer tools that open independent read-only links.
+        let params = EstimateParams {
+            paths: vec![temp.path().join("src")],
+            ..EstimateParams::default()
+        };
+        session
+            .estimate_paths(&params)
+            .expect("standalone estimate");
+        session
+            .rank(&RankParams {
+                paths: params.paths,
+                by: RankBy::Private,
+            })
+            .expect("standalone ranking");
+        session
+            .find_outputs(&crate::outputs::Params::default())
+            .expect("standalone output inventory");
         assert!(window.asked().is_empty());
         assert!(window.marks().is_empty());
         assert_eq!(session.marks().len(), 1);

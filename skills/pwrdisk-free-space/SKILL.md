@@ -38,6 +38,15 @@ to enable relative paths. Standalone captures its own working directory.
 
 ## Before you start
 
+Read this skill before choosing candidates, not only before marking. Use
+`pwrdisk_read_skill` with this URI and the OS reference below. The same
+files are MCP resources. In PwrAgent, call
+`manage_mcp_connections(action="describe_thread")`, find PwrDisk's exact
+`serverNameInAgent`, then use it for `list_mcp_resources(server=...)` and
+`read_mcp_resource(server=..., uri=...)`. Neither `pwrdisk` nor the reported
+client label (such as `pwragent-pwrdisk-proxy`) establishes the server name.
+A failed guessed name is not evidence that the skill is missing.
+
 Read the reference for the system `pwrdisk_status` names. Each lists what
 that system hides from a file scan, what it refuses, and what must never be
 marked:
@@ -51,8 +60,9 @@ marked:
 Looking is free; acting is the user's call.
 
 - **Read-only tools need no permission.** `pwrdisk_status`, `pwrdisk_ls`,
-  `pwrdisk_find` and a home-directory `pwrdisk_scan` only read. Say before
-  a `disk: true` scan that it walks the whole volume and can take minutes.
+  `pwrdisk_find`, `pwrdisk_find_outputs`, `pwrdisk_estimate` and a
+  home-directory `pwrdisk_scan` only read. Say before a `disk: true` scan
+  that it walks the whole volume and can take minutes.
 - **Confirm the list before `pwrdisk_mark`.** Show each candidate with its
   path, its size, what it is, and why it is safe to lose or how it comes
   back. Mark what the user agrees to, nothing more. Marking only marks, but
@@ -77,8 +87,48 @@ Looking is free; acting is the user's call.
   measured size and capacity limit. For Trash, explain that restoration may
   be possible until emptied, but is not guaranteed; space usually returns
   only when emptied. Permanent deletion cannot be undone through PwrDisk or
-  Trash. Wait for an explicit answer confirming this exact operation before
-  calling `pwrdisk_remove`. Never manufacture user confirmation yourself.
+  Trash. After showing the proposal, call `pwrdisk_remove` to ask the person
+  through the client's confirmation card. Never answer that card or
+  manufacture user confirmation yourself. Auto/Full Access and the tool
+  arguments do not authorize deletion.
+
+## Prefer older, large output across types
+
+Use `pwrdisk_find_outputs` for typed build output, caches, dependencies and
+name-described temporary/scratch/log/trash locations. Omit type filters for
+all supported kinds. Use `types: ["cargo"]` or `types: ["scala"]` for a
+subtype, or `family: "jvm"` / `types: ["jvm"]` for Scala, Gradle, Maven and
+Coursier together. Multiple types use OR; family, category, name, minimum
+evidence, size and age filters narrow together. Results identify their type,
+family, assessment, proof strength, exact file-write time, size and limits.
+
+Distinguish `name`, `layout` and `metadata` evidence; use `minimum_evidence`
+when stronger evidence is needed. A name-described location is not a known
+cache owner or disposable data. Cargo is an internal metadata-backed detector:
+it requires compiler/fingerprint contents and dependency structure, including
+custom output roots. A target name alone never qualifies. Other types expose
+the actual name/layout evidence from the shared classifier. The report names
+metadata-capable types; absence from a metadata-only query is not proof that
+other types are absent. Use the returned evidence directly instead of repeating
+filesystem walks or external identity/age checks for facts already established.
+
+Start with large older candidates, for example `min_bytes: 1073741824`,
+`older_than_days: 30`, `order: "oldest"`. Fetch all pages with `next_offset`.
+If insufficient for the goal, relax the age cutoff (for example 7 days, then
+omit it) and explain the expanded range. Recent writes can be automated and
+do not establish active human work. `order: "largest"` compares sizes instead.
+Age is newest scanned **file mtime beneath the root**, not directory mtime,
+access time or proof of inactivity. Unknown ages sort last and fail age filters.
+
+Types can overlap: a generic cache location may contain Cargo or Scala output.
+Keep the typed children visible. `covered_by` identifies an enclosing match;
+`matching_listed_bytes` counts the union once. Per-type totals may overlap and
+must not be added. Pass all selected paths to the full-list estimate and check
+retention before promising recovery. Check scan settings, timestamps,
+unreadable counts, truncation and exclusions before claiming coverage, even
+when a filter returns zero rows. Identity does not prove all untracked files
+are generated or safe to lose. Existing source-checkout, supported-owner,
+marking and removal-confirmation rules still apply.
 
 ## Never
 
@@ -101,6 +151,46 @@ Looking is free; acting is the user's call.
 
 ## Ground rules
 
+- **Separate detection from cleanup advice.** An artifact's `kind` names
+  what was recognized; `evidence` describes a name convention or tool
+  layout. `disposition: detected` is inventory, not a suggestion to remove
+  it. `suggested` means a relatively lower-risk candidate for review,
+  still subject to local edits, active owners, rebuild/reinstall costs and
+  the user's confirmation. Neither size nor age makes data disposable.
+  Use only the recognized subtree: a Cargo manifest does not establish
+  that all of `target`, `build` or `dist` is generated output.
+- **VM data belongs to its owner app.** Disk images can contain unique
+  work. Review and consolidate snapshots through the VM app; never offer
+  individual snapshot-chain files as generic cache cleanup. For saved
+  memory or suspend state, suggest resuming the VM and shutting it down
+  normally so its owner releases the state. Checkpoints may retain memory.
+  These are detections, and listed bytes are not guaranteed savings.
+- **Check retention before promising recovery.** On macOS call
+  `pwrdisk_retention` for a path on each selected volume before proposing
+  a recovery amount. It lists local Time Machine snapshots without changing
+  them; other snapshots, open files and concurrent writes remain unmeasured.
+  Failed, unsupported or unrecognized checks mean unknown, never zero.
+  Snapshot presence is a plausible retention mechanism, not proof of the
+  exact bytes held. Even an empty list cannot guarantee immediate recovery.
+  Report that uncertainty upfront, including for mostly private selections.
+- **Keep five different metrics separate.** Apparent logical size is known
+  only if measured in that mode. An ALLOCATED scan reports allocation,
+  including shared/repeated clone blocks; never relabel it apparent size.
+  Private allocation is the scan's estimate of unshared bytes. Reclaim
+  bounds evaluate the whole selected union before retention. Observed
+  recovery is the signed before/after available-space delta on the measured
+  volume, which concurrent writes affect too. A negative delta is a loss of
+  available space, not "0 B freed". Do not subtract private from reported
+  allocation to explain all missing recovery.
+- **Estimate before marking.** For a hypothetical path list use
+  `pwrdisk_estimate` without changing the cart. Evaluate the whole set;
+  never sum directory reclaim estimates or mark worktrees temporarily.
+  Allocation includes internal clone duplicates. Check bounds, scan and
+  metadata completeness, unavailable values and volume attribution.
+  Retained clone-holder directories are inspection leads, not removal
+  recommendations. Agree each added path separately; a larger estimated
+  saving does not establish that a worktree is disposable. See the macOS
+  reference for bounded peer discovery and unresolved references.
 - **Keep browsing stationary.** `pwrdisk_ls` and `pwrdisk_find` never move
   the window. Call `pwrdisk_show` only if the user asks to see a directory
   or explicitly asks the window to follow along. Do not enable following
@@ -112,6 +202,11 @@ Looking is free; acting is the user's call.
   and refuses an operation with unknown capacity or unreadable selection.
   Do not raise the setting, split a selection into batches, or retry an
   ambiguous result to evade the guard. Ask the user how to proceed.
+  A linked window refuses a mark that would take the list past the limit,
+  and removal checks it again; only the person can go past it, in the
+  window, and agents keep the 5% default even when the window's limit is
+  off. Without a window, marks are checked when they reach one, so a mark
+  that succeeds then may still be refused.
 - **The guards are not your safety net.** `pwrdisk_mark` refuses the home
   directory, mount points, the scanned root, system trees and a user
   profile, and says why. Anything else it will mark. You decide what to
@@ -161,21 +256,33 @@ Looking is free; acting is the user's call.
    the scanning and shows the result. The result lists the top level,
    largest first, and *worth a look*: the biggest directories that could
    plausibly go.
-3. **Walk, biggest first.** `pwrdisk_ls` on the largest directories, a few
+3. **Walk and compare physical candidates.** Allocation-sorted tools show
+   large listings, not the largest likely savings. Pass a bounded explicit
+   candidate path list to `pwrdisk_rank` (`by: "private"` or
+   `"reclaim_lower"`) to compare scan-derived physical figures; null is
+   unavailable and distinct from measured zero. The returned union is not
+   the sum of candidate rows. Ranking establishes neither ownership nor
+   cleanup method; check both before proposing anything. Never delete a
+   worktree merely to unlock a clone group.
+   Continue with `pwrdisk_ls` on the largest directories, a few
    levels down, until a directory clearly belongs to one project or one
    tool. Leave the displayed directory unchanged. Use `pwrdisk_show` only
    when the user asks to see a path or has requested following.
 4. **Sweep.** `pwrdisk_find` with `reclaimable: true` lists every cache,
    build directory and verified package store at once. These are cleanup
    candidates, not removal eligibility or guaranteed savings. Read reported
-   guard refusals; never bypass them. Confirm pnpm's store with `pnpm store
-   path` and prefer `pnpm store prune`; its installation also holds the
-   executable, global tools and `.tools`, which are not a disposable store.
+   guard refusals; never bypass them. Caches PwrDisk can clean with their
+   owner's command (npm, npx, uv, pip, Cypress, Playwright) go through
+   `owner_cleanup`; every other candidate, cache-like or not, is an
+   ordinary `trash` or `permanent` removal the user agrees and confirms.
+   pnpm installations include executables, global tools and `.tools`; do not
+   treat them as disposable stores or assume prune has directory-local scope.
    `kind: "file"` with
    `min_bytes` finds huge files. `older_than_days` finds what nobody has
    touched. `name` matches part of a name.
 5. **Classify each candidate**, in one line each:
-   - *regenerable*: caches, build output, installed dependencies;
+   - *regenerable*: caches and build output; the six owners above go
+     through `owner_cleanup`, the rest are ordinary removals;
    - *tool-owned*: stores, images, simulators, toolchains; offer the
      tool's command;
    - *user data*: media, downloads, archives, documents, VM disks, synced
@@ -191,18 +298,61 @@ Looking is free; acting is the user's call.
 8. **Confirm removal or hand it over.** To let the person remove in the
    app, announce `pwrdisk_review`, open it, and stop; never approve through
    computer use. For requested MCP removal, call `pwrdisk_removal_preview`
-   with an explicit `trash` or `permanent` mode, show every returned path and
-   the consequences, and wait for explicit user confirmation. Only then call
-   `pwrdisk_remove` with the exact preview ID, ordered paths, mode and required
+   with `owner_cleanup` for caches of those six owners (otherwise explicit
+   `trash` or `permanent`). A cache cleanup is decided per path:
+   the first preview lists one proposal per marked path; show every owner,
+   version, executable, argument list, environment override, selected path,
+   actual whole-cache scope, effects, limitations and recoverability, and
+   every unavailable reason. The user chooses `skip`, `owner` or
+   `delete_files` for each path; never choose for them, and recommend the
+   owner's command where it is offered. Preview again with those `decisions` (and
+   `delete_files_mode` when any path deletes files); its confirmation text
+   names each intent, and owner approval never approves deleting files.
+   Every mode may return preparing while inspection runs on a worker;
+   retry only the read-only preview. Exports contain marked paths, never
+   expanded owner scopes; a refused raw script is not a deletion fallback.
+   A cleanable cache under or inside a marked path holds it to
+   `owner_cleanup`; a cache name or tag alone never does.
+   Unknown,
+   unsupported, unavailable or failed owners never fall back to raw deletion.
+   Show every returned actual-scope path and
+   the consequences, then call
+   `pwrdisk_remove` to request human confirmation through the MCP client with the exact preview ID, ordered paths, mode and required
    confirmation text. The preview expires after five minutes and is single
    use. Any refusal, changed selection, changed scan or expiration requires
-   a new preview and fresh user confirmation. A tool response saying the
+   a new preview and fresh user confirmation, after checking outcome.
+   A cancelled MCP form describes the form, not native UI removal. If the
+   exact previewed selection finished or is running, do not replay it or
+   request another preview. Read status and reconcile failures or unreached
+   paths with the user. An unavailable outcome is not permission to retry.
+   A tool response saying the
    operation started is not proof it completed; never retry it automatically.
 9. **Report.** `pwrdisk_status` reports completed and failed removals and
    measured freed space. Report that figure, not a projection. Trash is not
    guaranteed recoverable and does not guarantee an immediate space saving.
+   Cache cleanup always rescans and reports each path's result (succeeded,
+   failed with a reason, cancelled, skipped, not reached) separately from
+   scope allocation and observed free-space change. Success need not
+   remove the cache root or free its listed allocation; APFS snapshots/clones,
+   hardlinks and open files can retain blocks. Never alter snapshots.
+   Raw removal does not rescan unless `pwrdisk_remove` is given `rescan: true`,
+   so the next batch can be found at once. Until a rescan, listings keep
+   the scan's sizes but say "removed since the scan" on what went, and
+   "N of it removed since the scan" on a directory that lost part of
+   itself; subtract that before reporting what is left. The window refuses
+   to mark removed paths again, so leave them out. Its removals since the scan are listed as
+   reported (a clone in every place), private (the scan's estimate of what
+   was theirs alone) and observed (the measured free-space change); report
+   the observed total first. Sharing figures stay the scan's until a
+   rescan.
 
 MCP removal also requires interactive confirmation from the client (form
-elicitation). An agent-supplied confirmation value does not establish human
-consent. If the client cannot ask the user, use human review in PwrDisk;
+elicitation with an empty schema and an explicit Accept or Decline decision).
+PwrAgent can show this as messaging buttons; no checkbox or typed form field
+is required. The card names the request ID and the complete operation. Only
+the person may answer it. An agent-supplied confirmation value does not
+establish human consent. Do not retry automatically after cancellation,
+expiry or reconnect: inspect status, then obtain a fresh preview and approval.
+Selected filesystem objects and their resolved parents are rechecked before
+execution; directory contents remain live, not snapshotted. If the client cannot ask the user, use human review in PwrDisk;
 never approve its buttons or confirmation keys through computer use.

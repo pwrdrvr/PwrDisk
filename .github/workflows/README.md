@@ -16,14 +16,16 @@ Every job runs on a standard GitHub-hosted runner: free on a public
 repository, macOS included, and discarded after the job. PwrRoute builds
 macOS on self-hosted lab machines; PwrDisk does not, because it takes pull
 requests from forks and those must never reach a persistent machine. Every
-Rust job pins Rust 1.97, the version in `rust-toolchain.toml`.
+Rust job installs the version `rust-toolchain.toml` pins, read from the
+checkout, so that file is the only place it is written.
 
 ## ci.yml
 
 The Linux `licenses` job runs `cargo xtask licenses --check` on every push
 to `main` and on PRs changing `Cargo.lock`, any `Cargo.toml`, `licenses/**`
-or `THIRD_PARTY_LICENSES`. Changes to `ci.yml` or `xtask/src/licenses.rs`
-also run it so edits to the gate or generator are checked. It installs
+or `THIRD_PARTY_LICENSES`. Changes to `ci.yml`, the `setup-rust` action or
+`xtask/src/licenses.rs` also run it so edits to the gate or generator are
+checked. It installs
 `cargo-about@0.9.2` with `cargo install --locked --features cli` and caches
 the binary by OS, architecture, generator version and Rust version. Like
 PwrRoute, the generator is pinned and the notice check runs on Linux only.
@@ -33,6 +35,73 @@ paths of renames. Unrelated PRs skip it; a failed classifier or incomplete
 file list runs it. The workflow trigger stays unfiltered so the job always
 reports a result. A stale file fails with instructions to run
 `cargo xtask licenses` and commit `THIRD_PARTY_LICENSES`.
+
+Each CI job has a deadline, and test steps have their own so a hang does
+not consume the rest of the job's budget. In nine successful runs on
+November 6, 2026, the Intel macOS test step took 8–13 minutes, Windows
+tests at most 9, and the other test steps at most 5. Their limits allow
+roughly twice those times; Intel gets 20 minutes. One earlier Intel run
+took 46 minutes in the test step: it would now fail instead of holding up
+the check. Both macOS jobs run the isolated APFS image fixture tests
+with a ten-minute deadline before the full test gate repeats those tests
+alongside the deletion oracle. Intel compiles workspace tests and the exact
+core lifecycle invocation first so the lifecycle step's execution deadline
+cannot be spent compiling core under another feature combination; run
+42529711572 passed all 33 lifecycle tests in 5m48s but its preceding 4m21s
+core build exhausted that step. Apple silicon runs the fixture tests before
+compiling the GUI dependency graph.
+Both macOS jobs compile workspace tests and xtask separately:
+Intel has a 15-minute compilation limit and 20-minute test gate; Apple
+silicon has 10 and 15 minutes respectively. The test gate includes
+execution, the later screenshot-feature build and script checks. Cold
+compilation took 11 minutes on Intel and 3m06s on Apple silicon. On the
+latter, core tests then took 6m23s, leaving no time in the old ten-minute
+step for the remaining suites. Counting compilation against execution
+terminated both advancing suites. Intel run 42415250815 passed the workspace
+tests, including 10m07s in core, but reached the 30-minute job limit while
+building the screenshot-feature tests. Its enclosing job now allows 50
+minutes: the existing 10-minute lifecycle, 15-minute compilation and
+20-minute gate deadlines, plus five for setup and cleanup. The phase limits
+are unchanged. Apple silicon keeps its 30-minute job limit. The deadline
+model in `scripts/ci/test-budgets.test.cjs` checks workloads against the
+separate phase budgets and exhaustively checks that Intel's valid phase
+durations fit the job. The job limits also cover setup and cache saving.
+Revisit them when runner speeds or cold-cache build times change.
+
+### The Rust cache
+
+Every Rust job in `ci.yml`, `preview-build.yml` and `release.yml` sets up
+through one local composite action, `.github/actions/setup-rust`, so the
+toolchain pin, the prune and the cache's save rule cannot drift apart
+between jobs. It reads the `channel` from the checked-out
+`rust-toolchain.toml`, installs it with `dtolnay/rust-toolchain`, runs
+`scripts/ci/prune-rust-toolchains.sh`, then `Swatinem/rust-cache`, saving
+only on `main`. The version is read from the file, not a repository
+variable, so a release tag builds with the Rust it pinned however the
+variable has moved since. Its inputs are what differ between jobs:
+`components` (clippy and rustfmt for the lint jobs), `targets` (both Apple
+architectures for the universal macOS build), `cache-bin` (off in the
+`licenses` job, whose own cache owns `cargo-about`) and `save-if` (`false`
+in `release.yml`, because a cache saved under a tag is readable by that
+tag's runs alone). Its `toolchain` output is the version it read, which
+keys the `cargo-about` cache. A job must check out the repository before
+using it, as with any local action.
+
+The cache saves only on `main`; a PR restores `main`'s entry for the same
+job, by key prefix when its `Cargo.lock` differs. The Actions cache store
+holds 10 GB and evicts the least recently used entry first. While PRs saved
+too, each wrote about 6 GB across the jobs, `main`'s entries were evicted,
+and the next PR compiled from scratch: the macOS job's lint went from under
+a minute to six, and its tests from two minutes to eight. As in PwrRoute,
+the prune script removes the runner image's own stable toolchain before the
+cache step, because rust-cache hashes every installed toolchain and image
+rollouts would otherwise change the key. A push to `main` never cancels the
+`main` run in progress, since a cancelled job saves nothing.
+
+Lint and test stay one job per platform. They compile separately anyway
+(clippy builds dependencies as metadata, tests as full code), so splitting
+them would only trade one runner for two and add a cache entry per
+platform to the 10 GB budget.
 
 ## preview-build.yml
 
@@ -123,9 +192,9 @@ other.
 - **`--require-icon-catalog`.** The jobs check the bundle for `Assets.car`
   and `CFBundleIconName` instead.
 - **Winget and Homebrew audit stubs.** There is no package in either yet.
-- **The cache-sharing `typecheck`/`test` jobs.** PwrDisk's `ci.yml` has a
-  different job layout; the release lints once and tests on each platform it
-  builds.
+- **The separate `typecheck`/`build`/`test` jobs.** PwrDisk's `ci.yml`
+  lints and tests in one job per platform; the release lints once and tests
+  on each platform it builds. PwrRoute's main-only Rust cache is ported.
 - **Linux `.deb`.** PwrDisk keeps its tarball and `install.sh`.
 
 ## PR labels

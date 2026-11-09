@@ -4,16 +4,17 @@
 //! works offline on every platform, bundle or not.
 //!
 //! The changelog is drawn from its Markdown (headings, bullets, `code`,
-//! **bold**); the license and the notices are monospace text, wrapped at
-//! [`WRAP_COLUMNS`] once when the window opens so the notices' megabyte
-//! draws as a list of fixed-height rows.
+//! **bold**); license and notices use measured monospace wrapping at the
+//! current width/scale, capped by [`WRAP_COLUMNS`]. Only visible rows of the
+//! notices' megabyte are drawn; Copy always retains the original source.
 
 use std::rc::Rc;
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, ClipboardItem, Context, FontWeight, HighlightStyle,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    AnyElement, App, ClipboardItem, Context, FocusHandle, FontWeight,
+    HighlightStyle, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ParentElement as _, Render, Role, ScrollHandle, ScrollStrategy,
     SharedString, StatefulInteractiveElement as _, Styled as _, StyledText,
     UniformListScrollHandle, Window, WindowHandle, div, uniform_list,
 };
@@ -28,7 +29,7 @@ pub const LICENSE: &str = include_str!("../../../LICENSE");
 pub const THIRD_PARTY_NOTICES: &str =
     include_str!("../../../THIRD_PARTY_LICENSES");
 
-/// Where the license and the notices wrap.
+/// Maximum columns when the document window has room.
 pub const WRAP_COLUMNS: usize = 100;
 
 /// The window's Copy button.
@@ -84,7 +85,11 @@ pub fn open(doc: Doc, cx: &mut App) {
 
 /// A new window for `doc`, for `open` and the tests.
 pub fn open_window(doc: Doc, cx: &mut App) -> Option<WindowHandle<DocWindow>> {
-    aux_window::open(&doc.spec(), cx, |_, _| DocWindow::new(doc))
+    aux_window::open(&doc.spec(), cx, |window, cx| {
+        let view = DocWindow::new(doc, cx);
+        window.focus(&view.focus, cx);
+        view
+    })
 }
 
 /// The window's view.
@@ -93,6 +98,10 @@ pub struct DocWindow {
     body: Body,
     copied: bool,
     strip_drag: bool,
+    pub focus: FocusHandle,
+    pub position: usize,
+    block_scroll: ScrollHandle,
+    wrap_key: Option<(u32, u32, SharedString)>,
 }
 
 enum Body {
@@ -108,7 +117,7 @@ impl Drags for DocWindow {
 }
 
 impl DocWindow {
-    pub fn new(doc: Doc) -> Self {
+    pub fn new(doc: Doc, cx: &Context<'_, Self>) -> Self {
         let body = match doc {
             Doc::Changelog => {
                 Body::Changelog(changelog(CHANGELOG, env!("CARGO_PKG_VERSION")))
@@ -128,7 +137,156 @@ impl DocWindow {
             body,
             copied: false,
             strip_drag: false,
+            focus: cx.focus_handle().tab_stop(true),
+            position: 0,
+            block_scroll: ScrollHandle::new(),
+            wrap_key: None,
         }
+    }
+
+    /// Wrap against measured glyph widths after a resize or shared scale
+    /// change. Keep the relative reading position; Copy always uses source.
+    fn reflow(&mut self, window: &Window, theme: &Theme) {
+        let Body::Lines(lines, scroll) = &mut self.body else {
+            return;
+        };
+        let rem = window.rem_size();
+        let font = gpui_kit::font(theme.mono_font.clone());
+        let font_size = rem * text::BODY.0;
+        let font_id = window.text_system().resolve_font(&font);
+        let advance = window
+            .text_system()
+            .advance(font_id, font_size, 'm')
+            .map_or(font_size * 0.6, |size| size.width);
+        // Body and row padding plus border clearance. A 100-column ceiling
+        // keeps wide windows readable without imposing it on narrow ones.
+        let room = (window.viewport_size().width - rem * 5.0)
+            .max(advance * 8.0)
+            .min(advance * WRAP_COLUMNS as f32);
+        // Monospace text wraps the same until a whole column is gained or
+        // lost, so a live resize re-wraps the megabyte of notices once per
+        // column rather than once per pixel.
+        let columns = (room / advance).floor();
+        let width = advance * columns;
+        let key = (
+            columns.to_bits(),
+            rem.as_f32().to_bits(),
+            theme.mono_font.clone(),
+        );
+        if self.wrap_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.wrap_key = Some(key);
+        let mut wrapper = window.text_system().line_wrapper(font, font_size);
+        let mut rows = Vec::new();
+        for raw in self.doc.source().lines() {
+            let expanded = raw.replace('\t', "    ");
+            if expanded.is_empty() {
+                rows.push(SharedString::from(""));
+                continue;
+            }
+            let fragments = [gpui_kit::LineFragment::text(&expanded)];
+            let mut starts = vec![0];
+            starts.extend(
+                // SameIndent is how GPUI wrapped before the argument
+                // existed; only the break offsets are used here.
+                wrapper
+                    .wrap_line(
+                        &fragments,
+                        width,
+                        gpui_kit::IndentAdjustment::SameIndent,
+                    )
+                    .map(|boundary| boundary.ix),
+            );
+            starts.push(expanded.len());
+            starts.dedup();
+            rows.extend(starts.windows(2).map(|range| {
+                SharedString::from(expanded[range[0]..range[1]].to_owned())
+            }));
+        }
+        self.position =
+            self.position.saturating_mul(rows.len()) / lines.len().max(1);
+        self.position = self.position.min(rows.len().saturating_sub(1));
+        *lines = Rc::new(rows);
+        scroll.scroll_to_item(self.position, ScrollStrategy::Top);
+    }
+
+    fn key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let key = &event.keystroke.key;
+        if (event.keystroke.modifiers.platform
+            || event.keystroke.modifiers.control)
+            && key == "c"
+        {
+            self.copy(cx);
+        } else {
+            if matches!(&self.body, Body::Changelog(_))
+                && matches!(key.as_str(), "pageup" | "pagedown")
+            {
+                crate::ui::scroll_key(
+                    key,
+                    &self.block_scroll,
+                    window.rem_size(),
+                );
+                self.position = self.block_scroll.top_item();
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
+            let page = match &self.body {
+                Body::Changelog(_) => 1,
+                Body::Lines(_, scroll) => {
+                    let measured = scroll.0.borrow();
+                    measured.last_item_size.map_or(1, |size| {
+                        ((measured.base_handle.bounds().size.height.as_f32()
+                            / size.item.height.as_f32())
+                        .floor() as usize)
+                            .saturating_sub(1)
+                            .max(1)
+                    })
+                }
+            };
+            let count = match &self.body {
+                Body::Changelog(blocks) => blocks.len(),
+                Body::Lines(lines, _) => lines.len(),
+            };
+            self.position = match key.as_str() {
+                "home" => 0,
+                "end" => count.saturating_sub(1),
+                "up" => self.position.saturating_sub(1),
+                "down" => {
+                    self.position.saturating_add(1).min(count.saturating_sub(1))
+                }
+                "pageup" => self.position.saturating_sub(page),
+                "pagedown" => self
+                    .position
+                    .saturating_add(page)
+                    .min(count.saturating_sub(1)),
+                _ => return,
+            };
+            match &self.body {
+                Body::Changelog(_) => {
+                    if matches!(key.as_str(), "home" | "end") {
+                        crate::ui::scroll_key(
+                            key,
+                            &self.block_scroll,
+                            window.rem_size(),
+                        );
+                    } else {
+                        self.block_scroll.scroll_to_item(self.position);
+                    }
+                }
+                Body::Lines(_, scroll) => {
+                    scroll.scroll_to_item(self.position, ScrollStrategy::Top);
+                }
+            }
+            cx.notify();
+        }
+        cx.stop_propagation();
     }
 
     fn copy(&mut self, cx: &mut Context<'_, Self>) {
@@ -146,37 +304,75 @@ impl Render for DocWindow {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        crate::ui::sync_scale(window, cx);
         let theme = cx.omarchy().clone();
+        self.reflow(window, &theme);
         let label = if self.copied { "Copied" } else { "Copy" };
         let copy = button(COPY_ID, label, ButtonVariant::Secondary, cx)
+            .accessibility_label(format!(
+                "{} {}",
+                if self.copied {
+                    "Copied"
+                } else {
+                    "Copy complete"
+                },
+                self.doc.title()
+            ))
             .debug_selector(|| COPY_ID.into())
             .on_click(cx.listener(|this, _, _, cx| this.copy(cx)));
+        let position = self.position;
         let body = match &self.body {
             Body::Changelog(blocks) => div()
                 .id("doc-scroll")
                 .debug_selector(|| "doc-scroll".into())
+                .role(Role::Document)
+                .aria_label(CHANGELOG_LABEL)
+                .track_focus(&self.focus)
+                .on_key_down(cx.listener(Self::key))
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
-                .child(
+                .track_scroll(&self.block_scroll)
+                .py(space::XL)
+                .flex()
+                .flex_col()
+                // Each block is a direct child, so the scroll handle can
+                // bring the current one into view; each takes the column's
+                // width and side padding the single column used to have,
+                // and the window-wide scroll area keeps its scrollbar at
+                // the window's edge.
+                .children(blocks.iter().enumerate().map(|(index, block)| {
                     div()
+                        .id(("doc-block", index))
+                        .role(if matches!(block, Block::Version { .. }) {
+                            Role::Heading
+                        } else {
+                            Role::Paragraph
+                        })
+                        .aria_label(block.label())
+                        .when(
+                            index == position,
+                            gpui_kit::StatefulInteractiveElement::aria_active_descendant,
+                        )
                         .max_w(size::DOCUMENT)
                         .px(space::XXL)
-                        .py(space::XL)
-                        .flex()
-                        .flex_col()
-                        .children(
-                            blocks
-                                .iter()
-                                .map(|block| draw_block(block, &theme)),
-                        ),
-                )
+                        .child(draw_block(block, &theme))
+                }))
                 .into_any_element(),
             Body::Lines(lines, scroll) => {
                 let rows = lines.clone();
                 let ink = theme.foreground;
                 let mono = theme.mono_font.clone();
                 div()
+                    .id("document-text")
+                    .role(Role::Document)
+                    .aria_label(format!(
+                        "{}; {} lines. {LINES_KEYS}",
+                        self.doc.title(),
+                        rows.len()
+                    ))
+                    .track_focus(&self.focus)
+                    .on_key_down(cx.listener(Self::key))
                     .flex_1()
                     .min_h_0()
                     .p(space::LG)
@@ -194,13 +390,17 @@ impl Render for DocWindow {
                                     move |range, _, _| {
                                         range
                                             .map(|index| {
-                                                div()
-                                                    .px(space::LG)
-                                                    .font_family(mono.clone())
-                                                    .text_size(text::BODY)
-                                                    .text_color(ink)
-                                                    .whitespace_nowrap()
-                                                    .child(rows[index].clone())
+                                                document_line(
+                                                    index,
+                                                    &rows[index],
+                                                    index == position,
+                                                )
+                                                .px(space::LG)
+                                                .font_family(mono.clone())
+                                                .text_size(text::BODY)
+                                                .text_color(ink)
+                                                .whitespace_nowrap()
+                                                .child(rows[index].clone())
                                             })
                                             .collect()
                                     },
@@ -214,6 +414,39 @@ impl Render for DocWindow {
         };
         aux_window::frame(&["Help", self.doc.title()], copy, body, window, cx)
     }
+}
+
+/// The keys a document reader takes, for assistive technology.
+const LINES_KEYS: &str = "Up/Down reads a line, PageUp/PageDown reads \
+     a page, Home/End reaches either end, Command or Control C \
+     copies all";
+
+const CHANGELOG_LABEL: &str = "Changelog; Up/Down reads a block, \
+     PageUp/PageDown scrolls a page, Home/End reaches either end, \
+     Command or Control C copies all";
+
+/// One line of a plain document, named with its number; the current line
+/// is the reader's active descendant.
+fn document_line(
+    index: usize,
+    line: &SharedString,
+    current: bool,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    crate::semantics::text(
+        ("document-line", index),
+        format!("Line {}: {line}", index + 1),
+    )
+    .when(
+        current,
+        gpui_kit::StatefulInteractiveElement::aria_active_descendant,
+    )
+    .debug_selector(move || {
+        if current {
+            "document-current".into()
+        } else {
+            format!("document-line-{index}")
+        }
+    })
 }
 
 // ---- The changelog -------------------------------------------------------
@@ -232,6 +465,25 @@ pub enum Block {
     Bullet(Vec<Span>),
     /// Any other text.
     Paragraph(Vec<Span>),
+}
+
+impl Block {
+    fn label(&self) -> String {
+        match self {
+            Self::Version {
+                name,
+                date,
+                current,
+            } => format!(
+                "{name} {}{}",
+                date.as_deref().unwrap_or(""),
+                if *current { "; this copy" } else { "" }
+            ),
+            Self::Bullet(spans) | Self::Paragraph(spans) => {
+                spans.iter().map(|span| span.text.as_str()).collect()
+            }
+        }
+    }
 }
 
 /// A run of inline text.

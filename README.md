@@ -108,6 +108,11 @@ does not update itself; download the next release.
 
 ## Using it
 
+**Settings › General › Size units** follows your platform by default:
+decimal on macOS (kB, MB, GB), binary on Windows and Linux (KiB, MiB,
+GiB). Choose **Decimal** or **Binary** to save an explicit preference for
+the window and human-readable agent reports.
+
 1. **Pick what to scan.** Choose **This computer** or an SSH host, then a
    drive or folder. Nothing is scanned until you choose.
 2. **Look around.** Click a tile, or use the arrow keys. Scroll to zoom into
@@ -119,8 +124,10 @@ does not update itself; download the next release.
 4. **Review.** Press **c** to see the list. Unmark anything you are unsure
    of, then **Enter** moves the rest to the Trash or Recycle Bin. **p**
    deletes permanently instead, after asking.
-5. **See the result.** PwrDisk scans again and shows how much space you
-   actually got back.
+5. **See the result.** PwrDisk shows how much space you actually got
+   back, without scanning again: what went stays in the treemap, greyed
+   out, until you rescan. **Move & rescan** (shift-Enter) scans afterwards
+   instead.
 
 | key | does |
 | --- | --- |
@@ -170,9 +177,10 @@ base. `~` refers to the server's home directory. Older relays that supply
 no base require absolute paths or `~/…`; reconnect with an updated relay
 to enable relative paths. Standalone captures its own working directory.
 
-On macOS the command lives inside the app. The window's **Work with an AI
-agent** line, under the disk, shows each command with the full path and a
-Copy button.
+On macOS the command lives inside the app. **Settings › Agents (MCP)**
+shows the command line and each client's command with the full path and a
+Copy button; **Help › Connect an AI Agent (MCP)…** and the line under the
+disk open it.
 
 The agent walks the tree, lists every cache and build directory, and
 proposes what can go. You can confirm in PwrDisk's review screen yourself,
@@ -181,7 +189,9 @@ removal tool. Approval to mark never authorizes removal. Agents must never
 approve through computer use. Trash may be recoverable until emptied;
 permanent deletion cannot be undone through PwrDisk. Settings > Safety
 limits each operation to 5% of each volume's capacity by default. If a PwrDisk window is open, you both look at the
-same map and its marks show up as the agent makes them. More in
+same map and its marks show up as the agent makes them. MCP confirmation
+can also reach you through PwrAgent messaging; see the
+[approval and client contract](docs/mcp-approval.md). More in
 [the guide](docs/guide.md#with-an-ai-agent).
 
 ## What PwrDisk will not delete
@@ -189,13 +199,22 @@ same map and its marks show up as the agent makes them. More in
 Only things inside the folder you scanned can be removed, and never:
 
 - the scanned folder itself, your home folder, or a folder that holds it;
+- `/Users` on macOS, `/home` on Linux or `C:\Users` on Windows, or any
+  account's folder in it (what is inside one can still be marked);
 - system folders (`/usr`, `/etc`, `C:\Windows`, Program Files, Homebrew's
   prefix and the like), even where permissions would allow it;
 - a mount point, or anything with another disk mounted inside it;
 - what a symlink points to (the link is removed, not its target).
 
 Each rule is [tested](crates/disktree-core/src/removal.rs). The full list is
-in [the guide](docs/guide.md#what-it-refuses-to-do).
+in [the guide](docs/guide.md#what-it-refuses-to-do). These are checked
+before you mark, so Mark is never offered for them.
+
+One removal may also take only 5% of a disk by default. Past that, Mark
+becomes **Over 5% limit** with a ▾ that holds **Mark anyway**, and Review
+asks you to type what you are doing ("delete 20% of my disk") before it
+removes anything. Settings › Safety changes the limit, turns it off, or
+swaps the typing for a checkbox or nothing; agents are always held to it.
 
 ## Thanks, Tobi
 
@@ -223,3 +242,18 @@ your own Mac build, and how to work on the code.
 
 MIT. See [LICENSE](LICENSE) and
 [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
+
+### Cache cleanup
+
+Marked caches that PwrDisk can clean with their owner's own command (npm,
+npx, uv, pip, Cypress, Playwright) go to **Cache cleanup** in Review, or
+MCP's `pwrdisk_removal_preview` with `mode: "owner_cleanup"`; anything
+else, cache-like or not, is an ordinary removal. Check owners shows,
+for each marked path, the installed owner's exact command, version and
+whole-cache scope, or why there is none. You then choose per path: skip it,
+run that command, or deliberately delete the files, which has its own
+disclosure and its own confirmation. Missing, unsupported, failed or
+cancelled owner commands never fall back to deleting files. Each path
+gets its own result; listed allocation is separate from measured
+free-space change. See
+[supported owners, versions and scope limitations](docs/owner-cleanup.md).

@@ -21,9 +21,64 @@ use gpui_omarchy::Theme;
 use crate::state::{Disktree, Screen};
 
 /// Native filesystem callbacks cannot run on GPUI's deterministic scheduler.
+///
+/// `gpui_omarchy::init` watches `$HOME` even without an Omarchy theme. Its
+/// callback wakes the deterministic executor from a foreign thread. The
+/// control initializers are private in gpui-omarchy 0.1.3, so mirror their
+/// bindings here and apply a fixed theme without creating a watcher at all.
 fn init(cx: &mut gpui_kit::App) {
-    gpui_omarchy::init(cx);
+    use gpui_kit::base::actions::{Cancel, Confirm, SelectLeft, SelectRight};
+    use gpui_kit::{KeyBinding, NoAction};
+    use gpui_omarchy::focus::{Next, Previous};
+
+    gpui_kit::base::init(cx);
+    cx.bind_keys([
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "cmd-c"
+            } else {
+                "ctrl-c"
+            },
+            gpui_kit::base::input::Copy,
+            Some("OmarchyFocusScope"),
+        ),
+        KeyBinding::new("tab", Next, Some("OmarchyFocusScope")),
+        KeyBinding::new("shift-tab", Previous, Some("OmarchyFocusScope")),
+        KeyBinding::new("left", SelectLeft, Some("OmarchyOptionGroup")),
+        KeyBinding::new("h", SelectLeft, Some("OmarchyOptionGroup")),
+        KeyBinding::new("right", SelectRight, Some("OmarchyOptionGroup")),
+        KeyBinding::new("l", SelectRight, Some("OmarchyOptionGroup")),
+        KeyBinding::new(
+            "enter",
+            Confirm { secondary: false },
+            Some("OmarchyOptionGroup"),
+        ),
+        KeyBinding::new(
+            "space",
+            Confirm { secondary: false },
+            Some("OmarchyOptionGroup"),
+        ),
+        KeyBinding::new("enter", NoAction, Some("OmarchyPopoverContent")),
+        KeyBinding::new("space", NoAction, Some("OmarchyPopoverContent")),
+        KeyBinding::new(
+            "enter",
+            Confirm { secondary: false },
+            Some("OmarchyDatePicker"),
+        ),
+        KeyBinding::new(
+            "space",
+            Confirm { secondary: false },
+            Some("OmarchyDatePicker"),
+        ),
+        KeyBinding::new("escape", Cancel, Some("OmarchyDatePicker")),
+    ]);
     Theme::tokyo_night().apply(cx);
+}
+
+// macOS's default TMPDIR is protected system state under /private/var.
+fn removable_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+        .expect("removable fixture")
 }
 
 /// A small tree on disk: two directories, a nested file, and a hidden one.
@@ -31,7 +86,7 @@ fn init(cx: &mut gpui_kit::App) {
 /// The hidden directory holds the largest file, which is both the common case
 /// in a home directory and the one the ranking has to get right.
 fn fixture() -> tempfile::TempDir {
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path();
     for (path, bytes) in [
         ("keep/notes.txt", 1_000_usize),
@@ -44,6 +99,231 @@ fn fixture() -> tempfile::TempDir {
         std::fs::write(&file, vec![b'x'; bytes]).expect("write");
     }
     temp
+}
+
+// Exhaust the delayed-query model: any source transition invalidates the
+// result, even if the old worker completes after a newer scan has started.
+#[gpui_kit::test]
+fn delayed_space_queries_obey_the_source_epoch_model(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let sampled = temp.path().to_path_buf();
+    for transitions in 0_u8..32 {
+        update(&view, cx, |app, cx| {
+            app.root_path = if transitions & 1 == 0 {
+                sampled.clone()
+            } else {
+                sampled.join("new-source")
+            };
+            app.scan_epoch = u64::from(transitions & 2 != 0);
+            app.remote = (transitions & 4 != 0).then(|| "fixture-host".into());
+            app.awaiting_root = transitions & 8 != 0;
+            let tree =
+                (transitions & 16 != 0).then(|| app.tree.take()).flatten();
+            let old = SpaceInfo {
+                total: 100,
+                free: 10,
+                available: 10,
+                native: None,
+            };
+            let fresh = SpaceInfo {
+                free: 20,
+                available: 20,
+                ..old
+            };
+            app.space = Some(old);
+            app.apply_space_sample(&sampled, 0, Some(fresh), cx);
+            assert_eq!(
+                app.space,
+                Some(if transitions == 0 { fresh } else { old }),
+                "source transition mask {transitions}"
+            );
+            if tree.is_some() {
+                app.tree = tree;
+            }
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn disk_accounting_explanation_renders_for_local_sources(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    let note = cx.debug_bounds("disk-accounting").expect("accounting note");
+    cx.simulate_mouse_move(note.center(), None, gpui_kit::Modifiers::default());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    draw(cx);
+    assert!(cx.debug_bounds("app-tooltip-surface").is_some());
+    update(&view, cx, |app, cx| {
+        app.root_path = PathBuf::from("/");
+        app.disk_root = Some(PathBuf::from("/"));
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("disk-accounting").is_some());
+    update(&view, cx, |app, cx| {
+        app.remote = Some("fixture-host".into());
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("disk-accounting").is_none());
+}
+
+#[gpui_kit::test]
+fn artifact_assessments_render_and_vm_data_stays_out_of_cleanup_filters(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    for path in [
+        "target/debug/deps/libapp.rlib",
+        "guest.utm/cache/state",
+        "guest.vmss",
+    ] {
+        let path = temp.path().join(path);
+        std::fs::create_dir_all(path.parent().expect("parent")).unwrap();
+        std::fs::write(path, vec![b'x'; 200_000]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    for (path, shown, absent) in [
+        (
+            "target/debug/deps",
+            "artifact-suggested",
+            "artifact-detected",
+        ),
+        ("guest.utm", "artifact-detected", "artifact-suggested"),
+        ("guest.vmss", "artifact-detected", "artifact-suggested"),
+    ] {
+        update(&view, cx, |app, cx| {
+            let (crumbs, _) =
+                app.tree().unwrap().descend(Path::new(path)).unwrap();
+            app.selected = Some(crumbs);
+            app.hovered = None;
+            app.pointer_active = false;
+            app.show_selection = true;
+            cx.notify();
+        });
+        draw(cx);
+        assert!(cx.debug_bounds(shown).is_some(), "{path}");
+        assert!(cx.debug_bounds(absent).is_none(), "{path}");
+        // The status is a chip of its own, not a run of caption text.
+        let status: &'static str =
+            Box::leak(format!("{shown}-status").into_boxed_str());
+        assert!(cx.debug_bounds(status).is_some(), "{path}");
+    }
+    click_on(cx, "legend-reclaimable");
+    cx.run_until_parked();
+    let drawn = laid_out(&view, cx);
+    assert!(drawn.iter().any(|name| name == "deps"), "{drawn:?}");
+    assert!(
+        !drawn.iter().any(|name| name.starts_with("guest")),
+        "{drawn:?}"
+    );
+    assert!(read(&view, cx, |app| app.marks.is_empty()));
+}
+
+/// Review repeats the VM caution where removal is approved, and only on
+/// VM data: a suggested build cache carries its kind alone.
+#[gpui_kit::test]
+fn review_cautions_on_marked_vm_data_only(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    for path in ["target/debug/deps/libapp.rlib", "guest.vmss"] {
+        let path = temp.path().join(path);
+        std::fs::create_dir_all(path.parent().expect("parent")).unwrap();
+        std::fs::write(path, vec![b'x'; 200_000]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    let vm = temp.path().join("guest.vmss");
+    mark_paths(
+        &view,
+        cx,
+        &[temp.path().join("target/debug/deps"), vm.clone()],
+    );
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+    let at = read(&view, cx, |app| {
+        app.marks.items().iter().position(|item| item.path == vm)
+    })
+    .expect("the VM file is marked");
+    let caution = |index: usize| -> &'static str {
+        Box::leak(format!("review-caution-{index}").into_boxed_str())
+    };
+    assert!(cx.debug_bounds(caution(at)).is_some(), "VM row cautions");
+    assert!(cx.debug_bounds(caution(1 - at)).is_none(), "cache row");
+    // A reminder, not a gate: both stay in the plan.
+    assert_eq!(read(&view, cx, |app| app.plan().targets.len()), 2);
+}
+
+#[gpui_kit::test]
+fn artifact_guidance_scrolls_above_the_pinned_free_space_meter(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let output = temp.path().join("target/debug/deps");
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::write(output.join("libapp.rlib"), vec![b'x'; 200_000]).unwrap();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let (crumbs, _) = app
+            .tree()
+            .unwrap()
+            .descend(Path::new("target/debug/deps"))
+            .unwrap();
+        app.selected = Some(crumbs);
+        app.hovered = None;
+        app.pointer_active = false;
+        app.show_selection = true;
+        app.space = Some(SpaceInfo {
+            total: 1000,
+            free: 350,
+            available: 350,
+            native: None,
+        });
+        cx.notify();
+    });
+    for (width, height, rem) in
+        [(1200., 600., 16.), (1400., 600., 24.), (1440., 900., 16.)]
+    {
+        cx.simulate_resize(gpui_kit::size(px(width), px(height)));
+        cx.update(|window, _| window.set_rem_size(px(rem)));
+        draw(cx);
+        draw(cx);
+        let disk = cx.debug_bounds("disk-section").unwrap();
+        assert!(disk.bottom() <= px(height), "{disk:?}");
+        assert!(disk.size.height >= px(rem * 4.0), "{disk:?}");
+        let scroll = cx.debug_bounds("side-panel-scroll").unwrap();
+        assert!(scroll.size.height > px(0.), "{scroll:?}");
+        assert!(scroll.bottom() <= disk.origin.y, "{scroll:?}, {disk:?}");
+        let guidance = cx.debug_bounds("artifact-suggested").unwrap();
+        // Scroll just far enough to read the final guidance line without
+        // moving the meter, even when the selection exceeds the viewport.
+        let distance = (guidance.bottom() - scroll.bottom()).max(px(0.));
+        cx.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: scroll.center(),
+            delta: gpui_kit::ScrollDelta::Pixels(Point::new(px(0.), -distance)),
+            modifiers: gpui_kit::Modifiers::none(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        draw(cx);
+        let scrolled = cx.debug_bounds("artifact-suggested").unwrap();
+        assert!(scrolled.bottom() <= scroll.bottom(), "{scrolled:?}");
+        assert!(scrolled.bottom() > scroll.origin.y, "{scrolled:?}");
+        assert_eq!(disk, cx.debug_bounds("disk-section").unwrap());
+    }
 }
 
 /// Apparent sizes, so the assertions are about the tree and not about how the
@@ -98,6 +378,12 @@ fn remote_view_over<'a>(
     (view, cx, root)
 }
 
+/// Complete the read-only cache preflight before exercising a native run.
+fn inspect_raw(view: &Entity<Disktree>, cx: &mut Window) {
+    update(view, cx, |app, cx| app.prepare_raw_inspection(cx));
+    cx.run_until_parked();
+}
+
 fn draw(cx: &mut Window) {
     cx.update(|window, cx| {
         window.draw(cx).clear(cx);
@@ -110,7 +396,7 @@ fn private_service_stores_draw_unavailable_and_partial_figures(
     cx: &mut TestAppContext,
 ) {
     use disktree_core::macos_services::{Usage, usage};
-    use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
@@ -118,21 +404,22 @@ fn private_service_stores_draw_unavailable_and_partial_figures(
     assert!(cx.debug_bounds("macos-services").is_none());
     update(&view, cx, |app, cx| {
         // Replace the fixture's tree without starting a real system scan.
-        let mut history = Node::directory(".fseventsd");
+        let mut history = Draft::directory(".fseventsd");
         history.read_error = true;
-        let mut index = Node::directory(".Spotlight-V100");
+        let mut index = Draft::directory(".Spotlight-V100");
         index
             .children
-            .push(Node::entry("store", NodeKind::File, 8192));
+            .push(Draft::entry("store", NodeKind::File, 8192));
         index.read_error = true;
-        let mut data = Node::directory("Data");
+        let mut data = Draft::directory("Data");
         data.children = vec![history, index];
-        let mut volumes = Node::directory("Volumes");
+        let mut volumes = Draft::directory("Volumes");
         volumes.children.push(data);
-        let mut system = Node::directory("System");
+        let mut system = Draft::directory("System");
         system.children.push(volumes);
-        let mut root = Node::directory("/");
+        let mut root = Draft::directory("/");
         root.children.push(system);
+        let mut root = Tree::from(root);
         aggregate(&mut root, Metric::Bytes);
         disktree_core::classify::classify(&mut root);
         app.tree = Some(std::sync::Arc::new(root));
@@ -179,11 +466,15 @@ fn private_service_stores_draw_unavailable_and_partial_figures(
         cx.notify();
     });
     draw(cx);
+    // The guards refuse a service store, so it is never offered: the
+    // inspector says why, and Space marks nothing and says so.
+    assert!(cx.debug_bounds("mark-guard").is_some());
     press(cx, "space");
-    assert!(read(&view, cx, |app| app.plan().targets.is_empty()));
-    assert!(read(&view, cx, |app| !app.plan().blocked.is_empty()));
-    press(cx, "c");
-    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    assert!(read(&view, cx, |app| app.marks.is_empty()));
+    assert!(read(&view, cx, |app| {
+        app.notice()
+            .is_some_and(|(notice, _)| notice.contains("macOS manages"))
+    }));
 }
 
 #[cfg(target_os = "macos")]
@@ -191,14 +482,14 @@ fn private_service_stores_draw_unavailable_and_partial_figures(
 fn unreadable_service_stores_stay_quiet_without_hiding_other_privacy_errors(
     cx: &mut TestAppContext,
 ) {
-    use disktree_core::tree::Node;
+    use disktree_core::tree::{Draft, Tree};
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
-        let mut tree = Node::directory(".fseventsd");
+        let mut tree = Draft::directory(".fseventsd");
         tree.read_error = true;
-        app.tree = Some(std::sync::Arc::new(tree));
+        app.tree = Some(std::sync::Arc::new(Tree::from(tree)));
         app.root_path = PathBuf::from("/System/Volumes/Data/.fseventsd");
         app.selected = None;
         app.hovered = None;
@@ -423,6 +714,7 @@ fn indexing_keeps_free_space_visible_in_short_zoomed_windows(
             total: 1000,
             free: 350,
             available: 350,
+            native: None,
         });
     });
     for (width, height, rem) in
@@ -456,7 +748,10 @@ fn indexing_keeps_free_space_visible_in_short_zoomed_windows(
             assert!(scrolled.origin.y < progress.origin.y);
         }
         // The stop button is the last progress row; it must be reachable.
-        assert!(scrolled.bottom() <= scroll.bottom(), "{scrolled:?}");
+        assert!(
+            scrolled.bottom() <= scroll.bottom(),
+            "{width}×{height}, rem {rem}: {scrolled:?}, viewport {scroll:?}"
+        );
         assert!(scrolled.bottom() > scroll.origin.y, "{scrolled:?}");
         assert_eq!(disk, cx.debug_bounds("disk-section").unwrap());
         update(&view, cx, |app, _| app.progress.finalizing = true);
@@ -511,7 +806,7 @@ fn startup_chooser_never_scans_before_explicit_acceptance(
     cx.run_until_parked();
     draw(cx);
     assert!(cx.debug_bounds("choose-root-idle").is_some());
-    assert!(cx.debug_bounds("source-host").is_some());
+    assert!(cx.debug_bounds("source-switch").is_some());
     read(&view, cx, |app| {
         assert!(app.awaiting_root);
         assert_eq!(app.scan_epoch, 0);
@@ -586,6 +881,7 @@ fn invalid_ssh_input_does_not_start_a_scan_or_change_the_source(
         cx.add_window_view(|_, cx| Disktree::choose(options(), 3, None, cx));
     cx.run_until_parked();
     draw(cx);
+    choose_ssh(cx);
     let input = cx.debug_bounds("source-host").expect("host editor");
     cx.simulate_click(input.center(), gpui_kit::Modifiers::none());
     cx.simulate_input("invalid host");
@@ -638,7 +934,7 @@ fn chooser_fits_a_small_window_at_large_interface_zoom(
         cx.add_window_view(|_, cx| Disktree::choose(options(), 3, None, cx));
     cx.run_until_parked();
     cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
-    for rem in [16., 28.] {
+    for rem in [16., 28., 32.] {
         cx.update(|window, _| window.set_rem_size(px(rem)));
         draw(cx);
         let bounds = cx
@@ -665,6 +961,7 @@ fn editing_a_host_never_retargets_an_existing_scan(cx: &mut TestAppContext) {
     cx.run_until_parked();
     draw(cx);
     let before = read(&view, cx, |app| app.scan_epoch);
+    choose_ssh(cx);
     let input = cx.debug_bounds("source-host").unwrap();
     cx.simulate_click(input.center(), gpui_kit::Modifiers::none());
     cx.simulate_input("new-host-not-connected");
@@ -796,22 +1093,23 @@ fn repointing_an_ssh_alias_never_reuses_old_machine_marks(
             machine_id: Some("machine-a".into()),
         };
         app.remote = Some("stable-alias".into());
-        app.update_remote_identity(Some(old.clone()));
+        app.update_remote_identity(Some(old.clone()), cx);
         let crumbs = app.crumbs_for_path(&junk).unwrap();
         app.select(Some(crumbs), cx);
         app.toggle_mark_selected(cx);
-        app.update_remote_identity(Some(old.clone()));
+        app.update_remote_identity(Some(old.clone()), cx);
         assert!(!app.marks.is_empty(), "same machine keeps its marks");
-        app.update_remote_identity(Some(
-            disktree_core::identity::HostIdentity {
+        app.update_remote_identity(
+            Some(disktree_core::identity::HostIdentity {
                 hostname: old.hostname,
                 machine_id: Some("machine-b".into()),
-            },
-        ));
+            }),
+            cx,
+        );
         assert!(app.marks.is_empty(), "same alias is not proof of identity");
         app.toggle_mark_selected(cx);
         assert!(!app.marks.is_empty());
-        app.update_remote_identity(None);
+        app.update_remote_identity(None, cx);
         assert!(app.marks.is_empty(), "lost identity also fails closed");
     });
 }
@@ -836,7 +1134,7 @@ fn remote_review_never_deletes_even_through_direct_actions(
     press(cx, "p");
     press(cx, "m");
     update(&view, cx, |app, cx| {
-        app.commit(cx);
+        app.commit(false, cx);
         app.confirm_delete(cx);
         app.begin_removal(cx);
         assert!(!app.confirm_open);
@@ -924,7 +1222,7 @@ fn the_first_scan_shows_what_it_is_doing_then_the_treemap(
             app.layout().map(<[Tile]>::len).unwrap_or_default(),
             app.selected.is_some(),
             app.tree().is_some_and(|tree| {
-                tree.children.iter().any(|c| c.name.starts_with('.'))
+                tree.children().iter().any(|c| c.name().starts_with('.'))
             }),
         )
     });
@@ -947,7 +1245,7 @@ fn keys_walk_the_tree_and_mark_what_is_selected(cx: &mut TestAppContext) {
     let (selected, name) = read(&view, cx, |app| {
         (
             app.selected.clone(),
-            app.node_at(&[0]).map(|node| node.name.to_string()),
+            app.node_at(&[0]).map(|node| node.name().to_string()),
         )
     });
     assert_eq!(selected, Some(vec![0]));
@@ -990,9 +1288,9 @@ fn a_permanent_deletion_asks_in_an_alert_dialog_then_removes(
         let junk = app
             .tree()
             .and_then(|tree| {
-                tree.children
+                tree.children()
                     .iter()
-                    .position(|child| &*child.name == "junk")
+                    .position(|child| child.name() == "junk")
                     .map(|index| vec![index])
             })
             .expect("the junk directory");
@@ -1035,7 +1333,7 @@ fn a_permanent_deletion_asks_in_an_alert_dialog_then_removes(
     assert!(finished, "the removal finished");
     draw(cx);
 
-    let summary = read(&view, cx, |app| app.run_summary.clone());
+    let summary = read(&view, cx, |app| app.run_list.totals());
     assert_eq!(summary.removed, 1, "{summary:?}");
     assert_eq!(summary.failed, 0, "{summary:?}");
     assert!(
@@ -1156,6 +1454,151 @@ fn hovering_reports_the_tile_under_the_pointer(cx: &mut TestAppContext) {
     assert_eq!(hovered.as_deref(), Some(biggest.as_slice()));
 }
 
+/// Press the left button over the drawn tile for `path`, as the
+/// `count`th press of a click sequence, and draw the frame after it.
+fn press_on(
+    view: &Entity<Disktree>,
+    cx: &mut Window,
+    path: &Path,
+    count: usize,
+) {
+    let at = update(view, cx, |app, _| {
+        let crumbs = app.crumbs_for_path(path).expect("a path in the tree");
+        let rect = app.tile_rect(&crumbs).expect("the tile is drawn");
+        let screen = app.view.project(rect);
+        let (x, y) = (screen.x + screen.w / 2.0, screen.y + screen.h / 2.0);
+        assert_eq!(
+            app.tile_at(x, y),
+            Some(crumbs),
+            "the press lands on that tile"
+        );
+        let origin = app.treemap_origin.get();
+        Point::new(origin.x + px(x), origin.y + px(y))
+    });
+    cx.simulate_event(gpui_kit::MouseDownEvent {
+        button: gpui_kit::MouseButton::Left,
+        position: at,
+        modifiers: gpui_kit::Modifiers::none(),
+        click_count: count,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui_kit::MouseUpEvent {
+        button: gpui_kit::MouseButton::Left,
+        position: at,
+        modifiers: gpui_kit::Modifiers::none(),
+        click_count: count,
+    });
+    draw(cx);
+}
+
+/// Where the window is and what is selected, as paths.
+fn place(view: &Entity<Disktree>, cx: &Window) -> (PathBuf, Option<PathBuf>) {
+    read(view, cx, |app| {
+        (
+            app.current_path(),
+            app.selected
+                .as_deref()
+                .and_then(|crumbs| app.path_at(crumbs)),
+        )
+    })
+}
+
+#[gpui_kit::test]
+fn a_double_click_on_a_nested_tile_opens_one_level(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let more = temp.path().join("junk/deeper/more.bin");
+
+    // Press 1 selects the deepest tile under the pointer and opens nothing.
+    press_on(&view, cx, &more, 1);
+    assert_eq!(
+        place(&view, cx),
+        (temp.path().to_path_buf(), Some(more.clone()))
+    );
+
+    // Press 2 opens one level toward it, not the three it is drawn down.
+    press_on(&view, cx, &more, 2);
+    assert_eq!(
+        place(&view, cx),
+        (temp.path().join("junk"), Some(more.clone())),
+        "one level, with the tile still selected"
+    );
+
+    // A triple click is still the same gesture.
+    press_on(&view, cx, &more, 3);
+    assert_eq!(place(&view, cx).0, temp.path().join("junk"));
+
+    // A new click on the selection opens the next level.
+    press_on(&view, cx, &more, 1);
+    assert_eq!(
+        place(&view, cx),
+        (temp.path().join("junk/deeper"), Some(more))
+    );
+}
+
+#[gpui_kit::test]
+fn a_double_click_on_the_selection_opens_one_level(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let more = temp.path().join("junk/deeper/more.bin");
+
+    // Click once: it is selected, and the hover card says what a second
+    // click does.
+    press_on(&view, cx, &more, 1);
+    let opens = update(&view, cx, |app, _| {
+        app.hovered = app.selected.clone();
+        app.click_opens_hovered()
+    });
+    assert!(opens, "a click on the selection opens");
+
+    // Then double-click it. Press 1 opens a level; press 2 lands on the
+    // level press 1 opened and used to open whatever was under it there.
+    press_on(&view, cx, &more, 1);
+    assert_eq!(place(&view, cx).0, temp.path().join("junk"));
+    let at_junk = read(&view, cx, |app| app.crumbs.clone());
+    cx.simulate_event(gpui_kit::MouseDownEvent {
+        button: gpui_kit::MouseButton::Left,
+        position: read(&view, cx, |app| {
+            let origin = app.treemap_origin.get();
+            let size = app.treemap_size.get();
+            Point::new(
+                origin.x + size.width / 2.0,
+                origin.y + size.height / 2.0,
+            )
+        }),
+        modifiers: gpui_kit::Modifiers::none(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    draw(cx);
+    assert_eq!(
+        read(&view, cx, |app| app.crumbs.clone()),
+        at_junk,
+        "the second press of the gesture is ignored"
+    );
+}
+
+#[gpui_kit::test]
+fn a_click_on_a_file_at_the_top_selects_it_and_opens_nothing(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    std::fs::write(temp.path().join("top.bin"), vec![b'x'; 150_000])
+        .expect("write");
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let top = temp.path().join("top.bin");
+    press_on(&view, cx, &top, 1);
+    press_on(&view, cx, &top, 2);
+    press_on(&view, cx, &top, 1);
+    assert_eq!(place(&view, cx), (temp.path().to_path_buf(), Some(top)));
+}
+
 #[gpui_kit::test]
 fn right_click_selects_the_tile_and_reveals_it(cx: &mut TestAppContext) {
     cx.update(init);
@@ -1206,16 +1649,64 @@ fn right_click_selects_the_tile_and_reveals_it(cx: &mut TestAppContext) {
     draw(cx);
 
     let (selected, notice) = read(&view, cx, |app| {
-        (
-            app.selected.clone(),
-            app.notice.as_ref().map(|(text, _)| text.clone()),
-        )
+        (app.selected.clone(), app.notice().map(|(text, _)| text))
     });
     assert_eq!(selected, Some(target), "the clicked tile is selected");
     assert!(
         notice.is_some_and(|text| text.contains("no longer on disk")),
         "the reveal ran for it"
     );
+}
+
+#[gpui_kit::test]
+fn find_field_never_draws_over_the_legend(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (_view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    press(cx, "/");
+    // Matches bring the longest hint, "enter shows only these".
+    cx.simulate_input("BLOB");
+    cx.run_until_parked();
+    // The minimum window width up to a wide one, at 100%, 150% and 200%.
+    for width in [900., 1100., 1440.] {
+        for rem in [16., 24., 32.] {
+            cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
+            cx.update(|window, _| window.set_rem_size(px(rem)));
+            draw(cx);
+            let at = format!("{width}x900 at rem {rem}");
+            let field = cx.debug_bounds("find-field").expect("find drawn");
+            let legend = cx.debug_bounds("legend").expect("legend drawn");
+            // Half a pixel for rounding where two edges meet. The field
+            // clips what it holds, so its own bounds are what is drawn.
+            // The legend has its own row under the field's.
+            assert!(
+                field.bottom() <= legend.top() + px(0.5)
+                    || field.right() <= legend.left() + px(0.5),
+                "{at}: field {field:?} overlaps legend {legend:?}"
+            );
+            assert!(
+                field.right() <= px(width) + px(0.5),
+                "{at}: the field stays in the window: {field:?}"
+            );
+        }
+    }
+    // Where the overlap was seen, and narrower: the whole hint reads, and
+    // the legend, on its own row now, is still drawn.
+    for width in [1000., 1440.] {
+        cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
+        cx.update(|window, _| window.set_rem_size(px(16.)));
+        draw(cx);
+        let hint = cx.debug_bounds("find-hint").expect("hint drawn");
+        let field = cx.debug_bounds("find-field").expect("find drawn");
+        let legend = cx.debug_bounds("legend").expect("legend drawn");
+        assert!(
+            hint.size.width > px(100.)
+                && hint.right() <= field.right() + px(0.5),
+            "{width}: the whole hint fits in the field: {hint:?} {field:?}"
+        );
+        assert!(legend.size.width > px(0.), "{width}: legend {legend:?}");
+    }
 }
 
 #[gpui_kit::test]
@@ -1232,7 +1723,7 @@ fn typing_filters_live_and_enter_shows_only_the_matches(
             tiles
                 .iter()
                 .filter_map(|tile| app.node_at(tile.crumbs()))
-                .map(|node| node.name.to_string())
+                .map(|node| node.name().to_string())
                 .collect::<Vec<_>>()
         })
     };
@@ -1246,9 +1737,9 @@ fn typing_filters_live_and_enter_shows_only_the_matches(
     let (count, applied, keep_filtered) = read(&view, cx, |app| {
         let matches = app.matches.as_deref().expect("matching as it is typed");
         let keep = app.tree().and_then(|tree| {
-            tree.children
+            tree.children()
                 .iter()
-                .position(|child| &*child.name == "keep")
+                .position(|child| child.name() == "keep")
         });
         (
             matches.count,
@@ -1261,6 +1752,30 @@ fn typing_filters_live_and_enter_shows_only_the_matches(
     assert!(keep_filtered, "keep holds no blob");
     // Dimmed, not hidden: a non-match is still drawn while typing.
     assert!(names_drawn(&view, cx).contains(&"deeper".to_string()));
+    // A match says so without colour (WCAG 1.4.1): the part of its name the
+    // find text matched is underlined, whatever case it was typed in. A
+    // non-match keeps its plain name, with no word added to every tile.
+    let mosaic = update(&view, cx, |app, _| app.prepare());
+    let matched: Vec<_> = mosaic
+        .labels
+        .iter()
+        .filter_map(|label| Some((label, label.found.clone()?)))
+        .collect();
+    assert!(!matched.is_empty(), "a blob is labelled");
+    for (label, found) in &matched {
+        assert_eq!(label.text, "blob.bin");
+        assert_eq!(&label.text[found.clone()], "blob");
+    }
+    let unmatched: Vec<_> = mosaic
+        .labels
+        .iter()
+        .filter(|label| label.found.is_none())
+        .map(|label| label.text.as_str())
+        .collect();
+    assert!(
+        unmatched.iter().all(|text| !text.starts_with('[')),
+        "{unmatched:?}"
+    );
 
     // Enter: only the matches, and the largest selected for marking.
     press(cx, "enter");
@@ -1337,20 +1852,26 @@ fn the_tooltip_hides_under_an_overlay(cx: &mut TestAppContext) {
     }
 }
 
-/// The menu opens one overlay at a time: the other one closes.
+/// Help › Connect an AI Agent (MCP)… opens Settings › Agents (MCP), and
+/// leaves the main window as it was.
 #[gpui_kit::test]
-fn the_menu_shows_one_overlay_at_a_time(cx: &mut TestAppContext) {
+fn the_menu_opens_settings_agents(cx: &mut TestAppContext) {
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
     draw(cx);
     cx.dispatch_action(crate::app_menu::ConnectAgent);
-    cx.dispatch_action(crate::app_menu::ShowKeyboardShortcuts);
-    draw(cx);
-    assert!(read(&view, cx, |app| app.show_help && !app.show_agent));
-    cx.dispatch_action(crate::app_menu::ConnectAgent);
-    draw(cx);
-    assert!(read(&view, cx, |app| app.show_agent && !app.show_help));
+    cx.run_until_parked();
+    assert_eq!(settings_pane(cx), Some(crate::settings::Pane::Agents));
+    assert!(read(&view, cx, |app| !app.has_modal()));
+}
+
+/// The pane Settings shows, if it is open.
+fn settings_pane(cx: &mut VisualTestContext) -> Option<crate::settings::Pane> {
+    cx.update(|_, cx| {
+        crate::aux_window::find::<crate::settings::SettingsWindow>(cx, |_| true)
+            .and_then(|handle| handle.read(cx).ok().map(|view| view.pane))
+    })
 }
 
 /// Opens one overlay, for the cases of `overlays_fit_a_short_window`.
@@ -1364,14 +1885,11 @@ fn overlays_fit_a_short_window(cx: &mut TestAppContext) {
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
     cx.simulate_resize(gpui_kit::size(px(900.), px(420.)));
-    let cases: [(&str, OpenOverlay); 2] = [
-        ("help-overlay", |app| app.show_help = true),
-        ("agent-overlay", |app| app.show_agent = true),
-    ];
+    let cases: [(&str, OpenOverlay); 1] =
+        [("help-overlay", |app| app.show_help = true)];
     for (card, open) in cases {
         update(&view, cx, |app, cx| {
             app.show_help = false;
-            app.show_agent = false;
             open(app);
             cx.notify();
         });
@@ -1397,11 +1915,11 @@ fn audit_help_contains_navigation_and_restores_keyboard_operation(
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
-    press(cx, "tab");
+    press(cx, "n");
     let selected = read(&view, cx, |app| app.selected.clone());
     let root = read(&view, cx, |app| app.crumbs.clone());
     press(cx, "?");
-    for key in ["tab", "shift-tab", "right", "enter", "space", "c"] {
+    for key in ["right", "enter", "space", "c", "tab", "shift-tab"] {
         press(cx, key);
     }
     read(&view, cx, |app| {
@@ -1525,7 +2043,8 @@ fn settings_updates_picks_a_channel_and_keeps_the_keys(
     let slot = cx.debug_bounds("update-slot-0").expect("first row");
     cx.simulate_click(slot.center(), gpui_kit::Modifiers::none());
     draw(cx);
-    press(cx, "down");
+    // Latest sits beside Prerelease in the grid.
+    press(cx, "right");
     press(cx, "enter");
     assert_eq!(
         crate::updater::selection().resolve("0.12.0"),
@@ -1536,28 +2055,404 @@ fn settings_updates_picks_a_channel_and_keeps_the_keys(
             .expect("the pick is saved");
     assert!(saved.contains("\"prerelease\""), "{saved}");
 
-    // Tab walks the panes; every one draws. Safety saves only in the fixture.
-    press(cx, "tab");
-    assert!(cx.debug_bounds("safety-limit-5").is_some());
-    click_on(cx, "safety-limit-10");
+    // Ctrl+PageDown walks the panes; every one draws. Safety saves only in the fixture.
+    press(cx, "ctrl-pagedown");
+    // One control of six equal segments, 1 5 10 25 50 100: 10% is third.
+    let limits = cx.debug_bounds("safety-limit").expect("the limit control");
+    cx.simulate_click(
+        gpui_kit::point(
+            limits.origin.x + limits.size.width * 2.5 / 6.,
+            limits.center().y,
+        ),
+        gpui_kit::Modifiers::none(),
+    );
+    draw(cx);
     assert_eq!(
         crate::safety::load(Some(saved_in.path()))
             .expect("saved limit")
             .percent(),
         10
     );
-    press(cx, "tab");
+    press(cx, "ctrl-pagedown");
+    assert_eq!(
+        view.read_with(cx, |settings, _| settings.pane),
+        Pane::Agents
+    );
+    assert!(cx.debug_bounds("agents-status").is_some());
+    press(cx, "ctrl-pagedown");
     assert!(
         cx.debug_bounds(crate::settings::COPY_DIAGNOSTICS_ID)
             .is_some()
     );
-    press(cx, "tab");
+    press(cx, "ctrl-pagedown");
     assert_eq!(view.read_with(cx, |settings, _| settings.pane), Pane::About);
-    assert!(cx.debug_bounds(crate::settings::COPY_BUILD_ID).is_some());
-    assert!(cx.debug_bounds("about-notices").is_some());
+    // The header leads the pane, and its Copy build info sits at the
+    // right of the same card.
+    let header = cx
+        .debug_bounds(crate::settings::ABOUT_HEADER_ID)
+        .expect("About's header");
+    let copy = cx
+        .debug_bounds(crate::settings::COPY_BUILD_ID)
+        .expect("Copy build info");
+    assert!(header.contains(&copy.center()), "{header:?} {copy:?}");
+    assert!(copy.center().x > header.center().x, "{header:?} {copy:?}");
+    let line = cx
+        .debug_bounds(crate::settings::ABOUT_BUILD_LINE_ID)
+        .expect("the build line");
+    assert!(header.contains(&line.center()), "{header:?} {line:?}");
+    assert!(line.right() < copy.left(), "{line:?} {copy:?}");
+    let notices = cx.debug_bounds("about-notices").expect("the notices");
+    assert!(header.bottom() < notices.top(), "{header:?} {notices:?}");
 
     // The selection is process-wide; leave the default for other tests.
     let _ = crate::updater::set_selection(UpdateSettings::default(), None);
+}
+
+/// Settings › Safety reads the saved limit when the pane opens and after
+/// a pick is saved, not on every frame, and shows the pick once saved.
+#[gpui_kit::test]
+fn settings_safety_reads_the_limit_once_and_shows_a_saved_pick(
+    cx: &mut TestAppContext,
+) {
+    use crate::settings::{Pane, SettingsWindow, work};
+    use disktree_core::removal_limit::Limit;
+
+    cx.update(init);
+    let saved_in = tempfile::TempDir::new().expect("tempdir");
+    crate::safety::save(
+        Some(saved_in.path()),
+        Limit::new(25).expect("a limit"),
+    )
+    .expect("save the starting limit");
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let view = SettingsWindow::new(Pane::Updates, cx);
+        window.focus(&cx.focus_handle(), cx);
+        view
+    });
+    cx.update(|_, cx| {
+        view.update(cx, |view, _| {
+            view.updates_dir = Some(saved_in.path().to_path_buf());
+        });
+    });
+    let shown = |cx: &mut Window| {
+        view.read_with(cx, |view, _| {
+            view.safety
+                .as_ref()
+                .ok()
+                .and_then(|policy| policy.limit.map(Limit::percent))
+        })
+    };
+    draw(cx);
+    work::SAFETY_LOADS.set(0);
+    click_on(cx, Pane::Safety.nav_id());
+    assert_eq!(view.read_with(cx, |view, _| view.pane), Pane::Safety);
+    for _ in 0..5 {
+        draw(cx);
+    }
+    assert_eq!(shown(cx), Some(25));
+    assert_eq!(work::SAFETY_LOADS.get(), 1, "opening the pane reads it");
+
+    // 1 5 10 25 50 100: 10% is the third segment.
+    let limits = cx.debug_bounds("safety-limit").expect("the limit control");
+    cx.simulate_click(
+        gpui_kit::point(
+            limits.origin.x + limits.size.width * 2.5 / 6.,
+            limits.center().y,
+        ),
+        gpui_kit::Modifiers::none(),
+    );
+    for _ in 0..5 {
+        draw(cx);
+    }
+    assert_eq!(shown(cx), Some(10), "the pane shows the pick once saved");
+    assert_eq!(work::SAFETY_LOADS.get(), 2, "and read it back once");
+    assert_eq!(
+        crate::safety::load(Some(saved_in.path()))
+            .expect("saved limit")
+            .percent(),
+        10
+    );
+}
+
+/// Three checkouts side by side: each a worktree's `.git` file and some
+/// data, largest first, so the first is selected when the window opens.
+fn checkouts() -> tempfile::TempDir {
+    let temp = removable_tempdir();
+    for (name, bytes) in
+        [("alpha", 300_000), ("beta", 200_000), ("gamma", 100_000)]
+    {
+        let dir = temp.path().join(name);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join(".git"), "gitdir: elsewhere").expect("write");
+        std::fs::write(dir.join("data.bin"), vec![b'x'; bytes]).expect("write");
+    }
+    temp
+}
+
+/// Give the window a probe that counts its runs and gives `answer` for
+/// every checkout, in place of git. Anything the real one started is
+/// forgotten.
+fn count_probes(
+    view: &Entity<Disktree>,
+    cx: &mut Window,
+    answer: crate::git_store::Probe,
+) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let runs = Arc::new(AtomicUsize::new(0));
+    update(view, cx, |app, _| {
+        let counter = runs.clone();
+        app.git_probe = Arc::new(move |_, _| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            crate::git_store::ready(answer.clone())
+        });
+        app.git.clear();
+    });
+    cx.run_until_parked();
+    runs
+}
+
+fn clean_checkout() -> crate::git::GitState {
+    crate::git::GitState {
+        changed: Some(0),
+        unpushed: Some(0),
+        ..crate::git::GitState::default()
+    }
+}
+
+/// Move the pointer onto the drawn tile for the directory `path`: onto its
+/// name band when it has children, where no child tile is.
+fn hover_on(view: &Entity<Disktree>, cx: &mut Window, path: &Path) {
+    let at = update(view, cx, |app, _| {
+        let crumbs = app.crumbs_for_path(path).expect("a path in the tree");
+        let tile = app
+            .layout()
+            .and_then(|tiles| {
+                tiles.iter().find(|tile| tile.crumbs() == crumbs).cloned()
+            })
+            .expect("the tile is drawn");
+        let screen = app.view.project(tile.header.unwrap_or(tile.rect));
+        let (x, y) = (screen.x + screen.w / 2.0, screen.y + screen.h / 2.0);
+        assert_eq!(app.tile_at(x, y), Some(crumbs), "the pointer is on it");
+        let origin = app.treemap_origin.get();
+        Point::new(origin.x + px(x), origin.y + px(y))
+    });
+    cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::default());
+    draw(cx);
+}
+
+fn probe_runs(runs: &std::sync::atomic::AtomicUsize) -> usize {
+    runs.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Sweeping the pointer across checkouts runs no git; resting on one runs
+/// it once, and the panel shows the answer.
+#[gpui_kit::test]
+fn a_sweep_over_checkouts_asks_nothing_and_a_rest_asks_once(
+    cx: &mut TestAppContext,
+) {
+    use crate::git_store::{DWELL, Probe, Shown};
+
+    cx.update(init);
+    let temp = checkouts();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
+    // Nothing selected, so only the pointer chooses what the panel shows.
+    press(cx, "escape");
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), None);
+    let runs = count_probes(&view, cx, Probe::Known(clean_checkout()));
+
+    for name in ["alpha", "beta", "gamma", "alpha", "beta"] {
+        hover_on(&view, cx, &temp.path().join(name));
+        cx.run_until_parked();
+    }
+    assert_eq!(probe_runs(&runs), 0, "a sweep asks nothing");
+
+    // The pointer stays on beta.
+    cx.executor().advance_clock(DWELL);
+    cx.run_until_parked();
+    draw(cx);
+    cx.run_until_parked();
+    assert_eq!(probe_runs(&runs), 1, "resting asks once");
+    let beta = temp.path().join("beta");
+    assert!(read(&view, cx, |app| {
+        app.git.shown(&beta) == Shown::Answer(&Probe::Known(clean_checkout()))
+    }));
+
+    // Resting longer asks nothing more.
+    for _ in 0..3 {
+        cx.executor().advance_clock(DWELL);
+        cx.run_until_parked();
+        draw(cx);
+        cx.run_until_parked();
+    }
+    assert_eq!(probe_runs(&runs), 1);
+}
+
+/// Selecting a checkout runs git once at once; selecting it again reads
+/// the answer instead.
+#[gpui_kit::test]
+fn selecting_a_checkout_asks_once_and_then_reads_the_answer(
+    cx: &mut TestAppContext,
+) {
+    use crate::git_store::Probe;
+
+    cx.update(init);
+    let temp = checkouts();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
+    let runs = count_probes(&view, cx, Probe::Known(clean_checkout()));
+    let alpha = temp.path().join("alpha");
+    let beta = temp.path().join("beta");
+    let crumbs = |path: &Path| {
+        read(&view, cx, |app| app.crumbs_for_path(path)).expect("in the tree")
+    };
+    let (alpha_at, beta_at) = (crumbs(&alpha), crumbs(&beta));
+    assert_eq!(
+        read(&view, cx, |app| app.selected.clone()),
+        Some(alpha_at.clone()),
+        "the largest is selected"
+    );
+
+    for _ in 0..5 {
+        draw(cx);
+        cx.run_until_parked();
+    }
+    assert_eq!(probe_runs(&runs), 1, "five frames, one probe");
+
+    let select = |at: &Vec<usize>, cx: &mut Window| {
+        let at = at.clone();
+        update(&view, cx, move |app, cx| {
+            app.selected = Some(at);
+            cx.notify();
+        });
+        draw(cx);
+        cx.run_until_parked();
+    };
+    select(&beta_at, cx);
+    assert_eq!(probe_runs(&runs), 2, "another checkout, another probe");
+    select(&alpha_at, cx);
+    draw(cx);
+    cx.run_until_parked();
+    assert_eq!(probe_runs(&runs), 2, "alpha's answer is remembered");
+}
+
+/// A checkout left selected is not asked again while the window is in
+/// the background, however stale its answer gets; it is refreshed once
+/// when the window comes back.
+#[gpui_kit::test]
+fn a_background_window_leaves_a_stale_answer_until_it_is_active(
+    cx: &mut TestAppContext,
+) {
+    use crate::git_store::{FRESH_FOR, Probe};
+
+    cx.update(init);
+    let temp = checkouts();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
+    // A test window opens in the background; bring it to the front.
+    cx.update(|window, _| window.activate_window());
+    let runs = count_probes(&view, cx, Probe::Known(clean_checkout()));
+    draw(cx);
+    cx.run_until_parked();
+    assert!(cx.update(|window, _| window.is_window_active()));
+    assert_eq!(probe_runs(&runs), 1, "the selection is asked about");
+
+    cx.deactivate_window();
+    for _ in 0..5 {
+        cx.executor().advance_clock(FRESH_FOR);
+        cx.run_until_parked();
+        draw(cx);
+        cx.run_until_parked();
+    }
+    assert_eq!(probe_runs(&runs), 1, "nobody is looking");
+
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    draw(cx);
+    cx.run_until_parked();
+    assert_eq!(probe_runs(&runs), 2, "back in front, it is refreshed");
+    draw(cx);
+    cx.run_until_parked();
+    assert_eq!(probe_runs(&runs), 2, "once");
+}
+
+/// A checkout git could not read within its limit is drawn as such, and
+/// not asked again on the frames that follow.
+#[gpui_kit::test]
+fn a_timed_out_checkout_is_drawn_and_not_asked_again(cx: &mut TestAppContext) {
+    use crate::git_store::{Probe, Shown};
+
+    cx.update(init);
+    let temp = checkouts();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
+    let runs = count_probes(&view, cx, Probe::TimedOut);
+    for _ in 0..5 {
+        draw(cx);
+        cx.run_until_parked();
+    }
+    assert_eq!(probe_runs(&runs), 1);
+    let alpha = temp.path().join("alpha");
+    assert!(read(&view, cx, |app| {
+        app.git.shown(&alpha) == Shown::Answer(&Probe::TimedOut)
+    }));
+}
+
+/// The side panel asks whether the selection is a checkout once per
+/// selection, not on every frame it draws.
+#[gpui_kit::test]
+fn the_panel_checks_for_a_checkout_once_per_selection(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    // Opening the window draws its first frame, so count from before it.
+    crate::git::CHECKS.set(0);
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1400.), px(900.)));
+    for _ in 0..5 {
+        draw(cx);
+    }
+    assert!(
+        cx.debug_bounds("side-panel-scroll").is_some(),
+        "the panel is shown"
+    );
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), Some(vec![0]));
+    assert_eq!(crate::git::CHECKS.get(), 1, "five frames, one check");
+
+    // Another directory is another question, asked once.
+    update(&view, cx, |app, cx| {
+        app.selected = Some(vec![1]);
+        cx.notify();
+    });
+    for _ in 0..5 {
+        draw(cx);
+    }
+    let next_is_dir = read(&view, cx, |app| {
+        app.node_at(&[1])
+            .is_some_and(disktree_core::index::Node::is_dir)
+    });
+    assert!(next_is_dir, "the fixture's second entry is a directory");
+    assert_eq!(crate::git::CHECKS.get(), 2);
+
+    // With nothing selected the panel describes the scan root, which is
+    // never asked about: not even its `.git`, let alone `git status`.
+    std::fs::create_dir(temp.path().join(".git")).expect("mkdir .git");
+    press(cx, "escape");
+    for _ in 0..5 {
+        draw(cx);
+    }
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), None);
+    assert_eq!(crate::git::CHECKS.get(), 2, "the root is not checked");
+    // `git` fills only when a background ask finishes; let any finish.
+    cx.run_until_parked();
+    let root = temp.path().to_path_buf();
+    assert!(
+        read(&view, cx, |app| {
+            app.git.shown(&root) == crate::git_store::Shown::Asking
+        }),
+        "no git status"
+    );
 }
 
 /// Shift-U, which opened the Updates panel, opens Settings › Updates in
@@ -1587,7 +2482,7 @@ fn help_documents_draw_and_copy(cx: &mut TestAppContext) {
 
     cx.update(init);
     for doc in [Doc::Changelog, Doc::License, Doc::ThirdPartyNotices] {
-        let (_, cx) = cx.add_window_view(move |_, _| DocWindow::new(doc));
+        let (_, cx) = cx.add_window_view(move |_, cx| DocWindow::new(doc, cx));
         draw(cx);
         assert!(cx.debug_bounds("title-strip").is_some(), "{doc:?}");
         let copy = cx
@@ -1863,7 +2758,7 @@ fn restart_to_update_waits_for_a_removal(cx: &mut TestAppContext) {
         assert!(!app.can_restart_to_update());
         app.restart_to_update(cx);
     });
-    let notice = read(&view, cx, |app| app.notice.clone());
+    let notice = read(&view, cx, Disktree::notice);
     assert!(
         notice.is_some_and(|(text, _)| text.contains("removal")),
         "restart refused while removing"
@@ -1904,7 +2799,7 @@ fn the_strip_menu_lists_the_menus_off_macos(cx: &mut TestAppContext) {
 }
 
 /// Copy Diagnostics Info writes the report, with the main window's
-/// session and no path it scanned, and says so in the notice line.
+/// session and no path it scanned, and says so in a toast.
 #[gpui_kit::test]
 fn copy_diagnostics_info_names_no_scanned_path(cx: &mut TestAppContext) {
     cx.update(init);
@@ -1925,7 +2820,7 @@ fn copy_diagnostics_info_names_no_scanned_path(cx: &mut TestAppContext) {
     assert!(report.contains("\n[Session]\nScan: local"), "{report}");
     let root = temp.path().display().to_string();
     assert!(!report.contains(&root), "{report}");
-    let notice = read(&view, cx, |app| app.notice.clone());
+    let notice = read(&view, cx, Disktree::notice);
     assert!(
         notice.is_some_and(|(text, _)| text.starts_with("Diagnostics copied")),
         "the main window says it copied"
@@ -1960,9 +2855,8 @@ fn enter_in_the_focused_volume_picker_scans_the_selected_root(
 ) {
     cx.update(init);
     let temp = fixture();
-    // Accepting a local root canonicalizes it, and the temporary directory
-    // is behind a link on macOS (/var -> /private/var) and a short 8.3 name
-    // on Windows runners, so compare against the resolved path.
+    // Accepting a local root canonicalizes it; the checkout itself can
+    // have another spelling, so compare against the resolved path.
     let target = dunce::canonicalize(temp.path().join("junk")).unwrap();
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, _| {
@@ -1989,7 +2883,7 @@ fn enter_in_the_focused_volume_picker_scans_the_selected_root(
 }
 
 #[gpui_kit::test]
-fn the_volume_picker_is_centred_and_still_dismisses_from_outside(
+fn the_volume_picker_is_centred_and_ignores_clicks_outside(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
@@ -2006,6 +2900,7 @@ fn the_volume_picker_is_centred_and_still_dismisses_from_outside(
                     total: 1_000,
                     free: 500,
                     available: 400,
+                    native: None,
                 }),
             },
             Volume {
@@ -2031,16 +2926,16 @@ fn the_volume_picker_is_centred_and_still_dismisses_from_outside(
         "the popup is not centred down: {centre:?} in {viewport:?}"
     );
 
-    // The wrapper that centres the popup must not swallow the backdrop's
-    // clicks: a click in the corner, outside the popup, still closes it.
+    // A dialog keeps what was typed: a click in the corner, outside the
+    // popup, closes nothing. Cancel and Escape do.
     cx.simulate_click(
         gpui_kit::point(px(4.), px(4.)),
         gpui_kit::Modifiers::none(),
     );
     draw(cx);
     assert!(
-        !read(&view, cx, |app| app.volumes_open),
-        "clicking outside the picker closes it"
+        read(&view, cx, |app| app.volumes_open),
+        "clicking outside the picker leaves it open"
     );
 }
 
@@ -2054,7 +2949,7 @@ fn showing_a_tile_that_is_gone_says_so_instead(cx: &mut TestAppContext) {
     // The selection is .cache, the largest; take it away behind the tree.
     std::fs::remove_dir_all(temp.path().join(".cache")).expect("remove");
     press(cx, "o");
-    let notice = read(&view, cx, |app| app.notice.clone());
+    let notice = read(&view, cx, Disktree::notice);
     let (message, _) = notice.expect("a notice");
     assert!(message.contains("no longer on disk"), "{message}");
 }
@@ -2142,6 +3037,60 @@ fn a_view_without_flags_or_marks_still_draws(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("disktree-root").is_some());
 }
 
+/// In a short window what does not fit in the summary is reached by
+/// scrolling it. Its box ended above the footer even before the fix; its
+/// content painted past the box, so the wheel checks are the guard.
+#[gpui_kit::test]
+fn the_review_summary_fits_a_short_window(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1100.), px(420.)));
+    update(&view, cx, |app, cx| {
+        app.marks.toggle(
+            disktree_core::removal::Target {
+                path: temp.path().join("junk"),
+                bytes: 300_000,
+                is_dir: true,
+                hidden: false,
+            },
+            app.path_style(),
+        );
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+    draw(cx);
+    let summary = cx.debug_bounds("review-summary").expect("summary");
+    let footer = cx.debug_bounds("review-footer").expect("footer");
+    assert!(
+        summary.bottom() <= footer.top(),
+        "summary ends at {:?}, under the footer at {:?}",
+        summary.bottom(),
+        footer.top()
+    );
+    // The panel's end starts below its bottom edge, and the wheel brings
+    // it up into view. Without scrolling it stays put and paints over the
+    // footer.
+    let end = cx.debug_bounds("review-summary-end").expect("summary end");
+    assert!(end.bottom() > summary.bottom(), "starts out of view");
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: summary.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+            px(0.),
+            px(-2000.),
+        )),
+        ..Default::default()
+    });
+    draw(cx);
+    let scrolled = cx.debug_bounds("review-summary-end").expect("summary end");
+    assert!(scrolled.top() < end.top(), "{scrolled:?} did not move");
+    assert!(
+        scrolled.bottom() <= summary.bottom(),
+        "{scrolled:?} still past {summary:?}"
+    );
+}
+
 /// The removal mode is a choice with two independent channels: the key and the
 /// button both have to reach the same state.
 #[gpui_kit::test]
@@ -2177,6 +3126,270 @@ fn the_review_screen_switches_removal_mode(cx: &mut TestAppContext) {
     );
     press(cx, "!");
     assert!(read(&view, cx, |app| app.marks.is_empty()));
+}
+
+/// Put `paths` on the marked list, as the treemap would.
+fn mark_paths(view: &Entity<Disktree>, cx: &mut Window, paths: &[PathBuf]) {
+    update(view, cx, |app, cx| {
+        for path in paths {
+            app.marks.toggle(
+                disktree_core::removal::Target {
+                    path: path.clone(),
+                    bytes: 1_000,
+                    is_dir: true,
+                    hidden: false,
+                },
+                app.path_style(),
+            );
+        }
+        cx.notify();
+    });
+}
+
+fn marked(view: &Entity<Disktree>, cx: &Window) -> Vec<PathBuf> {
+    read(view, cx, |app| {
+        app.marks
+            .items()
+            .iter()
+            .map(|item| item.path.clone())
+            .collect()
+    })
+}
+
+/// Unmark all keeps what it took: `u`, or Edit › Undo, puts it back,
+/// and a source switch forgets it, since the paths were that machine's.
+#[gpui_kit::test]
+fn unmark_all_can_be_undone(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let both = vec![temp.path().join("junk"), temp.path().join("keep")];
+    mark_paths(&view, cx, &both);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    click_on(cx, "unmark-all");
+    assert!(marked(&view, cx).is_empty());
+    let notice = read(&view, cx, Disktree::notice);
+    assert!(
+        notice.is_some_and(|(message, _)| message.contains("to undo")),
+        "the way back is said"
+    );
+    press(cx, "u");
+    assert_eq!(marked(&view, cx), both);
+
+    // The menu's Undo does the same, once.
+    press(cx, "!");
+    assert!(marked(&view, cx).is_empty());
+    cx.dispatch_action(crate::app_menu::Undo);
+    draw(cx);
+    assert_eq!(marked(&view, cx), both);
+    press(cx, "u");
+    assert_eq!(marked(&view, cx), both, "nothing more to undo");
+
+    // Keys still reach the window after a click on Export, whose button
+    // Unmark all then disables: a disabled button must not keep focus.
+    click_on(cx, "export");
+    press(cx, "escape");
+    press(cx, "!");
+    assert!(marked(&view, cx).is_empty());
+    press(cx, "u");
+    assert_eq!(marked(&view, cx), both);
+
+    // A mark made since stays, and a path it now covers is not re-added.
+    press(cx, "!");
+    mark_paths(&view, cx, &[temp.path().to_path_buf()]);
+    press(cx, "u");
+    assert_eq!(marked(&view, cx), vec![temp.path().to_path_buf()]);
+    let notice = read(&view, cx, Disktree::notice);
+    assert!(
+        notice.is_some_and(|(message, _)| message.contains("Nothing to put")),
+        "no count of nothing"
+    );
+
+    // During a removal the marks are the running list's: Undo leaves
+    // them alone and keeps what it holds.
+    press(cx, "!");
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Running;
+        cx.notify();
+    });
+    cx.dispatch_action(crate::app_menu::Undo);
+    draw(cx);
+    assert!(marked(&view, cx).is_empty());
+    assert!(read(&view, cx, |app| app.unmarked.is_some()));
+}
+
+/// The review screen's footer: Export and Unmark all on the left, Back
+/// and the commit on the right, the commit in the corner except on
+/// Windows, where the default comes first.
+#[gpui_kit::test]
+fn the_review_footer_puts_the_commit_with_back_on_the_right(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let junk = temp.path().join("junk");
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_paths(&view, cx, std::slice::from_ref(&junk));
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+    let bounds = |cx: &mut Window, selector| {
+        cx.debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"))
+    };
+    let export = bounds(cx, "export");
+    let unmark = bounds(cx, "unmark-all");
+    let back = bounds(cx, "back");
+    let commit = bounds(cx, "commit");
+    assert!(export.right() <= unmark.origin.x, "{export:?} {unmark:?}");
+    assert!(unmark.right() < back.origin.x.min(commit.origin.x));
+    if cfg!(windows) {
+        assert!(commit.right() <= back.origin.x, "{commit:?} {back:?}");
+    } else {
+        assert!(back.right() <= commit.origin.x, "{back:?} {commit:?}");
+    }
+    // One row, along the bottom.
+    assert_eq!(back.center().y, commit.center().y);
+    assert_eq!(export.center().y, commit.center().y);
+
+    // Export opens a menu of the four ways to hand the list on; a row
+    // runs and closes it, removing nothing.
+    click_on(cx, "export");
+    assert!(cx.debug_bounds("export-menu").is_some());
+    press(cx, "escape");
+    assert!(cx.debug_bounds("export-menu").is_none());
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    // The keys the menu shows run their row and close it.
+    click_on(cx, "export");
+    press(cx, "y");
+    assert!(cx.debug_bounds("export-menu").is_none());
+    assert!(clipboard(cx).contains(&junk.display().to_string()));
+    click_on(cx, "export");
+    click_on(cx, "copy-prompt");
+    assert!(cx.debug_bounds("export-menu").is_none());
+    assert!(
+        clipboard(cx).contains(&format!("- {}", junk.display())),
+        "the prompt names the path"
+    );
+    assert!(junk.exists(), "nothing was removed");
+}
+
+/// While a removal runs, Stop is a button; when it ends, Done is the
+/// footer's right-hand button.
+#[gpui_kit::test]
+fn removing_shows_stop_and_done_sits_on_the_right(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let width = cx.update(|window, _| window.viewport_size().width);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Running;
+        cx.notify();
+    });
+    draw(cx);
+    let stop = cx.debug_bounds("stop-removal").expect("a Stop button");
+    assert!(stop.origin.x > width / 2., "{stop:?}");
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Done;
+        cx.notify();
+    });
+    draw(cx);
+    let done = cx.debug_bounds("continue").expect("a Done button");
+    assert!(done.origin.x > width / 2., "{done:?}");
+    press(cx, "enter");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Explore);
+}
+
+/// The chooser asks, so a stray click outside it neither answers nor
+/// throws away what was typed: only Cancel or Escape close it.
+#[gpui_kit::test]
+fn a_click_outside_the_chooser_keeps_it_open(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, Disktree::open_volumes);
+    cx.run_until_parked();
+    draw(cx);
+    let picker = cx.debug_bounds("source-picker").expect("the chooser");
+    let outside = gpui_kit::point(picker.origin.x / 2., picker.center().y);
+    cx.simulate_click(outside, gpui_kit::Modifiers::none());
+    draw(cx);
+    assert!(read(&view, cx, |app| app.volumes_open));
+    click_on(cx, "source-cancel");
+    assert!(!read(&view, cx, |app| app.volumes_open));
+}
+
+/// The source switch: SSH host shows the host field, This computer hides
+/// it, and the typed directory is the list's last row, which typing
+/// selects so the one Scan acts on it.
+#[gpui_kit::test]
+fn the_chooser_switches_source_and_scans_the_selected_row(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let selected = fixture();
+    let (view, cx) =
+        cx.add_window_view(|_, cx| Disktree::choose(options(), 3, None, cx));
+    cx.run_until_parked();
+    update(&view, cx, |app, _| {
+        app.volumes = vec![Volume {
+            point: selected.path().join("keep"),
+            device: None,
+            space: None,
+        }];
+        app.volumes_loading = false;
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("source-host").is_none());
+    choose_ssh(cx);
+    assert!(read(&view, cx, |app| app.picker_ssh));
+    assert!(cx.debug_bounds("source-host").is_some());
+    assert!(
+        cx.debug_bounds("source-path").is_none(),
+        "nothing to choose from before Connect"
+    );
+    let switch = cx.debug_bounds("source-switch").expect("the switch");
+    cx.simulate_click(
+        gpui_kit::point(
+            switch.origin.x + switch.size.width / 4.,
+            switch.center().y,
+        ),
+        gpui_kit::Modifiers::none(),
+    );
+    draw(cx);
+    assert!(!read(&view, cx, |app| app.picker_ssh));
+    assert!(cx.debug_bounds("source-host").is_none());
+
+    assert_eq!(read(&view, cx, |app| app.volume_highlight), 0);
+    let input = cx.debug_bounds("source-path").expect("the Directory row");
+    cx.simulate_click(input.center(), gpui_kit::Modifiers::none());
+    cx.simulate_input(selected.path().to_str().unwrap());
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.volume_highlight), 1);
+    click_on(cx, "source-scan");
+    assert_eq!(
+        read(&view, cx, |app| app.root_path.clone()),
+        dunce::canonicalize(selected.path()).unwrap()
+    );
+    finish_scan(&view, cx);
+}
+
+/// Click the chooser's SSH host segment.
+fn choose_ssh(cx: &mut Window) {
+    let switch = cx.debug_bounds("source-switch").expect("the switch");
+    cx.simulate_click(
+        gpui_kit::point(
+            switch.origin.x + switch.size.width * 3. / 4.,
+            switch.center().y,
+        ),
+        gpui_kit::Modifiers::none(),
+    );
+    draw(cx);
 }
 
 /// `a` on the review screen copies a prompt for an agent naming the marked
@@ -2215,7 +3428,7 @@ fn the_review_screen_copies_the_list_as_an_agent_prompt(
         "{copied}"
     );
     assert!(junk.exists(), "nothing was removed");
-    let notice = read(&view, cx, |app| app.notice.clone());
+    let notice = read(&view, cx, Disktree::notice);
     assert!(
         notice.is_some_and(|(message, _)| message.contains("copied")),
         "the copy is confirmed"
@@ -2274,14 +3487,15 @@ fn remote_review_copies_host_guarded_script_and_prompt(
 fn remote_history_keeps_literal_and_nested_names_separate(
     cx: &mut TestAppContext,
 ) {
-    use disktree_core::tree::Node;
+    use disktree_core::tree::{Draft, Tree};
     cx.update(init);
-    let mut root = Node::directory("srv");
-    root.children.push(Node::directory(r"a\b"));
-    let mut a = Node::directory("a");
-    a.children.push(Node::directory("b"));
+    let mut root = Draft::directory("srv");
+    root.children.push(Draft::directory(r"a\b"));
+    let mut a = Draft::directory("a");
+    a.children.push(Draft::directory("b"));
     root.children.push(a);
-    root.children.push(Node::directory("other"));
+    root.children.push(Draft::directory("other"));
+    let root = Tree::from(root);
     let (view, cx) = cx.add_window_view(move |_, cx| {
         let mut app =
             Disktree::with_tree(PathBuf::from("/srv"), root, options(), 3, cx);
@@ -2315,16 +3529,17 @@ fn remote_history_keeps_literal_and_nested_names_separate(
 fn remote_paths_keep_the_hosts_separators_on_every_client(
     cx: &mut TestAppContext,
 ) {
-    use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
 
     cx.update(init);
-    let mut root = Node::directory("data");
-    let mut logs = Node::directory(r"logs\old");
+    let mut root = Draft::directory("data");
+    let mut logs = Draft::directory(r"logs\old");
     logs.children
-        .push(Node::entry("a:b", NodeKind::File, 4_000));
+        .push(Draft::entry("a:b", NodeKind::File, 4_000));
     root.children.push(logs);
     root.children
-        .push(Node::entry("notes", NodeKind::File, 1_000));
+        .push(Draft::entry("notes", NodeKind::File, 1_000));
+    let mut root = Tree::from(root);
     aggregate(&mut root, Metric::Bytes);
     let root_path = PathBuf::from("/srv/data");
     let (view, cx) = cx.add_window_view(move |_, cx| {
@@ -2389,6 +3604,7 @@ fn escape_in_the_delete_dialog_cancels(cx: &mut TestAppContext) {
         app.screen = Screen::Review;
         cx.notify();
     });
+    inspect_raw(&view, cx);
     draw(cx);
 
     press(cx, "enter");
@@ -2460,9 +3676,9 @@ fn interface_zoom_scales_the_rem_and_the_header_band(cx: &mut TestAppContext) {
 fn child_crumbs(app: &Disktree, parent: &[usize], name: &str) -> Vec<usize> {
     let node = app.node_at(parent).expect("the parent");
     let index = node
-        .children
+        .children()
         .iter()
-        .position(|child| &*child.name == name)
+        .position(|child| child.name() == name)
         .unwrap_or_else(|| panic!("no {name}"));
     let mut crumbs = parent.to_vec();
     crumbs.push(index);
@@ -2801,7 +4017,7 @@ fn widening_reuses_the_tree_it_has_and_reads_only_the_rest(
             .selected
             .as_deref()
             .and_then(|crumbs| app.node_at(crumbs))
-            .map(|node| node.name.to_string());
+            .map(|node| node.name().to_string());
         (junk, tree.child_named("keep").is_some(), selected)
     });
     assert_eq!(reused, before, "junk was reused, not walked again");
@@ -2848,7 +4064,7 @@ fn a_crumb_lists_its_siblings_and_jumps_sideways(cx: &mut TestAppContext) {
     let junk = read(&view, cx, |app| {
         app.tree()
             .and_then(|tree| {
-                tree.children.iter().position(|c| &*c.name == "junk")
+                tree.children().iter().position(|c| c.name() == "junk")
             })
             .expect("junk")
     });
@@ -2899,7 +4115,7 @@ fn a_crumb_lists_its_siblings_and_jumps_sideways(cx: &mut TestAppContext) {
     let cache = read(&view, cx, |app| {
         app.tree()
             .and_then(|tree| {
-                tree.children.iter().position(|c| &*c.name == ".cache")
+                tree.children().iter().position(|c| c.name() == ".cache")
             })
             .expect(".cache")
     });
@@ -2979,13 +4195,58 @@ fn marking_a_directory_marks_everything_inside_it(cx: &mut TestAppContext) {
     assert!(inside >= 2, "blob.bin and deeper are drawn inside junk");
     assert!(covered, "every tile inside junk goes with it");
 
+    // The mark is not said by colour alone (WCAG 1.4.1): its name, and every
+    // name inside it, is struck through. The name itself is left whole, so
+    // a narrow tile still shows it rather than a repeated word.
+    let label = mosaic
+        .labels
+        .iter()
+        .find(|label| label.text == "junk")
+        .expect("junk is large enough to be labelled, under its own name");
+    assert!(label.marked, "a marked name is struck through");
+    assert!(label.decoration.marked, "the label paints its tile's state");
+    let covered: Vec<_> = mosaic
+        .labels
+        .iter()
+        .filter(|label| label.decoration.covered)
+        .collect();
+    assert!(!covered.is_empty(), "something inside junk is labelled");
+    assert!(
+        covered.iter().all(|label| label.marked),
+        "what goes with a mark is struck through as going"
+    );
+    assert!(
+        covered.iter().all(|label| matches!(
+            &*label.text,
+            "blob.bin" | "deeper" | "more.bin"
+        )),
+        "covered names carry no prefix: {:?}",
+        covered.iter().map(|label| &label.text).collect::<Vec<_>>()
+    );
+    assert!(
+        mosaic
+            .labels
+            .iter()
+            .filter(
+                |label| !label.decoration.marked && !label.decoration.covered
+            )
+            .all(|label| !label.marked),
+        "nothing else is struck"
+    );
+    // Gone inside the mark, the trail still shows it: the crumbs for junk
+    // and anything in it are struck, the rest are not.
+    let keep = crumbs(&view, cx, "keep");
+    read(&view, cx, |app| {
+        assert!(app.goes_with_a_mark(&junk));
+        assert!(app.goes_with_a_mark(&deeper));
+        assert!(!app.goes_with_a_mark(&keep));
+        assert!(!app.goes_with_a_mark(&[]), "the scanned root");
+    });
+
     // Marking something inside it is refused, and says why.
     update(&view, cx, |app, cx| app.toggle_mark(&deeper, cx));
     let (count, notice) = read(&view, cx, |app| {
-        (
-            app.marks.len(),
-            app.notice.as_ref().map(|(text, _)| text.clone()),
-        )
+        (app.marks.len(), app.notice().map(|(text, _)| text))
     });
     assert_eq!(count, 1);
     assert!(notice.is_some_and(|text| text.contains("goes with the marked")));
@@ -3087,7 +4348,7 @@ fn switching_the_metric_keeps_the_directory_and_the_selection(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path();
     // Largest by size, but fewest files: the two swap places.
     std::fs::create_dir_all(root.join("big")).expect("mkdir");
@@ -3127,6 +4388,67 @@ fn switching_the_metric_keeps_the_directory_and_the_selection(
     update(&view, cx, |app, cx| app.set_mode(0, cx));
     draw(cx);
     assert_eq!(read(&view, cx, Disktree::current_path), root.join("big"));
+}
+
+/// The size/files toggle reorders the window's tree where it lies rather
+/// than copying it, yet still hands out a new tree; a tree another task is
+/// reading is copied and left in its old order.
+#[gpui_kit::test]
+fn toggling_the_metric_reorders_without_copying_the_tree(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = removable_tempdir();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("big")).expect("mkdir");
+    std::fs::write(root.join("big/one.bin"), vec![b'x'; 500_000])
+        .expect("write");
+    for index in 0..5 {
+        let file = root.join(format!("many/{index}.txt"));
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&file, b"x").expect("write");
+    }
+    let (view, cx) = view_over(root, cx);
+    draw(cx);
+    let first = |app: &Disktree| {
+        app.tree
+            .as_ref()
+            .expect("tree")
+            .root()
+            .children()
+            .at(0)
+            .name()
+            .to_string()
+    };
+
+    let (tree, children) = read(&view, cx, |app| {
+        let tree = app.tree.as_ref().expect("tree");
+        // Where the root's children start: an in-place reorder keeps it.
+        let children = tree.root().children().at(0).facts();
+        (std::sync::Arc::as_ptr(tree), std::ptr::from_ref(children))
+    });
+    assert_eq!(read(&view, cx, first), "big");
+    update(&view, cx, Disktree::toggle_metric);
+    draw(cx);
+    assert_eq!(read(&view, cx, first), "many", "most files first");
+    let (after, children_after) = read(&view, cx, |app| {
+        let tree = app.tree.as_ref().expect("tree");
+        // Where the root's children start: an in-place reorder keeps it.
+        let children = tree.root().children().at(0).facts();
+        (std::sync::Arc::as_ptr(tree), std::ptr::from_ref(children))
+    });
+    assert_eq!(children_after, children, "the nodes were not copied");
+    assert_ne!(after, tree, "but the tree is a new one");
+
+    let held = read(&view, cx, |app| app.tree.clone().expect("tree"));
+    update(&view, cx, Disktree::toggle_metric);
+    draw(cx);
+    assert_eq!(read(&view, cx, first), "big");
+    assert_eq!(
+        held.root().children().at(0).name(),
+        "many",
+        "a reader keeps its order"
+    );
 }
 
 /// Escape stops a first scan. What the walk found so far is not shown as a
@@ -3246,7 +4568,7 @@ fn mouse_side_buttons_go_back_and_forward(cx: &mut TestAppContext) {
 #[test]
 fn restart_arguments_parse_back_to_the_same_scan() {
     use disktree_core::tree::Metric;
-    let temp = tempfile::TempDir::new().expect("tempdir");
+    let temp = removable_tempdir();
     let root = temp.path().join("a folder");
     std::fs::create_dir(&root).expect("mkdir");
     let root = dunce::canonicalize(&root).expect("canonical root");
@@ -3330,13 +4652,50 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         Disktree::with_tree(root_for_view.clone(), tree, options, 3, cx)
     });
     draw(cx);
+    // The window answers a listing with the clone split `pwrdisk mcp`
+    // computes in process, and draws the same split for the selection.
+    update(&view, cx, |app, cx| {
+        let answer = app.answer_agent(
+            &disktree_link::Request::Ls {
+                path: root.clone(),
+                limit: 10,
+            },
+            cx,
+        );
+        let disktree_link::Response::Listing(listing) = answer else {
+            panic!("{answer:?}");
+        };
+        let tree = app.tree().expect("tree");
+        let here =
+            disktree_link::Listing::of(&root, tree.bytes, &root, tree, 10);
+        assert_eq!(listing, here);
+        let copies = listing
+            .children
+            .iter()
+            .find(|child| child.name == "copies")
+            .and_then(|child| child.clones)
+            .expect("clone facts for copies");
+        assert!(copies.private <= 8 * 1024, "{copies:?}");
+        assert!(copies.shared >= 8 * 1024 * 1024 - 64 * 1024, "{copies:?}");
+        let node = tree
+            .children()
+            .iter()
+            .find(|node| node.name() == "copies")
+            .expect("copies");
+        let split = crate::views::clone_split(node).expect("a split");
+        assert!(split.contains("shared with other APFS clones"), "{split}");
+    });
+    // The accessible file list draws the split on its rows too.
+    update(&view, cx, |app, _| app.file_list = true);
+    draw(cx);
+    update(&view, cx, |app, _| app.file_list = false);
     update(&view, cx, |app, cx| {
         let index = app
             .tree()
             .expect("tree")
-            .children
+            .children()
             .iter()
-            .position(|node| node.name.as_ref() == "copies")
+            .position(|node| node.name() == "copies")
             .expect("copies");
         app.toggle_mark(&[index], cx);
         app.screen = Screen::Review;
@@ -3350,6 +4709,8 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         assert_eq!(estimate.paths, vec![root.join("copies")]);
         assert_eq!((estimate.lower, estimate.upper), (0, Some(0)));
         assert_eq!(estimate.on_volume, 0);
+        // The agent hears why: the listed bytes are clone blocks.
+        assert!(estimate.shared >= 8 * 1024 * 1024 - 64 * 1024);
     });
     // Remote selections are exports: local clone metadata and mount
     // attribution cannot authorize or project a remote saving.
@@ -3379,24 +4740,24 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
         let index = app
             .tree()
             .expect("tree")
-            .children
+            .children()
             .iter()
-            .position(|node| node.name.as_ref() == "original")
+            .position(|node| node.name() == "original")
             .expect("original");
         app.toggle_mark(&[index], cx);
         let plan = app.plan();
         assert_eq!(plan.bytes(), 16 * 1024 * 1024);
-        assert_eq!(plan.reclaimable_bytes(), 8 * 1024 * 1024);
+        assert_eq!(plan.reclaimable_bytes(), 0);
         assert_eq!(plan.possible_bytes(), 8 * 1024 * 1024);
         let estimate = app.agent_state().estimate.expect("linked union");
-        assert_eq!(estimate.lower, 8 * 1024 * 1024);
-        assert_eq!(estimate.upper, Some(estimate.lower));
+        assert_eq!(estimate.lower, 0);
+        assert_eq!(estimate.upper, Some(8 * 1024 * 1024));
     });
     draw(cx);
     crate::marks::work::reset();
     read(&view, cx, |app| {
         for _ in 0..4 {
-            assert_eq!(app.plan().reclaimable_bytes(), 8 * 1024 * 1024);
+            assert_eq!(app.plan().reclaimable_bytes(), 0);
         }
     });
     assert_eq!(
@@ -3417,7 +4778,7 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
     update(&view, cx, |app, _| {
         app.marks.refresh(
             &root,
-            &refreshed,
+            refreshed.root(),
             disktree_core::tree::Metric::Bytes,
             app.path_style(),
         );
@@ -3442,7 +4803,8 @@ fn power_efficiency_menu_saves_without_discarding_the_tree(
     let config = tempfile::tempdir().expect("config");
     let path = config.path().join("power-efficiency");
     let (view, cx) = view_over(temp.path(), cx);
-    cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+    // Wide enough for the gauge to sit in the bar rather than in ⋮.
+    cx.simulate_resize(gpui_kit::size(px(1280.), px(800.)));
     update(&view, cx, |app, _| {
         app.power_settings_path = Some(path.clone());
         // Enough CPUs that every preset is offered, whatever runs the test.
@@ -3475,7 +4837,7 @@ fn power_efficiency_menu_saves_without_discarding_the_tree(
         app.power_settings_path = Some(config.path().to_owned());
         app.set_power_efficiency(Power::Miser, cx);
     });
-    assert!(read(&view, cx, |app| app.notice.as_ref().is_some_and(
+    assert!(read(&view, cx, |app| app.notice().as_ref().is_some_and(
         |(message, _)| message.contains("could not be saved")
     )));
     update(&view, cx, Disktree::start_scan);
@@ -3493,7 +4855,7 @@ fn the_power_menu_offers_only_what_the_cpus_can_tell_apart(
     let temp = fixture();
     let config = tempfile::tempdir().expect("config");
     let (view, cx) = view_over(temp.path(), cx);
-    cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+    cx.simulate_resize(gpui_kit::size(px(1280.), px(800.)));
     update(&view, cx, |app, _| {
         app.power_settings_path = Some(config.path().join("power"));
         // Aggressive and Drain My Battery would both run four workers.
@@ -3522,7 +4884,7 @@ fn the_power_menu_offers_only_what_the_cpus_can_tell_apart(
     draw(cx);
     read(&view, cx, |app| {
         assert_eq!(app.power_choice, Some(Power::Balanced));
-        assert!(app.notice.is_none());
+        assert!(app.notice().is_none());
     });
 
     // The arrows step over what is not offered, and Enter chooses.
@@ -3559,20 +4921,21 @@ fn the_power_menu_offers_only_what_the_cpus_can_tell_apart(
 fn marked_window_resolution_budget(cx: &mut TestAppContext) {
     use crate::marks::work;
     use disktree_core::removal::Target;
-    use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
 
     cx.update(init);
     let mut measure = |count| {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = removable_tempdir();
         let root_path = temp.path().to_path_buf();
-        let mut tree = Node::directory("root");
+        let mut tree = Draft::directory("root");
         for index in 0..count {
-            let mut folder = Node::directory(format!("folder-{index:05}"));
+            let mut folder = Draft::directory(format!("folder-{index:05}"));
             folder
                 .children
-                .push(Node::entry("payload", NodeKind::File, 1));
+                .push(Draft::entry("payload", NodeKind::File, 1));
             tree.children.push(folder);
         }
+        let mut tree = Tree::from(tree);
         aggregate(&mut tree, Metric::Bytes);
         let (view, window) = cx.add_window_view(move |_, cx| {
             Disktree::with_tree(root_path.clone(), tree, options(), 3, cx)
@@ -3693,9 +5056,10 @@ fn marked_tiles_follow_metric_rescan_and_mark_changes(cx: &mut TestAppContext) {
         std::slice::from_ref(&junk)
     );
     update(&view, window, |app, cx| {
-        let mut tree = (**app.tree.as_ref().expect("tree")).clone();
+        // Child lists are fixed once built: reorder through a draft.
+        let mut tree = app.tree.as_ref().expect("tree").root().to_draft();
         tree.children.reverse();
-        app.tree = Some(Arc::new(tree));
+        app.tree = Some(Arc::new(disktree_core::tree::Tree::from(tree)));
         cx.notify();
     });
     draw(window);
@@ -3742,7 +5106,7 @@ fn marked_interaction_timings(cx: &mut TestAppContext) {
     }
 
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     // One broad directory, kept fixed while only the number of marks grows.
     // Each marked folder contains a file: descendants still make one mark.
     for index in 0..1025 {
@@ -3842,21 +5206,22 @@ fn queue_budget_view(
     count: usize,
     cx: &mut TestAppContext,
 ) -> (tempfile::TempDir, Entity<Disktree>, &mut Window) {
-    use disktree_core::tree::{Metric, Node, NodeKind, aggregate};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
 
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     let root_path = temp.path().to_path_buf();
-    let mut tree = Node::directory("root");
-    let mut parent = Node::directory("container");
+    let mut tree = Draft::directory("root");
+    let mut parent = Draft::directory("container");
     for index in 0..count {
-        parent.children.push(Node::entry(
+        parent.children.push(Draft::entry(
             format!("file-{index:05}"),
             NodeKind::File,
             1,
         ));
     }
     tree.children.push(parent);
-    tree.children.push(Node::entry("keep", NodeKind::File, 1));
+    tree.children.push(Draft::entry("keep", NodeKind::File, 1));
+    let mut tree = Tree::from(tree);
     aggregate(&mut tree, Metric::Bytes);
     let (view, window) = cx.add_window_view(move |_, cx| {
         Disktree::with_tree(root_path.clone(), tree, options(), 3, cx)
@@ -4043,7 +5408,7 @@ fn covered_review_status_budget(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn folder_queue_construction_budget(cx: &mut TestAppContext) {
     use crate::marks::work;
-    use disktree_core::tree::{Node, NodeKind, aggregate};
+    use disktree_core::tree::{Draft, NodeKind, Tree, aggregate};
     use std::sync::Arc;
 
     cx.update(init);
@@ -4051,14 +5416,18 @@ fn folder_queue_construction_budget(cx: &mut TestAppContext) {
         let (_temp, view, window) = queue_budget_view(count, cx);
         let operations = update(&view, window, |app, cx| {
             let metric = app.options.metric;
-            let tree = Arc::make_mut(app.tree.as_mut().expect("tree"));
-            for child in &mut tree.children[0].children {
+            // Child lists are fixed once built: turn each file into a
+            // folder through a draft, then build the tree again.
+            let mut draft = app.tree.as_ref().expect("tree").root().to_draft();
+            for child in &mut draft.children[0].children {
                 child.kind = NodeKind::Directory;
                 child
                     .children
-                    .push(Node::entry("payload", NodeKind::File, 1));
+                    .push(Draft::entry("payload", NodeKind::File, 1));
             }
-            aggregate(tree, metric);
+            let mut tree = Tree::from(draft);
+            aggregate(&mut tree, metric);
+            app.tree = Some(Arc::new(tree));
             work::reset();
             let start = std::time::Instant::now();
             for index in 0..count {
@@ -4359,6 +5728,84 @@ fn the_tooltip_follows_the_pointer_inside_a_client_side_frame(
     assert_eq!(tip.top(), at.y + px(gap));
 }
 
+/// Only a read-only preview may be retried while its worker is preparing.
+fn await_removal_preview(
+    ask: &mut impl FnMut(
+        &mut Window,
+        disktree_link::Request,
+    ) -> disktree_link::Response,
+    cx: &mut Window,
+    request: &disktree_link::Request,
+) -> disktree_link::RemovalPreview {
+    assert!(matches!(
+        request,
+        disktree_link::Request::PrepareRemoval { .. }
+    ));
+    for _ in 0..400 {
+        cx.run_until_parked();
+        match ask(cx, request.clone()) {
+            disktree_link::Response::RemovalPreview(preview) => return preview,
+            disktree_link::Response::Error { message }
+                if message.contains("preparing") => {}
+            response => panic!("preview refused: {response:?}"),
+        }
+        draw(cx);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("preview worker did not finish");
+}
+
+/// Link `view` to an agent over a real socket or pipe named after `temp`,
+/// as `pwrdisk mcp` does.
+#[cfg(any(unix, windows))]
+fn link_agent(
+    view: &Entity<Disktree>,
+    temp: &Path,
+    cx: &mut Window,
+) -> disktree_link::Link {
+    #[cfg(not(windows))]
+    let socket = temp.join("link.sock");
+    #[cfg(windows)]
+    let socket = PathBuf::from(format!(
+        r"\\.\pipe\pwrdisk-test-{}",
+        temp.file_name().expect("temp name").to_string_lossy()
+    ));
+    let listener =
+        disktree_link::Listener::bind_at(&socket).expect("bind the link");
+    update(view, cx, |app, cx| app.attach_agent(listener, cx));
+    disktree_link::Link::connect_at(&socket).expect("connect")
+}
+
+/// Send `request` over `link` and pump the window until it answers. The
+/// client blocks on each answer, so it runs on its own thread while the
+/// test pumps the window's side, as the timer task would.
+#[cfg(any(unix, windows))]
+fn ask_over(
+    view: &Entity<Disktree>,
+    link: &mut Option<disktree_link::Link>,
+    cx: &mut Window,
+    request: disktree_link::Request,
+) -> disktree_link::Response {
+    let mut taken = link.take().expect("the link is at hand");
+    let worker = std::thread::spawn(move || {
+        let response = taken.call(&request).expect("an answer");
+        (taken, response)
+    });
+    for _ in 0..400 {
+        update(view, cx, |app, cx| {
+            app.poll_agent_once(cx);
+        });
+        if worker.is_finished() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let (returned, response) = worker.join().expect("client thread");
+    *link = Some(returned);
+    draw(cx);
+    response
+}
+
 /// Drive the window as `pwrdisk mcp` does, over the real socket: say
 /// hello, mark, show, open the review, unmark, hang up. The marks land in
 /// the window, the screen follows, and the header names the agent while it
@@ -4368,48 +5815,20 @@ fn the_tooltip_follows_the_pointer_inside_a_client_side_frame(
 fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     use disktree_link::{Link, MarkRequest, Request, Response};
 
-    cx.update(gpui_omarchy::init);
+    cx.update(init);
     let temp = fixture();
     let root = temp.path().to_path_buf();
+    // Native approval needs ordinary output too: cache fixtures are
+    // inspection-only and cannot exercise successful raw removal.
+    std::fs::create_dir(root.join("native-output")).expect("native output");
+    std::fs::write(root.join("native-output/artifact"), b"fixture")
+        .expect("native payload");
     let (view, cx) = view_over(temp.path(), cx);
     draw(cx);
 
-    #[cfg(not(windows))]
-    let socket = temp.path().join("link.sock");
-    #[cfg(windows)]
-    let socket = PathBuf::from(format!(
-        r"\\.\pipe\pwrdisk-test-{}",
-        temp.path()
-            .file_name()
-            .expect("temp name")
-            .to_string_lossy()
-    ));
-    let listener =
-        disktree_link::Listener::bind_at(&socket).expect("bind the link");
-    update(&view, cx, |app, cx| app.attach_agent(listener, cx));
-
-    // The client blocks on each answer, so it runs on its own thread while
-    // the test pumps the window's side, as the timer task would.
-    let mut link = Some(Link::connect_at(&socket).expect("connect"));
+    let mut link = Some(link_agent(&view, temp.path(), cx));
     let mut ask = |cx: &mut Window, request: Request| -> Response {
-        let mut taken = link.take().expect("the link is at hand");
-        let worker = std::thread::spawn(move || {
-            let response = taken.call(&request).expect("an answer");
-            (taken, response)
-        });
-        for _ in 0..400 {
-            update(&view, cx, |app, cx| {
-                app.poll_agent_once(cx);
-            });
-            if worker.is_finished() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let (returned, response) = worker.join().expect("client thread");
-        link = Some(returned);
-        draw(cx);
-        response
+        ask_over(&view, &mut link, cx, request)
     };
 
     let refused = ask(
@@ -4627,17 +6046,44 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     );
     let preview_request = Request::PrepareRemoval {
         mode: disktree_link::RemovalChoice::Permanent,
+        decisions: None,
+        files: None,
     };
-    let Response::RemovalPreview(preview) = ask(cx, preview_request.clone())
-    else {
-        panic!("preview");
-    };
+    assert!(matches!(
+        ask(cx, preview_request.clone()),
+        Response::Error { message } if message.contains("preparing")
+    ));
+    assert!(matches!(ask(cx, Request::State), Response::State(_)));
+    let preview = await_removal_preview(&mut ask, cx, &preview_request);
     assert_eq!(preview.estimate.paths, preview.paths);
     assert_eq!(preview.estimate.lower, 0, "apparent fixture sizes");
     assert_eq!(preview.estimate.upper, None);
     assert!(preview.estimate.partial);
+    // Estimation must leave the pending single-use removal intent intact.
+    let before = ask(cx, Request::State);
+    let estimated = ask(
+        cx,
+        Request::Estimate {
+            paths: vec![root.join("junk")],
+            peer_scope: None,
+            peer_limit: 10,
+        },
+    );
+    let Response::Estimate(report) = estimated else {
+        panic!("estimate response");
+    };
+    assert_eq!(report.accepted, [root.join("junk")]);
+    assert!(report.reclaim.is_none(), "apparent fixture");
+    assert_eq!(ask(cx, Request::State), before);
+    assert!(!read(&view, cx, |app| app
+        .agent
+        .as_ref()
+        .expect("agent")
+        .previews
+        .is_empty()));
     let confirmed = |preview: &disktree_link::RemovalPreview| {
         disktree_link::ConfirmedRemoval {
+            rescan: false,
             preview_id: preview.preview_id.clone(),
             mode: preview.mode,
             paths: preview.paths.clone(),
@@ -4656,10 +6102,7 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         ask(cx, Request::Remove(confirmed(&preview))),
         Response::Error { .. }
     ));
-    let Response::RemovalPreview(changed) = ask(cx, preview_request.clone())
-    else {
-        panic!("preview");
-    };
+    let changed = await_removal_preview(&mut ask, cx, &preview_request);
     ask(
         cx,
         Request::Unmark {
@@ -4686,10 +6129,7 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     update(&view, cx, |app, _| {
         app.removal_settings_dir = Some(settings.clone());
     });
-    let Response::RemovalPreview(old_policy) = ask(cx, preview_request.clone())
-    else {
-        panic!("preview");
-    };
+    let old_policy = await_removal_preview(&mut ask, cx, &preview_request);
     crate::safety::save(
         Some(&settings),
         disktree_core::removal_limit::Limit::new(10).expect("10%"),
@@ -4705,13 +6145,70 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         disktree_core::removal_limit::Limit::default(),
     )
     .expect("restore fixture policy");
-    let Response::RemovalPreview(preview) = ask(cx, preview_request) else {
-        panic!("preview");
-    };
+    // Model: Preview -> retain original -> replace -> confirm must refuse,
+    // independently of the replacement's kind or size. The filesystem is
+    // the oracle: the replacement is still there and byte-for-byte intact.
+    {
+        use proptest::prelude::*;
+        use proptest::test_runner::{Config, TestRunner};
+        let window = std::cell::RefCell::new(&mut *cx);
+        let ask = std::cell::RefCell::new(&mut ask);
+        TestRunner::new(Config {
+            cases: 16,
+            // A broken implementation can start deleting this fixture.
+            // Shrinking must not reuse its now-running window state.
+            max_shrink_iters: 0,
+            failure_persistence: None,
+            ..Config::default()
+        })
+        .run(&(any::<bool>(), 0_usize..1024), |(directory, bytes)| {
+            let mut ask = ask.borrow_mut();
+            let mut window = window.borrow_mut();
+            let replaced = await_removal_preview(
+                &mut **ask,
+                &mut window,
+                &preview_request,
+            );
+            std::fs::rename(root.join("junk"), root.join("held-original"))
+                .expect("retain original fixture");
+            let path = if directory {
+                std::fs::create_dir(root.join("junk")).expect("replacement");
+                root.join("junk/blob.bin")
+            } else {
+                root.join("junk")
+            };
+            let data = vec![b'x'; bytes];
+            std::fs::write(&path, &data).expect("replacement data");
+            prop_assert!(
+                matches!(
+                    ask(&mut window, Request::Remove(confirmed(&replaced))),
+                    Response::Error { .. }
+                ),
+                "a replacement cannot inherit approval"
+            );
+            prop_assert_eq!(std::fs::read(&path).expect("not approved"), data);
+            std::fs::remove_file(&path).expect("owned fixture");
+            if directory {
+                std::fs::remove_dir(root.join("junk")).expect("owned fixture");
+            }
+            std::fs::rename(root.join("held-original"), root.join("junk"))
+                .expect("restore original fixture");
+            Ok(())
+        })
+        .expect("replacement never inherits human approval");
+    }
+    let preview = await_removal_preview(&mut ask, cx, &preview_request);
     assert_eq!(preview.paths, [root.join("junk")]);
     assert_eq!(preview.limit_percent, 5);
     // Another client connecting must not discard this client's approval.
-    let second_socket = socket;
+    let second_socket = read(&view, cx, |app| {
+        app.agent
+            .as_ref()
+            .expect("agent")
+            .listener
+            .path()
+            .to_path_buf()
+    });
     let second = std::thread::spawn(move || {
         let mut link = Link::connect_at(&second_socket).expect("second client");
         link.call(&Request::Hello {
@@ -4741,9 +6238,9 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     assert!(
         matches!(
             ask(cx, Request::Remove(confirmed(&preview))),
-            Response::Error { .. }
+            Response::State(_)
         ),
-        "no replay"
+        "a duplicate reports the running operation without replay"
     );
     let epoch = read(&view, cx, |app| app.run_epoch);
     let mut done = false;
@@ -4761,7 +6258,68 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     assert!(!root.join("junk").exists());
     assert!(root.join("keep/notes.txt").exists());
     assert!(root.join(".cache/blob.bin").exists());
-    assert_eq!(read(&view, cx, |app| app.run_summary.failed), 0);
+    assert_eq!(read(&view, cx, |app| app.run_list.totals().failed), 0);
+
+    // A pending MCP form does not own native UI approval. Complete another
+    // exact preview through the same entry point as native confirmation.
+    ask(
+        cx,
+        Request::Mark {
+            root: root.clone(),
+            targets: vec![MarkRequest {
+                path: root.join("native-output"),
+                bytes: 0,
+                is_dir: true,
+            }],
+        },
+    );
+    let native = await_removal_preview(
+        &mut ask,
+        cx,
+        &Request::PrepareRemoval {
+            mode: disktree_link::RemovalChoice::Permanent,
+            decisions: None,
+            files: None,
+        },
+    );
+    update(&view, cx, |app, cx| {
+        app.removal_mode = RemovalMode::Permanent;
+        app.begin_removal(cx);
+    });
+    let native_epoch = read(&view, cx, |app| app.run_epoch);
+    let Response::State(running) = ask(cx, Request::State) else {
+        panic!("state");
+    };
+    let operation = running.removal_operation.expect("native run correlated");
+    assert_eq!(operation.preview_id, native.preview_id);
+    assert!(!operation.finished);
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        if update(&view, cx, |app, cx| {
+            !app.poll_removal_once(native_epoch, cx)
+        }) {
+            break;
+        }
+    }
+    assert!(!root.join("native-output").exists());
+    assert!(root.join(".cache/blob.bin").exists());
+    let Response::State(completed) =
+        ask(cx, Request::Remove(confirmed(&native)))
+    else {
+        panic!("late request reports outcome");
+    };
+    let operation = completed.removal_operation.expect("completed outcome");
+    assert!(operation.finished);
+    assert_eq!(
+        (operation.removed, operation.failed, operation.pending),
+        (1, 0, 0)
+    );
+    assert_eq!(
+        read(&view, cx, |app| app.run_epoch),
+        native_epoch,
+        "no second run"
+    );
+    assert!(root.join("keep/notes.txt").exists());
 
     // Hanging up takes the name out of the header.
     drop(link);
@@ -4781,74 +6339,68 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("agent-pill").is_none(), "pill gone");
 }
 
-/// The agent overlay opens from the panel line, lists a command for each
-/// client with the binary's own path, and closes on Escape.
+/// The panel's agent line opens Settings › Agents (MCP), which lists a
+/// command for each client with the binary's own path, the bare command
+/// line first, and says who is connected.
 #[gpui_kit::test]
-fn the_agent_overlay_opens_and_closes(cx: &mut TestAppContext) {
-    cx.update(gpui_omarchy::init);
+fn the_agent_line_opens_settings_agents(cx: &mut TestAppContext) {
+    use crate::settings::{Pane, SettingsWindow};
+
+    cx.update(init);
     let temp = fixture();
-    let (view, cx) = view_over(temp.path(), cx);
+    let (_, cx) = view_over(temp.path(), cx);
     draw(cx);
     assert!(cx.debug_bounds("agent-line").is_some());
-    assert!(cx.debug_bounds("agent-overlay").is_none());
-
-    update(&view, cx, |app, cx| {
-        app.show_agent = true;
-        cx.notify();
-    });
-    draw(cx);
-    assert!(cx.debug_bounds("agent-overlay").is_some());
-
-    press(cx, "escape");
-    assert!(!read(&view, cx, |app| app.show_agent));
-    assert!(cx.debug_bounds("agent-overlay").is_none());
-
-    // Done closes it, and so does a click outside the card; a click on the
-    // card itself does not.
-    update(&view, cx, |app, cx| {
-        app.show_agent = true;
-        cx.notify();
-    });
-    draw(cx);
-    click_on(cx, "overlay-done");
-    draw(cx);
-    assert!(!read(&view, cx, |app| app.show_agent), "Done closes");
-
-    update(&view, cx, |app, cx| {
-        app.show_agent = true;
-        cx.notify();
-    });
-    draw(cx);
-    click_on(cx, "agent-overlay");
-    draw(cx);
-    assert!(read(&view, cx, |app| app.show_agent), "card click stays");
-    let card = cx.debug_bounds("agent-overlay").expect("card");
-    let outside = card.origin - gpui_kit::point(px(8.), px(8.));
-    cx.simulate_click(outside, gpui_kit::Modifiers::none());
-    draw(cx);
-    assert!(!read(&view, cx, |app| app.show_agent), "outside closes");
-
-    // The Help menu opens the same overlay.
-    cx.dispatch_action(crate::app_menu::ConnectAgent);
-    draw(cx);
-    assert!(read(&view, cx, |app| app.show_agent));
-    assert!(cx.debug_bounds("agent-overlay").is_some());
-    press(cx, "escape");
+    click_on(cx, "agent-line");
+    cx.run_until_parked();
+    assert_eq!(settings_pane(cx), Some(Pane::Agents));
 
     let commands =
         crate::agent::connect_commands(Path::new("/opt/disktree/disktree"));
-    assert_eq!(commands.len(), 3);
+    let labels: Vec<_> = commands.iter().map(|way| way.label).collect();
+    assert_eq!(
+        labels,
+        [
+            "Command line",
+            "Claude Code",
+            "Codex",
+            "Other MCP clients (JSON)"
+        ]
+    );
+    assert_eq!(commands[0].text, "\"/opt/disktree/disktree\" mcp");
     assert!(
-        commands[0]
-            .1
+        commands[1]
+            .text
             .starts_with("claude mcp add --scope user pwrdisk")
     );
     assert!(
         commands
             .iter()
-            .all(|(_, command)| command.contains("/opt/disktree/disktree"))
+            .all(|way| way.text.contains("/opt/disktree/disktree"))
     );
-    assert!(commands[2].1.contains("\"args\": [\"mcp\"]"));
+    assert!(commands[3].text.contains("\"args\": [\"mcp\"]"));
+
+    // The pane draws every row, each with its own Copy, and the status.
+    let (view, cx) =
+        cx.add_window_view(|_, cx| SettingsWindow::new(Pane::Agents, cx));
+    draw(cx);
+    assert!(cx.debug_bounds("settings-nav-agents").is_some());
+    assert!(cx.debug_bounds("agents-status").is_some());
+    for way in &commands {
+        assert!(cx.debug_bounds(way.id).is_some(), "{} has Copy", way.label);
+    }
+    // Copy answers on its own button, for a moment, never with a toast.
+    click_on(cx, "agents-copy-command");
+    let copied = clipboard(cx);
+    assert!(copied.ends_with("\" mcp"), "{copied}");
+    assert!(copied.starts_with('"'), "{copied}");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.copied()),
+        Some("agents-copy-command")
+    );
+    cx.executor().advance_clock(crate::settings::COPY_FEEDBACK);
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.copied()), None);
 }
 
 /// A window showing an SSH host answers an agent with where it is and
@@ -4954,7 +6506,7 @@ fn removal_capacity_limit_blocks_the_entire_ui_selection(
         assert_eq!(app.screen, Screen::Review);
         assert!(app.run.is_none());
         assert!(
-            app.notice
+            app.notice()
                 .as_ref()
                 .is_some_and(|(text, _)| text.contains("limit"))
         );
@@ -5075,7 +6627,7 @@ fn accessible_file_pages_reach_every_entry_and_share_safe_marks(
     cx: &mut TestAppContext,
 ) {
     cx.update(init);
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     for i in 0..235 {
         std::fs::write(
             temp.path().join(format!("Résumé 日本語-{i:03}.txt")),
@@ -5092,7 +6644,9 @@ fn accessible_file_pages_reach_every_entry_and_share_safe_marks(
     draw(cx);
     assert!(cx.debug_bounds("file-row-99").is_some());
     assert!(cx.debug_bounds("file-row-100").is_none());
-    press(cx, "down pagedown pagedown");
+    click_on(cx, "file-next");
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), Some(vec![100]));
+    press(cx, "pagedown");
     assert!(cx.debug_bounds("file-row-200").is_some());
     assert!(cx.debug_bounds("file-row-199").is_none());
     read(&view, cx, |app| {
@@ -5144,7 +6698,7 @@ fn accessible_file_navigation_uses_absolute_paths_and_filter(
 }
 
 fn paginated_fixture(count: usize) -> tempfile::TempDir {
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = removable_tempdir();
     for index in 0..count {
         let prefix = if index < 150 { "match" } else { "other" };
         std::fs::write(
@@ -5201,13 +6755,14 @@ fn accessible_list_review_sibling_navigation_tracks_page(
     let (view, cx) = view_over(temp.path(), cx);
     focus_file_list(&view, cx);
     update(&view, cx, |app, cx| app.select(Some(vec![99]), cx));
-    press(cx, "tab");
+    // Tab traverses controls; n retains the shared sibling-navigation path.
+    press(cx, "n");
     assert_eq!(read(&view, cx, |app| app.selected.clone()), Some(vec![100]));
     assert_eq!(read(&view, cx, |app| app.file_page), 1);
     assert!(cx.debug_bounds("file-row-100").is_some());
     assert!(cx.debug_bounds("file-row-99").is_none());
     let marked = read(&view, cx, |app| app.path_at(&[100]).unwrap());
-    press(cx, "space shift-tab");
+    press(cx, "space shift-n");
     assert_eq!(read(&view, cx, |app| app.selected.clone()), Some(vec![99]));
     assert_eq!(read(&view, cx, |app| app.file_page), 0);
     assert!(cx.debug_bounds("file-row-99").is_some());
@@ -5307,4 +6862,5427 @@ fn accessible_list_review_noop_navigation_preserves_page(
         read(&view, cx, Disktree::current_path),
         temp.path().join("nested")
     );
+}
+
+#[gpui_kit::test]
+fn readable_progress_is_throttled_but_errors_and_completion_are_immediate(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.start_scan(cx);
+        app.progress.files = 100;
+        let first = app.accessibility_status();
+        assert!(first.contains("100 files") && first.contains("indeterminate"));
+        app.progress.files = 200;
+        assert_eq!(app.accessibility_status(), first);
+        app.accessible_progress.as_mut().unwrap().0 = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(3))
+            .expect("test clock");
+        assert!(app.accessibility_status().contains("200 files"));
+        app.scan_error = Some("contrived scan error".into());
+        assert!(app.accessibility_status().contains("contrived scan error"));
+        app.cancel_scan(cx);
+        assert!(app.scan.is_none() && app.progress.cancelled);
+        app.scan_error = None;
+        assert!(app.accessibility_status().contains("Scan cancelled"));
+        app.progress.cancelled = false;
+        app.progress.finished = true;
+        assert!(app.accessibility_status().contains("Scan complete"));
+    });
+}
+
+#[gpui_kit::test]
+fn status_review_cancelled_widening_does_not_hide_the_active_screen(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(&temp.path().join("junk"), cx);
+    update(&view, cx, |app, cx| {
+        app.widen_to(temp.path().to_path_buf(), cx);
+        app.cancel_scan(cx);
+        app.open_review(cx);
+        for (screen, checked, phase) in [
+            (Screen::Review, false, "Review marked paths"),
+            (
+                Screen::Running,
+                false,
+                "Checking selection; nothing removed yet",
+            ),
+            (Screen::Running, true, "Removal running"),
+            (Screen::Done, false, "Removal finished"),
+        ] {
+            app.screen = screen;
+            app.run_checked = checked;
+            let label = app.accessibility_status();
+            assert!(label.starts_with(phase), "{label}");
+            assert!(label.contains("Previous scan cancelled"), "{label}");
+            app.scan_error = Some("contrived widening error".into());
+            let label = app.accessibility_status();
+            assert!(label.starts_with(phase), "{label}");
+            assert!(label.contains("contrived widening error"), "{label}");
+            app.scan_error = None;
+        }
+    });
+    draw(cx);
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn status_review_removal_completion_survives_its_background_rescan(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let keep = child_crumbs(app, &[], "keep");
+        let notes = child_crumbs(app, &keep, "notes.txt");
+        app.toggle_mark(&notes, cx);
+        app.removal_mode = RemovalMode::Permanent;
+        // Remove & rescan.
+        app.rescan_after_removal = true;
+    });
+    inspect_raw(&view, cx);
+    let epoch = update(&view, cx, |app, cx| {
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
+        app.run_epoch
+    });
+    let mut status = None;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        status = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            (app.screen == Screen::Done).then(|| {
+                assert!(app.is_indexing(), "completion starts a refresh");
+                app.accessibility_status()
+            })
+        });
+        if status.is_some() {
+            break;
+        }
+    }
+    let status = status.expect("removal completes");
+    assert!(status.starts_with("Removal finished"), "{status}");
+    assert!(status.contains("Background scan"), "{status}");
+    assert!(!status.contains("Escape cancels"), "{status}");
+    finish_scan(&view, cx);
+    draw(cx);
+    assert!(!temp.path().join("keep/notes.txt").exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// Run a contrived permanent removal of `names`, each under the root, to
+/// its Done screen.
+fn remove_now(view: &Entity<Disktree>, cx: &mut Window, names: &[&str]) {
+    update(view, cx, |app, cx| {
+        for name in names {
+            let crumbs = app
+                .crumbs_for_path(&app.root_path.join(name))
+                .expect("in the tree");
+            app.toggle_mark(&crumbs, cx);
+        }
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    inspect_raw(view, cx);
+    let epoch = update(view, cx, |app, cx| {
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
+        app.run_epoch
+    });
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let done = update(view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            return;
+        }
+    }
+    panic!("the removal did not finish");
+}
+
+/// Cargo writes a cache tag into every `target` directory. Review once
+/// read that tag as an opaque cache: it switched to Cache cleanup, and
+/// Permanent refused `target/debug/deps` with "no raw deletion
+/// fallback". Build output is an ordinary removal in every mode.
+#[gpui_kit::test]
+fn a_cargo_build_is_an_ordinary_removal(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let build = temp.path().join("checkout/target");
+    for (path, text) in [
+        ("checkout/Cargo.toml", "[workspace]\n"),
+        ("checkout/src/main.rs", "fn main() {}\n"),
+        (
+            "checkout/target/CACHEDIR.TAG",
+            concat!(
+                "Signature: 8a477f597d28d172789f06886806bc55\n",
+                "# This file is a cache directory tag created by cargo.\n",
+                "# For information about cache directory tags see ",
+                "https://bford.info/cachedir/\n",
+            ),
+        ),
+        ("checkout/target/.rustc_info.json", "{}"),
+        ("checkout/target/debug/deps/libapp.rlib", "rlib"),
+        (
+            "checkout/target/debug/incremental/app-1/s-1/dep-graph.bin",
+            "g",
+        ),
+    ] {
+        let file = temp.path().join(path);
+        std::fs::create_dir_all(file.parent().expect("parent")).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        for name in ["debug/deps", "debug/incremental"] {
+            let crumbs =
+                app.crumbs_for_path(&build.join(name)).expect("in the tree");
+            app.toggle_mark(&crumbs, cx);
+        }
+        let before = app.removal_mode;
+        app.open_review(cx);
+        assert_eq!(app.removal_mode, before, "Review keeps the user's mode");
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    inspect_raw(&view, cx);
+    let epoch = update(&view, cx, |app, cx| {
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
+        app.run_epoch
+    });
+    draw(cx);
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done, "the removal finished");
+    read(&view, cx, |app| {
+        let totals = app.run_list.totals();
+        assert_eq!(totals.failed, 0, "{:?}", app.notice());
+    });
+    assert!(!build.join("debug/deps").exists());
+    assert!(!build.join("debug/incremental").exists());
+    assert!(build.join("CACHEDIR.TAG").exists(), "only marks go");
+    assert!(temp.path().join("checkout/src/main.rs").exists());
+}
+
+/// The run's list is on screen from Removing's first frame, says what
+/// each item is, and stays on Done, every item checked off, rather than
+/// only the names of what already went.
+#[gpui_kit::test]
+fn removal_plan_captures_the_scan_accounting_options(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_paths(&view, cx, &[temp.path().join("junk")]);
+    update(&view, cx, |app, _| {
+        app.options.apparent_size = true;
+        app.options.apfs_clone_metadata = false;
+        app.options.dedup_hardlinks = false;
+        app.options.threads.max_threads = 2;
+        let captured = app.selection_plan();
+        assert_eq!(
+            serde_json::to_value(&captured.scan_options).expect("plan"),
+            serde_json::to_value(&app.options).expect("scan"),
+        );
+        app.options = ScanOptions::default();
+        assert!(captured.scan_options.apparent_size);
+        assert!(!captured.scan_options.apfs_clone_metadata);
+        assert!(!captured.scan_options.dedup_hardlinks);
+        assert_eq!(captured.scan_options.threads.max_threads, 2);
+    });
+}
+
+#[gpui_kit::test]
+fn the_removal_list_stays_on_screen_from_start_to_done(
+    cx: &mut TestAppContext,
+) {
+    use crate::run_list::Status;
+    cx.update(init);
+    let temp = fixture();
+    // This test exercises ordinary raw removal. Cache removal is covered
+    // separately and must go through an owner preview.
+    let build_output = temp.path().join("target/debug/deps");
+    std::fs::create_dir_all(build_output.parent().expect("build profile"))
+        .expect("build output parent");
+    std::fs::rename(temp.path().join(".cache"), &build_output)
+        .expect("ordinary removal fixture");
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        for name in ["target/debug/deps", "junk/deeper"] {
+            let crumbs = app
+                .crumbs_for_path(&app.root_path.join(name))
+                .expect("in the tree");
+            app.toggle_mark(&crumbs, cx);
+        }
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    inspect_raw(&view, cx);
+    let epoch = update(&view, cx, |app, cx| {
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
+        app.run_epoch
+    });
+    draw(cx);
+    // Until the worker reports Start, every row waits and no row claims
+    // to be removing anything. The current index is only the next target.
+    assert!(cx.debug_bounds("run-checking").is_some());
+    assert!(cx.debug_bounds("run-progress").is_none());
+    assert!(cx.debug_bounds("run-list").is_some());
+    assert!(cx.debug_bounds("run-row-0").is_some());
+    assert!(cx.debug_bounds("run-row-1").is_some());
+    assert!(cx.debug_bounds("run-summary").is_some());
+    update(&view, cx, |app, _| {
+        let items = &app.run_list.items;
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|item| item.status == Status::Waiting));
+        assert_eq!(app.run_list.current(), Some(0));
+        let output = items
+            .iter()
+            .find(|item| item.target.path == build_output)
+            .expect("the build output is listed");
+        assert_eq!(output.kind(), Some("build output"), "and says why");
+        assert_eq!(output.target.bytes, 300_000);
+    });
+
+    let mut finished = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        finished = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if finished {
+            break;
+        }
+    }
+    assert!(finished, "the removal finished");
+    draw(cx);
+    assert!(
+        cx.debug_bounds("run-row-0").is_some(),
+        "Done keeps the list"
+    );
+    assert!(cx.debug_bounds("run-row-1").is_some());
+    update(&view, cx, |app, _| {
+        assert!(
+            app.run_list
+                .items
+                .iter()
+                .all(|item| item.status == Status::Removed),
+            "every item is checked off"
+        );
+        let totals = app.run_list.totals();
+        assert_eq!((totals.removed, totals.failed), (2, 0));
+        assert_eq!(totals.reported_done, 400_000);
+    });
+    assert!(!build_output.exists());
+    assert!(temp.path().join("target/debug").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// Review draws its rows as Removing does: a deep path is shortened from
+/// the middle onto one line, so its row is as tall as a short one's, and
+/// the row says why the path is listed.
+#[gpui_kit::test]
+fn review_rows_shorten_deep_paths_and_say_why(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    // Keep the descriptive badge independent of the host's temp location.
+    let deep: PathBuf = std::iter::once("tmp".to_owned())
+        .chain((0..30).map(|level| format!("nested-directory-{level:02}")))
+        .collect();
+    let file = temp.path().join(&deep).join("leaf.bin");
+    std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&file, vec![b'x'; 5_000]).expect("write");
+    let (view, cx) = view_over(temp.path(), cx);
+    mark_paths(&view, cx, &[temp.path().join(".cache"), file.clone()]);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Review;
+        cx.notify();
+    });
+    draw(cx);
+    let rows: Vec<_> = (0..2)
+        .map(|index| {
+            let selector: &'static str =
+                Box::leak(format!("review-row-{index}").into_boxed_str());
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        })
+        .collect();
+    assert_eq!(
+        rows[0].size.height, rows[1].size.height,
+        "the deep path does not wrap: {rows:?}"
+    );
+    // The cache is regenerable; the plain file retains its temporary location.
+    assert!(cx.debug_bounds("review-kind-0").is_some(), "a kind chip");
+    assert!(cx.debug_bounds("review-kind-1").is_some(), "temporary data");
+    // What each mark is was read once: a later frame walks no directory.
+    crate::marks::work::reset();
+    update(&view, cx, |_, cx| cx.notify());
+    draw(cx);
+    assert!(crate::marks::work::RENDERS.get() > 0, "it drew again");
+    assert_eq!(
+        crate::marks::work::RESOLUTION.get(),
+        0,
+        "and walked nothing"
+    );
+    let folder = read(&view, cx, |app| {
+        crate::run_view::folder_line(app, &file, 40)
+    });
+    assert!(folder.contains('\u{2026}'), "{folder}");
+    assert!(folder.ends_with("nested-directory-29"), "{folder}");
+}
+
+/// A long run scrolls with the item in hand, as the live log follows its
+/// newest line: scrolling it out of view pauses that and shows the pill,
+/// and the pill follows again.
+#[gpui_kit::test]
+fn the_removal_list_follows_the_item_in_hand_like_the_live_log(
+    cx: &mut TestAppContext,
+) {
+    use crate::run_list::{Item, RunList, Status};
+    use crate::run_view::focus_place;
+    use std::cmp::Ordering;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let path = |index: usize| temp.path().join(format!("dir-{index:03}"));
+    update(&view, cx, |app, cx| {
+        app.run_list = RunList::new(
+            (0..80)
+                .map(|index| Item {
+                    target: disktree_core::removal::Target {
+                        path: path(index),
+                        bytes: 1_000,
+                        is_dir: true,
+                        hidden: false,
+                    },
+                    category: disktree_core::classify::Category::Other,
+                    // Every other row has a kind chip, so rows differ in
+                    // what they hold.
+                    reclaim: (index % 2 == 1).then_some(
+                        disktree_core::classify::Reclaim::BuildOutput,
+                    ),
+                    private: None,
+                    status: Status::Waiting,
+                })
+                .collect(),
+        );
+        app.screen = Screen::Running;
+        app.run_checked = true;
+        cx.notify();
+    });
+    draw(cx);
+    // Every row spans the list, whatever it holds, so its size and status
+    // lanes line up with the rows around it. A virtualized row is only as
+    // wide as its content unless it says otherwise.
+    let list = cx.debug_bounds("run-list").expect("the list");
+    for index in ["run-row-0", "run-row-1"] {
+        let row = cx.debug_bounds(index).expect("a row");
+        assert!(
+            row.size.width >= list.size.width - px(4.),
+            "{index} is {:?} wide in a {:?} list",
+            row.size.width,
+            list.size.width
+        );
+    }
+    let place =
+        |cx: &mut Window, view: &Entity<Disktree>| read(view, cx, focus_place);
+    assert_eq!(place(cx, &view), Some(Ordering::Equal), "row 0 shows");
+    let settle = |cx: &mut Window, view: &Entity<Disktree>, upto| {
+        update(view, cx, |app, cx| {
+            app.update_follow();
+            for index in 0..upto {
+                if app.run_list.settle(&path(index), &Ok(())).is_some() {
+                    app.scroll_to_focus();
+                }
+            }
+            cx.notify();
+        });
+        draw(cx);
+        draw(cx);
+    };
+
+    // Most of the way down: the list went with it.
+    settle(cx, &view, 60);
+    assert_eq!(read(&view, cx, |app| app.run_list.current()), Some(60));
+    assert_eq!(place(cx, &view), Some(Ordering::Equal), "row 60 shows");
+    assert!(cx.debug_bounds("run-row-60").is_some(), "and is drawn");
+    // Only the rows in view are built, however long the run.
+    assert!(cx.debug_bounds("run-row-0").is_none(), "row 0 is not");
+    assert!(cx.debug_bounds("follow-removal").is_none());
+
+    // Scrolled back to the top, away from it: following pauses, the pill
+    // shows, and the list stays where it was put.
+    let list = cx.debug_bounds("run-list").expect("the list");
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: list.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+            px(0.),
+            px(100_000.),
+        )),
+        ..Default::default()
+    });
+    draw(cx);
+    settle(cx, &view, 65);
+    assert!(!read(&view, cx, |app| app.run_list.follow), "paused");
+    assert_eq!(place(cx, &view), Some(Ordering::Greater));
+    assert!(cx.debug_bounds("follow-removal").is_some(), "the pill");
+
+    // The pill follows again.
+    click_on(cx, "follow-removal");
+    draw(cx);
+    assert!(read(&view, cx, |app| app.run_list.follow));
+    assert_eq!(place(cx, &view), Some(Ordering::Equal), "row 65 shows");
+    assert!(cx.debug_bounds("follow-removal").is_none());
+}
+
+#[gpui_kit::test]
+fn a_removal_leaves_what_went_in_the_tree_as_removed_and_counts_it(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    // Stand in the directory that is about to lose a child.
+    update(&view, cx, |app, cx| {
+        let junk = app
+            .crumbs_for_path(&temp.path().join("junk"))
+            .expect("junk");
+        app.go_to(junk, cx);
+    });
+    let (scan, before) = read(&view, cx, |app| {
+        (
+            app.scan_epoch,
+            app.tree.as_ref().expect("a tree").root().bytes,
+        )
+    });
+
+    remove_now(&view, cx, &["junk/deeper"]);
+    assert!(read(&view, cx, |app| app.scan.is_none()), "no rescan");
+    draw(cx);
+    let deeper = temp.path().join("junk/deeper");
+    update(&view, cx, |app, _| {
+        let root = app.tree.as_ref().expect("a tree").root();
+        assert_eq!(root.bytes, before, "the scan's figures stay");
+        assert!(app.crumbs_for_path(&deeper).is_some(), "and so does it");
+        assert!(app.was_removed(&deeper));
+        assert_eq!(app.current_path(), temp.path().join("junk"));
+        assert!(
+            app.prepare().tiles.iter().any(|tile| tile.removed),
+            "it is drawn as removed"
+        );
+        let cohorts = app.ledger.since(app.scans_done);
+        assert_eq!(app.scan_epoch, scan);
+        assert_eq!(cohorts.len(), 1);
+        assert_eq!(cohorts[0].removed, 1);
+        assert_eq!(cohorts[0].reported, 100_000);
+        assert!(cohorts[0].observed().is_some(), "free space is measured");
+    });
+    assert!(cx.debug_bounds("removal-ledger").is_some(), "Done lists it");
+
+    // The inspector offers no mark for it, and says why.
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Explore;
+        app.selected = app.crumbs_for_path(&deeper);
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("inspector-mark").is_none());
+    update(&view, cx, |app, cx| {
+        app.selected = app.crumbs_for_path(&temp.path().join("junk/blob.bin"));
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("inspector-mark").is_some(), "its neighbour");
+
+    update(&view, cx, |app, cx| {
+        // What went cannot be marked again.
+        let crumbs = app.crumbs_for_path(&deeper).expect("still drawn");
+        app.toggle_mark(&crumbs, cx);
+        assert!(app.marks.is_empty());
+        let notice = app.notice().map(|(text, _)| text);
+        assert!(notice.is_some_and(|text| text.contains("was removed")));
+        // Its directory can, for what is left in it.
+        let junk = app.crumbs_for_path(&temp.path().join("junk")).unwrap();
+        let listed = app.node_at(&junk).unwrap().bytes;
+        app.toggle_mark(&junk, cx);
+        assert_eq!(app.marks.items()[0].bytes, listed - 100_000);
+        app.toggle_mark(&junk, cx);
+        assert!(app.marks.is_empty());
+    });
+
+    // A second batch, still without a scan: two rows and a total.
+    remove_now(&view, cx, &["keep"]);
+    draw(cx);
+    let totals = read(&view, cx, |app| {
+        assert!(app.was_removed(&temp.path().join("keep/notes.txt")));
+        crate::ledger::Ledger::totals(app.ledger.since(app.scans_done))
+    })
+    .expect("totals");
+    assert_eq!(totals.count, 2);
+    assert_eq!(totals.reported, 101_000);
+    assert!(
+        temp.path().join("junk/blob.bin").exists(),
+        "neighbours stay"
+    );
+
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Explore;
+        // A scan started and stopped keeps the tree, and so the account.
+        app.scan_epoch += 1;
+        cx.notify();
+    });
+    draw(cx);
+    assert!(
+        cx.debug_bounds("freed-since-scan").is_some(),
+        "the Disk section keeps the account"
+    );
+
+    // A rescan starts a new account and forgets what was removed.
+    update(&view, cx, Disktree::start_scan);
+    finish_scan(&view, cx);
+    draw(cx);
+    read(&view, cx, |app| {
+        assert!(app.ledger.since(app.scans_done).is_empty());
+        assert!(app.removed.is_empty());
+        assert!(app.crumbs_for_path(&deeper).is_none(), "the disk now");
+    });
+    assert!(cx.debug_bounds("freed-since-scan").is_none());
+}
+
+#[gpui_kit::test]
+fn removing_a_directory_after_part_of_it_counts_only_the_rest(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    remove_now(&view, cx, &["junk/deeper"]);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Explore;
+        cx.notify();
+    });
+    remove_now(&view, cx, &["junk"]);
+    read(&view, cx, |app| {
+        let cohorts = app.ledger.since(app.scans_done);
+        assert_eq!(cohorts.len(), 2);
+        let rest = cohorts[1].reported;
+        assert!(
+            cohorts[1].private.is_none_or(|private| private <= rest),
+            "{:?} private of {rest} reported",
+            cohorts[1].private
+        );
+        let totals = crate::ledger::Ledger::totals(cohorts).unwrap();
+        assert!(totals.private.is_none_or(|p| p <= totals.reported));
+    });
+}
+
+#[gpui_kit::test]
+fn enclosing_removal_preserves_scanned_bytes_in_marks_and_agent_reports(
+    cx: &mut TestAppContext,
+) {
+    use disktree_link::{FindRequest, Request, Response};
+
+    cx.update(init);
+    #[cfg(unix)]
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
+    #[cfg(not(unix))]
+    let temp = tempfile::tempdir().unwrap();
+    for (directory, bytes) in [("a", 40), ("a/b", 40), ("a/b/c", 20)] {
+        let path = temp.path().join(directory);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("payload"), vec![b'x'; bytes]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    remove_now(&view, cx, &["a/b/c"]);
+    remove_now(&view, cx, &["a/b"]);
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Explore;
+        let a = temp.path().join("a");
+        let crumbs = app.crumbs_for_path(&a).unwrap();
+        app.toggle_mark(&crumbs, cx);
+        assert_eq!(app.marks.items()[0].bytes, 40);
+        let Response::Listing(listing) = app.answer_agent(
+            &Request::Ls {
+                path: a.clone(),
+                limit: 10,
+            },
+            cx,
+        ) else {
+            panic!("listing")
+        };
+        assert_eq!(listing.entry.removed_bytes, 60);
+        let Response::Found(found) = app.answer_agent(
+            &Request::Find(FindRequest {
+                name: Some("a".into()),
+                kind: "dir".into(),
+                limit: 10,
+                ..FindRequest::default()
+            }),
+            cx,
+        ) else {
+            panic!("search")
+        };
+        let hit = found.matches.iter().find(|hit| hit.path == a).unwrap();
+        assert_eq!(hit.entry.removed_bytes, 60);
+        // Metric changes refresh marks from the unchanged scanned tree.
+        app.toggle_metric(cx);
+        assert_eq!(app.marks.items()[0].bytes, 40);
+    });
+    draw(cx);
+    assert_eq!(
+        std::fs::read(temp.path().join("a/payload")).unwrap().len(),
+        40
+    );
+    assert!(!temp.path().join("a/b").exists());
+}
+
+#[gpui_kit::test]
+fn an_agent_listing_says_what_was_removed_since_the_scan(
+    cx: &mut TestAppContext,
+) {
+    use disktree_link::{FindRequest, Request, Response};
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let root = temp.path().to_path_buf();
+    let ask = |request: Request, cx: &mut Window| {
+        update(&view, cx, |app, cx| app.answer_agent(&request, cx))
+    };
+    // Before any removal, nothing says removed.
+    let Response::Listing(before) = ask(
+        Request::Ls {
+            path: root.clone(),
+            limit: 10,
+        },
+        cx,
+    ) else {
+        panic!("a listing");
+    };
+    assert!(
+        before
+            .children
+            .iter()
+            .all(|child| !child.removed && child.removed_bytes == 0)
+    );
+
+    remove_now(&view, cx, &["junk/deeper"]);
+    let Response::Listing(listing) = ask(
+        Request::Ls {
+            path: root.clone(),
+            limit: 10,
+        },
+        cx,
+    ) else {
+        panic!("a listing");
+    };
+    let junk = listing
+        .children
+        .iter()
+        .find(|child| child.name == "junk")
+        .expect("junk is still listed");
+    assert!(!junk.removed);
+    assert_eq!(junk.removed_bytes, 100_000, "part of it went");
+    assert_eq!(listing.entry.removed_bytes, 100_000, "and so of the root");
+    let keep = listing.children.iter().find(|c| c.name == "keep").unwrap();
+    assert!(
+        !keep.removed && keep.removed_bytes == 0,
+        "neighbours say nothing"
+    );
+
+    let Response::Listing(inside) = ask(
+        Request::Ls {
+            path: root.join("junk"),
+            limit: 10,
+        },
+        cx,
+    ) else {
+        panic!("a listing");
+    };
+    let deeper = inside.children.iter().find(|c| c.name == "deeper").unwrap();
+    assert!(deeper.removed, "it went whole");
+    assert_eq!(deeper.removed_bytes, 0);
+
+    let Response::Found(found) = ask(
+        Request::Find(FindRequest {
+            kind: "any".into(),
+            name: Some("deeper".into()),
+            limit: 5,
+            ..FindRequest::default()
+        }),
+        cx,
+    ) else {
+        panic!("matches");
+    };
+    let hit = found
+        .matches
+        .iter()
+        .find(|hit| hit.path == root.join("junk/deeper"))
+        .expect("still found");
+    assert!(hit.entry.removed);
+
+    // An estimate over what went, or around it, would price space already
+    // gone: it asks for a rescan instead.
+    for path in [root.join("junk/deeper"), root.join("junk")] {
+        let answer = ask(
+            Request::Estimate {
+                paths: vec![path],
+                peer_scope: None,
+                peer_limit: 0,
+            },
+            cx,
+        );
+        assert!(
+            matches!(&answer, Response::Error { message } if message.contains("rescan")),
+            "{answer:?}"
+        );
+    }
+
+    // A rescan sees the disk as it is, and nothing is flagged.
+    update(&view, cx, Disktree::start_scan);
+    finish_scan(&view, cx);
+    let Response::Listing(after) = ask(
+        Request::Ls {
+            path: root.join("junk"),
+            limit: 10,
+        },
+        cx,
+    ) else {
+        panic!("a listing");
+    };
+    assert!(after.children.iter().all(|c| c.name != "deeper"));
+    assert_eq!(after.entry.removed_bytes, 0);
+}
+
+#[gpui_kit::test]
+fn what_was_removed_stays_removed_across_a_metric_change(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    remove_now(&view, cx, &["junk/deeper"]);
+    let junk = temp.path().join("junk");
+    update(&view, cx, |app, cx| {
+        app.screen = Screen::Explore;
+        let crumbs = app.crumbs_for_path(&junk).unwrap();
+        app.toggle_mark(&crumbs, cx);
+        // Size | Files reorders the tree and re-reads every mark's size.
+        app.toggle_metric(cx);
+        app.toggle_metric(cx);
+    });
+    read(&view, cx, |app| {
+        assert!(app.was_removed(&junk.join("deeper")));
+        let crumbs = app.crumbs_for_path(&junk).unwrap();
+        let listed = app.node_at(&crumbs).unwrap().bytes;
+        assert_eq!(
+            app.marks.items()[0].bytes,
+            listed - 100_000,
+            "a mark around it still leaves it out"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn status_review_widening_announces_each_in_flight_root_immediately(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let inner = temp.path().join("junk/deeper");
+    let (view, cx) = view_over(&inner, cx);
+    update(&view, cx, |app, cx| {
+        for target in [temp.path().join("junk"), temp.path().to_path_buf()] {
+            app.widen_to(target.clone(), cx);
+            assert_eq!(app.root_path, inner, "the old tree stays usable");
+            assert_eq!(app.scan_root, target);
+            let status = app.accessibility_status();
+            assert!(
+                status.starts_with(&format!("Scanning {}.", target.display())),
+                "{status}"
+            );
+            app.progress.files = 500;
+            assert_eq!(app.accessibility_status(), status, "counts sampled");
+        }
+        app.cancel_scan(cx);
+        assert!(app.accessibility_status().starts_with("Scan cancelled"));
+    });
+    draw(cx);
+    assert!(inner.join("more.bin").exists());
+}
+
+#[gpui_kit::test]
+fn source_tab_traversal_stays_in_the_modal_and_escape_restores_origin(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    press(cx, "tab");
+    let origin = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("control focus");
+    let root_focus = read(&view, cx, |app| app.focus.clone());
+    assert!(!cx.update(|window, _| root_focus.is_focused(window)));
+    for ssh in [false, true] {
+        update(&view, cx, |app, cx| {
+            app.open_volumes(cx);
+            app.volumes = vec![Volume {
+                point: temp.path().into(),
+                device: None,
+                space: None,
+            }];
+            app.volumes_loading = false;
+            app.picker_ssh = ssh;
+        });
+        draw(cx);
+        assert_eq!(cx.debug_bounds("source-host").is_some(), ssh);
+        let (host, path) = view.read_with(cx, |app, cx| {
+            use gpui_kit::Focusable as _;
+            (
+                app.picker_host.as_ref().unwrap().read(cx).focus_handle(cx),
+                app.picker_path.as_ref().unwrap().read(cx).focus_handle(cx),
+            )
+        });
+        let roots = read(&view, cx, |app| app.source_roots_focus.clone());
+        let mut saw_roots = false;
+        let mut saw_host = false;
+        let mut saw_path = false;
+        for key in ["tab", "shift-tab"] {
+            for _ in 0..24 {
+                press(cx, key);
+                saw_roots |= cx.update(|window, _| roots.is_focused(window));
+                saw_host |= cx.update(|window, _| host.is_focused(window));
+                saw_path |= cx.update(|window, _| path.is_focused(window));
+                let modal = read(&view, cx, |app| app.confirm_focus.clone());
+                assert!(
+                    cx.update(|window, cx| modal.contains_focused(window, cx))
+                );
+                assert!(read(&view, cx, |app| app.marks.is_empty()
+                    && app.scan.is_none()));
+            }
+        }
+        assert!(saw_roots, "the root list remains a tab stop");
+        assert_eq!(saw_host, ssh, "only SSH mode shows the host field");
+        assert_eq!(saw_path, !ssh, "Directory appears after a source is ready");
+        press(cx, "escape");
+        assert!(cx.update(|window, _| origin.is_focused(window)));
+    }
+}
+
+#[gpui_kit::test]
+fn help_focus_returns_to_the_originating_control(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    press(cx, "tab");
+    let origin = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("control focus");
+    for dismissal in ["escape", "done", "backdrop"] {
+        update(&view, cx, Disktree::open_help);
+        draw(cx);
+        press(cx, "tab shift-tab");
+        match dismissal {
+            "escape" => press(cx, "escape"),
+            "done" => click_on(cx, "overlay-done"),
+            _ => {
+                let card = cx.debug_bounds("help-overlay").expect("card");
+                let outside = card.origin - Point::new(px(8.), px(8.));
+                cx.simulate_click(outside, gpui_kit::Modifiers::none());
+                draw(cx);
+            }
+        }
+        assert!(cx.update(|window, _| origin.is_focused(window)));
+        assert!(read(&view, cx, |app| !app.show_help && app.marks.is_empty()));
+    }
+}
+
+#[gpui_kit::test]
+fn custom_menu_arrows_and_escape_leave_files_untouched(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, Disktree::toggle_app_menu);
+    draw(cx);
+    press(cx, "down down up");
+    assert_eq!(read(&view, cx, |app| app.app_menu_index), 1);
+    press(cx, "escape");
+    assert!(read(&view, cx, |app| !app.app_menu_open && app.marks.is_empty()));
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn custom_menu_enter_activates_the_named_safe_action(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let index = crate::app_menu::menus(crate::app_menu::Platform::Other)
+        .into_iter()
+        .flat_map(|menu| menu.items)
+        .filter_map(|item| {
+            if let gpui_kit::MenuItem::Action { name, .. } = item {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .position(|name| name == "Keyboard Shortcuts")
+        .expect("safe menu action");
+    update(&view, cx, |app, cx| {
+        app.toggle_app_menu(cx);
+        app.app_menu_index = index;
+    });
+    draw(cx);
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.show_help
+        && !app.app_menu_open
+        && app.marks.is_empty()));
+    press(cx, "escape");
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn a_large_directory_keeps_zero_weight_files_reachable_in_bounded_pages(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = removable_tempdir();
+    for index in 0..50_000 {
+        std::fs::write(temp.path().join(format!("entry-{index:05}.txt")), [])
+            .expect("empty fixture file");
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        app.selected = None;
+        app.file_step(1, cx);
+        app.file_step(isize::MAX, cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("file-row-49999").is_some());
+    assert!(cx.debug_bounds("file-row-49899").is_none());
+    read(&view, cx, |app| {
+        assert_eq!(app.current().unwrap().children().len(), 50_000);
+        assert_eq!(app.selected.as_deref(), Some([49_999].as_slice()));
+        assert!(app.marks.is_empty());
+    });
+}
+
+#[gpui_kit::test]
+fn tab_reaches_file_navigation_without_changing_selection(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let navigation = read(&view, cx, |app| app.file_focus.clone());
+    let selected = read(&view, cx, |app| app.selected.clone());
+    let mut reached = false;
+    // Each legend chip adds a tab stop alongside the platform's chrome
+    // and navigation controls. Growing the inventory must not make this
+    // reachability check depend on a fixed number of categories.
+    let tab_budget = 16
+        + disktree_core::classify::Category::LEGEND.len()
+        + crate::palette::AGE_BUCKETS.len();
+    for _ in 0..tab_budget {
+        press(cx, "tab");
+        if cx.update(|window, _| navigation.is_focused(window)) {
+            reached = true;
+            break;
+        }
+    }
+    assert!(reached, "file navigation participates in the tab order");
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), selected);
+}
+
+/// Keyboard activation of Cancel must never authorize the marked removal.
+#[gpui_kit::test]
+fn focus_review_delete_cancel_enter_preserves_the_fixture(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.removal_mode = RemovalMode::Permanent;
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+        app.open_review(cx);
+    });
+    inspect_raw(&view, cx);
+    draw(cx);
+    let cancel_tabs = if crate::chrome::Platform::current()
+        == crate::chrome::Platform::Windows
+    {
+        2
+    } else {
+        1
+    };
+    for activation in ["enter", "space"] {
+        press(cx, "enter");
+        for _ in 0..cancel_tabs {
+            press(cx, "tab");
+        }
+        let keystroke = gpui_kit::Keystroke::parse(activation).unwrap();
+        cx.simulate_event(gpui_kit::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui_kit::KeyUpEvent { keystroke });
+        draw(cx);
+        read(&view, cx, |app| {
+            assert!(!app.confirm_open, "Cancel {activation} closes the alert");
+            assert!(app.run.is_none(), "Cancel never starts removal");
+            assert_eq!(app.screen, Screen::Review);
+            assert_eq!(app.marks.len(), 1);
+        });
+        assert!(temp.path().join("junk/blob.bin").exists());
+        assert!(temp.path().join("keep/notes.txt").exists());
+    }
+    press(cx, "enter");
+    for _ in 0..(3 - cancel_tabs) {
+        press(cx, "tab");
+    }
+    press(cx, "enter");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Running);
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut finished = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        finished = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if finished {
+            break;
+        }
+    }
+    assert!(finished, "focused Delete completes the contrived removal");
+    assert!(!temp.path().join("junk").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+    read(&view, cx, |app| {
+        assert!(app.scan.is_none(), "Delete alone does not rescan");
+        let root = app.tree.as_ref().expect("a tree").root();
+        assert!(root.child_named("junk").is_some(), "the tree keeps it");
+        assert!(app.was_removed(&temp.path().join("junk")), "as removed");
+    });
+}
+
+#[gpui_kit::test]
+fn focus_review_source_cancel_enter_does_not_scan(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let epoch = read(&view, cx, |app| app.scan_epoch);
+    // Supply only a contrived root, without starting host discovery.
+    update(&view, cx, |app, cx| {
+        app.volumes_open = true;
+        app.volumes_loading = false;
+        app.volumes = vec![Volume {
+            point: temp.path().into(),
+            device: None,
+            space: None,
+        }];
+        app.focus_request = Some(crate::state::FocusTarget::Dialog);
+        cx.notify();
+    });
+    draw(cx);
+    let cancel_tabs = if crate::chrome::Platform::current()
+        == crate::chrome::Platform::Windows
+    {
+        1
+    } else {
+        2
+    };
+    for _ in 0..cancel_tabs {
+        press(cx, "shift-tab");
+    }
+    press(cx, "enter");
+    read(&view, cx, |app| {
+        assert!(!app.volumes_open, "Cancel closes the picker");
+        assert!(app.scan.is_none());
+        assert_eq!(app.scan_epoch, epoch, "Cancel does not accept a root");
+        assert_eq!(app.root_path, temp.path());
+    });
+}
+
+#[gpui_kit::test]
+fn focus_review_escape_cancels_removal_before_background_scan(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(&temp.path().join("junk"), cx);
+    update(&view, cx, |app, cx| {
+        app.widen_to(temp.path().into(), cx);
+        app.screen = Screen::Running;
+        // No paths are removed: this checks delivery of the cancellation
+        // request while a real, contrived widening scan is still active.
+        app.run = Some(disktree_core::removal::spawn(
+            disktree_core::removal::Plan::default(),
+            RemovalMode::Permanent,
+        ));
+        cx.notify();
+    });
+    draw(cx);
+    press(cx, "escape");
+    read(&view, cx, |app| {
+        assert!(app.scan.is_some(), "foreground Escape preserves the scan");
+        assert!(
+            app.notice().as_ref().is_some_and(
+                |(text, _)| text == "stopping after the current item"
+            )
+        );
+    });
+    update(&view, cx, |app, cx| {
+        app.run = None;
+        app.cancel_scan(cx);
+    });
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn focus_review_escape_leaves_review_and_done_with_refresh_intact(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(&temp.path().join("junk"), cx);
+    for screen in [Screen::Review, Screen::Done] {
+        update(&view, cx, |app, cx| {
+            app.widen_to(temp.path().into(), cx);
+            app.screen = screen;
+            cx.notify();
+        });
+        draw(cx);
+        press(cx, "escape");
+        read(&view, cx, |app| {
+            assert_eq!(app.screen, Screen::Explore);
+            assert!(
+                app.scan.is_some(),
+                "foreground Escape preserves the refresh"
+            );
+        });
+        update(&view, cx, Disktree::cancel_scan);
+    }
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+fn cycle_back_to_focus(
+    cx: &mut Window,
+    target: &gpui_kit::FocusHandle,
+    key: &str,
+) {
+    press(cx, key);
+    for _ in 0..60 {
+        if cx.update(|window, _| target.is_focused(window)) {
+            return;
+        }
+        press(cx, key);
+    }
+    panic!("{key} traversal did not reach the navigation control");
+}
+
+#[gpui_kit::test]
+fn focus_review_settings_panes_are_forward_and_reverse_tab_stops(
+    cx: &mut TestAppContext,
+) {
+    use crate::settings::{Pane, SettingsWindow};
+    cx.update(init);
+    let (_view, cx) =
+        cx.add_window_view(|_, cx| SettingsWindow::new(Pane::About, cx));
+    draw(cx);
+    for pane in Pane::ALL {
+        click_on(cx, pane.nav_id());
+        let target = cx
+            .update(|window, cx| window.focused(cx))
+            .expect("pane focus");
+        cycle_back_to_focus(cx, &target, "tab");
+        cycle_back_to_focus(cx, &target, "shift-tab");
+    }
+}
+
+#[gpui_kit::test]
+fn focus_review_application_menu_is_a_forward_and_reverse_tab_stop(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.chrome_pin = window_frames()
+            .into_iter()
+            .find(|(name, _)| *name == "GNOME, controls right")
+            .map(|(_, frame)| frame);
+        cx.notify();
+    });
+    draw(cx);
+    click_on(cx, "app-menu-button");
+    press(cx, "escape");
+    let target = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("menu trigger focus");
+    cycle_back_to_focus(cx, &target, "tab");
+    cycle_back_to_focus(cx, &target, "shift-tab");
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.app_menu_open));
+    press(cx, "escape");
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn routing_review_search_escape_preserves_the_widening_scan(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(&temp.path().join("junk"), cx);
+    for file_list in [false, true] {
+        update(&view, cx, |app, cx| {
+            app.file_list = file_list;
+            app.widen_to(temp.path().into(), cx);
+        });
+        draw(cx);
+        let epoch = read(&view, cx, |app| app.scan_epoch);
+        press(cx, "/ b l o b");
+        assert!(read(&view, cx, |app| app.find_open && app.find == "blob"));
+        press(cx, "escape");
+        read(&view, cx, |app| {
+            assert!(!app.find_open, "Escape dismisses the foreground search");
+            assert!(app.find.is_empty());
+            assert!(app.scan.is_some(), "dismissing search preserves the scan");
+            assert_eq!(app.scan_epoch, epoch);
+            assert!(!app.progress.cancelled);
+            assert!(app.tree().is_some());
+        });
+        press(cx, "escape");
+        read(&view, cx, |app| {
+            assert!(app.scan.is_none(), "the next Escape cancels the scan");
+            assert!(app.progress.cancelled);
+        });
+    }
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+#[gpui_kit::test]
+fn routing_review_menu_escape_preserves_the_widening_scan(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(&temp.path().join("junk"), cx);
+    for menu in ["crumb", "power", "application"] {
+        update(&view, cx, |app, cx| {
+            app.widen_to(temp.path().into(), cx);
+            match menu {
+                "crumb" => {
+                    let deeper = child_crumbs(app, &[], "deeper");
+                    app.open_crumb_menu(&deeper, cx);
+                }
+                "power" => {
+                    app.cpu_threads = 8;
+                    app.toggle_power_menu(cx);
+                }
+                _ => app.toggle_app_menu(cx),
+            }
+        });
+        draw(cx);
+        let epoch = read(&view, cx, |app| app.scan_epoch);
+        press(cx, "escape");
+        read(&view, cx, |app| {
+            assert!(app.crumb_menu.is_none(), "{menu}");
+            assert!(app.power_menu.is_none(), "{menu}");
+            assert!(!app.app_menu_open, "{menu}");
+            assert!(app.scan.is_some(), "{menu} Escape preserves the scan");
+            assert_eq!(app.scan_epoch, epoch);
+            assert!(!app.progress.cancelled);
+        });
+        press(cx, "escape");
+        assert!(read(&view, cx, |app| app.scan.is_none()));
+    }
+}
+
+#[gpui_kit::test]
+fn routing_review_help_dismisses_menus_and_contains_navigation(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let junk = read(&view, cx, |app| child_crumbs(app, &[], "junk"));
+    update(&view, cx, |app, cx| {
+        app.go_to(junk.clone(), cx);
+        app.power_settings_path = None;
+        app.cpu_threads = 8;
+        app.chrome_pin = window_frames()
+            .into_iter()
+            .find(|(name, _)| *name == "GNOME, controls right")
+            .map(|(_, frame)| frame);
+        cx.notify();
+    });
+    draw(cx);
+    for menu in ["crumb", "power", "application"] {
+        for native_action in [false, true] {
+            update(&view, cx, |app, cx| match menu {
+                "crumb" => app.open_crumb_menu(&junk, cx),
+                "power" => app.toggle_power_menu(cx),
+                _ => app.toggle_app_menu(cx),
+            });
+            draw(cx);
+            if native_action {
+                cx.update(|window, cx| {
+                    window.dispatch_action(
+                        Box::new(crate::app_menu::ShowKeyboardShortcuts),
+                        cx,
+                    );
+                });
+                draw(cx);
+            } else {
+                press(cx, "?");
+            }
+            read(&view, cx, |app| {
+                assert!(app.show_help, "{menu}, action={native_action}");
+                assert!(app.crumb_menu.is_none(), "Help closes {menu}");
+                assert!(app.power_menu.is_none(), "Help closes {menu}");
+                assert!(!app.app_menu_open, "Help closes {menu}");
+            });
+            press(cx, "down enter");
+            read(&view, cx, |app| {
+                assert!(app.show_help);
+                assert_eq!(app.crumbs, junk, "Help contains navigation");
+                assert!(app.marks.is_empty());
+                assert_eq!(app.screen, Screen::Explore);
+            });
+            press(cx, "escape");
+            assert!(read(&view, cx, |app| !app.show_help));
+        }
+    }
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// A made-up updater state: `finished` checks done, the last ending in
+/// `outcome`, and the download held for the default channel, if any.
+fn update_state(
+    finished: u64,
+    outcome: crate::updater::Outcome,
+    held: Option<&str>,
+) -> crate::updater::State {
+    use crate::update_channel::Slot;
+    crate::updater::State {
+        finished,
+        last: Some((
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(finished),
+            outcome,
+        )),
+        held: held.map(|version| crate::updater::Held {
+            version: version.to_owned(),
+            file_name: format!("PwrDisk-{version}-full.nupkg"),
+            slot: Slot::default().key(),
+            switch_back: false,
+        }),
+        ..crate::updater::State::default()
+    }
+}
+
+/// Asks as Check for Updates… does, against a made-up check that has not
+/// finished yet, without starting a real one.
+fn ask_for_updates(view: &Entity<Disktree>, cx: &mut Window) {
+    use crate::update_channel::Slot;
+    update(view, cx, |app, cx| {
+        app.update_watch.ask(0);
+        let state = crate::updater::State {
+            checking: true,
+            ..crate::updater::State::default()
+        };
+        app.follow_updates(state, "0.14.0", Slot::default(), cx);
+    });
+}
+
+/// Check for Updates… shows a live card, then answers in its place: here,
+/// that this copy is the latest.
+#[gpui_kit::test]
+fn a_check_asked_for_answers_in_a_toast(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    ask_for_updates(&view, cx);
+    draw(cx);
+    assert!(cx.debug_bounds("toast-update").is_some(), "checking shows");
+    assert!(cx.debug_bounds("toast-track").is_some(), "with its sweep");
+    assert!(
+        cx.debug_bounds("toast-update-timer").is_none(),
+        "work under way has no countdown"
+    );
+
+    let state = update_state(1, Outcome::UpToDate("0.14.0".into()), None);
+    update(&view, cx, |app, cx| {
+        app.follow_updates(state, "0.14.0", Slot::default(), cx);
+    });
+    draw(cx);
+    let title = read(&view, cx, |app| {
+        app.toasts
+            .get(crate::toasts::UPDATE)
+            .map(|t| t.title.clone())
+    });
+    assert_eq!(
+        title.as_deref(),
+        Some("PwrDisk is up to date"),
+        "replaced in place"
+    );
+    assert!(cx.debug_bounds("toast-release-notes").is_some());
+    assert!(
+        cx.debug_bounds("toast-update-timer").is_some(),
+        "counts down"
+    );
+    assert!(cx.debug_bounds("toast-track").is_none());
+    assert!(cx.debug_bounds("toast-restart").is_none());
+}
+
+/// A download's percent redraws the live card, and only Check for
+/// Updates… shows one: a background download raises nothing until it is
+/// ready.
+#[gpui_kit::test]
+fn a_menu_check_shows_its_download_percent(cx: &mut TestAppContext) {
+    use crate::updater::Download;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let download = Download {
+        version: "0.15.0".into(),
+        switch_back: false,
+        percent: Some(42),
+    };
+    update(&view, cx, |app, _| {
+        app.update_watch.follow_progress(Some(download.clone()));
+    });
+    draw(cx);
+    assert!(
+        cx.debug_bounds("toast-stack").is_none(),
+        "nobody asked: a background download is silent"
+    );
+
+    ask_for_updates(&view, cx);
+    update(&view, cx, |app, _| {
+        app.update_watch.follow_progress(Some(download));
+    });
+    draw(cx);
+    let card = read(&view, cx, crate::toasts::update_card).expect("live");
+    assert_eq!(card.title, "Downloading update");
+    assert_eq!(card.body, "PwrDisk 0.15.0 \u{00b7} 42%");
+    assert!(cx.debug_bounds("toast-track").is_some());
+}
+
+/// A download's percent is drawn by the toast alone: it never rebuilds
+/// Settings, which collects the diagnostics again. A real change does.
+#[gpui_kit::test]
+fn a_progress_tick_does_not_rebuild_settings(cx: &mut TestAppContext) {
+    use crate::settings::REFRESHES;
+    use crate::updater::Change;
+    cx.update(init);
+    let temp = fixture();
+    let (_view, cx) = view_over(temp.path(), cx);
+    let before = REFRESHES.get();
+    for _ in 0..100 {
+        cx.update(|_, cx| crate::toasts::updater_changed(Change::Progress, cx));
+    }
+    assert_eq!(REFRESHES.get(), before, "a hundred ticks, no rebuild");
+    cx.update(|_, cx| crate::toasts::updater_changed(Change::State, cx));
+    assert_eq!(REFRESHES.get(), before + 1, "a real change refreshes");
+}
+
+/// A ready release stays: a background check offers it, Later puts that
+/// version away (the strip's chip still offers it), and a newer one comes
+/// back.
+#[gpui_kit::test]
+fn a_ready_download_stays_until_later(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let slot = Slot::default();
+
+    let quiet = update_state(1, Outcome::UpToDate("0.14.0".into()), None);
+    update(&view, cx, |app, cx| {
+        app.follow_updates(quiet, "0.14.0", slot, cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("toast-stack").is_none(), "nothing new");
+    assert!(cx.debug_bounds(crate::views::UPDATE_CHIP_ID).is_none());
+
+    let ready =
+        update_state(2, Outcome::Downloaded("0.15.0".into()), Some("0.15.0"));
+    update(&view, cx, |app, cx| {
+        app.follow_updates(ready, "0.14.0", slot, cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("toast-restart").is_some());
+    assert!(cx.debug_bounds(crate::views::UPDATE_CHIP_ID).is_some());
+    let later = cx.debug_bounds("toast-later").expect("ready toast");
+    cx.simulate_click(later.center(), gpui_kit::Modifiers::none());
+    draw(cx);
+    assert!(cx.debug_bounds("toast-update").is_none(), "put away");
+    assert!(
+        cx.debug_bounds(crate::views::UPDATE_CHIP_ID).is_some(),
+        "the chip still offers it"
+    );
+
+    // The next background check finds the same download: still down.
+    let again =
+        update_state(3, Outcome::Pending("0.15.0".into()), Some("0.15.0"));
+    update(&view, cx, |app, cx| {
+        app.follow_updates(again, "0.14.0", slot, cx);
+    });
+    draw(cx);
+    assert!(
+        cx.debug_bounds("toast-update").is_none(),
+        "once per version"
+    );
+
+    let newer =
+        update_state(4, Outcome::Downloaded("0.15.1".into()), Some("0.15.1"));
+    update(&view, cx, |app, cx| {
+        app.follow_updates(newer, "0.14.0", slot, cx);
+    });
+    draw(cx);
+    let body = read(&view, cx, crate::toasts::update_card).map(|t| t.body);
+    assert_eq!(
+        body.as_deref(),
+        Some(
+            "PwrDisk 0.15.1 is downloaded. It installs when you restart or quit."
+        )
+    );
+}
+
+/// An answer takes the ready card's place while it stands, and the ready
+/// card comes back once it leaves: a failed check never hides a release.
+#[gpui_kit::test]
+fn the_ready_card_comes_back_after_an_answer(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let slot = Slot::default();
+    let ready =
+        update_state(1, Outcome::Downloaded("0.15.0".into()), Some("0.15.0"));
+    update(&view, cx, |app, cx| {
+        app.follow_updates(ready, "0.14.0", slot, cx);
+    });
+    ask_for_updates(&view, cx);
+    let mut failed =
+        update_state(2, Outcome::Failed("timed out".into()), Some("0.15.0"));
+    failed.checking = false;
+    update(&view, cx, |app, cx| {
+        app.update_watch.ask(1);
+        app.follow_updates(failed, "0.14.0", slot, cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("toast-check-again").is_some(), "the answer");
+    assert!(cx.debug_bounds("toast-restart").is_none(), "in its place");
+    cx.executor().advance_clock(crate::toasts::ANSWER);
+    cx.run_until_parked();
+    draw(cx);
+    assert!(cx.debug_bounds("toast-check-again").is_none(), "gone");
+    assert!(cx.debug_bounds("toast-restart").is_some(), "offered again");
+}
+
+/// Restart pressed says so and cannot be pressed again; a failed restart
+/// is offered again, with why.
+#[gpui_kit::test]
+fn restarting_waits_and_a_failure_is_offered_again(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let slot = Slot::default();
+    let mut state =
+        update_state(1, Outcome::Downloaded("0.15.0".into()), Some("0.15.0"));
+    state.restarting = true;
+    update(&view, cx, |app, cx| {
+        app.follow_updates(state.clone(), "0.14.0", slot, cx);
+    });
+    draw(cx);
+    let card = read(&view, cx, crate::toasts::update_card).expect("ready");
+    assert!(card.actions.contains(&crate::toasts::Action::Restart {
+        switch_back: false,
+        restarting: true,
+    }));
+
+    state.restarting = false;
+    state.restart_failed = Some("the updater did not start".into());
+    update(&view, cx, |app, cx| {
+        app.follow_updates(state, "0.14.0", slot, cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("toast-update-problem").is_some());
+    let notice = read(&view, cx, Disktree::notice);
+    assert!(notice.is_some_and(|(text, _)| text.contains("did not start")));
+}
+
+/// A failed check asked for by hand says why, with the log one click away.
+#[gpui_kit::test]
+fn a_failed_check_says_why(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    ask_for_updates(&view, cx);
+    let failed = update_state(1, Outcome::Failed("rate limited".into()), None);
+    update(&view, cx, |app, cx| {
+        app.follow_updates(failed, "0.14.0", Slot::default(), cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("toast-open-logs").is_some());
+    assert!(cx.debug_bounds("toast-check-again").is_some());
+    assert!(
+        !read(&view, cx, |app| app.update_watch.is_asking()),
+        "answered"
+    );
+}
+
+/// An answer leaves on its own after 8 s, and under Reduce Motion too: the
+/// strip only stops draining.
+#[gpui_kit::test]
+fn an_answer_leaves_on_its_own(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    ask_for_updates(&view, cx);
+    let up = update_state(1, Outcome::UpToDate("0.14.0".into()), None);
+    update(&view, cx, |app, cx| {
+        app.follow_updates(up, "0.14.0", Slot::default(), cx);
+    });
+    draw(cx);
+    let full = cx.debug_bounds("toast-update").expect("answer").size.width;
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(5));
+    cx.run_until_parked();
+    draw(cx);
+    assert!(
+        !read(&view, cx, |app| app.toasts.is_empty()),
+        "still reading"
+    );
+    let strip = cx.debug_bounds("toast-update-timer").expect("strip");
+    // The card's border lies outside the strip: within two pixels is full.
+    assert!(
+        strip.size.width >= full - px(2.),
+        "Reduce Motion: the strip holds still"
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(4));
+    cx.run_until_parked();
+    draw(cx);
+    assert!(
+        read(&view, cx, |app| app.toasts.is_empty()),
+        "gone after 8 s"
+    );
+    assert!(cx.debug_bounds("toast-update").is_none());
+    cx.update(|_, cx| cx.set_reduce_motion(false));
+}
+
+/// The toasts sit above each screen's footer: on Review they never cover
+/// Export, Unmark all, Back or the removal button.
+#[gpui_kit::test]
+fn a_toast_never_covers_the_review_footer(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _tree) = review_with_tree(temp.path(), cx);
+    // Short enough that a stack anchored to the window would reach the
+    // footer.
+    cx.simulate_resize(gpui_kit::size(px(900.), px(420.)));
+    ask_for_updates(&view, cx);
+    let failed = update_state(1, Outcome::Failed("timed out".into()), None);
+    update(&view, cx, |app, cx| {
+        app.follow_updates(failed, "0.14.0", Slot::default(), cx);
+    });
+    draw(cx);
+    let stack = cx.debug_bounds("toast-stack").expect("the answer");
+    let footer = cx.debug_bounds("review-footer").expect("footer");
+    assert!(
+        stack.bottom() <= footer.top(),
+        "the stack ends above the footer: {stack:?} over {footer:?}"
+    );
+    for id in ["unmark-all", "back", "commit"] {
+        let button = cx.debug_bounds(id).expect(id);
+        assert!(!stack.intersects(&button), "{id} is clear");
+    }
+}
+
+/// A toast drawn over the treemap takes the pointer: the tile under it
+/// shows no tooltip while the pointer is on the card, and a click or a
+/// scroll on the card never reaches the mosaic.
+#[gpui_kit::test]
+fn a_toast_hides_the_treemap_under_it(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    use gpui_kit::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    ask_for_updates(&view, cx);
+    let failed = update_state(1, Outcome::Failed("timed out".into()), None);
+    update(&view, cx, |app, cx| {
+        app.follow_updates(failed, "0.14.0", Slot::default(), cx);
+    });
+    draw(cx);
+    let stack = cx.debug_bounds("toast-stack").expect("the answer");
+    let treemap = cx.debug_bounds("treemap").expect("the mosaic");
+    // On the card's padding, clear of its buttons, and over the mosaic.
+    let on_card = stack.origin + Point::new(px(6.), px(6.));
+    assert!(treemap.contains(&on_card), "{stack:?} over {treemap:?}");
+
+    // Into the mosaic first, so there is a tooltip for the card to end.
+    let beside = Point::new(stack.right() + px(20.), on_card.y);
+    assert!(treemap.contains(&beside), "{beside:?} in {treemap:?}");
+    cx.simulate_mouse_move(beside, None, Modifiers::none());
+    draw(cx);
+    assert!(cx.debug_bounds("cursor-tooltip").is_some(), "a tile's card");
+
+    cx.simulate_mouse_move(on_card, None, Modifiers::none());
+    draw(cx);
+    assert!(
+        cx.debug_bounds("cursor-tooltip").is_none(),
+        "the pointer is on the toast, not the tile under it"
+    );
+    assert!(
+        read(&view, cx, |app| app.hovered.is_none()),
+        "nothing hovered"
+    );
+    assert!(
+        read(&view, cx, |app| app.toasts.is_hovered()),
+        "the stack is"
+    );
+
+    let (selected, zoom) =
+        read(&view, cx, |app| (app.selected.clone(), app.view));
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position: on_card,
+        modifiers: Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position: on_card,
+        modifiers: Modifiers::none(),
+        click_count: 1,
+    });
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: on_card,
+        delta: gpui_kit::ScrollDelta::Lines(Point::new(0., 3.)),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    draw(cx);
+    assert_eq!(
+        read(&view, cx, |app| (app.selected.clone(), app.view)),
+        (selected, zoom),
+        "a click or a scroll on the card leaves the mosaic alone"
+    );
+}
+
+/// Review's export menu opens over the marked list and takes the pointer:
+/// resting on it never raises the path tooltip of the row underneath, and
+/// a press on its padding reaches no row.
+#[gpui_kit::test]
+fn the_export_menu_hides_the_list_under_it(cx: &mut TestAppContext) {
+    use gpui_kit::Modifiers;
+    const TIP: &str = "app-tooltip-surface";
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _tree) = review_with_tree(temp.path(), cx);
+    // Short enough that the menu, which opens upward from the footer,
+    // reaches the first row.
+    cx.simulate_resize(gpui_kit::size(px(900.), px(300.)));
+    draw(cx);
+    let row = cx.debug_bounds("review-row-0").expect("the marked row");
+
+    // The row's own tooltip, so its absence below means something.
+    rest_at(cx, row.center());
+    assert!(cx.debug_bounds(TIP).is_some(), "the row names its path");
+    let back = cx.debug_bounds("back").expect("Back");
+    rest_at(cx, back.center());
+
+    click_on(cx, "export");
+    let menu = cx.debug_bounds("export-menu").expect("the menu");
+    // In the menu's top padding, above its first item, and over the row.
+    let on_menu = menu.origin + Point::new(px(24.), px(2.));
+    assert!(row.contains(&on_menu), "{menu:?} over {row:?}");
+
+    rest_at(cx, on_menu);
+    assert!(
+        cx.debug_bounds(TIP).is_none(),
+        "the pointer is on the menu, not the row under it"
+    );
+
+    let marks = read(&view, cx, |app| app.marks.len());
+    cx.simulate_click(on_menu, Modifiers::none());
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.marks.len()), marks, "no row hit");
+    assert!(
+        cx.debug_bounds("export-menu").is_some(),
+        "a press inside the menu leaves it open"
+    );
+}
+
+/// Rest the pointer at `at` past a tooltip's delay, and draw what shows.
+fn rest_at(cx: &mut Window, at: Point<Pixels>) {
+    cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::none());
+    // Past the tooltip's delay, so a rest shows the tooltip it would.
+    cx.executor().advance_clock(
+        crate::widgets::TOOLTIP_DELAY + std::time::Duration::from_millis(100),
+    );
+    cx.run_until_parked();
+    draw(cx);
+}
+
+/// The first log line drawn, by its number: it moves when the list scrolls.
+fn first_log_row(cx: &mut Window) -> Option<usize> {
+    (1..=400).find(|number| {
+        cx.debug_bounds(Box::leak(format!("log-row-{number}").into_boxed_str()))
+            .is_some()
+    })
+}
+
+fn scroll_at(cx: &mut Window, at: Point<Pixels>, dy: f32) {
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: at,
+        delta: gpui_kit::ScrollDelta::Pixels(Point::new(px(0.), px(dy))),
+        ..Default::default()
+    });
+    draw(cx);
+}
+
+/// Logs' context menu drops over the lines and takes the pointer: a scroll
+/// on it moves nothing. The selection bar floats over the lines too: a
+/// press on it never picks the line number beneath, though a scroll there
+/// still moves the lines, as it does over the new-lines pill.
+#[gpui_kit::test]
+fn logs_overlays_hide_the_lines_under_them(cx: &mut TestAppContext) {
+    use crate::logs_window::{CONTEXT_ID, LIVE_ID, PILL_ID};
+    use gpui_kit::Modifiers;
+    let line = |number: usize| {
+        format!("2026-10-31T12:00:00.000-04:00 INFO  pwrdisk: line {number}\n")
+    };
+    let text: String = (1..=200).map(line).collect();
+    let (_dir, path, view, cx) = logs_over(cx, &text);
+    let viewport = cx.debug_bounds("logs-viewport").expect("the lines");
+
+    // The context menu: a search in Filter mode offers it.
+    let search = cx.update(|_, cx| view.read(cx).search_state());
+    cx.update(|window, cx| {
+        search.update(cx, |search, cx| search.focus(window, cx));
+    });
+    cx.simulate_input("line");
+    draw(cx);
+    click_on(cx, CONTEXT_ID);
+    let menu = cx.debug_bounds("logs-context-menu").expect("the menu");
+    let on_menu = Point::new(menu.left() + px(24.), menu.bottom() - px(2.));
+    assert!(viewport.contains(&on_menu), "{menu:?} over {viewport:?}");
+    let first = first_log_row(cx);
+    scroll_at(cx, on_menu, -400.);
+    assert_eq!(first_log_row(cx), first, "the lines stay put");
+    assert!(cx.debug_bounds("logs-context-menu").is_some(), "still open");
+    cx.update(|window, cx| {
+        search.update(cx, |search, cx| search.focus(window, cx));
+    });
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+
+    // The selection bar, at double text size in a narrow window, where it
+    // reaches the line numbers; tall enough that lines show beneath it.
+    cx.update(|window, _| window.set_rem_size(px(32.)));
+    cx.simulate_resize(gpui_kit::size(px(640.), px(1000.)));
+    draw(cx);
+    let first = first_log_row(cx).expect("a line");
+    let picked: &'static str =
+        Box::leak(format!("log-number-{first}").into_boxed_str());
+    click_on(cx, picked);
+    let selection = cx.update(|_, cx| view.read(cx).selection);
+    assert!(selection.is_some(), "a line is picked");
+    let bar = cx.debug_bounds("logs-selection-bar").expect("the bar");
+    // The line number that lies most under the bar, within the lines'
+    // visible frame: a row's part outside it is clipped and takes no press.
+    let lines = cx.debug_bounds("logs-viewport").expect("the lines");
+    let clear = bar.intersect(&lines);
+    let under = (first..first + 60)
+        .filter_map(|number| {
+            cx.debug_bounds(Box::leak(
+                format!("log-number-{number}").into_boxed_str(),
+            ))
+        })
+        .max_by(|a, b| {
+            let tall = |g: &Bounds<Pixels>| g.intersect(&clear).size.height;
+            tall(a).as_f32().total_cmp(&tall(b).as_f32())
+        })
+        .filter(|gutter| gutter.intersect(&clear).size.height > px(8.))
+        .unwrap_or_else(|| panic!("a line number under {bar:?}"));
+    // In the middle of where the two overlap: the bar's label there is
+    // only text, so the press is the bar's.
+    let on_bar = under.intersect(&clear).center();
+    assert!(bar.contains(&on_bar), "{bar:?} at {on_bar:?}");
+    assert!(under.contains(&on_bar), "{bar:?} over {under:?}");
+    cx.simulate_click(on_bar, Modifiers::none());
+    draw(cx);
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).selection),
+        selection,
+        "a press on the bar picks no line"
+    );
+    let top = first_log_row(cx);
+    scroll_at(cx, on_bar, -400.);
+    assert_ne!(first_log_row(cx), top, "a scroll there moves the lines");
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+
+    // The pill: paused, new lines count on it, and a scroll over it still
+    // reaches the lines.
+    cx.update(|window, _| window.set_rem_size(px(16.)));
+    cx.simulate_resize(gpui_kit::size(px(1120.), px(720.)));
+    draw(cx);
+    if cx.update(|_, cx| view.read(cx).live) {
+        click_on(cx, LIVE_ID);
+    }
+    append_log(&path, &line(201));
+    poll_logs(cx);
+    let pill = cx.debug_bounds(PILL_ID).expect("the pill");
+    let top = first_log_row(cx);
+    scroll_at(cx, pill.center(), 400.);
+    assert_ne!(first_log_row(cx), top, "a scroll over the pill moves them");
+}
+
+/// The note that nothing passes the legend's filter sits over the mosaic:
+/// the pointer on it raises no tile's card and a press selects no tile.
+#[gpui_kit::test]
+fn the_empty_filter_note_hides_the_treemap_under_it(cx: &mut TestAppContext) {
+    use crate::legend::ChipId;
+    use gpui_kit::Modifiers;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    update(&view, cx, |app, cx| {
+        app.cycle_legend(ChipId::Reclaimable, cx);
+        app.cycle_legend(ChipId::Kind(2), cx);
+    });
+    cx.run_until_parked();
+    draw(cx);
+    let note = cx.debug_bounds("legend-empty").expect("the note");
+    let on_note = note.origin + Point::new(px(4.), px(4.));
+    cx.simulate_mouse_move(on_note, None, Modifiers::none());
+    draw(cx);
+    assert!(
+        cx.debug_bounds("cursor-tooltip").is_none(),
+        "the pointer is on the note"
+    );
+    let selected = read(&view, cx, |app| app.selected.clone());
+    cx.simulate_click(on_note, Modifiers::none());
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.selected.clone()), selected);
+}
+
+/// Removing's Follow pill floats over the list: resting on it raises no
+/// row's path, though a scroll over it still scrolls the list.
+#[gpui_kit::test]
+fn the_follow_pill_hides_the_row_under_it(cx: &mut TestAppContext) {
+    use crate::run_list::{Item, RunList, Status};
+    const TIP: &str = "app-tooltip-surface";
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let path = |index: usize| temp.path().join(format!("dir-{index:03}"));
+    update(&view, cx, |app, cx| {
+        app.run_list = RunList::new(
+            (0..80)
+                .map(|index| Item {
+                    target: disktree_core::removal::Target {
+                        path: path(index),
+                        bytes: 1_000,
+                        is_dir: true,
+                        hidden: false,
+                    },
+                    category: disktree_core::classify::Category::Other,
+                    reclaim: None,
+                    private: None,
+                    status: Status::Waiting,
+                })
+                .collect(),
+        );
+        app.screen = Screen::Running;
+        app.run_checked = true;
+        cx.notify();
+    });
+    draw(cx);
+    let settle = |cx: &mut Window, view: &Entity<Disktree>, upto| {
+        update(view, cx, |app, cx| {
+            app.update_follow();
+            for index in 0..upto {
+                if app.run_list.settle(&path(index), &Ok(())).is_some() {
+                    app.scroll_to_focus();
+                }
+            }
+            cx.notify();
+        });
+        draw(cx);
+        draw(cx);
+    };
+    settle(cx, &view, 60);
+    let list = cx.debug_bounds("run-list").expect("the list");
+    scroll_at(cx, list.center(), 100_000.);
+    settle(cx, &view, 65);
+    let pill = cx.debug_bounds("follow-removal").expect("the pill");
+
+    // A row's own tooltip, so its absence below means something.
+    rest_at(cx, Point::new(list.left() + px(40.), pill.center().y));
+    assert!(cx.debug_bounds(TIP).is_some(), "the row names its path");
+    rest_at(cx, list.origin - Point::new(px(4.), px(4.)));
+    rest_at(cx, pill.origin + Point::new(px(4.), px(4.)));
+    assert!(
+        cx.debug_bounds(TIP).is_none(),
+        "the pointer is on the pill, not the row under it"
+    );
+
+    update(&view, cx, |app, _| app.run_list.scrolled_by_hand = false);
+    scroll_at(cx, pill.center(), -200.);
+    assert!(
+        read(&view, cx, |app| app.run_list.scrolled_by_hand),
+        "a scroll over the pill still scrolls the list"
+    );
+}
+
+/// The strip's menu drops over the treemap and takes the pointer: a press
+/// on its padding selects no tile, and a scroll there zooms nothing.
+#[gpui_kit::test]
+fn the_app_menu_hides_the_treemap_under_it(cx: &mut TestAppContext) {
+    use gpui_kit::Modifiers;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, Disktree::toggle_app_menu);
+    draw(cx);
+    let menu = cx.debug_bounds("app-menu").expect("the menu");
+    let treemap = cx.debug_bounds("treemap").expect("the mosaic");
+    // On a group's heading, which is only text: just above the group's
+    // first row, in the first group drawn over the mosaic.
+    let on_menu = (1..8)
+        .filter_map(|group| {
+            let first = (0..8).find_map(|index| {
+                cx.debug_bounds(Box::leak(
+                    format!("app-menu-{group}-{index}").into_boxed_str(),
+                ))
+            })?;
+            Some(Point::new(menu.origin.x + px(24.), first.top() - px(4.)))
+        })
+        .find(|at| treemap.contains(at))
+        .unwrap_or_else(|| panic!("a heading over {treemap:?} in {menu:?}"));
+
+    let (selected, zoom) =
+        read(&view, cx, |app| (app.selected.clone(), app.view));
+    cx.simulate_click(on_menu, Modifiers::none());
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: on_menu,
+        delta: gpui_kit::ScrollDelta::Lines(Point::new(0., 3.)),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    draw(cx);
+    assert_eq!(
+        read(&view, cx, |app| (app.selected.clone(), app.view)),
+        (selected, zoom),
+        "a press or a scroll on the menu leaves the mosaic alone"
+    );
+    assert!(read(&view, cx, |app| app.app_menu_open), "still open");
+
+    // The menu is taller than its cap, and still scrolls itself.
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: on_menu,
+        delta: gpui_kit::ScrollDelta::Lines(Point::new(0., -3.)),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    draw(cx);
+    assert!(
+        read(&view, cx, |app| app.menu_scroll.offset().y) < px(0.),
+        "the list scrolled"
+    );
+    assert_eq!(read(&view, cx, |app| app.view), zoom, "the mosaic did not");
+}
+
+/// The ready card gives way while a removal runs (Restart would wait for
+/// it anyway); the strip's chip still offers the release. The pointer that
+/// rested on the card is forgotten with it, so the next answer still runs
+/// out.
+#[gpui_kit::test]
+fn a_removal_keeps_the_ready_card_down(cx: &mut TestAppContext) {
+    use crate::update_channel::Slot;
+    use crate::updater::Outcome;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let ready =
+        update_state(1, Outcome::Downloaded("0.15.0".into()), Some("0.15.0"));
+    update(&view, cx, |app, cx| {
+        app.follow_updates(ready, "0.14.0", Slot::default(), cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("toast-update").is_some());
+    update(&view, cx, |app, cx| {
+        // The pointer is on the card when the removal starts.
+        let now = cx.background_executor().now();
+        app.toasts.set_hovered(true, now);
+        app.run = Some(disktree_core::removal::spawn(
+            disktree_core::removal::Plan::default(),
+            RemovalMode::Trash,
+        ));
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("toast-update").is_none());
+    assert!(cx.debug_bounds(crate::views::UPDATE_CHIP_ID).is_some());
+    assert!(
+        !read(&view, cx, |app| app.toasts.is_hovered()),
+        "a stack that is not drawn holds no pointer"
+    );
+    update(&view, cx, |app, _| app.run = None);
+}
+
+/// A window over the fixture, on the review screen with `junk` marked, and
+/// a weak handle to its tree.
+fn review_with_tree<'a>(
+    temp: &Path,
+    cx: &'a mut TestAppContext,
+) -> (
+    Entity<Disktree>,
+    &'a mut Window,
+    std::sync::Weak<disktree_core::tree::Tree>,
+) {
+    let (view, cx) = view_over(temp, cx);
+    draw(cx);
+    let tree = update(&view, cx, |app, cx| {
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+        std::sync::Arc::downgrade(app.tree.as_ref().expect("a scanned tree"))
+    });
+    press(cx, "c");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    (view, cx, tree)
+}
+
+/// Quitting from the review screen drops the window and its tree. Freed on
+/// the main thread, a home directory's tens of millions of nodes kept the
+/// app from exiting for seconds after Quit, and macOS called it not
+/// responding. On quit nothing is freed: the process exits and the system
+/// takes the memory back whole.
+#[gpui_kit::test]
+fn quitting_from_review_leaves_the_tree_to_the_system(cx: &mut TestAppContext) {
+    use crate::marks::work;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, tree) = review_with_tree(temp.path(), cx);
+
+    work::reset();
+    drop(view);
+    // What Quit runs on every platform: the quit hooks, then every window
+    // and the state it held is dropped, on this thread.
+    cx.cx.update(gpui_kit::App::shutdown);
+
+    assert_eq!(work::DISCARDED.get(), 0, "no thread is started to free it");
+    assert_eq!(tree.strong_count(), 1, "nothing walks the nodes on quit");
+}
+
+/// Closing the window while the app stays frees the tree, off the main
+/// thread: nothing is leaked and nothing waits on it.
+#[gpui_kit::test]
+fn closing_a_window_frees_its_tree_off_the_main_thread(
+    cx: &mut TestAppContext,
+) {
+    use crate::marks::work;
+    use std::time::{Duration, Instant};
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, tree) = review_with_tree(temp.path(), cx);
+
+    work::reset();
+    drop(view);
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+
+    assert_eq!(work::DISCARDED.get(), 1, "the tree is handed off");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while tree.strong_count() > 0 {
+        assert!(Instant::now() < deadline, "the tree is never freed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[gpui_kit::test]
+fn main_integration_help_dismisses_the_export_menu(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+        app.open_review(cx);
+    });
+    draw(cx);
+    click_on(cx, "export");
+    assert!(read(&view, cx, |app| app.export_menu_open));
+    press(cx, "?");
+    read(&view, cx, |app| {
+        assert!(app.show_help);
+        assert!(!app.export_menu_open);
+        assert_eq!(app.screen, Screen::Review);
+        assert_eq!(app.marks.len(), 1);
+    });
+    press(cx, "escape");
+    assert!(read(&view, cx, |app| !app.show_help && app.marks.len() == 1));
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// Offscreen document text becomes a real row before its active semantic
+/// descendant changes. Copy remains complete, independent of virtualization.
+#[gpui_kit::test]
+fn documents_reach_the_end_and_copy_by_keyboard(cx: &mut TestAppContext) {
+    use crate::doc_window::{Doc, DocWindow};
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let view = DocWindow::new(Doc::ThirdPartyNotices, cx);
+        window.focus(&view.focus, cx);
+        view
+    });
+    draw(cx);
+    press(cx, "end");
+    let last = view.read_with(cx, |view, _| view.position);
+    assert!(last > 1_000, "a long document, beyond its first viewport");
+    assert!(cx.debug_bounds("document-current").is_some());
+    press(cx, "home");
+    assert_eq!(view.read_with(cx, |view, _| view.position), 0);
+    assert!(cx.debug_bounds("document-current").is_some());
+    press(cx, "ctrl-c");
+    assert_eq!(
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some(Doc::ThirdPartyNotices.source())
+    );
+}
+
+/// Keyboard selection reaches virtual log rows and copying retains the full
+/// Unicode line. No append is a live announcement.
+#[gpui_kit::test]
+fn logs_read_and_copy_offscreen_lines_by_keyboard(cx: &mut TestAppContext) {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    for n in 0..300 {
+        writeln!(text, "2026-10-31T12:00:00.000-04:00 INFO  fixture: invented line {n} 日本語")
+            .expect("string");
+    }
+    let (_dir, _path, view, cx) = logs_over(cx, &text);
+    cx.update(|window, cx| {
+        view.read(cx)
+            .search_state()
+            .update(cx, |search, cx| search.focus(window, cx));
+    });
+    draw(cx);
+    press(cx, "escape");
+    press(cx, "end");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.selection),
+        Some((300, 300))
+    );
+    assert!(cx.debug_bounds("log-row-300").is_some());
+    press(cx, "ctrl-c");
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert!(copied.contains("invented line 299 日本語"));
+    assert!(!copied.contains("invented line 298"));
+    press(cx, "home");
+    assert_eq!(view.read_with(cx, |view, _| view.selection), Some((1, 1)));
+    assert!(cx.debug_bounds("log-row-1").is_some());
+}
+
+fn invented_log(lines: usize) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    for n in 0..lines {
+        writeln!(
+            text,
+            "2026-10-31T12:00:00.000-04:00 INFO  fixture: invented line {n}"
+        )
+        .expect("string");
+    }
+    text
+}
+
+/// The level and mode segments are reachable by Tab, both ways, and Space
+/// works them: focusable alone is not a tab stop in GPUI.
+#[gpui_kit::test]
+fn aux_review_log_toggles_are_tab_stops(cx: &mut TestAppContext) {
+    use crate::log_view::Level;
+    let (_dir, _path, view, cx) = logs_over(cx, &invented_log(30));
+    draw(cx);
+    click_on(cx, "logs-level-info");
+    assert!(!view.read_with(cx, |view, _| view.view.shows(Level::Info)));
+    let target = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("segment focus");
+    cycle_back_to_focus(cx, &target, "tab");
+    cycle_back_to_focus(cx, &target, "shift-tab");
+    press(cx, "space");
+    assert!(view.read_with(cx, |view, _| view.view.shows(Level::Info)));
+}
+
+/// With nothing selected, Down starts at the first line and Up at the
+/// last, rather than stepping past either.
+#[gpui_kit::test]
+fn aux_review_first_log_step_selects_an_end(cx: &mut TestAppContext) {
+    let (_dir, _path, view, cx) = logs_over(cx, &invented_log(30));
+    cx.update(|window, cx| {
+        view.read(cx)
+            .search_state()
+            .update(cx, |search, cx| search.focus(window, cx));
+    });
+    draw(cx);
+    press(cx, "escape");
+    press(cx, "down");
+    assert_eq!(view.read_with(cx, |view, _| view.selection), Some((1, 1)));
+    press(cx, "escape");
+    assert_eq!(view.read_with(cx, |view, _| view.selection), None);
+    press(cx, "up");
+    assert_eq!(view.read_with(cx, |view, _| view.selection), Some((30, 30)));
+}
+
+/// The release channels are one radio group with one Tab stop, on the
+/// channel picked.
+#[gpui_kit::test]
+fn aux_review_picked_channel_is_a_tab_stop(cx: &mut TestAppContext) {
+    use crate::settings::{Pane, SettingsWindow};
+    cx.update(init);
+    let saved_in = tempfile::TempDir::new().expect("tempdir");
+    let (view, cx) =
+        cx.add_window_view(|_, cx| SettingsWindow::new(Pane::Updates, cx));
+    cx.update(|_, cx| {
+        view.update(cx, |view, _| {
+            view.updates_dir = Some(saved_in.path().to_path_buf());
+        });
+    });
+    draw(cx);
+    click_on(cx, "update-slot-0");
+    let target = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("channel focus");
+    cycle_back_to_focus(cx, &target, "tab");
+    cycle_back_to_focus(cx, &target, "shift-tab");
+}
+
+/// Tab leaves the title strip's Copy for the reader and comes back: the
+/// frame takes Tab above the strip, where the reader's own keys cannot.
+#[gpui_kit::test]
+fn aux_review_document_tab_leaves_the_title_strip(cx: &mut TestAppContext) {
+    use crate::doc_window::{COPY_ID, Doc, DocWindow};
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let view = DocWindow::new(Doc::License, cx);
+        window.focus(&view.focus, cx);
+        view
+    });
+    draw(cx);
+    let reader = view.read_with(cx, |view, _| view.focus.clone());
+    cycle_back_to_focus(cx, &reader, "tab");
+    click_on(cx, COPY_ID);
+    let copy = cx
+        .update(|window, cx| window.focused(cx))
+        .expect("copy focus");
+    assert!(copy != reader, "the strip's Copy takes focus");
+    cycle_back_to_focus(cx, &reader, "tab");
+    cycle_back_to_focus(cx, &copy, "shift-tab");
+}
+
+/// Three 10 GiB worktrees sharing all but 100 MiB each, marked one by one
+/// in the window: the meter and the review button project each one's own
+/// 100 MiB. Completing the clone ID adds only possible shared savings.
+/// Synthetic clone facts, so it runs on every system.
+#[gpui_kit::test]
+fn marking_a_worktree_trio_projects_only_its_private_allocation(
+    cx: &mut TestAppContext,
+) {
+    use disktree_core::sharing::{Allocation, CloneInfo};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+    const MIB: u64 = 1024 * 1024;
+
+    cx.update(init);
+    let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+        .expect("tempdir in the checkout");
+    let root_path = std::fs::canonicalize(temp.path()).expect("root");
+    let mut root = Draft::directory("fixture");
+    for name in ["wt-a", "wt-b", "wt-c"] {
+        std::fs::create_dir(root_path.join(name)).expect("mkdir");
+        let mut dir = Draft::directory(name);
+        let mut file = Draft::entry("objects", NodeKind::File, 10_140 * MIB);
+        file.allocation = Some(Box::new(Allocation {
+            bytes: 10_140 * MIB,
+            identity: None,
+            links: 1,
+            followed: false,
+            clone: Some(CloneInfo {
+                device: 1,
+                id: 77,
+                references: 3,
+                private_bytes: Some(0),
+                data_bytes: 10_140 * MIB,
+            }),
+        }));
+        dir.children.push(file);
+        dir.children
+            .push(Draft::entry("own", NodeKind::File, 100 * MIB));
+        root.children.push(dir);
+    }
+    let mut root = Tree::from(root);
+    aggregate(&mut root, Metric::Bytes);
+    let path = root_path.clone();
+    let (view, cx) = cx.add_window_view(move |_, cx| {
+        // Allocated sizes: the helper's apparent sizes project nothing.
+        Disktree::with_tree(path.clone(), root, ScanOptions::default(), 3, cx)
+    });
+    // 30 GiB of synthetic worktrees on whatever disk runs the tests: past
+    // 5% of a small CI disk, which is not what this test is about.
+    update(&view, cx, |app, _| {
+        app.safety_policy.replace(Some(crate::safety::Policy {
+            limit: None,
+            ..crate::safety::Policy::default()
+        }));
+    });
+    draw(cx);
+    let mut seen = Vec::new();
+    for name in ["wt-a", "wt-b", "wt-c"] {
+        update(&view, cx, |app, cx| {
+            let crumbs = app
+                .crumbs_for_path(&root_path.join(name))
+                .expect("in the tree");
+            app.toggle_mark(&crumbs, cx);
+        });
+        draw(cx);
+        seen.push(read(&view, cx, |app| {
+            let plan = app.plan();
+            let linked = app.agent_state().estimate.expect("an estimate");
+            assert_eq!(linked.lower, plan.reclaimable_bytes());
+            (
+                plan.reclaimable_bytes(),
+                plan.possible_bytes(),
+                plan.reclaim(),
+            )
+        }));
+    }
+    assert_eq!(
+        seen,
+        [
+            (100 * MIB, 100 * MIB, 100 * MIB),
+            (200 * MIB, 200 * MIB, 200 * MIB),
+            (300 * MIB, 10_440 * MIB, 300 * MIB),
+        ]
+    );
+}
+
+/// Help keeps its heading/Done on screen and scrolls its reading lane at
+/// minimum dimensions; neither zoom nor keys act on the marked background.
+#[gpui_kit::test]
+fn help_reflows_and_scrolls_at_minimum_size_and_double_scale(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    for rem in [16., 32.] {
+        cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+        cx.update(|window, _| window.set_rem_size(px(rem)));
+        update(&view, cx, Disktree::open_help);
+        draw(cx);
+        let popup = cx.debug_bounds("help-overlay").expect("Help popup");
+        let close = cx.debug_bounds("overlay-done").expect("Done");
+        assert!(
+            cx.debug_bounds("help-scroll")
+                .expect("reading lane")
+                .size
+                .height
+                >= px(rem * 3.0)
+        );
+        assert!(
+            popup.left() >= px(0.) && popup.right() <= px(900.),
+            "{popup:?}"
+        );
+        assert!(
+            popup.top() >= px(0.) && popup.bottom() <= px(600.),
+            "{popup:?}"
+        );
+        assert!(
+            close.top() >= px(0.) && close.bottom() <= px(600.),
+            "{close:?}"
+        );
+        press(cx, "end");
+        assert!(read(&view, cx, |app| app.help_scroll.offset().y) < px(0.));
+        press(cx, "home");
+        assert!(
+            read(&view, cx, |app| app.help_scroll.offset().y).abs() < px(1.)
+        );
+        press(cx, "escape");
+        assert!(!read(&view, cx, |app| app.show_help));
+        assert!(temp.path().join("junk/blob.bin").exists());
+    }
+}
+
+/// Controls stay reachable when the toolbar wraps; tiny tiles have the
+/// same larger file-list target alternative at every zoom step.
+#[gpui_kit::test]
+fn double_scale_wraps_controls_and_keeps_pointer_targets(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (_view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+    for _ in 0..5 {
+        press(cx, "ctrl-=");
+    }
+    assert!(
+        (cx.update(|window, _| window.rem_size().as_f32()) - 32.).abs() < 0.01
+    );
+    // At 28 rem the bar keeps only the view switch; Depth is in ⋮.
+    assert!(cx.debug_bounds("depth-less-target").is_none());
+    click_on(cx, "more-toggle");
+    for selector in ["more-toggle", "more-depth-less", "more-depth-more"] {
+        let bounds = cx.debug_bounds(selector).expect("depth target");
+        assert!(
+            bounds.right() <= px(900.) && bounds.bottom() <= px(600.),
+            "{bounds:?}"
+        );
+        assert!(
+            bounds.size.width >= px(24.) && bounds.size.height >= px(24.),
+            "{bounds:?}"
+        );
+    }
+    press(cx, "ctrl-0");
+    for _ in 0..2 {
+        press(cx, "ctrl--");
+    }
+    let bounds = cx.debug_bounds("depth-more-target").expect("depth target");
+    assert!(bounds.size.width >= px(24.) && bounds.size.height >= px(24.));
+}
+
+#[gpui_kit::test]
+fn settings_panes_scroll_at_minimum_size_and_double_scale(
+    cx: &mut TestAppContext,
+) {
+    use crate::settings::{Pane, SettingsWindow};
+    cx.update(init);
+    let (view, cx) =
+        cx.add_window_view(|_, cx| SettingsWindow::new(Pane::About, cx));
+    cx.simulate_resize(gpui_kit::size(px(640.), px(480.)));
+    cx.update(|window, _| window.set_rem_size(px(32.)));
+    draw(cx);
+    let scroll = cx.debug_bounds("settings-scroll").expect("pane scroll");
+    assert!(
+        scroll.size.width > px(300.),
+        "navigation reflows above the pane: {scroll:?}"
+    );
+    let nav = cx.debug_bounds("settings-nav-about").expect("About tab");
+    cx.simulate_click(nav.center(), gpui_kit::Modifiers::none());
+    press(cx, "end");
+    assert!(view.read_with(cx, |view, _| view.pane_scroll.offset().y) < px(0.));
+}
+
+/// Reflow is measured in glyph widths rather than a fixed 100 characters.
+/// Complete copy and end navigation remain available at the document minimum.
+#[gpui_kit::test]
+fn documents_reflow_at_minimum_size_and_double_scale(cx: &mut TestAppContext) {
+    use crate::doc_window::{Doc, DocWindow};
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let view = DocWindow::new(Doc::ThirdPartyNotices, cx);
+        window.focus(&view.focus, cx);
+        view
+    });
+    cx.simulate_resize(gpui_kit::size(px(640.), px(480.)));
+    cx.update(|window, _| window.set_rem_size(px(32.)));
+    draw(cx);
+    press(cx, "end");
+    assert!(view.read_with(cx, |view, _| view.position) > 1_000);
+    let row = cx.debug_bounds("document-current").expect("last row");
+    assert!(row.left() >= px(0.) && row.right() <= px(640.), "{row:?}");
+    press(cx, "ctrl--");
+    assert!(
+        (cx.update(|window, _| window.rem_size().as_f32()) - 28.).abs() < 0.01
+    );
+    press(cx, "ctrl-c");
+    assert_eq!(clipboard(cx), Doc::ThirdPartyNotices.source());
+}
+
+/// The review's list and explanation stack in a narrow text viewport.
+/// Scrolling never commits a removal.
+#[gpui_kit::test]
+fn review_scrolls_at_minimum_size_and_double_scale(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+        app.open_review(cx);
+    });
+    cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+    cx.update(|window, _| window.set_rem_size(px(32.)));
+    draw(cx);
+    press(cx, "end");
+    assert!(read(&view, cx, |app| app.review_scroll.offset().y) < px(0.));
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    assert!(temp.path().join("junk/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+#[gpui_kit::test]
+fn logs_wrap_at_minimum_size_and_double_scale(cx: &mut TestAppContext) {
+    let text = format!(
+        "2026-10-31T12:00:00.000-04:00 INFO  fixture: {}\n",
+        "invented 日本語 ".repeat(50)
+    );
+    let (_dir, _path, view, cx) = logs_over(cx, &text);
+    cx.update(|window, _| window.set_rem_size(px(32.)));
+    for width in [640., 880., 1120.] {
+        cx.simulate_resize(gpui_kit::size(px(width), px(480.)));
+        draw(cx);
+        let search = cx
+            .debug_bounds(crate::logs_window::SEARCH_ID)
+            .expect("named search");
+        assert!(search.right() <= px(width), "{search:?}");
+        assert!(
+            search.size.width >= px(400.),
+            "search retains room for input and match controls: {search:?}"
+        );
+        let row = cx.debug_bounds("log-row-1").unwrap_or_else(|| {
+            panic!(
+                "wrapped line at {width}: toolbar={:?}, viewport={:?}",
+                cx.debug_bounds("logs-toolbar"),
+                cx.debug_bounds("logs-viewport")
+            )
+        });
+        assert!(row.right() <= px(width), "{row:?}");
+    }
+    assert!(view.read_with(cx, |view, _| view.wrap));
+}
+
+/// A single wrapped log line can be taller than the entire window. Paging
+/// must expose its lower text instead of repeatedly selecting its start.
+#[gpui_kit::test]
+fn page_scrolls_inside_an_oversized_log_line(cx: &mut TestAppContext) {
+    let text = format!(
+        "2026-10-31T12:00:00.000-04:00 INFO  fixture: {}\n",
+        "invented 日本語 ".repeat(300)
+    );
+    let (_dir, _path, view, cx) = logs_over(cx, &text);
+    cx.simulate_resize(gpui_kit::size(px(640.), px(480.)));
+    cx.update(|window, cx| {
+        window.set_rem_size(px(32.));
+        view.read(cx)
+            .search_state()
+            .update(cx, |search, cx| search.focus(window, cx));
+    });
+    draw(cx);
+    press(cx, "escape");
+    press(cx, "home");
+    let before = view.read_with(cx, |view, _| view.scroll_offset());
+    press(cx, "pagedown");
+    let after = view.read_with(cx, |view, _| view.scroll_offset());
+    assert!(
+        after < before,
+        "paging progresses inside one log line: {before:?} -> {after:?}"
+    );
+    assert_eq!(view.read_with(cx, |view, _| view.selection), Some((1, 1)));
+}
+
+/// Low-vision readers need a complete file entry between the fixed heading
+/// and actions, including when a long root path would otherwise wrap.
+#[gpui_kit::test]
+fn file_list_keeps_a_complete_entry_visible_at_double_scale(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        app.selected = Some(vec![0]);
+        cx.notify();
+    });
+    cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+    cx.update(|window, _| window.set_rem_size(px(32.)));
+    draw(cx);
+    draw(cx);
+    let viewport = read(&view, cx, |app| app.file_scroll.bounds());
+    let row = cx.debug_bounds("file-row-0").expect("first file entry");
+    // 24 px type plus 32 px vertical padding at 200%, before a border.
+    assert!(
+        row.size.height >= px(56.),
+        "text must fit inside its row: {row:?}"
+    );
+    assert!(
+        viewport.size.height >= row.size.height,
+        "{viewport:?}, row {row:?}"
+    );
+    assert!(
+        row.bottom() <= viewport.bottom() + px(1.),
+        "{viewport:?}, row {row:?}"
+    );
+    assert!(row.size.height >= px(24.));
+}
+
+/// Every screenshot navigation paints destination geometry without waiting
+/// for wall time, independent of the preceding navigation sequence.
+#[gpui_kit::test]
+fn screenshot_navigation_always_matches_the_destination_layout(
+    cx: &mut TestAppContext,
+) {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+
+    cx.update(init);
+    cx.update(|cx| cx.set_reduce_motion(false));
+    cx.update(crate::screenshots::init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let window = std::cell::RefCell::new(cx);
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: None,
+        ..Config::default()
+    });
+    runner
+        .run(&prop::collection::vec(0_u8..5, 1..24), |moves| {
+            update(&view, &mut window.borrow_mut(), |app, cx| {
+                app.go_to(Vec::new(), cx);
+                for movement in moves {
+                    let junk = child_crumbs(app, &[], "junk");
+                    let deeper = child_crumbs(app, &junk, "deeper");
+                    match movement {
+                        0 | 1 => {
+                            app.selected =
+                                Some(if movement == 0 { junk } else { deeper });
+                            app.descend(cx);
+                        }
+                        2 => app.ascend(cx),
+                        3 => app.go_back(cx),
+                        _ => app.go_forward(cx),
+                    }
+                    // The cached destination layout is an independent oracle:
+                    // screenshots must never paint wall-clock interpolation.
+                    prop_assert!(app.transition.is_none());
+                    let expected: Vec<_> = app
+                        .layout()
+                        .expect("layout")
+                        .iter()
+                        .map(|tile| tile.rect)
+                        .collect();
+                    let painted: Vec<_> = app
+                        .prepare()
+                        .tiles
+                        .into_iter()
+                        .map(|tile| tile.rect)
+                        .collect();
+                    prop_assert_eq!(painted, expected);
+                }
+                Ok(())
+            })
+        })
+        .expect("every screenshot navigation lands immediately");
+}
+
+/// Reduced motion lands on the same real layout and preserves the ordinary
+/// selection/history/mark behavior, including wheel-driven descent.
+#[gpui_kit::test]
+fn reduced_motion_lands_navigation_history_and_zoom(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    update(&view, cx, |app, cx| {
+        let junk = child_crumbs(app, &[], "junk");
+        let keep = child_crumbs(app, &[], "keep");
+        app.toggle_mark(&keep, cx);
+        app.selected = Some(junk.clone());
+        app.descend(cx);
+        assert!(app.transition.is_none(), "descent lands immediately");
+        assert_eq!(app.crumbs, junk);
+        assert_eq!(app.selected.as_ref(), Some(&junk));
+        let expected: Vec<_> = app
+            .layout()
+            .expect("layout")
+            .iter()
+            .map(|tile| tile.rect)
+            .collect();
+        let drawn: Vec<_> = app
+            .prepare()
+            .tiles
+            .into_iter()
+            .map(|tile| tile.rect)
+            .collect();
+        assert_eq!(drawn, expected, "no transient geometry");
+        app.ascend(cx);
+        assert!(app.transition.is_none());
+        assert!(app.crumbs.is_empty());
+        app.go_back(cx);
+        assert_eq!(app.crumbs, junk);
+        assert!(app.transition.is_none());
+        app.go_forward(cx);
+        assert!(app.crumbs.is_empty());
+        assert!(app.transition.is_none());
+        app.go_to(junk.clone(), cx);
+        app.zoom_at(100., 100., 1.2, false, cx);
+        assert!(app.view.scale > 1.0, "user-controlled zoom still works");
+        assert!(app.transition.is_none());
+        app.reset_view(cx);
+        let deeper = child_crumbs(app, &junk, "deeper");
+        let body = app.tile_body(&deeper).expect("nested directory");
+        let pivot = disktree_core::treemap::Rect::new(
+            body.x + body.w / 2.,
+            body.y + body.h / 2.,
+            0.,
+            0.,
+        );
+        for _ in 0..80 {
+            if app.crumbs == deeper {
+                break;
+            }
+            let screen = app.view.project(pivot);
+            app.zoom_at(screen.x, screen.y, 1.15, true, cx);
+        }
+        assert_eq!(app.crumbs, deeper, "wheel zoom reaches its directory");
+        assert!(app.transition.is_none());
+        assert_eq!(app.marks.len(), 1);
+    });
+    draw(cx);
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// A live policy change cancels an in-flight transition. Turning the policy
+/// off restores ordinary navigation motion without changing the destination.
+#[gpui_kit::test]
+fn reduced_motion_cancels_active_transition_and_can_be_disabled(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    cx.update(|_, cx| cx.set_reduce_motion(false));
+    update(&view, cx, |app, cx| {
+        let junk = child_crumbs(app, &[], "junk");
+        app.selected = Some(junk);
+        app.descend(cx);
+        assert!(app.transition.is_some(), "normal motion remains available");
+    });
+    let destination = read(&view, cx, Disktree::current_path);
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    draw(cx);
+    assert!(read(&view, cx, |app| app.transition.is_none()));
+    assert_eq!(read(&view, cx, Disktree::current_path), destination);
+    cx.update(|_, cx| cx.set_reduce_motion(false));
+    update(&view, cx, |app, cx| {
+        app.ascend(cx);
+        assert!(app.transition.is_some(), "normal ascent animates again");
+    });
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    draw(cx);
+    assert!(read(&view, cx, |app| app.transition.is_none()));
+    assert!(read(&view, cx, |app| app.crumbs.is_empty()));
+}
+
+#[gpui_kit::test]
+fn the_view_switch_and_the_view_menu_show_the_file_list(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    // The switch is in the title bar, not a row of its own over the mosaic.
+    let strip = cx.debug_bounds("title-strip").expect("strip");
+    let list = cx.debug_bounds("view-list").expect("switch");
+    assert!(strip.contains(&list.center()), "{list:?} in {strip:?}");
+
+    click_on(cx, "view-list");
+    assert!(read(&view, cx, |app| app.file_list));
+    assert!(cx.debug_bounds("file-list").is_some());
+    assert!(
+        cx.update(|window, cx| view.read(cx).file_focus.is_focused(window)),
+        "the list takes the keyboard, so a screen reader lands in it"
+    );
+
+    cx.dispatch_action(crate::app_menu::ShowTreemap);
+    draw(cx);
+    assert!(!read(&view, cx, |app| app.file_list));
+    assert!(cx.update(|window, cx| view.read(cx).focus.is_focused(window)));
+    cx.dispatch_action(crate::app_menu::ShowFileList);
+    draw(cx);
+    assert!(read(&view, cx, |app| app.file_list));
+    click_on(cx, "view-treemap");
+    assert!(!read(&view, cx, |app| app.file_list));
+}
+
+#[gpui_kit::test]
+fn the_bar_folds_into_more_as_the_window_narrows(cx: &mut TestAppContext) {
+    use crate::toolbar::BarFit;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    // Window size and interface zoom presses, then the tier it lands in.
+    let cases = [
+        (1440., 900., 0, BarFit::Full),
+        (1100., 700., 0, BarFit::Folded),
+        (900., 600., 0, BarFit::Folded),
+        (900., 600., 2, BarFit::Narrow),
+        (900., 600., 4, BarFit::Tight),
+    ];
+    let mut labelled_width = None;
+    for (width, height, zoom, fit) in cases {
+        press(cx, "ctrl-0");
+        cx.simulate_resize(gpui_kit::size(px(width), px(height)));
+        for _ in 0..zoom {
+            press(cx, "ctrl-=");
+        }
+        draw(cx);
+        assert_eq!(read(&view, cx, |app| app.bar_fit), fit, "{width} {zoom}");
+        let full = fit == BarFit::Full;
+        assert_eq!(
+            cx.debug_bounds("power-efficiency").is_some(),
+            full,
+            "{fit:?}"
+        );
+        assert_eq!(cx.debug_bounds("more-toggle").is_none(), full, "{fit:?}");
+        assert_eq!(
+            cx.debug_bounds("history-back").is_some(),
+            fit.shows_history_and_depth(),
+            "{fit:?}"
+        );
+        assert_eq!(
+            cx.debug_bounds("depth-less-target").is_some(),
+            fit.shows_history_and_depth(),
+            "{fit:?}"
+        );
+        assert_eq!(cx.debug_bounds("measure-mode").is_some(), fit.shows_mode());
+
+        // Whatever is left fits in one bar, beside the brand.
+        let strip = cx.debug_bounds("title-strip").expect("strip");
+        let brand = cx.debug_bounds("strip-brand").expect("brand");
+        let switch = cx.debug_bounds("view-treemap").expect("switch");
+        let last = cx
+            .debug_bounds(if full {
+                "power-efficiency"
+            } else {
+                "more-toggle"
+            })
+            .expect("last control");
+        assert!(switch.left() >= brand.right(), "{fit:?}: {switch:?}");
+        assert!(last.right() <= px(width), "{fit:?}: {last:?}");
+        assert!(strip.contains(&last.center()), "{fit:?}: one row");
+        assert!(switch.size.height >= px(24.), "{fit:?}: {switch:?}");
+
+        // The switch keeps its words until 64 rem.
+        if zoom == 0 && width >= 1100. {
+            labelled_width = Some(switch.size.width);
+        } else if zoom == 0 {
+            let labelled = labelled_width.expect("a labelled switch");
+            assert!(switch.size.width < labelled, "glyph alone at {width}");
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn more_holds_the_folded_controls_and_takes_the_keys(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1100.), px(700.)));
+    update(&view, cx, |app, _| app.cpu_threads = 18);
+    let hidden = read(&view, cx, |app| app.options.include_hidden);
+    let epoch = read(&view, cx, |app| app.scan_epoch);
+
+    click_on(cx, "more-toggle");
+    assert_eq!(read(&view, cx, |app| app.more_menu), Some(0));
+    assert!(cx.debug_bounds("more-menu").is_some());
+    // Hidden files rescans, as its checkbox does.
+    press(cx, "enter");
+    read(&view, cx, |app| {
+        assert_eq!(app.options.include_hidden, !hidden);
+        assert_eq!(app.scan_epoch, epoch + 1);
+        assert!(app.more_menu.is_none());
+    });
+    update(&view, cx, |app, _| {
+        if let Some(scan) = app.scan.take() {
+            scan.cancel();
+        }
+    });
+
+    // Scan workers opens the power menu in ⋮'s place; ⋮ closes it again.
+    click_on(cx, "more-toggle");
+    press(cx, "end");
+    press(cx, "enter");
+    assert!(read(&view, cx, |app| app.power_menu.is_some()));
+    assert!(cx.debug_bounds("power-menu").is_some());
+    // A real press arrives after the pointer is on ⋮.
+    let more = cx.debug_bounds("more-toggle").expect("more");
+    cx.simulate_mouse_move(more.center(), None, gpui_kit::Modifiers::none());
+    click_on(cx, "more-toggle");
+    read(&view, cx, |app| {
+        assert!(app.power_menu.is_none());
+        assert!(app.more_menu.is_none());
+    });
+
+    // Escape closes without acting; a screen key closes and still acts.
+    click_on(cx, "more-toggle");
+    press(cx, "escape");
+    assert!(read(&view, cx, |app| app.more_menu.is_none()));
+    click_on(cx, "more-toggle");
+    press(cx, "?");
+    assert!(read(&view, cx, |app| app.more_menu.is_none() && app.show_help));
+}
+
+#[gpui_kit::test]
+fn more_steps_depth_in_place_when_the_stepper_folds(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(900.), px(600.)));
+    press(cx, "ctrl-=");
+    press(cx, "ctrl-=");
+    let depth = read(&view, cx, |app| app.layout_options.max_depth);
+    click_on(cx, "more-toggle");
+    // Nowhere to go back or forward yet, so ⋮ opens on Depth, past the
+    // disabled history rows; the up arrow does not land on them either.
+    assert_eq!(read(&view, cx, |app| app.more_menu), Some(2));
+    press(cx, "up");
+    assert_eq!(read(&view, cx, |app| app.more_menu), Some(2));
+    // The row stays open while the arrows step it.
+    press(cx, "left");
+    assert_eq!(
+        read(&view, cx, |app| app.layout_options.max_depth),
+        depth - 1
+    );
+    assert_eq!(read(&view, cx, |app| app.more_menu), Some(2));
+    click_on(cx, "more-depth-more");
+    assert_eq!(read(&view, cx, |app| app.layout_options.max_depth), depth);
+}
+
+/// The names the mosaic lays out, top to bottom of the tree.
+fn laid_out(view: &Entity<Disktree>, cx: &mut Window) -> Vec<String> {
+    update(view, cx, |app, _| {
+        let tiles = app.layout().map(<[Tile]>::to_vec).unwrap_or_default();
+        tiles
+            .iter()
+            .filter_map(|tile| app.node_at(tile.crumbs()))
+            .map(|node| node.name().to_string())
+            .collect()
+    })
+}
+
+#[gpui_kit::test]
+fn a_legend_chip_shows_only_then_hides_its_kind(cx: &mut TestAppContext) {
+    use crate::legend::{Chip, ChipId};
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    assert!(
+        cx.debug_bounds("legend-clear").is_none(),
+        "nothing filtered"
+    );
+
+    // Cache, once: temporary neighbours have their own kind.
+    click_on(cx, "legend-kind-7");
+    cx.run_until_parked();
+    let chip = read(&view, cx, |app| app.legend.get(ChipId::Kind(7)));
+    assert_eq!(chip, Chip::Only);
+    let drawn = laid_out(&view, cx);
+    assert!(drawn.contains(&".cache".to_string()), "{drawn:?}");
+    assert!(
+        !drawn.iter().any(|name| name == "junk" || name == "keep"),
+        "{drawn:?}"
+    );
+    // The totals line says the share on screen, and Show all appears.
+    let shown = read(&view, cx, |app| {
+        app.legend_matches.as_deref().map(|matches| matches.bytes)
+    });
+    assert_eq!(shown, Some(300_000));
+    assert!(cx.debug_bounds("legend-clear").is_some());
+
+    // Again: hidden, so everything but `.cache`.
+    click_on(cx, "legend-kind-7");
+    cx.run_until_parked();
+    let drawn = laid_out(&view, cx);
+    assert!(!drawn.contains(&".cache".to_string()), "{drawn:?}");
+    assert!(drawn.contains(&"junk".to_string()), "{drawn:?}");
+
+    // Show all gives everything back, and keys reach the mosaic again.
+    click_on(cx, "legend-clear");
+    cx.run_until_parked();
+    assert!(!read(&view, cx, |app| app.legend.is_active()));
+    assert!(cx.update(|window, cx| view.read(cx).focus.is_focused(window)));
+    let drawn = laid_out(&view, cx);
+    assert!(
+        drawn.contains(&".cache".to_string())
+            && drawn.contains(&"junk".to_string())
+    );
+
+    // A kind set to only, cleared by Escape.
+    update(&view, cx, |app, cx| app.cycle_legend(ChipId::Kind(7), cx));
+    cx.run_until_parked();
+    let drawn = laid_out(&view, cx);
+    assert!(drawn.contains(&".cache".to_string()), "Cache: {drawn:?}");
+    assert!(!drawn.contains(&"keep".to_string()), "{drawn:?}");
+    press(cx, "escape");
+    cx.run_until_parked();
+    assert!(!read(&view, cx, |app| app.legend.is_active()));
+}
+
+#[gpui_kit::test]
+fn the_legend_filter_follows_into_folders_and_into_a_search(
+    cx: &mut TestAppContext,
+) {
+    use crate::legend::ChipId;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    // Hide Cache: `.cache` goes, and a search for blobs finds only junk's.
+    update(&view, cx, |app, cx| {
+        app.cycle_legend(ChipId::Kind(7), cx);
+        app.cycle_legend(ChipId::Kind(7), cx);
+    });
+    cx.run_until_parked();
+    press(cx, "/");
+    cx.simulate_input("blob");
+    cx.run_until_parked();
+    let count = read(&view, cx, |app| app.matches.as_deref().map(|m| m.count));
+    assert_eq!(count, Some(1), "the cached blob is hidden");
+    press(cx, "escape");
+    cx.run_until_parked();
+
+    // Descending keeps the filter: no search runs, the root's answer holds.
+    let junk = read(&view, cx, |app| {
+        app.crumbs_for_path(&temp.path().join("junk"))
+            .expect("junk")
+    });
+    update(&view, cx, |app, cx| app.go_to(junk, cx));
+    draw(cx);
+    assert!(read(&view, cx, |app| app.legend.is_active()));
+    let drawn = laid_out(&view, cx);
+    assert!(drawn.contains(&"blob.bin".to_string()), "{drawn:?}");
+}
+
+#[gpui_kit::test]
+fn marking_a_partly_shown_folder_says_it_takes_all_of_it(
+    cx: &mut TestAppContext,
+) {
+    use crate::legend::ChipId;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    update(&view, cx, |app, cx| {
+        app.cycle_legend(ChipId::Reclaimable, cx);
+        app.cycle_legend(ChipId::Reclaimable, cx);
+    });
+    cx.run_until_parked();
+    // The scanned root holds `.cache`, which the filter hides.
+    update(&view, cx, |app, _| app.selected = Some(Vec::new()));
+    draw(cx);
+    assert!(cx.debug_bounds("selection-partly-shown").is_some());
+    // A folder that passes whole needs no such note.
+    let junk = read(&view, cx, |app| {
+        app.crumbs_for_path(&temp.path().join("junk"))
+            .expect("junk")
+    });
+    update(&view, cx, |app, _| app.selected = Some(junk));
+    draw(cx);
+    assert!(cx.debug_bounds("selection-partly-shown").is_none());
+}
+
+/// Every chip is a filter, so none may be clipped away or pushed onto a
+/// second row: the legend is one row, at any width and text size, in both
+/// colour modes, and what it has no room for is in its "+N" menu.
+#[gpui_kit::test]
+fn every_legend_chip_is_on_the_row_or_in_its_menu(cx: &mut TestAppContext) {
+    use crate::legend::ChipId;
+    use disktree_core::classify::Category;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    for age in [false, true] {
+        update(&view, cx, |app, cx| {
+            app.color_mode = if age {
+                crate::state::ColorMode::Age
+            } else {
+                crate::state::ColorMode::Kind
+            };
+            cx.notify();
+        });
+        let chips: Vec<ChipId> = if age {
+            (0..crate::palette::AGE_BUCKETS.len())
+                .map(ChipId::Age)
+                .collect()
+        } else {
+            (0..Category::LEGEND.len()).map(ChipId::Kind).collect()
+        };
+        for width in [900., 1100., 1440.] {
+            for rem in [16., 24., 32.] {
+                cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
+                cx.update(|window, _| window.set_rem_size(px(rem)));
+                draw(cx);
+                draw(cx);
+                let legend = cx.debug_bounds("legend").expect("legend");
+                let mut missing = Vec::new();
+                for id in chips.iter().copied().chain([ChipId::Reclaimable]) {
+                    let at = format!("{id:?} at {width} rem {rem}");
+                    let key = Box::leak(id.key().into_boxed_str());
+                    let Some(chip) = cx.debug_bounds(key) else {
+                        missing.push(id);
+                        continue;
+                    };
+                    assert!(
+                        chip.right() <= legend.right() + px(0.5)
+                            && chip.left() >= px(0.)
+                            && chip.size.width > px(0.),
+                        "{at}: {chip:?} inside the legend {legend:?}"
+                    );
+                    // One row: no chip starts below the first line.
+                    assert!(
+                        chip.top() - legend.top() < chip.size.height,
+                        "{at}: {chip:?} on the legend's one row {legend:?}"
+                    );
+                }
+                if missing.is_empty() {
+                    assert!(cx.debug_bounds("legend-more").is_none());
+                    continue;
+                }
+                let more = cx.debug_bounds("legend-more").expect("+N");
+                assert!(more.right() <= legend.right() + px(0.5), "{more:?}");
+                click_on(cx, "legend-more");
+                draw(cx);
+                for id in missing {
+                    let key = format!(
+                        "legend-menu-{}",
+                        id.key().trim_start_matches("legend-")
+                    );
+                    let at = format!("{key} at {width} rem {rem}");
+                    let row = cx
+                        .debug_bounds(Box::leak(key.into_boxed_str()))
+                        .expect(&at);
+                    assert!(
+                        row.right() <= px(width) + px(0.5)
+                            && row.left() >= px(0.),
+                        "{at}: {row:?}"
+                    );
+                }
+                click_on(cx, "legend-more");
+                draw(cx);
+                assert!(cx.debug_bounds("legend-menu").is_none());
+            }
+        }
+    }
+}
+
+/// The legend belongs to the scan, not to the folder on screen: drilling
+/// into a folder with none of a kind keeps that kind's chip set, on the
+/// row and at its scan-wide size, and coming back up finds it unchanged.
+#[gpui_kit::test]
+fn a_set_chip_survives_drilling_into_a_folder_without_its_kind(
+    cx: &mut TestAppContext,
+) {
+    use crate::legend::{Chip, ChipId};
+    use disktree_core::classify::Category;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    draw(cx);
+    let cache = ChipId::Kind(
+        Category::LEGEND
+            .iter()
+            .position(|kind| *kind == Category::Cache)
+            .unwrap(),
+    );
+    let key = Box::leak(cache.key().into_boxed_str());
+    let shares = read(&view, cx, |app| app.legend_shares.clone());
+    for state in [Chip::Only, Chip::Hidden] {
+        update(&view, cx, |app, cx| {
+            app.clear_legend(None, cx);
+            while app.legend.get(cache) != state {
+                app.cycle_legend(cache, cx);
+            }
+        });
+        // `junk` holds no cache at all.
+        let junk = read(&view, cx, |app| {
+            app.crumbs_for_path(&temp.path().join("junk"))
+                .expect("junk")
+        });
+        update(&view, cx, |app, cx| app.go_to(junk, cx));
+        draw(cx);
+        draw(cx);
+        assert_eq!(read(&view, cx, |app| app.legend.get(cache)), state);
+        assert!(cx.debug_bounds(key).is_some(), "{state:?}: on the row");
+        assert_eq!(
+            read(&view, cx, |app| app.legend_shares.clone()),
+            shares,
+            "sizes are the scan's, not the folder's"
+        );
+        update(&view, cx, Disktree::ascend);
+        draw(cx);
+        assert_eq!(read(&view, cx, |app| app.legend.get(cache)), state);
+        assert!(cx.debug_bounds(key).is_some());
+    }
+}
+
+/// Each chip says how much of the scan it keeps. Empty and tiny kinds wait
+/// in "+N"; a chip set from there moves to the row, where its state shows.
+#[gpui_kit::test]
+fn legend_chips_carry_sizes_and_empty_kinds_wait_in_the_menu(
+    cx: &mut TestAppContext,
+) {
+    use crate::legend::{Chip, ChipId};
+    use disktree_core::classify::Category;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    draw(cx);
+    let shares = read(&view, cx, |app| app.legend_shares.clone())
+        .expect("shares worked out");
+    let cache = Category::LEGEND
+        .iter()
+        .position(|kind| *kind == Category::Cache)
+        .unwrap();
+    // `.cache/blob.bin` holds 300,000 bytes of the fixture's ~601,000.
+    assert_eq!(shares.kind(Category::Cache), 300_000);
+    let key = Box::leak(ChipId::Kind(cache).key().into_boxed_str());
+    assert!(cx.debug_bounds(key).is_some(), "Cache has data: on the row");
+    // The fixture holds no code: Code waits in the menu.
+    let code = Category::LEGEND
+        .iter()
+        .position(|kind| *kind == Category::Code)
+        .unwrap();
+    assert_eq!(shares.kind(Category::Code), 0);
+    let code_key = Box::leak(ChipId::Kind(code).key().into_boxed_str());
+    assert!(cx.debug_bounds(code_key).is_none(), "empty: not on the row");
+    assert!(cx.debug_bounds("legend-more").is_some());
+
+    click_on(cx, "legend-more");
+    draw(cx);
+    let menu_key =
+        Box::leak(format!("legend-menu-kind-{code}").into_boxed_str());
+    assert!(cx.debug_bounds(menu_key).is_some(), "Code is in the menu");
+    click_on(cx, menu_key);
+    draw(cx);
+    assert_eq!(
+        read(&view, cx, |app| app.legend.get(ChipId::Kind(code))),
+        Chip::Only
+    );
+    assert!(!read(&view, cx, |app| app.legend_menu_open), "menu closed");
+    assert!(cx.debug_bounds(code_key).is_some(), "set: on the row");
+}
+
+/// A filter that keeps nothing in the folder on screen says so, says
+/// whether anything elsewhere passes, and offers Show all, in the mosaic
+/// and in List view alike.
+#[gpui_kit::test]
+fn a_legend_filter_that_keeps_nothing_says_so(cx: &mut TestAppContext) {
+    use crate::legend::ChipId;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    assert!(cx.debug_bounds("legend-empty").is_none());
+
+    // Reclaimable toolchains: the fixture's only reclaimable tree is a
+    // cache, so nothing anywhere passes.
+    update(&view, cx, |app, cx| {
+        app.cycle_legend(ChipId::Reclaimable, cx);
+        app.cycle_legend(ChipId::Kind(2), cx);
+    });
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(read(&view, cx, Disktree::legend_empty_here), Some((0, 0)));
+    assert!(cx.debug_bounds("legend-empty").is_some(), "in the mosaic");
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("legend-empty").is_some(), "in List view");
+    assert!(
+        cx.debug_bounds("legend-empty-status").is_some(),
+        "announced"
+    );
+    // Compact List view draws no legend, so its header says what filters.
+    let note = read(&view, cx, Disktree::list_filter_note);
+    assert!(note.contains("suggested Toolchains"), "{note}");
+    click_on(cx, "legend-empty-clear");
+    cx.run_until_parked();
+    draw(cx);
+    assert!(!read(&view, cx, |app| app.legend.is_active()));
+    assert!(cx.debug_bounds("legend-empty").is_none());
+
+    // Cache alone, from inside `keep`: nothing here, but `.cache`
+    // passes elsewhere.
+    let keep = read(&view, cx, |app| {
+        app.crumbs_for_path(&temp.path().join("keep"))
+            .expect("keep")
+    });
+    update(&view, cx, |app, cx| {
+        app.file_list = false;
+        app.crumbs = keep;
+        app.selected = None;
+        app.cycle_legend(ChipId::Kind(7), cx);
+    });
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(
+        read(&view, cx, Disktree::legend_empty_here),
+        Some((300_000, 1))
+    );
+    assert!(cx.debug_bounds("legend-empty").is_some());
+}
+
+/// The age chips judge by the scan's clock, as the age colours do, and
+/// a partly shown folder's row in List view says what share passed.
+#[gpui_kit::test]
+fn the_age_filter_keeps_the_scan_clock_and_lists_partial_shares(
+    cx: &mut TestAppContext,
+) {
+    use crate::legend::ChipId;
+
+    cx.update(init);
+    let temp = fixture();
+    // Two years old: in the Older bucket, unlike everything else.
+    let old = std::time::SystemTime::now()
+        - std::time::Duration::from_hours(800 * 24);
+    std::fs::File::options()
+        .write(true)
+        .open(temp.path().join("junk/deeper/more.bin"))
+        .and_then(|file| file.set_modified(old))
+        .expect("age the file");
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.file_list = true;
+        app.scanned_at -= 3 * 86_400;
+        app.cycle_legend(ChipId::Age(4), cx);
+    });
+    cx.run_until_parked();
+    let (now, scanned) = read(&view, cx, |app| {
+        (app.legend_rule().map(|rule| rule.now), app.scanned_at)
+    });
+    assert_eq!(now, Some(scanned), "ages measured from the scan");
+
+    let junk = read(&view, cx, |app| {
+        app.crumbs_for_path(&temp.path().join("junk"))
+            .expect("junk")
+    });
+    let size = read(&view, cx, |app| {
+        app.entry_size(&junk, app.node_at(&junk).expect("junk"))
+    });
+    assert!(size.contains(" of "), "partly shown: {size}");
+    let keep = read(&view, cx, |app| {
+        app.crumbs_for_path(&temp.path().join("keep"))
+            .expect("keep")
+    });
+    let listed = read(&view, cx, Disktree::file_entries);
+    assert!(
+        !listed.contains(keep.last().expect("a child")),
+        "{listed:?}"
+    );
+}
+
+/// Switching size and file count reorders every folder, so the legend's
+/// result, keyed by position, is dropped at once and worked out again.
+#[gpui_kit::test]
+fn switching_the_metric_recomputes_the_legend(cx: &mut TestAppContext) {
+    use crate::legend::ChipId;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    update(&view, cx, |app, cx| {
+        app.cycle_legend(ChipId::Kind(7), cx);
+    });
+    cx.run_until_parked();
+    assert!(read(&view, cx, |app| app.legend_matches.is_some()));
+    update(&view, cx, |app, cx| {
+        app.toggle_metric(cx);
+        assert!(app.legend_matches.is_none(), "old positions dropped");
+    });
+    cx.run_until_parked();
+    let drawn = laid_out(&view, cx);
+    assert!(drawn.contains(&".cache".to_string()), "{drawn:?}");
+    assert!(!drawn.contains(&"junk".to_string()), "{drawn:?}");
+}
+
+#[gpui_kit::test]
+fn the_marked_total_is_pinned_above_the_disk_with_the_review(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    assert!(cx.debug_bounds("marked-total").is_none(), "nothing marked");
+
+    for name in ["junk", ".cache"] {
+        let crumbs = read(&view, cx, |app| {
+            app.crumbs_for_path(&temp.path().join(name))
+                .expect("present")
+        });
+        update(&view, cx, |app, cx| app.toggle_mark(&crumbs, cx));
+    }
+    draw(cx);
+    let total = cx.debug_bounds("marked-total").expect("marked total drawn");
+    let disk = cx.debug_bounds("disk-section").expect("disk drawn");
+    let scroll = cx.debug_bounds("side-panel-scroll").expect("lists drawn");
+    assert!(total.bottom() <= disk.top() + px(0.5), "{total:?} {disk:?}");
+    assert!(
+        scroll.bottom() <= total.top() + px(0.5),
+        "pinned below lists"
+    );
+    // The list leads the scroll, so on a short window it is suggestions
+    // that scroll out of sight, not what is marked.
+    let row = cx.debug_bounds("marked-row-0").expect("marked row drawn");
+    let worth = cx.debug_bounds("worth-section").expect("worth drawn");
+    assert!(row.bottom() <= worth.top(), "{row:?} {worth:?}");
+    assert!(row.bottom() <= scroll.bottom(), "{row:?} {scroll:?}");
+    // Without clones what is marked is what is freed, said once.
+    assert!(cx.debug_bounds("marked-frees").is_some());
+    assert!(cx.debug_bounds("marked-split").is_none());
+    let review = cx.debug_bounds("review").expect("review button");
+    assert!(
+        total.contains(&review.center()),
+        "the review is in the block"
+    );
+    click_on(cx, "review");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+}
+
+/// Preparation yields to the window; confirmation leaves fresh recursive
+/// inspection to the removal worker, which must still refuse new caches.
+#[gpui_kit::test]
+fn raw_inspection_prepares_off_thread_and_execution_rechecks(
+    cx: &mut TestAppContext,
+) {
+    use disktree_link::{ConfirmedRemoval, RemovalChoice, Request, Response};
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    #[cfg(not(windows))]
+    let socket = temp.path().join("inspection.sock");
+    #[cfg(windows)]
+    let socket = PathBuf::from(format!(
+        r"\\.\pipe\pwrdisk-inspection-{}",
+        temp.path()
+            .file_name()
+            .expect("temp name")
+            .to_string_lossy()
+    ));
+    let listener = disktree_link::Listener::bind_at(&socket).expect("link");
+    update(&view, cx, |app, cx| {
+        app.attach_agent(listener, cx);
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+    });
+    let mut ask = |cx: &mut Window, request: Request| {
+        update(&view, cx, |app, cx| app.answer_agent(&request, cx))
+    };
+    let request = Request::PrepareRemoval {
+        mode: RemovalChoice::Permanent,
+        decisions: None,
+        files: None,
+    };
+    assert!(
+        matches!(ask(cx, request.clone()), Response::Error { message }
+        if message.contains("preparing"))
+    );
+    // Another request and a frame can proceed while inspection is pending.
+    assert!(matches!(ask(cx, Request::State), Response::State(_)));
+    draw(cx);
+    let preview = await_removal_preview(&mut ask, cx, &request);
+    assert_eq!(preview.paths, [temp.path().join("junk")]);
+
+    // This appears after the preview. Confirmation must not walk it on the
+    // UI thread, but the fresh worker check must protect it before writes.
+    // A relocated uv cache: its tag and one of its buckets. A tag alone
+    // is any build tool's and would not stop the removal.
+    let tag = temp.path().join("junk/deeper/CACHEDIR.TAG");
+    std::fs::write(&tag, "Signature: 8a477f597d28d172789f06886806bc55")
+        .expect("fixture cache appeared");
+    std::fs::create_dir(temp.path().join("junk/deeper/wheels-v5"))
+        .expect("uv bucket");
+    let response = ask(
+        cx,
+        Request::Remove(ConfirmedRemoval {
+            preview_id: preview.preview_id,
+            mode: preview.mode,
+            paths: preview.paths,
+            confirmation: preview.mode.confirmation().into(),
+            rescan: false,
+        }),
+    );
+    assert!(matches!(response, Response::State(state)
+        if state.screen == "running"));
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done);
+    read(&view, cx, |app| assert_eq!(app.run_list.totals().failed, 1));
+    assert!(tag.exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// Review must agree with the worker's recursive oracle before consent.
+/// Unmarking a relocated cache must leave unrelated marks removable on
+/// every platform, including those without cleanup's Delete files option.
+#[gpui_kit::test]
+fn review_routes_relocated_cache_before_confirmation_and_removes_unrelated_mark(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let cache = temp.path().join("project/vendor/_cacache/content-v2/blob");
+    std::fs::create_dir_all(cache.parent().expect("parent")).unwrap();
+    std::fs::write(&cache, b"cache payload").unwrap();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        for name in ["project", "junk"] {
+            let crumbs = child_crumbs(app, &[], name);
+            app.toggle_mark(&crumbs, cx);
+        }
+        app.removal_mode = RemovalMode::Permanent;
+        // Differential oracle: this is the check the worker would run.
+        assert!(
+            disktree_core::cleanup::check_raw(&app.plan().targets).is_err()
+        );
+        app.open_review(cx);
+    });
+    cx.run_until_parked();
+    draw(cx);
+    read(&view, cx, |app| {
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+        assert!(!app.confirm_open, "routing precedes confirmation");
+        assert!(app.run.is_none());
+    });
+    update(&view, cx, |app, cx| {
+        // Ordinary removal is available everywhere; cleanup's Delete
+        // files additionally requires the macOS/Linux active-use check.
+        app.unmark(&app.root_path.join("project"), cx);
+        app.removal_mode = RemovalMode::Permanent;
+        app.commit(false, cx);
+        assert!(!app.confirm_open, "changed marks need a fresh inspection");
+        assert!(app.run.is_none());
+    });
+    inspect_raw(&view, cx);
+    update(&view, cx, |app, cx| {
+        app.commit(false, cx);
+        assert!(app.confirm_open, "{:?}", app.notice());
+        app.confirm_delete(cx);
+        assert_eq!(app.screen, Screen::Running);
+    });
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done);
+    read(&view, cx, |app| {
+        assert_eq!(app.run_list.totals().removed, 1);
+        assert_eq!(app.run_list.totals().failed, 0);
+    });
+    assert!(cache.exists(), "the unmarked project is preserved");
+    assert!(!temp.path().join("junk").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// Differential oracle: Review and the worker agree across names, layouts,
+/// nesting depths and ordinary build output. Pending inspection grants no
+/// confirmation, even if commit is called without the disabled button.
+#[gpui_kit::test]
+fn review_inspection_agrees_with_worker_for_relocated_layouts(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let layouts: &[(&str, &[&str])] = &[
+        ("npm", &["_cacache/content-v2/blob"]),
+        ("npx", &["_npx/package/blob"]),
+        ("playwright", &["ms-playwright/chromium/blob"]),
+        ("pip", &["cache/wheels/blob", "cache/http-v2/blob"]),
+        ("uv", &["cache/CACHEDIR.TAG", "cache/wheels-v5/blob"]),
+        ("cypress", &["cache/15.0.0/Cypress.app/blob"]),
+        ("cargo", &["target/CACHEDIR.TAG", "target/debug/deps/blob"]),
+        ("ordinary", &["node_modules/.cache/blob"]),
+    ];
+    for (depth, (name, paths)) in layouts.iter().enumerate() {
+        let nested = temp.path().join(name).join("nested/".repeat(depth));
+        for path in *paths {
+            let file = nested.join(path);
+            std::fs::create_dir_all(file.parent().expect("parent")).unwrap();
+            std::fs::write(file, b"fixture").unwrap();
+        }
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    for (name, _) in layouts {
+        let refused = update(&view, cx, |app, cx| {
+            app.clear_marks(cx);
+            let crumbs = child_crumbs(app, &[], name);
+            app.toggle_mark(&crumbs, cx);
+            let refused =
+                disktree_core::cleanup::check_raw(&app.plan().targets).is_err();
+            app.removal_mode = RemovalMode::Permanent;
+            app.open_review(cx);
+            app.commit(false, cx);
+            assert!(!app.confirm_open, "inspection is pending: {name}");
+            assert!(app.run.is_none());
+            refused
+        });
+        cx.run_until_parked();
+        draw(cx);
+        read(&view, cx, |app| {
+            assert_eq!(app.raw_inspection_ready().is_err(), refused, "{name}");
+            assert_eq!(
+                app.removal_mode == RemovalMode::OwnerCleanup,
+                refused,
+                "{name}"
+            );
+            assert!(!app.confirm_open);
+        });
+        assert_eq!(cx.debug_bounds("raw-inspection").is_some(), refused);
+    }
+}
+
+/// A result from an old selection or tree cannot change the mode, permit
+/// confirmation or authorize removal of a later selection.
+#[gpui_kit::test]
+fn review_inspection_discards_replaced_selection_and_scan(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    npm_cache(temp.path());
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let cache = child_crumbs(app, &[], ".npm");
+        app.toggle_mark(&cache, cx);
+        app.open_review(cx);
+        app.clear_marks(cx);
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+        app.removal_mode = RemovalMode::Permanent;
+        app.open_review(cx);
+    });
+    cx.run_until_parked();
+    read(&view, cx, |app| {
+        assert!(app.raw_inspection_ready().is_ok());
+        assert_eq!(app.removal_mode, RemovalMode::Permanent);
+    });
+    update(&view, cx, |app, cx| {
+        app.commit(false, cx);
+        assert!(app.confirm_open, "current selection was checked");
+        let cache = child_crumbs(app, &[], ".npm");
+        app.toggle_mark(&cache, cx);
+        app.confirm_delete(cx);
+        assert!(app.run.is_none(), "changed marks revoke confirmation");
+    });
+    cx.run_until_parked();
+    read(&view, cx, |app| {
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+        assert!(!app.confirm_open);
+    });
+    update(&view, cx, |app, _| {
+        // Same paths and marks, but a new complete scan has its own check.
+        app.tree = Some(std::sync::Arc::new(
+            scan(temp.path(), options()).expect("new scan"),
+        ));
+        assert!(app.raw_inspection_ready().is_err());
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    draw(cx);
+    cx.run_until_parked();
+    read(&view, cx, |app| {
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+        assert!(app.run.is_none());
+    });
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// Exporting a cache selection cannot substitute raw deletion for its owner.
+#[gpui_kit::test]
+fn cache_exports_keep_marks_and_refuse_raw_scripts(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let selected = npm_cache(temp.path());
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let file = app
+            .crumbs_for_path(
+                &npm_cache_dir(&app.root_path)
+                    .join("content-v2")
+                    .join("blob.bin"),
+            )
+            .expect("in the tree");
+        app.toggle_mark(&file, cx);
+        app.open_review(cx);
+        let (list, count) = app.export_text(false).expect("marked list");
+        assert_eq!(count, 1);
+        assert_eq!(list, format!("{}\n", selected.display()));
+        for mode in [
+            RemovalMode::OwnerCleanup,
+            RemovalMode::Permanent,
+            RemovalMode::Trash,
+        ] {
+            app.removal_mode = mode;
+            assert!(
+                app.export_text(true)
+                    .expect_err("no raw script")
+                    .contains("owner cleanup")
+            );
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                "keep".into(),
+            ));
+            app.copy_delete_script(cx);
+            app.save_delete_script(cx);
+            assert!(
+                app.notice()
+                    .as_ref()
+                    .expect("refusal")
+                    .0
+                    .contains("owner cleanup")
+            );
+        }
+    });
+    assert_eq!(clipboard(cx), "keep", "refusal leaves clipboard alone");
+    assert!(selected.exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// Cache classification steers review, but grants no generic deletion.
+#[gpui_kit::test]
+fn cache_review_requires_owner_preview_and_never_falls_back_to_raw_removal(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let blob = npm_cache(temp.path());
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let cache = app
+            .crumbs_for_path(&npm_cache_dir(&app.root_path))
+            .expect("in the tree");
+        app.toggle_mark(&cache, cx);
+        app.open_review(cx);
+    });
+    inspect_raw(&view, cx);
+    update(&view, cx, |app, cx| {
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+        // Confirm cannot execute a missing owner preview, even if reached
+        // directly rather than through the disabled/preview UI.
+        app.confirm_delete(cx);
+        assert!(app.run.is_none());
+        assert_eq!(app.screen, Screen::Review);
+        assert!(app.cleanup_description().contains("Check owners"));
+        // Neither explicit raw mode can silently replace owner cleanup.
+        for mode in [RemovalMode::Permanent, RemovalMode::Trash] {
+            app.removal_mode = mode;
+            app.begin_removal(cx);
+            assert!(app.run.is_none());
+            assert!(
+                app.notice()
+                    .as_ref()
+                    .expect("refusal")
+                    .0
+                    .contains("Cache cleanup")
+            );
+        }
+        app.removal_mode = RemovalMode::OwnerCleanup;
+        app.confirm_open = true;
+        app.cancel_delete(cx);
+        assert!(!app.confirm_open);
+        assert!(app.run.is_none());
+    });
+    draw(cx);
+    assert!(blob.exists());
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// A folder that only sounds like a cache is an ordinary mark: Review
+/// keeps the person's mode, and Trash or Permanent goes ahead.
+#[gpui_kit::test]
+fn a_cache_named_folder_is_an_ordinary_mark(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    for path in [
+        "project/node_modules/.cache/babel-loader/blob.bin",
+        "Library/Caches/com.example.app/blob.bin",
+    ] {
+        let file = temp.path().join(path);
+        std::fs::create_dir_all(file.parent().expect("parent")).unwrap();
+        std::fs::write(file, vec![b'x'; 10_000]).unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        for name in [".cache", "project", "Library/Caches/com.example.app"] {
+            let crumbs = app
+                .crumbs_for_path(&app.root_path.join(name))
+                .expect("in the tree");
+            app.toggle_mark(&crumbs, cx);
+        }
+        let before = app.removal_mode;
+        app.open_review(cx);
+        assert_eq!(app.removal_mode, before, "Review keeps the user's mode");
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    inspect_raw(&view, cx);
+    let epoch = update(&view, cx, |app, cx| {
+        app.begin_removal(cx);
+        assert_eq!(app.screen, Screen::Running, "{:?}", app.notice());
+        app.run_epoch
+    });
+    let mut done = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        done = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            break;
+        }
+    }
+    assert!(done, "the removal finished");
+    read(&view, cx, |app| {
+        assert_eq!(app.run_list.totals().failed, 0, "{:?}", app.notice());
+    });
+    for gone in [".cache", "project", "Library/Caches/com.example.app"] {
+        assert!(!temp.path().join(gone).exists(), "{gone}");
+    }
+    assert!(temp.path().join("junk/blob.bin").exists());
+}
+
+/// An empty Marked or Worth a look is its header alone, at any height: the
+/// hint and the "none" sit where a full section shows its count or total.
+#[gpui_kit::test]
+fn empty_panel_lists_are_one_line(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    draw(cx);
+    // The header, and the gap before the section's hidden status line.
+    let head =
+        px((crate::ui::size::SECTION_HEAD.0 + crate::ui::space::XS.0) * 16.)
+            + px(0.5);
+    let marked = cx.debug_bounds("marked-section").expect("marked");
+    let worth = cx.debug_bounds("worth-section").expect("worth a look");
+    assert!(marked.size.height <= head, "{marked:?}");
+    assert!(worth.size.height <= head, "{worth:?}");
+
+    let crumbs = read(&view, cx, |app| {
+        app.crumbs_for_path(&temp.path().join("junk"))
+            .expect("present")
+    });
+    update(&view, cx, |app, cx| app.toggle_mark(&crumbs, cx));
+    draw(cx);
+    let marked = cx.debug_bounds("marked-section").expect("marked");
+    assert!(marked.size.height > head, "a row: {marked:?}");
+    assert!(cx.debug_bounds("marked-row-0").is_some());
+}
+
+/// Under 48 rem tall the selection's four figures are one line that opens
+/// the grid, and an idle agent line gives way, so with an assessment
+/// selected at 1200×600 Marked still starts in sight; suggestions may
+/// scroll, the cart may not. The assessment itself never folds. A tall
+/// window draws the grid as before.
+#[gpui_kit::test]
+fn a_short_panel_folds_the_selection_figures(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let output = temp.path().join("target/debug/deps");
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::write(output.join("libapp.rlib"), vec![b'x'; 200_000]).unwrap();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let (crumbs, _) = app
+            .tree()
+            .unwrap()
+            .descend(Path::new("target/debug/deps"))
+            .unwrap();
+        app.selected = Some(crumbs);
+        app.hovered = None;
+        app.pointer_active = false;
+        cx.notify();
+    });
+    cx.simulate_resize(gpui_kit::size(px(1200.), px(600.)));
+    draw(cx);
+    draw(cx);
+    assert!(cx.debug_bounds("selection-summary").is_some(), "one line");
+    assert!(
+        cx.debug_bounds("selection-figures").is_none(),
+        "grid folded"
+    );
+    assert!(
+        cx.debug_bounds("artifact-suggested").is_some(),
+        "never folds"
+    );
+    assert!(cx.debug_bounds("agent-line").is_none(), "idle line gone");
+    // Secondary OS counters must not take the cart's height, regardless
+    // of which optional measurements the filesystem supports.
+    for native in [
+        None,
+        Some(disktree_core::space::NativeSpace {
+            used: Some(80_000_000_000),
+            available: None,
+        }),
+        Some(disktree_core::space::NativeSpace {
+            used: Some(80_000_000_000),
+            available: Some(20_000_000_000),
+        }),
+    ] {
+        update(&view, cx, |app, cx| {
+            app.space = Some(SpaceInfo {
+                total: 100_000_000_000,
+                free: 10_000_000_000,
+                available: 10_000_000_000,
+                native,
+            });
+            cx.notify();
+        });
+        draw(cx);
+        let scroll = cx.debug_bounds("side-panel-scroll").unwrap();
+        let marked = cx.debug_bounds("marked-section").unwrap();
+        assert!(
+            marked.bottom() <= scroll.bottom(),
+            "Marked in sight: {marked:?} {scroll:?}, {native:?}"
+        );
+        assert!(cx.debug_bounds("disk-native-usage").is_none());
+        assert!(cx.debug_bounds("disk-reclaimable").is_none());
+    }
+
+    // The chevron opens the grid, and it stays open for the session.
+    click_on(cx, "selection-summary");
+    draw(cx);
+    assert!(read(&view, cx, |app| app.selection_details));
+    assert!(cx.debug_bounds("selection-figures").is_some(), "opened");
+    assert!(cx.debug_bounds("selection-summary").is_some(), "to close");
+    click_on(cx, "selection-summary");
+    draw(cx);
+    assert!(cx.debug_bounds("selection-figures").is_none(), "closed");
+
+    // Tall: the grid, no summary, and the invitation to connect an agent.
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    assert!(cx.debug_bounds("selection-summary").is_none());
+    assert!(cx.debug_bounds("selection-figures").is_some());
+    assert!(cx.debug_bounds("agent-line").is_some());
+    assert!(cx.debug_bounds("disk-native-usage").is_some());
+    assert!(cx.debug_bounds("disk-reclaimable").is_some());
+}
+
+/// A side panel list's header stays at the top of the list while its rows
+/// scroll under it, and the next section pushes it up rather than covering
+/// it, as PwrGit's and PwrAgnt's sidebars do.
+#[gpui_kit::test]
+fn panel_headers_stay_in_sight_while_their_list_scrolls(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    // Suggestions to scroll under the headers: the selection leads the
+    // lists, so the fixture's own are too few to reach the top.
+    for name in ["a", "b", "c", "d", "e", "f"] {
+        let file = temp.path().join(name).join(".cache/blob.bin");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        // Sparse: the scan measures apparent size, and a suggestion has to
+        // pass `insights::MIN_BYTES`.
+        std::fs::File::create(file)
+            .unwrap()
+            .set_len(65 << 20)
+            .unwrap();
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    // Rows for Marked's header to stay above: empty, the section is only
+    // its header.
+    for name in ["junk", ".cache"] {
+        let crumbs = read(&view, cx, |app| {
+            app.crumbs_for_path(&temp.path().join(name))
+                .expect("present")
+        });
+        update(&view, cx, |app, cx| app.toggle_mark(&crumbs, cx));
+    }
+    // Short enough that the lists scroll.
+    cx.simulate_resize(gpui_kit::size(px(1100.), px(520.)));
+    draw(cx);
+    draw(cx);
+    let scroll_to = |cx: &mut Window, y: f32| {
+        update(&view, cx, |app, cx| {
+            app.panel_scroll.set_offset(gpui_kit::point(px(0.), px(-y)));
+            cx.notify();
+        });
+        draw(cx);
+    };
+    let list = cx.debug_bounds("side-panel-scroll").expect("the lists");
+    // The selection leads the lists without a header of its own, so the
+    // offsets below count from where Marked starts.
+    let marked = cx.debug_bounds("marked-section").expect("marked");
+    let start = f32::from(marked.top() - list.top());
+    // Marked's last line just in sight: its header is pushed up by the
+    // section's end, with Worth a look coming up below.
+    let push = f32::from(marked.bottom() - list.top()) - 2.;
+    assert!(
+        read(&view, cx, |app| app.panel_scroll.max_offset().y) > px(push),
+        "the lists must scroll for this test"
+    );
+    assert!(cx.debug_bounds("pinned-head").is_none(), "nothing at rest");
+
+    // Marked's header leaves the top: its copy pins there.
+    scroll_to(cx, start + 10.);
+    let pinned = cx.debug_bounds("pinned-head").expect("pinned");
+    assert_eq!(pinned.top(), list.top(), "{pinned:?} {list:?}");
+
+    // A wheel over the pinned header still scrolls the list it heads.
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: pinned.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-10.))),
+        ..Default::default()
+    });
+    draw(cx);
+    assert!(
+        read(&view, cx, |app| app.panel_scroll.offset().y) < px(-(start + 10.)),
+        "the wheel reached the list"
+    );
+
+    // Worth a look comes up under it and pushes it off, never under it.
+    scroll_to(cx, push);
+    let pinned = cx.debug_bounds("pinned-head").expect("still pinned");
+    let worth = cx.debug_bounds("worth-section").expect("worth a look");
+    assert!(pinned.top() < list.top(), "pushed up: {pinned:?}");
+    assert!(pinned.bottom() < worth.top(), "{pinned:?} {worth:?}");
+
+    // Back at the top, nothing is pinned.
+    scroll_to(cx, 0.);
+    assert!(cx.debug_bounds("pinned-head").is_none());
+}
+
+/// What just happened is a toast that runs out, not a line in the panel
+/// that stays for hours. A newer notice replaces it with a fresh
+/// countdown; an error stays until closed.
+#[gpui_kit::test]
+fn notices_are_toasts_that_run_out(cx: &mut TestAppContext) {
+    use gpui_omarchy::Status;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    update(&view, cx, |app, cx| {
+        app.say("copied a thing", Status::Success, cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("toast-notice").is_some(), "a toast");
+    assert!(cx.debug_bounds("toast-notice-timer").is_some(), "it drains");
+
+    // Half its time later a newer one takes its place, and its full time.
+    let half = crate::toasts::ANSWER / 2;
+    cx.executor().advance_clock(half);
+    update(&view, cx, |app, cx| {
+        app.say("nothing to copy", Status::Warning, cx);
+    });
+    cx.executor().advance_clock(half + half / 2);
+    cx.run_until_parked();
+    assert_eq!(
+        read(&view, cx, Disktree::notice),
+        Some(("nothing to copy".to_owned(), Status::Warning))
+    );
+    cx.executor().advance_clock(crate::toasts::ANSWER);
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(read(&view, cx, Disktree::notice), None, "gone");
+    assert!(cx.debug_bounds("toast-notice").is_none());
+
+    // An error stays, with no countdown, until × closes it.
+    update(&view, cx, |app, cx| {
+        app.say("could not save /x: denied", Status::Error, cx);
+    });
+    cx.executor().advance_clock(crate::toasts::ANSWER * 4);
+    cx.run_until_parked();
+    draw(cx);
+    assert!(cx.debug_bounds("toast-notice").is_some(), "an error stays");
+    assert!(cx.debug_bounds("toast-notice-timer").is_none());
+    click_on(cx, "toast-close-notice");
+    draw(cx);
+    assert_eq!(read(&view, cx, Disktree::notice), None);
+
+    // So does a warning that something failed on the person's behalf.
+    update(&view, cx, |app, cx| {
+        app.say_until_closed(
+            "Remote identity changed; previous marks were cleared.",
+            Status::Warning,
+            cx,
+        );
+    });
+    cx.executor().advance_clock(crate::toasts::ANSWER * 4);
+    cx.run_until_parked();
+    assert!(read(&view, cx, Disktree::notice).is_some(), "it stays");
+}
+
+/// Unmark all's notice carries Undo, which puts the marks back.
+#[gpui_kit::test]
+fn unmark_all_offers_undo_on_its_toast(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+        app.clear_marks(cx);
+    });
+    draw(cx);
+    assert!(read(&view, cx, |app| app.marks.is_empty()));
+    click_on(cx, "toast-undo");
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.marks.len()), 1);
+}
+
+/// `junk` on a pretend 1 MB USB disk mounted inside the scan, the rest on
+/// a boot disk of `boot` bytes, as Review's probe finds them.
+fn two_disks(path: &Path, boot: u64) -> crate::mark_guard::Disk {
+    if path.components().any(|part| part.as_os_str() == "junk") {
+        crate::mark_guard::Disk {
+            key: "usb".into(),
+            capacity: 1_000_000,
+            name: "/Volumes/USB".into(),
+        }
+    } else {
+        crate::mark_guard::Disk {
+            key: "boot".into(),
+            capacity: boot,
+            name: "/".into(),
+        }
+    }
+}
+
+/// The fixture on a pretend 1 MB disk, with `junk` (300 kB, 30% of it)
+/// selected: past the default 5% limit.
+fn over_limit_view<'a>(
+    temp: &Path,
+    cx: &'a mut TestAppContext,
+) -> (Entity<Disktree>, &'a mut Window, Vec<usize>) {
+    let (view, cx) = view_over(temp, cx);
+    let junk = update(&view, cx, |app, cx| {
+        // Every path on one pretend 1 MB disk.
+        app.disk_probe = |_| {
+            Ok(crate::mark_guard::Disk {
+                key: "disk".into(),
+                capacity: 1_000_000,
+                name: "/".into(),
+            })
+        };
+        app.space = Some(SpaceInfo {
+            total: 1_000_000,
+            free: 100_000,
+            available: 100_000,
+            native: None,
+        });
+        let junk = app
+            .tree()
+            .and_then(|tree| tree.find("junk").map(|(crumbs, _)| crumbs))
+            .expect("the junk directory");
+        app.select(Some(junk.clone()), cx);
+        junk
+    });
+    draw(cx);
+    (view, cx, junk)
+}
+
+/// Past the limit, Space marks nothing; only the chevron's Mark anyway
+/// does, and Review then wants the phrase before anything is removed.
+#[gpui_kit::test]
+fn past_the_limit_marking_needs_mark_anyway_and_review_the_phrase(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = over_limit_view(temp.path(), cx);
+    assert!(cx.debug_bounds("mark-guard").is_some());
+    assert!(cx.debug_bounds("inspector-mark-more").is_some());
+
+    press(cx, "space");
+    read(&view, cx, |app| {
+        assert!(app.marks.is_empty());
+        assert!(app.notice().is_some_and(|(notice, _)| {
+            notice.contains("30%") && notice.contains("5% limit")
+        }));
+    });
+
+    click_on(cx, "inspector-mark-more");
+    assert!(cx.debug_bounds("mark-menu").is_some());
+    click_on(cx, "mark-anyway");
+    read(&view, cx, |app| {
+        assert_eq!(app.marks.len(), 1);
+        assert_eq!(app.mark_menu, None);
+    });
+
+    update(&view, cx, |app, _| {
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    press(cx, "c");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    assert!(cx.debug_bounds("over-limit-gate").is_some());
+    assert!(cx.debug_bounds("over-limit-matched").is_none());
+
+    // Enter commits nothing until the phrase is typed.
+    press(cx, "enter");
+    read(&view, cx, |app| {
+        assert!(!app.confirm_open);
+        assert!(app.run.is_none());
+        assert!(app.notice().is_some_and(|(notice, _)| {
+            notice.contains("delete 30% of my disk")
+        }));
+    });
+
+    // Close is not enough, and neither is the other mode's verb.
+    click_on(cx, "over-limit-phrase");
+    cx.simulate_input("trash 30% of my disk");
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-matched").is_none());
+    let typed = "trash 30% of my disk".chars().count();
+    cx.simulate_keystrokes(&vec!["backspace"; typed].join(" "));
+    cx.simulate_input("Delete 30%  of my disk");
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-matched").is_some());
+    // What the worker is held to is what was typed, not the 5% setting:
+    // a share that grew past 30% since is refused there.
+    update(&view, cx, |app, cx| {
+        let plan = app.plan();
+        let ceilings = app.removal_limit(&plan, cx).expect("confirmed");
+        assert_eq!(ceilings.of("disk").percent(), 30);
+    });
+
+    // Enter in the field commits, and the permanent dialog still asks.
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert!(read(&view, cx, |app| app.confirm_open));
+    assert!(
+        temp.path().join("junk").exists(),
+        "nothing has happened yet"
+    );
+    press(cx, "enter");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Running);
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut finished = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        finished = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if finished {
+            break;
+        }
+    }
+    assert!(finished, "the removal finished");
+    assert!(!temp.path().join("junk").exists());
+    assert!(temp.path().join("keep/notes.txt").exists());
+    // The phrase confirmed that removal only: the next one asks again.
+    read(&view, cx, |app| {
+        assert!(app.over_phrase.is_none());
+        assert_eq!(app.over_ticked, None);
+    });
+}
+
+/// A mark on a disk mounted inside the scan counts against that disk, not
+/// the scanned one. Review names each disk past the limit, and the worker
+/// holds each to the share confirmed for it and every other to the limit:
+/// 30% confirmed for one disk lets nothing past 5% on another.
+#[gpui_kit::test]
+fn past_the_limit_review_names_each_disk_and_holds_each_to_its_own_share(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, junk) = over_limit_view(temp.path(), cx);
+    let keep = update(&view, cx, |app, cx| {
+        // A boot disk large enough that nothing here nears its limit.
+        app.disk_probe = |path| Ok(two_disks(path, 1_000_000_000));
+        app.removal_mode = RemovalMode::Permanent;
+        app.mark_anyway(&junk, cx);
+        app.open_review(cx);
+        app.tree()
+            .and_then(|tree| tree.find("keep").map(|(crumbs, _)| crumbs))
+            .expect("the keep directory")
+    });
+    draw(cx);
+
+    // Only the USB disk is past the limit, and the gate says which.
+    assert!(cx.debug_bounds("over-limit-disk-0").is_some());
+    assert!(cx.debug_bounds("over-limit-disk-1").is_none());
+    update(&view, cx, |app, _| {
+        let gate = app.removal_gate(&app.plan()).expect("past the limit");
+        assert_eq!(gate.summary(), "30% of /Volumes/USB");
+        assert_eq!(app.gate_phrase(&gate), "delete 30% of my disk");
+    });
+    click_on(cx, "over-limit-phrase");
+    cx.simulate_input("delete 30% of my disk");
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-matched").is_some());
+    update(&view, cx, |app, cx| {
+        let plan = app.plan();
+        let ceilings = app.removal_limit(&plan, cx).expect("confirmed");
+        assert_eq!(ceilings.of("usb").percent(), 30);
+        assert_eq!(ceilings.of("boot").percent(), 5, "not confirmed");
+    });
+
+    // `keep` takes a small boot disk past the limit too: the gate lists
+    // both, the phrase names both shares, and the one typed is no longer
+    // enough.
+    update(&view, cx, |app, cx| {
+        // A 10 kB boot disk, which `keep` (1 kB) takes past the limit.
+        app.disk_probe = |path| Ok(two_disks(path, 10_000));
+        app.screen = Screen::Explore;
+        app.mark_anyway(&keep, cx);
+        app.open_review(cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-disk-0").is_some());
+    assert!(cx.debug_bounds("over-limit-disk-1").is_some());
+    assert!(cx.debug_bounds("over-limit-matched").is_none());
+    update(&view, cx, |app, cx| {
+        let plan = app.plan();
+        let gate = app.removal_gate(&plan).expect("past the limit");
+        assert_eq!(gate.summary(), "30% of /Volumes/USB and 10% of /");
+        assert_eq!(app.gate_phrase(&gate), "delete 30% and 10% of my disks");
+        let refused = app.removal_limit(&plan, cx).expect_err("unconfirmed");
+        assert!(
+            refused.contains("delete 30% and 10% of my disks"),
+            "{refused}"
+        );
+    });
+    // A click lands the caret where it falls in the text; clear from the
+    // end so every character typed before goes.
+    click_on(cx, "over-limit-phrase");
+    cx.simulate_keystrokes("end");
+    let typed = "delete 30% of my disk".chars().count();
+    cx.simulate_keystrokes(&vec!["backspace"; typed].join(" "));
+    cx.simulate_input("delete 30% and 10% of my disks");
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-matched").is_some());
+    update(&view, cx, |app, cx| {
+        let plan = app.plan();
+        let ceilings = app.removal_limit(&plan, cx).expect("confirmed");
+        assert_eq!(ceilings.of("usb").percent(), 30);
+        assert_eq!(ceilings.of("boot").percent(), 10);
+        assert_eq!(ceilings.of("elsewhere").percent(), 5);
+    });
+}
+
+/// An agent's confirmed removal is held to the agent limit on the worker,
+/// as its preview was. With the window's limit Off, the person's removal
+/// would be held only to 100%; an agent's that grew past 5% since its
+/// preview must still be refused, and nothing removed.
+#[cfg(any(unix, windows))]
+#[gpui_kit::test]
+fn an_agent_removal_stays_at_the_agent_limit_with_the_windows_off(
+    cx: &mut TestAppContext,
+) {
+    use disktree_link::{
+        ConfirmedRemoval, MarkRequest, RemovalChoice, Request, Response,
+    };
+
+    cx.update(init);
+    let temp = fixture();
+    let root = temp.path().to_path_buf();
+    let settings = tempfile::TempDir::new().expect("settings");
+    crate::safety::save_limit(Some(settings.path()), None).expect("off");
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, _| {
+        app.removal_settings_dir = Some(settings.path().to_path_buf());
+        app.safety_policy.replace(None);
+    });
+    draw(cx);
+
+    let mut link = Some(link_agent(&view, temp.path(), cx));
+    let mut ask = |cx: &mut Window, request: Request| -> Response {
+        ask_over(&view, &mut link, cx, request)
+    };
+    let hello = ask(
+        cx,
+        Request::Hello {
+            client: "Claude Code".into(),
+            version: disktree_link::VERSION,
+        },
+    );
+    assert!(matches!(hello, Response::State(_)), "{hello:?}");
+    ask(
+        cx,
+        Request::Mark {
+            root: root.clone(),
+            targets: vec![MarkRequest {
+                path: root.join("junk"),
+                bytes: 0,
+                is_dir: true,
+            }],
+        },
+    );
+
+    // The preview is checked at the agent limit, Off or not.
+    let preview = await_removal_preview(
+        &mut ask,
+        cx,
+        &Request::PrepareRemoval {
+            mode: RemovalChoice::Permanent,
+            decisions: None,
+            files: None,
+        },
+    );
+    assert_eq!(preview.limit_percent, 5);
+
+    // Since the preview, `junk` has become 30% of its disk: a pretend
+    // 1 MB disk stands in for growth the fixture cannot make on a real
+    // one. The person's removal would be allowed, the agent's is not.
+    update(&view, cx, |app, cx| {
+        app.disk_probe = |_| {
+            Ok(crate::mark_guard::Disk {
+                key: "disk".into(),
+                capacity: 1_000_000,
+                name: "/".into(),
+            })
+        };
+        let plan = app.plan();
+        let person = app.removal_limit(&plan, cx).expect("Off allows it");
+        assert_eq!(person.of("disk").percent(), 100);
+        let refused = app.agent_removal_limit(&plan).expect_err("held to 5%");
+        assert!(refused.contains("5% per-operation"), "{refused}");
+    });
+    let removed = ask(
+        cx,
+        Request::Remove(ConfirmedRemoval {
+            rescan: false,
+            preview_id: preview.preview_id.clone(),
+            mode: preview.mode,
+            paths: preview.paths.clone(),
+            confirmation: preview.mode.confirmation().into(),
+        }),
+    );
+    assert!(
+        matches!(
+            removed,
+            Response::Error { ref message } if message.contains("did not start")
+        ),
+        "{removed:?}"
+    );
+    read(&view, cx, |app| {
+        assert_ne!(app.screen, Screen::Running);
+        assert!(app.run.is_none());
+    });
+    assert!(root.join("junk/blob.bin").exists(), "nothing removed");
+}
+
+/// Settings › Safety relaxes the window, never an agent: Off gives the
+/// plain Mark back, Tick a box asks for a tick, and an agent is still held
+/// to 5%.
+#[gpui_kit::test]
+fn safety_settings_relax_the_window_but_never_an_agent(
+    cx: &mut TestAppContext,
+) {
+    use crate::safety::{Confirm, save_confirm, save_limit};
+
+    cx.update(init);
+    let temp = fixture();
+    let settings = tempfile::TempDir::new().expect("settings");
+    save_confirm(Some(settings.path()), Confirm::Tick).expect("tick");
+    let (view, cx, junk) = over_limit_view(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.removal_settings_dir = Some(settings.path().to_path_buf());
+        app.safety_policy.replace(None);
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("inspector-mark-more").is_some());
+
+    // Ticked for 30% to the trash, then the mode changes: the tick was
+    // for the other one.
+    update(&view, cx, |app, cx| {
+        app.mark_anyway(&junk, cx);
+        app.removal_mode = RemovalMode::Trash;
+        app.open_review(cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-phrase").is_none());
+    click_on(cx, "over-limit-tick");
+    let met = |view: &Entity<Disktree>, cx: &mut Window| {
+        update(view, cx, |app, cx| {
+            let plan = app.plan();
+            let share = app.removal_gate(&plan).expect("past the limit");
+            app.gate_met(&share, cx)
+        })
+    };
+    assert!(met(&view, cx));
+    update(&view, cx, |app, _| {
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    assert!(!met(&view, cx), "a tick is for one mode");
+
+    update(&view, cx, |app, _| {
+        app.removal_mode = RemovalMode::OwnerCleanup;
+    });
+    assert!(!met(&view, cx), "trash approval cannot authorize cleanup");
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-tick").is_some());
+
+    // Off: no gate in Review, the plain Mark in the inspector, and an
+    // agent still held to 5%.
+    save_limit(Some(settings.path()), None).expect("off");
+    update(&view, cx, |app, cx| {
+        app.safety_policy.replace(None);
+        let plan = app.plan();
+        assert_eq!(app.removal_gate(&plan), None);
+        app.clear_marks(cx);
+        app.screen = Screen::Explore;
+        app.select(Some(junk.clone()), cx);
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("inspector-mark-more").is_none());
+    assert!(cx.debug_bounds("mark-guard").is_none());
+    update(&view, cx, |app, _| {
+        let target = app.target_at(&junk).expect("junk");
+        assert!(
+            app.agent_mark_refusal(&target)
+                .is_some_and(|reason| reason.contains("5% limit"))
+        );
+    });
+    press(cx, "space");
+    assert_eq!(read(&view, cx, |app| app.marks.len()), 1);
+}
+
+/// A fixture `uv` that answers the version and cache-root probes and
+/// records a cleanup instead of doing one. It lives outside the scan, and
+/// tests point `cleanup_path` at it so no real tool on this machine is
+/// ever probed or run.
+#[cfg(unix)]
+fn mock_uv(cache: &std::path::Path) -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let bin = tempfile::TempDir::new().expect("fixture bin");
+    let uv = bin.path().join("uv");
+    std::fs::write(
+        &uv,
+        "#!/bin/sh\nhere=${0%/*}\ncase \"$1 $2\" in\n  '--version ') printf '%s\\n' 'uv 0.11.0';;\n  'cache dir') /bin/cat \"$here/cache-root\";;\n  'cache clean') printf '%s\\n' \"$@\" > \"$here/invocation\";;\n  *) exit 97;;\nesac\n",
+    )
+    .expect("mock uv");
+    std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755))
+        .expect("executable");
+    std::fs::write(
+        bin.path().join("cache-root"),
+        format!("{}\n", cache.display()),
+    )
+    .expect("cache root");
+    bin
+}
+
+/// Give `root` uv's cache layout: the tag uv writes and one of its
+/// versioned buckets.
+#[cfg(unix)]
+fn uv_layout(root: &Path) {
+    std::fs::create_dir_all(root.join("wheels-v5")).expect("uv bucket");
+    std::fs::write(
+        root.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55",
+    )
+    .expect("uv tag");
+}
+
+/// Where `npm_cache` puts npm's package cache under `root`, joined part by
+/// part so it reads the same as a scanned path on Windows.
+fn npm_cache_dir(root: &Path) -> PathBuf {
+    root.join(".npm").join("_cacache")
+}
+
+/// An npm package cache, by the name only npm gives it, holding one
+/// file; returns that file.
+fn npm_cache(root: &Path) -> PathBuf {
+    let file = npm_cache_dir(root).join("content-v2").join("blob.bin");
+    std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+    std::fs::write(&file, vec![b'x'; 300_000]).expect("payload");
+    file
+}
+
+/// Cleanup's in-use check sees any running `uv`, the other test's mock
+/// included, so the tests that run one take turns.
+#[cfg(unix)]
+static MOCK_OWNER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Mark three paths and open Review over them, cache cleanup chosen.
+#[cfg(unix)]
+fn cache_cleanup_view<'a>(
+    temp: &tempfile::TempDir,
+    cx: &'a mut TestAppContext,
+) -> (
+    Entity<Disktree>,
+    &'a mut Window,
+    [PathBuf; 3],
+    tempfile::TempDir,
+) {
+    for name in [".cache/uvdata/payload", ".cache/stale/payload"] {
+        let file = temp.path().join(name);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        std::fs::write(file, vec![b'x'; 50_000]).expect("payload");
+    }
+    // uv's own layout, so it is recognized wherever it was moved: Review
+    // goes to Cache cleanup for it, and only for a cache it knows.
+    uv_layout(&temp.path().join(".cache/uvdata"));
+    let (view, cx) = view_over(temp.path(), cx);
+    let root = read(&view, cx, |app| app.root_path.clone());
+    let paths = [
+        root.join(".cache/uvdata"),
+        root.join(".cache/stale"),
+        root.join("junk"),
+    ];
+    let bin = mock_uv(&paths[0]);
+    update(&view, cx, |app, cx| {
+        app.cleanup_path = Some(bin.path().display().to_string());
+        let cache = child_crumbs(app, &[], ".cache");
+        for name in ["uvdata", "stale"] {
+            let crumbs = child_crumbs(app, &cache, name);
+            app.toggle_mark(&crumbs, cx);
+        }
+        let junk = child_crumbs(app, &[], "junk");
+        app.toggle_mark(&junk, cx);
+        app.open_review(cx);
+    });
+    inspect_raw(&view, cx);
+    read(&view, cx, |app| {
+        assert_eq!(app.removal_mode, RemovalMode::OwnerCleanup);
+    });
+    (view, cx, paths, bin)
+}
+
+#[cfg(unix)]
+fn await_owners(view: &Entity<Disktree>, cx: &Window) {
+    for _ in 0..400 {
+        cx.run_until_parked();
+        if read(view, cx, |app| app.cleanup_ready().is_ok()) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("owners were not checked");
+}
+
+#[cfg(unix)]
+fn await_done(view: &Entity<Disktree>, cx: &mut Window) {
+    let epoch = read(view, cx, |app| app.run_epoch);
+    for _ in 0..800 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let done = update(view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if done {
+            return;
+        }
+    }
+    panic!("cleanup did not finish");
+}
+
+/// Each marked path is decided on its own; nothing is chosen for the
+/// person; deleting files needs its own tick; and every path gets a result.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn cache_cleanup_decides_each_path_and_deleting_files_needs_its_own_tick(
+    cx: &mut TestAppContext,
+) {
+    use disktree_core::cleanup::{Action, Decision, Outcome, Problem};
+    let _turn = MOCK_OWNER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, [uvdata, stale, junk], bin) = cache_cleanup_view(&temp, cx);
+    draw(cx);
+    assert!(cx.debug_bounds("check-owners").is_some());
+    // Commit first checks owners; it never runs anything.
+    update(&view, cx, |app, cx| app.commit(false, cx));
+    await_owners(&view, cx);
+    draw(cx);
+    let index = |path: &PathBuf| {
+        read(&view, cx, |app| {
+            app.marks
+                .items()
+                .iter()
+                .position(|item| item.path == *path)
+                .expect("marked")
+        })
+    };
+    let (owner, files, skip) = (index(&uvdata), index(&stale), index(&junk));
+    for proposal in [owner, files, skip] {
+        assert!(
+            cx.debug_bounds(Box::leak(
+                format!("cleanup-proposal-{proposal}").into_boxed_str()
+            ))
+            .is_some()
+        );
+    }
+    read(&view, cx, |app| {
+        let prepared = app.cleanup_ready().expect("checked");
+        let ready = &prepared.proposals[owner];
+        assert_eq!(ready.operations.len(), 1);
+        let operation = &prepared.operations[ready.operations[0]];
+        assert_eq!(operation.scope, uvdata);
+        assert_eq!(operation.version, "uv 0.11.0");
+        assert!(
+            operation
+                .command
+                .executable
+                .starts_with(std::fs::canonicalize(bin.path()).expect("bin"))
+        );
+        assert_eq!(
+            prepared.proposals[files].issue.as_ref().map(|i| i.problem),
+            Some(Problem::UnknownOwner)
+        );
+        for index in 0..3 {
+            assert_eq!(app.cleanup_decision(index), Decision::Skip);
+        }
+    });
+
+    update(&view, cx, |app, cx| {
+        // Nothing chosen: nothing to confirm.
+        app.commit(false, cx);
+        assert!(!app.confirm_open);
+        assert!(app.notice().expect("why").0.contains("Nothing chosen"));
+        // An owner command is never offered for an unknown cache.
+        app.decide_cleanup(files, Decision::Owner, cx);
+        assert_eq!(app.cleanup_decision(files), Decision::Skip);
+        app.decide_cleanup(owner, Decision::Owner, cx);
+        app.decide_cleanup(files, Decision::DeleteFiles, cx);
+        app.set_cleanup_files(Action::Permanent, cx);
+        app.commit(false, cx);
+        assert!(app.confirm_open, "both intents to confirm");
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("cleanup-files-tick").is_some());
+    assert!(
+        cx.debug_bounds(Box::leak(
+            format!("cleanup-delete-{files}").into_boxed_str()
+        ))
+        .is_some()
+    );
+    update(&view, cx, |app, cx| {
+        // Confirming the commands is not consent to delete files.
+        app.confirm_delete(cx);
+        assert!(app.run.is_none());
+        assert!(app.notice().expect("why").0.contains("Tick"));
+        app.commit(false, cx);
+        app.tick_cleanup_files(cx);
+        app.confirm_delete(cx);
+        assert_eq!(app.screen, Screen::Running);
+    });
+    await_done(&view, cx);
+    read(&view, cx, |app| {
+        let results: Vec<_> = app
+            .cleanup_results
+            .iter()
+            .map(|report| (report.path.clone(), report.action, report.outcome))
+            .collect();
+        assert!(results.contains(&(
+            junk.clone(),
+            Action::Skip,
+            Outcome::Skipped
+        )));
+        assert!(results.contains(&(
+            uvdata.clone(),
+            Action::Owner,
+            Outcome::Succeeded
+        )));
+        assert!(results.contains(&(
+            stale.clone(),
+            Action::Permanent,
+            Outcome::Succeeded
+        )));
+        assert!(app.cleanup_review.is_none(), "decisions are consumed");
+    });
+    assert!(bin.path().join("invocation").exists(), "the owner ran");
+    assert!(
+        uvdata.join("payload").exists(),
+        "the mock owner deletes nothing"
+    );
+    assert!(!stale.exists(), "deleted as chosen");
+    assert!(junk.join("blob.bin").exists(), "skipped means untouched");
+    assert!(temp.path().join("keep/notes.txt").exists());
+}
+
+/// Review's cache decisions against a model of them. After any command a
+/// person can give (an action for one path, Trash or permanent, the
+/// consent tick) the window shows the model's decisions, its kept
+/// approval equals a fresh one, a change to what is deleted clears the
+/// tick, and the export still lists exactly the marked paths.
+///
+/// Cases come from a seed, named when one breaks the rule; set
+/// `PWRDISK_SEED` to replay it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn cache_cleanup_decisions_follow_a_model_of_them(cx: &mut TestAppContext) {
+    use disktree_core::cleanup::{Action, Decision};
+
+    /// `SplitMix64`, as disktree-core's tests use, picking commands.
+    fn next(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    let _turn = MOCK_OWNER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _, _bin) = cache_cleanup_view(&temp, cx);
+    update(&view, cx, |app, cx| app.commit(false, cx));
+    await_owners(&view, cx);
+    let (marked, exported, trash) = read(&view, cx, |app| {
+        (
+            app.marks.len(),
+            app.export_text(false).expect("marked list").0,
+            app.trash_backend.is_available(),
+        )
+    });
+    assert_eq!(exported.lines().count(), marked);
+    let initial = read(&view, cx, Disktree::cleanup_files);
+    let first = std::env::var("PWRDISK_SEED")
+        .ok()
+        .and_then(|seed| seed.parse().ok())
+        .unwrap_or_else(|| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            now.as_secs().wrapping_mul(1_000_003)
+                ^ u64::from(now.subsec_nanos())
+        });
+    for seed in (0..8).map(|run| first.wrapping_add(run)) {
+        // Each seed starts from the same state, so it replays alone.
+        update(&view, cx, |app, cx| {
+            for index in 0..marked {
+                app.decide_cleanup(index, Decision::Skip, cx);
+            }
+            app.set_cleanup_files(initial, cx);
+        });
+        let mut decisions = vec![Decision::Skip; marked];
+        let mut files = initial;
+        let mut ticked = false;
+        let mut state = seed;
+        let mut history = vec![];
+        for _ in 0..30 {
+            let command = next(&mut state) % 3;
+            let index = usize::try_from(next(&mut state) % marked as u64)
+                .expect("index");
+            let decision =
+                [Decision::Skip, Decision::Owner, Decision::DeleteFiles]
+                    [usize::try_from(next(&mut state) % 3).expect("index")];
+            let action = if next(&mut state).is_multiple_of(2) {
+                Action::Trash
+            } else {
+                Action::Permanent
+            };
+            update(&view, cx, |app, cx| match command {
+                0 => {
+                    history.push(format!("decide {index} {decision:?}"));
+                    let offered =
+                        app.cleanup_ready().expect("checked").proposals[index]
+                            .allows(decision);
+                    if offered {
+                        decisions[index] = decision;
+                        ticked = false;
+                    }
+                    app.decide_cleanup(index, decision, cx);
+                }
+                1 => {
+                    history.push(format!("files {action:?}"));
+                    if action != Action::Trash || trash {
+                        files = action;
+                        ticked = false;
+                    }
+                    app.set_cleanup_files(action, cx);
+                }
+                _ => {
+                    history.push("tick".into());
+                    ticked = !ticked;
+                    app.tick_cleanup_files(cx);
+                }
+            });
+            let case = format!("seed {seed}: after {history:?}");
+            read(&view, cx, |app| {
+                let shown: Vec<_> = (0..marked)
+                    .map(|index| app.cleanup_decision(index))
+                    .collect();
+                assert_eq!(shown, decisions, "{case}");
+                assert_eq!(app.cleanup_files(), files, "{case}");
+                assert_eq!(app.cleanup_files_ticked(), ticked, "{case}");
+                let fresh = app
+                    .cleanup_ready()
+                    .expect("checked")
+                    .approve(&decisions, files);
+                match (app.cleanup_approved(), fresh) {
+                    (Ok(kept), Ok(fresh)) => {
+                        assert_eq!(kept.steps, fresh.steps, "{case}");
+                        assert_eq!(kept.decisions, fresh.decisions, "{case}");
+                        assert_eq!(kept.files, fresh.files, "{case}");
+                        assert_eq!(
+                            kept.confirmation(),
+                            fresh.confirmation(),
+                            "{case}"
+                        );
+                    }
+                    (Err(kept), Err(fresh)) => {
+                        assert_eq!(kept, fresh, "{case}");
+                    }
+                    (kept, fresh) => panic!(
+                        "{case}: kept {:?}, fresh {:?}",
+                        kept.map(|approved| &approved.steps),
+                        fresh.map(|approved| approved.steps)
+                    ),
+                }
+                assert_eq!(
+                    app.export_text(false).expect("marked list").0,
+                    exported,
+                    "{case}: decisions changed the export"
+                );
+            });
+        }
+    }
+}
+
+/// An agent relays the same proposals and the person's choices. Without
+/// decisions nothing can be confirmed; deleting files is named in the
+/// confirmation; and the window's own choices are never used for it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_agent_confirms_cache_decisions_by_path_with_both_intents_named(
+    cx: &mut TestAppContext,
+) {
+    use disktree_core::cleanup::{Decision, RUN_AND_DELETE};
+    use disktree_link::{
+        ConfirmedRemoval, PathDecision, RemovalChoice, Request, Response,
+    };
+    let _turn = MOCK_OWNER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, [uvdata, stale, junk], bin) = cache_cleanup_view(&temp, cx);
+    let socket = temp.path().join("cleanup.sock");
+    let listener = disktree_link::Listener::bind_at(&socket).expect("link");
+    update(&view, cx, |app, cx| app.attach_agent(listener, cx));
+    let mut ask = |cx: &mut Window, request: Request| {
+        update(&view, cx, |app, cx| app.answer_agent(&request, cx))
+    };
+    let proposals = Request::PrepareRemoval {
+        mode: RemovalChoice::OwnerCleanup,
+        decisions: None,
+        files: None,
+    };
+    let listed = await_removal_preview(&mut ask, cx, &proposals);
+    assert_eq!(listed.proposals.len(), 3);
+    assert!(listed.confirmation.is_empty(), "nothing to confirm yet");
+    assert!(listed.paths.is_empty());
+    assert!(listed.consent.contains("Owner command (choose owner)"));
+    assert!(matches!(
+        ask(
+            cx,
+            Request::Remove(ConfirmedRemoval {
+                preview_id: listed.preview_id,
+                mode: RemovalChoice::OwnerCleanup,
+                paths: vec![],
+                confirmation: "RUN OWNER CLEANUP".into(),
+                rescan: false,
+            })
+        ),
+        Response::Error { .. }
+    ));
+
+    let decide = |files: Option<RemovalChoice>| Request::PrepareRemoval {
+        mode: RemovalChoice::OwnerCleanup,
+        decisions: Some(vec![
+            PathDecision {
+                path: uvdata.clone(),
+                action: Decision::Owner,
+            },
+            PathDecision {
+                path: stale.clone(),
+                action: Decision::DeleteFiles,
+            },
+            PathDecision {
+                path: junk.clone(),
+                action: Decision::Skip,
+            },
+        ]),
+        files,
+    };
+    assert!(matches!(
+        ask(cx, decide(None)),
+        Response::Error { message } if message.contains("Trash or permanent")
+    ));
+    let Response::RemovalPreview(preview) =
+        ask(cx, decide(Some(RemovalChoice::Permanent)))
+    else {
+        panic!("decided preview");
+    };
+    assert_eq!(preview.confirmation, RUN_AND_DELETE);
+    assert_eq!(preview.paths.len(), 2);
+    assert!(!preview.paths.contains(&junk), "skip is not executed");
+    assert!(preview.consent.contains("Delete files directly"));
+    let confirmed = |preview: &disktree_link::RemovalPreview, text: &str| {
+        Request::Remove(ConfirmedRemoval {
+            preview_id: preview.preview_id.clone(),
+            mode: RemovalChoice::OwnerCleanup,
+            paths: preview.paths.clone(),
+            confirmation: text.into(),
+            rescan: false,
+        })
+    };
+    // Owner approval alone is not approval to delete files.
+    assert!(matches!(
+        ask(cx, confirmed(&preview, "RUN OWNER CLEANUP")),
+        Response::Error { .. }
+    ));
+    assert!(stale.exists());
+    let Response::RemovalPreview(preview) =
+        ask(cx, decide(Some(RemovalChoice::Permanent)))
+    else {
+        panic!("new preview after a refused confirmation");
+    };
+    read(&view, cx, |app| {
+        for index in 0..3 {
+            assert_eq!(app.cleanup_decision(index), Decision::Skip);
+        }
+    });
+    let started = ask(cx, confirmed(&preview, RUN_AND_DELETE));
+    assert!(
+        matches!(&started, Response::State(state) if state.screen == "running"),
+        "{started:?}"
+    );
+    await_done(&view, cx);
+    let results = read(&view, cx, |app| app.cleanup_results.clone());
+    assert!(bin.path().join("invocation").exists(), "{results:#?}");
+    assert!(uvdata.join("payload").exists());
+    assert!(!stale.exists());
+    assert!(junk.join("blob.bin").exists());
+}
+
+/// Once a set filters, hovering another chip of it offers "only": one
+/// click from Code to just Cache, where the chip itself would add Cache.
+/// The chip's tooltip waits, then starts below the pointer rather than
+/// under it, so it never covers the pill or the next chip.
+#[gpui_kit::test]
+fn the_only_pill_switches_kinds_and_the_tooltip_stays_clear(
+    cx: &mut TestAppContext,
+) {
+    use crate::legend::{Chip, ChipId};
+    use disktree_core::classify::Category;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    draw(cx);
+    let kind = |wanted: Category| {
+        ChipId::Kind(
+            Category::LEGEND
+                .iter()
+                .position(|kind| *kind == wanted)
+                .unwrap(),
+        )
+    };
+    let (code, cache) = (kind(Category::Code), kind(Category::Cache));
+    let key = Box::leak(cache.key().into_boxed_str());
+    let pill = Box::leak(format!("{key}-only").into_boxed_str());
+
+    // Nothing set: a click already means only, so there is no pill.
+    let chip = cx.debug_bounds(key).expect("Cache is on the row");
+    let at = chip.center();
+    cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::default());
+    draw(cx);
+    assert!(cx.debug_bounds(pill).is_none(), "no pill with nothing set");
+
+    // Code is empty in the fixture, so setting it brings it from "+N"
+    // to the row, and Cache moves along.
+    cx.simulate_mouse_move(
+        gpui_kit::point(px(700.), px(600.)),
+        None,
+        gpui_kit::Modifiers::default(),
+    );
+    update(&view, cx, |app, cx| app.cycle_legend(code, cx));
+    draw(cx);
+    let chip = cx.debug_bounds(key).expect("Cache is on the row");
+    let at = chip.center();
+    cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::default());
+    draw(cx);
+    let only = cx.debug_bounds(pill).expect("the pill, once Code is set");
+    assert!(chip.contains(&only.center()), "laid over the chip");
+
+    // The tooltip waits for the pointer to rest, then starts below it.
+    assert!(cx.debug_bounds("app-tooltip").is_none(), "not at once");
+    cx.executor().advance_clock(
+        crate::widgets::TOOLTIP_DELAY + std::time::Duration::from_millis(100),
+    );
+    draw(cx);
+    let tip = cx.debug_bounds("app-tooltip-surface").expect("a tooltip");
+    assert!(
+        tip.top() >= at.y + crate::ui::size::TOOLTIP_CLEARANCE,
+        "the tooltip clears the cursor: {tip:?} vs {at:?}"
+    );
+    assert!(!tip.contains(&only.center()), "and the pill");
+
+    click_on(cx, pill);
+    cx.run_until_parked();
+    assert_eq!(read(&view, cx, |app| app.legend.get(cache)), Chip::Only);
+    assert_eq!(read(&view, cx, |app| app.legend.get(code)), Chip::Shown);
+    // A chip may move under the pointer when Code goes back to "+N".
+    // Judge any new hover by the actual bounds, not the old row's spacing.
+    if let Some(hovered) = read(&view, cx, |app| app.legend_hover) {
+        let key = Box::leak(hovered.key().into_boxed_str());
+        let chip = cx.debug_bounds(key).expect("hovered chip is drawn");
+        assert!(chip.contains(&only.center()), "hover follows hit testing");
+    }
+}
+
+/// The preference changes a live Settings window and every formatter, and
+/// a restart reads the same pick. Process isolation keeps concurrent tests'
+/// historical binary fixtures independent of this application's choices.
+#[gpui_kit::test]
+fn size_units_settings_apply_and_save_every_choice(cx: &mut TestAppContext) {
+    use crate::settings::{Pane, SettingsWindow};
+    use disktree_core::{
+        size::{self as sizes, SizeUnits},
+        size_preferences,
+    };
+    const CHILD: &str = "PWRDISK_SIZE_SETTINGS_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(
+            std::env::current_exe().expect("test binary"),
+        )
+        .args([
+            "--exact",
+            "tests::size_units_settings_apply_and_save_every_choice",
+        ])
+        .env(CHILD, "1")
+        .status()
+        .expect("settings process");
+        assert!(status.success());
+        return;
+    }
+    cx.update(init);
+    let dir = tempfile::tempdir().expect("settings directory");
+    let (settings, cx) = cx.add_window_view(|_, cx| {
+        let mut view = SettingsWindow::new(Pane::General, cx);
+        view.updates_dir = Some(dir.path().to_path_buf());
+        view
+    });
+    for units in SizeUnits::ALL {
+        settings.update(cx, |settings, cx| settings.pick_size_units(units, cx));
+        draw(cx);
+        assert_eq!(sizes::units(), units);
+        assert_eq!(sizes::human_bytes(1_000_000), units.format(1_000_000));
+        assert_eq!(
+            disktree_mcp::report::observed(Some(1_000_000)),
+            format!("+{}", units.format(1_000_000)),
+        );
+        assert_eq!(
+            size_preferences::load(
+                &dir.path().join(size_preferences::FILE_NAME)
+            )
+            .expect("restart"),
+            units
+        );
+        assert!(settings.read_with(cx, |settings, _| settings.note.is_none()));
+        assert!(cx.debug_bounds("size-units").is_some());
+    }
 }

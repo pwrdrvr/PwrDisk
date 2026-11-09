@@ -288,18 +288,22 @@ impl Governor {
 use std::io;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Condvar};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::scan::ScanProgress;
 
-pub(crate) struct ControllerGuard {
+/// The admission controller's thread, stopped and joined on drop. Scoped:
+/// the queue it samples holds the walk's nodes, which borrow the tree
+/// being built.
+pub(crate) struct ControllerGuard<'scope> {
     stop: Arc<(Mutex<bool>, Condvar)>,
-    worker: Option<JoinHandle<()>>,
+    worker: Option<thread::ScopedJoinHandle<'scope, ()>>,
 }
 
-impl ControllerGuard {
-    pub(crate) fn spawn<T: Send + 'static>(
+impl<'scope> ControllerGuard<'scope> {
+    pub(crate) fn spawn<'env, T: Send + 'scope>(
+        scope: &'scope thread::Scope<'scope, 'env>,
         options: ScanThreads,
         admission: Arc<Admission<T>>,
         progress: Arc<ScanProgress>,
@@ -311,7 +315,7 @@ impl ControllerGuard {
         let wake = Arc::clone(&stop);
         let worker = thread::Builder::new()
             .name("disktree-admission".into())
-            .spawn(move || {
+            .spawn_scoped(scope, move || {
             control(options, &admission, &progress, &wake);
         })?;
         Ok(Some(Self {
@@ -321,7 +325,7 @@ impl ControllerGuard {
     }
 }
 
-impl Drop for ControllerGuard {
+impl Drop for ControllerGuard<'_> {
     fn drop(&mut self) {
         *self.stop.0.lock().unwrap_or_else(PoisonError::into_inner) = true;
         self.stop.1.notify_one();
