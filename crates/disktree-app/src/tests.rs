@@ -7834,12 +7834,28 @@ fn focus_review_delete_cancel_enter_preserves_the_fixture(
     assert_eq!(read(&view, cx, |app| app.screen), Screen::Running);
     let epoch = read(&view, cx, |app| app.run_epoch);
     let mut finished = false;
-    for _ in 0..400 {
+    for poll in 0..400 {
+        let _ = poll;
         std::thread::sleep(std::time::Duration::from_millis(5));
         finished = update(&view, cx, |app, cx| {
             app.poll_removal_once(epoch, cx);
             app.screen == Screen::Done
         });
+        #[cfg(feature = "removal-diagnostics")]
+        if poll % 100 == 0 || poll == 399 || finished {
+            read(&view, cx, |app| {
+                eprintln!(
+                    "removal poll={poll} screen={:?} epoch={epoch}/{} run_checked={} list={:?} junk_exists={} keep_exists={}\n{}",
+                    app.screen, app.run_epoch, app.run_checked,
+                    app.run_list.totals(), temp.path().join("junk").exists(),
+                    temp.path().join("keep/notes.txt").exists(),
+                    app.run.as_ref().map_or_else(
+                        || "run handle cleared".into(),
+                        disktree_core::removal::RemovalHandle::diagnostics,
+                    ),
+                );
+            });
+        }
         if finished {
             break;
         }

@@ -36,6 +36,21 @@ thread_local! {
     };
 }
 
+#[cfg(feature = "removal-diagnostics")]
+mod diagnostics;
+#[cfg(feature = "removal-diagnostics")]
+use diagnostics::EventSender;
+#[cfg(not(feature = "removal-diagnostics"))]
+type EventSender = mpsc::Sender<RemovalEvent>;
+
+// Diagnostics observe boundaries; they never change admission or outcomes.
+macro_rules! removal_progress {
+    ($sender:expr, $stage:literal) => {
+        #[cfg(feature = "removal-diagnostics")]
+        $sender.progress.record($stage);
+    };
+}
+
 mod approval;
 pub use approval::ApprovalScope;
 
@@ -1456,6 +1471,8 @@ pub enum RemovalEvent {
 pub struct RemovalHandle {
     events: Receiver<RemovalEvent>,
     cancel: Arc<AtomicBool>,
+    #[cfg(feature = "removal-diagnostics")]
+    progress: diagnostics::Progress,
 }
 
 impl RemovalHandle {
@@ -1463,7 +1480,16 @@ impl RemovalHandle {
     pub fn poll(&self) -> Option<RemovalEvent> {
         // Empty and Disconnected mean the same thing to the caller: there is
         // nothing more to do this tick.
-        self.events.try_recv().ok()
+        let event = self.events.try_recv();
+        #[cfg(feature = "removal-diagnostics")]
+        self.progress.polled(&event);
+        event.ok()
+    }
+
+    /// A path-free snapshot for controlled headless investigation builds.
+    #[cfg(feature = "removal-diagnostics")]
+    pub fn diagnostics(&self) -> String {
+        self.progress.snapshot()
     }
 
     /// Stop before the next target starts.
@@ -1559,6 +1585,11 @@ fn start(
     spawn: impl FnOnce(Work) -> io::Result<()>,
 ) -> RemovalHandle {
     let (sender, events) = mpsc::channel();
+    #[cfg(feature = "removal-diagnostics")]
+    let sender = EventSender::new(sender);
+    #[cfg(feature = "removal-diagnostics")]
+    let progress = sender.progress.clone();
+    removal_progress!(sender, "queued");
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
     let backend = backend_for(mode, cleanup.as_ref());
@@ -1570,6 +1601,9 @@ fn start(
         let plan = Arc::clone(&plan);
         let sender = sender.clone();
         move || {
+            #[cfg(feature = "removal-diagnostics")]
+            let _exit = sender.worker();
+            removal_progress!(sender, "worker entered");
             // Every path has a result, the skipped ones included.
             if let Some(approved) = &cleanup {
                 for report in &approved.skipped {
@@ -1578,6 +1612,7 @@ fn start(
             }
             // A cleanup admits each step on its own measurement; only the
             // capacity ceiling refuses the whole run.
+            removal_progress!(sender, "approval check");
             let scope = plan.check_approval();
             let scope_failed = scope.is_err();
             let checked = scope.and_then(|()| {
@@ -1594,6 +1629,7 @@ fn start(
                             approved.admit(limit.as_ref().unwrap_or(&default))
                         })
                 } else {
+                    removal_progress!(sender, "raw cache inspection");
                     crate::cleanup::check_raw(&plan.targets).map(|()| vec![])
                 }
             });
@@ -1622,8 +1658,10 @@ fn start(
             if let Some(limit) =
                 limit.filter(|_| mode != RemovalMode::OwnerCleanup)
             {
+                removal_progress!(sender, "fresh guard plan");
                 let fresh = self::plan(&plan.targets, &plan.root);
                 let checked = if fresh.blocked.is_empty() {
+                    removal_progress!(sender, "fresh capacity and scan");
                     limit.check_fresh(&plan.targets, &plan.scan_options)
                 } else {
                     Err("Removal guards changed before preflight; nothing was removed".into())
@@ -1655,7 +1693,12 @@ fn start(
         );
     }
 
-    RemovalHandle { events, cancel }
+    RemovalHandle {
+        events,
+        cancel,
+        #[cfg(feature = "removal-diagnostics")]
+        progress,
+    }
 }
 
 /// A whole run that removed nothing: every target failed for `reason`,
@@ -1663,7 +1706,7 @@ fn start(
 fn fail_all(
     targets: &[Target],
     reason: &str,
-    sender: &mpsc::Sender<RemovalEvent>,
+    sender: &EventSender,
 ) {
     for target in targets {
         let _ = sender.send(RemovalEvent::Item {
@@ -1688,7 +1731,7 @@ fn run(
         &[Option<crate::cleanup::Issue>],
     )>,
     cancel: &AtomicBool,
-    sender: &mpsc::Sender<RemovalEvent>,
+    sender: &EventSender,
 ) {
     use crate::cleanup::{Action, Issue, Problem};
     let _ = sender.send(RemovalEvent::Start {
@@ -1700,7 +1743,9 @@ fn run(
     // The plan was judged against a mount table up to `MOUNTS_FRESH` old,
     // or, right after start, not read yet. Judged again against a fresh
     // read, here on the worker, before anything is touched.
+    removal_progress!(sender, "fresh mount table");
     let mounts = read_mount_table();
+    removal_progress!(sender, "mount table returned");
     // Links too: one put on the way down since the plan was made would lead
     // the trash out of the root. Permanent removal on Unix refuses that by
     // itself; see [`open_parent`].
@@ -1721,6 +1766,7 @@ fn run(
         }
         // The /run/media exception must still hold when removal starts;
         // a disk may have been unmounted since the review was displayed.
+        removal_progress!(sender, "target guard and approval");
         let reason = judge(
             &target.path,
             &plan.root,
@@ -1749,7 +1795,10 @@ fn run(
         } else {
             match mode {
                 RemovalMode::Permanent => {
-                    remove_permanently(&target.path, &plan.root)
+                    removal_progress!(sender, "permanent filesystem remove");
+                    let result = remove_permanently(&target.path, &plan.root);
+                    removal_progress!(sender, "permanent remove returned");
+                    result
                 }
                 RemovalMode::Trash => move_to_trash(&target.path, backend),
                 RemovalMode::OwnerCleanup => Ok(()),
@@ -1821,6 +1870,7 @@ fn run(
         && plan.root.parent().is_none()
         && crate::access::administrator() == Some(true)
     {
+        removal_progress!(sender, "volume flush");
         let _ = crate::windows::flush_volume(&plan.root);
     }
 

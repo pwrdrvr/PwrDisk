@@ -15,6 +15,7 @@ path = "src/main.rs"
 workspace = true
 
 [features]
+removal-diagnostics = ["disktree-core/removal-diagnostics"]
 # Development binary only; main.rs rejects release builds with this enabled.
 screenshots = ["gpui-kit/test-support", "dep:image"]
 
