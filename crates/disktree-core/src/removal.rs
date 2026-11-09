@@ -1492,6 +1492,12 @@ impl RemovalHandle {
         self.progress.snapshot()
     }
 
+    /// Observe worker exit after a diagnostic test has already failed.
+    #[cfg(feature = "removal-diagnostics")]
+    pub fn diagnostics_after_failure(&self) -> String {
+        self.progress.after_failure()
+    }
+
     /// Stop before the next target starts.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);

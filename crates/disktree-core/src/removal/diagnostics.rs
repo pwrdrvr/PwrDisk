@@ -2,13 +2,13 @@
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
-use std::sync::{Arc, Mutex, mpsc};
-use std::time::Instant;
+use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use super::RemovalEvent;
 
 #[derive(Clone, Debug)]
-pub(super) struct Progress(Arc<Mutex<Trace>>);
+pub(super) struct Progress(Arc<(Mutex<Trace>, Condvar)>);
 
 #[derive(Debug)]
 struct Trace {
@@ -18,9 +18,10 @@ struct Trace {
     received: [u64; 4],
     empty: u64,
     disconnected: u64,
+    exited: bool,
 }
 
-fn kind(event: &RemovalEvent) -> usize {
+const fn kind(event: &RemovalEvent) -> usize {
     match event {
         RemovalEvent::Cleanup(_) => 0,
         RemovalEvent::Start { .. } => 1,
@@ -31,18 +32,23 @@ fn kind(event: &RemovalEvent) -> usize {
 
 impl Progress {
     fn new() -> Self {
-        Self(Arc::new(Mutex::new(Trace {
-            start: Instant::now(),
-            history: VecDeque::new(),
-            sent: [0; 4],
-            received: [0; 4],
-            empty: 0,
-            disconnected: 0,
-        })))
+        Self(Arc::new((
+            Mutex::new(Trace {
+                start: Instant::now(),
+                history: VecDeque::new(),
+                sent: [0; 4],
+                received: [0; 4],
+                empty: 0,
+                disconnected: 0,
+                exited: false,
+            }),
+            Condvar::new(),
+        )))
     }
 
     pub(super) fn record(&self, stage: &str) {
         let mut trace = self
+            .0
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -63,6 +69,7 @@ impl Progress {
     ) {
         let mut trace = self
             .0
+            .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match event {
@@ -72,8 +79,28 @@ impl Progress {
         }
     }
 
+    pub(super) fn after_failure(&self) -> String {
+        let trace = self
+            .0
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The test's verdict is already fixed. Observe exit without polling
+        // or accepting a late completion as success, before fixture teardown.
+        let (trace, _) = self
+            .0
+            .1
+            .wait_timeout_while(trace, Duration::from_secs(10), |trace| {
+                !trace.exited
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(trace);
+        self.snapshot()
+    }
+
     pub(super) fn snapshot(&self) -> String {
         let trace = self
+            .0
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -115,6 +142,7 @@ impl EventSender {
         if result.is_ok() {
             self.progress
                 .0
+                .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .sent[index] += 1;
@@ -139,5 +167,12 @@ impl Drop for WorkerExit {
         } else {
             "worker exited normally"
         });
+        self.0
+            .0
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .exited = true;
+        self.0.0.1.notify_all();
     }
 }

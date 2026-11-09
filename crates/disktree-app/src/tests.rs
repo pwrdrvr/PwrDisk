@@ -7860,6 +7860,17 @@ fn focus_review_delete_cancel_enter_preserves_the_fixture(
             break;
         }
     }
+    #[cfg(feature = "removal-diagnostics")]
+    if !finished {
+        read(&view, cx, |app| {
+            if let Some(run) = &app.run {
+                eprintln!(
+                    "Original 400-poll verdict: FAILED. Post-failure worker exit observation (verdict unchanged):\n{}",
+                    run.diagnostics_after_failure(),
+                );
+            }
+        });
+    }
     assert!(finished, "focused Delete completes the contrived removal");
     assert!(!temp.path().join("junk").exists());
     assert!(temp.path().join("keep/notes.txt").exists());
