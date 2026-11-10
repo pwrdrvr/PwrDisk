@@ -140,12 +140,13 @@ Space, X, Enter and the arrows act on the tile under the mouse if the mouse
 moved last, and on the keyboard selection after you use an arrow or n.
 
 A click selects the tile under the pointer. A second click on the
-selection, slow or as a double-click, opens one level toward it: the
-directory on screen's child that holds it, however deep the tile is
-drawn, with the tile still selected so the next click opens the next
-level. One double- or triple-click never opens more than one level. The
-pointer turns into a hand over a selection a click would open, and the
-tile's hover card names the directory a click or a double-click opens.
+selection, slow or as a double-click, opens it, however deep it is drawn:
+a directory opens itself, and a file opens the directory holding it, with
+the file still selected. The tile grows to fill the window while its
+neighbours slide off the edges (at once with Reduced Motion). One double-
+or triple-click never opens more than once. The pointer turns into a hand
+over a selection a click would open, and the tile's hover card names the
+directory a click or a double-click opens.
 
 A marked tile takes the danger colour, and so does everything inside it:
 removing a directory takes its contents with it. Marking a directory absorbs
@@ -221,7 +222,7 @@ until the next scan.
 | --- | --- |
 | `space` / `x` | mark or unmark the tile you point at |
 | `ctrl`-click (`⌘`-click on macOS) | mark without moving the selection |
-| click, then click again (or double-click) | select a tile, then open one level toward it |
+| click, then click again (or double-click) | select a tile, then open it |
 | `enter` | open that directory, at any depth |
 | `⌫` / `esc` | go up one directory |
 | `alt ←` `alt →` | back and forward through where you have been |

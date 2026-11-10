@@ -235,12 +235,16 @@ impl View {
 /// region lands in the layout being switched to.
 ///
 /// Every descending or ascending move is one region of the tree changing
-/// address. Rather than moving a camera, each tile is drawn from where that
-/// region *was* to where it *is*, so the tiles inside the directory that is
-/// being entered grow into place and the ones being left slide out. That is
-/// what makes "zoom in and descend" read as one motion: the newly visible
-/// level is always larger than it was a moment ago, never smaller.
-#[derive(Clone, Copy, Debug)]
+/// address. Each tile is drawn from where that region *was* to where it *is*,
+/// so the tiles inside the directory that is being entered grow into place.
+/// That is what makes "zoom in and descend" read as one motion: the newly
+/// visible level is always larger than it was a moment ago, never smaller.
+///
+/// Width and height map separately. A tile is rarely the viewport's shape,
+/// and a single scale would start the new level as a box that over- or
+/// underfills the tile that was clicked, which reads as something other than
+/// that tile growing.
+#[derive(Clone, Debug)]
 pub struct LayoutTransition {
     /// The region in the old frame, in viewport coordinates.
     src: Rect,
@@ -248,57 +252,123 @@ pub struct LayoutTransition {
     dst: Rect,
     started: Instant,
     duration: Duration,
+    /// The level being left, as it was on screen, when the new one grows
+    /// out of one of its tiles. It is drawn behind the new level and pushed
+    /// out by the same motion, so the neighbours of the tile slide off the
+    /// edges instead of vanishing on the first frame. The entered tile and
+    /// everything inside it are left out: the new level covers that region.
+    outgoing: Vec<Tile>,
 }
+
+/// The shortest and longest a transition runs, and how much longer each
+/// doubling of scale makes it. Long enough to see which tile became the
+/// window; short enough that the next click never waits on it.
+const TRANSITION_BASE_MS: f32 = 170.0;
+const TRANSITION_PER_DOUBLING_MS: f32 = 55.0;
+const TRANSITION_MAX_DOUBLINGS: f32 = 4.0;
 
 impl LayoutTransition {
     fn new(src: Rect, dst: Rect) -> Self {
-        // Longer pulls take a little longer, but never enough to feel slow.
-        let ratio = if dst.w > 1.0 { src.w / dst.w } else { 1.0 };
-        let magnitude = ratio.abs().max(1.0).log2().clamp(0.0, 4.0);
+        // How far the camera travels, the same going in as coming out: the
+        // linear scale between the two regions, as a number of doublings.
+        let area = |rect: Rect| (rect.w * rect.h).max(1.0);
+        let factor = (area(src) / area(dst)).sqrt();
+        let doublings = factor
+            .max(factor.recip())
+            .log2()
+            .clamp(0.0, TRANSITION_MAX_DOUBLINGS);
+        let millis =
+            doublings.mul_add(TRANSITION_PER_DOUBLING_MS, TRANSITION_BASE_MS);
         Self {
             src,
             dst,
             started: Instant::now(),
-            duration: Duration::from_millis(130 + (magnitude * 45.0) as u64),
+            duration: Duration::from_secs_f32(millis / 1000.0),
+            outgoing: Vec::new(),
         }
+    }
+
+    /// How much smaller the region was than it is, per axis.
+    fn scale(&self) -> (f32, f32) {
+        let ratio = |from: f32, to: f32| if to > 0.0 { from / to } else { 1.0 };
+        (ratio(self.src.w, self.dst.w), ratio(self.src.h, self.dst.h))
     }
 
     /// Where a rectangle in the new layout was, before the switch.
     fn origin_of(&self, rect: Rect) -> Rect {
-        let scale = if self.dst.w > 0.0 {
-            self.src.w / self.dst.w
-        } else {
-            1.0
-        };
+        let (sx, sy) = self.scale();
         Rect::new(
-            (rect.x - self.dst.x).mul_add(scale, self.src.x),
-            (rect.y - self.dst.y).mul_add(scale, self.src.y),
-            rect.w * scale,
-            rect.h * scale,
+            (rect.x - self.dst.x).mul_add(sx, self.src.x),
+            (rect.y - self.dst.y).mul_add(sy, self.src.y),
+            rect.w * sx,
+            rect.h * sy,
         )
+    }
+
+    /// Where a rectangle of the old frame goes: the inverse of `origin_of`,
+    /// so the level left behind moves exactly with the one growing over it.
+    fn destination_of(&self, rect: Rect) -> Rect {
+        let (sx, sy) = self.scale();
+        let (sx, sy) = (sx.max(f32::EPSILON), sy.max(f32::EPSILON));
+        Rect::new(
+            (rect.x - self.src.x) / sx + self.dst.x,
+            (rect.y - self.src.y) / sy + self.dst.y,
+            rect.w / sx,
+            rect.h / sy,
+        )
+    }
+
+    /// The eased progress at this instant, or `None` once it has finished.
+    fn progress(&self) -> Option<f32> {
+        let elapsed =
+            self.started.elapsed().as_secs_f32() / self.duration.as_secs_f32();
+        (elapsed < 1.0).then(|| 1.0 - (1.0 - elapsed).powi(3))
     }
 
     /// The rectangle to draw at this instant, and whether the transition is
     /// still running.
     fn sample(&self, rect: Rect) -> (Rect, bool) {
-        let elapsed =
-            self.started.elapsed().as_secs_f32() / self.duration.as_secs_f32();
-        if elapsed >= 1.0 {
-            return (rect, false);
+        match self.progress() {
+            Some(eased) => (lerp_rect(self.origin_of(rect), rect, eased), true),
+            None => (rect, false),
         }
-        let eased = 1.0 - (1.0 - elapsed).powi(3);
-        let from = self.origin_of(rect);
-        let lerp = |a: f32, b: f32| (b - a).mul_add(eased, a);
-        (
-            Rect::new(
-                lerp(from.x, rect.x),
-                lerp(from.y, rect.y),
-                lerp(from.w, rect.w),
-                lerp(from.h, rect.h),
-            ),
-            true,
-        )
     }
+
+    /// The tiles of the level being left, where they are at this instant.
+    /// Those already pushed wholly out of `area` are dropped.
+    fn outgoing_now(&self, area: Rect) -> Vec<Tile> {
+        let Some(eased) = self.progress() else {
+            return Vec::new();
+        };
+        let place =
+            |rect: Rect| lerp_rect(rect, self.destination_of(rect), eased);
+        self.outgoing
+            .iter()
+            .filter_map(|tile| {
+                let rect = place(tile.rect);
+                let inside = rect.x < area.right()
+                    && rect.right() > area.x
+                    && rect.y < area.bottom()
+                    && rect.bottom() > area.y;
+                inside.then(|| Tile {
+                    rect,
+                    header: tile.header.map(place),
+                    ..tile.clone()
+                })
+            })
+            .collect()
+    }
+}
+
+/// `from` moved `eased` of the way to `to`, each edge in a straight line.
+fn lerp_rect(from: Rect, to: Rect, eased: f32) -> Rect {
+    let lerp = |a: f32, b: f32| (b - a).mul_add(eased, a);
+    Rect::new(
+        lerp(from.x, to.x),
+        lerp(from.y, to.y),
+        lerp(from.w, to.w),
+        lerp(from.h, to.h),
+    )
 }
 
 /// Layout for one (crumbs, area, options) combination.
@@ -2344,19 +2414,26 @@ impl Disktree {
         self.enter(target, from, cx);
     }
 
-    /// What a click on `crumbs` opens: the child of the directory on screen
-    /// that holds it, one level down however deep the tile is drawn. A
-    /// click aims at a tile, and a tile can be several levels down; going
-    /// straight there skipped the levels between.
+    /// What a click on `crumbs` opens: the tile itself when it is a
+    /// directory with something in it, else the nearest directory holding
+    /// it, however deep it is drawn. The click aims at that tile; opening
+    /// one level toward it instead painted levels nobody aimed at and moved
+    /// the view under the pointer. Nothing, when that is the directory
+    /// already on screen.
     pub fn click_target(&self, crumbs: &[usize]) -> Option<Vec<usize>> {
         let depth = self.crumbs.len();
         if crumbs.len() <= depth || !crumbs.starts_with(&self.crumbs) {
             return None;
         }
-        let target = crumbs[..=depth].to_vec();
-        self.node_at(&target)
-            .is_some_and(|node| node.is_dir() && !node.children().is_empty())
-            .then_some(target)
+        (depth + 1..=crumbs.len())
+            .rev()
+            .map(|length| &crumbs[..length])
+            .find(|target| {
+                self.node_at(target).is_some_and(|node| {
+                    node.is_dir() && !node.children().is_empty()
+                })
+            })
+            .map(<[usize]>::to_vec)
     }
 
     /// Whether a click on the hovered tile would open a level: it is the
@@ -2368,10 +2445,10 @@ impl Disktree {
         })
     }
 
-    /// Open one level toward `crumbs`, keeping it selected when it lies
-    /// deeper, so the next click on it opens the next level. Returns whether
-    /// a level opened.
-    fn open_toward(
+    /// Open what a click on `crumbs` opens, keeping `crumbs` selected when
+    /// it lies deeper (a file opens the folder holding it). Returns whether
+    /// anything opened.
+    pub(crate) fn open_toward(
         &mut self,
         crumbs: &[usize],
         cx: &mut Context<'_, Self>,
@@ -2412,6 +2489,14 @@ impl Disktree {
         if !node.is_dir() || node.children().is_empty() {
             return;
         }
+        let motion = !prefers_reduced_motion(cx);
+        // Only a level that grows out of one of its tiles has neighbours to
+        // push aside; without `from` the new level simply lands.
+        let outgoing = if motion && from.is_some() {
+            self.take_drawn_outside(&target)
+        } else {
+            Vec::new()
+        };
         self.remember();
         self.file_page = 0;
         self.selected = Some(target.clone());
@@ -2427,9 +2512,37 @@ impl Disktree {
             area.width.as_f32().max(1.0),
             area.height.as_f32().max(1.0),
         );
-        self.transition = (!prefers_reduced_motion(cx))
-            .then(|| LayoutTransition::new(src, dst));
+        self.transition = motion.then(|| LayoutTransition {
+            outgoing,
+            ..LayoutTransition::new(src, dst)
+        });
         cx.notify();
+    }
+
+    /// The tiles on screen now, where they are drawn this instant (mid-zoom
+    /// included), in viewport coordinates, except `target` and what is drawn
+    /// inside it: the level a transition into `target` pushes aside. Takes
+    /// the layout cache, which entering drops anyway.
+    fn take_drawn_outside(&mut self, target: &[usize]) -> Vec<Tile> {
+        let Some(cache) = self
+            .cache
+            .take()
+            .filter(|cache| cache.key.crumbs == self.crumbs)
+        else {
+            return Vec::new();
+        };
+        let view = self.view;
+        let drawn = |rect: Rect| view.project(self.animated_rect(rect));
+        cache
+            .tiles
+            .into_iter()
+            .filter(|tile| !tile.crumbs().starts_with(target))
+            .map(|tile| Tile {
+                rect: drawn(tile.rect),
+                header: tile.header.map(drawn),
+                ..tile
+            })
+            .collect()
     }
 
     /// Where a drawn directory's contents sit: its tile below the name band.
@@ -3134,12 +3247,33 @@ impl Disktree {
             |tree| self.removed.crumbs(&self.root_path, tree, metric, style),
         );
 
-        let Some(tiles) = self.layout().map(<[Tile]>::to_vec) else {
+        let Some(current) = self.layout().map(<[Tile]>::to_vec) else {
             return Mosaic {
                 view,
                 ..Mosaic::default()
             };
         };
+        // Every tile where it is drawn this frame. Mid-transition that is on
+        // its way from where it was, behind it the level being left as it is
+        // pushed aside, painted first so the new level covers it.
+        let area = self.treemap_size.get();
+        let viewport = Rect::new(
+            0.0,
+            0.0,
+            area.width.as_f32().max(1.0),
+            area.height.as_f32().max(1.0),
+        );
+        let mut tiles = self
+            .transition
+            .as_ref()
+            .map(|transition| transition.outgoing_now(viewport))
+            .unwrap_or_default();
+        let leaving = tiles.len();
+        tiles.extend(current.into_iter().map(|tile| Tile {
+            rect: self.animated_rect(tile.rect),
+            header: tile.header.map(|header| self.animated_rect(header)),
+            ..tile
+        }));
 
         // Hue comes from the node's kind; lightness from its depth in this
         // view, so the first level always reads as the first level.
@@ -3147,7 +3281,15 @@ impl Disktree {
         let now = self.scanned_at;
         let mut decorations = Vec::with_capacity(tiles.len());
         let mut labels = Vec::new();
-        for tile in &tiles {
+        // Names of the level being left, kept apart so they never take the
+        // new level's share of the label budget.
+        let mut leaving_labels = Vec::new();
+        for (index, tile) in tiles.iter().enumerate() {
+            let sink = if index < leaving {
+                &mut leaving_labels
+            } else {
+                &mut labels
+            };
             #[cfg(test)]
             crate::marks::work::TILES.set(crate::marks::work::TILES.get() + 1);
             let crumbs = tile.crumbs();
@@ -3199,7 +3341,7 @@ impl Disktree {
                 && (1..=crumbs.len())
                     .any(|length| removed.contains(&crumbs[..length]));
             let decoration = TileDeco {
-                rect: self.animated_rect(tile.rect),
+                rect: tile.rect,
                 depth: tile.depth,
                 category,
                 age_bucket,
@@ -3216,11 +3358,7 @@ impl Disktree {
 
             // Labels are chosen in screen space: zooming in makes room for more
             // of them, which is the point of zooming in.
-            let drawn = self.animated_rect(tile.rect);
-            let screen = view.project(
-                tile.header
-                    .map_or(drawn, |header| self.animated_rect(header)),
-            );
+            let screen = view.project(tile.header.unwrap_or(tile.rect));
             if screen.w < LABEL_MIN_W_REMS * self.rem
                 || screen.h < LABEL_MIN_H_REMS * self.rem
             {
@@ -3252,13 +3390,11 @@ impl Disktree {
                             range.start + unreadable.len()
                                 ..range.end + unreadable.len()
                         });
-                    labels.push(Label {
+                    sink.push(Label {
                         text: format!("{unreadable}{}", node.name()),
                         found,
-                        rect: self.animated_rect(tile.rect),
-                        header: tile
-                            .header
-                            .map(|header| self.animated_rect(header)),
+                        rect: tile.rect,
+                        header: tile.header,
                         depth: tile.depth,
                         dim: filtered == Filtered::Out || is_removed,
                         marked: is_marked || is_covered,
@@ -3273,10 +3409,10 @@ impl Disktree {
                         decoration: decoration.clone(),
                     });
                 }
-                TileKind::Others { count, .. } => labels.push(Label {
+                TileKind::Others { count, .. } => sink.push(Label {
                     text: format!("+{count} more"),
                     found: None,
-                    rect: self.animated_rect(tile.rect),
+                    rect: tile.rect,
                     header: None,
                     depth: tile.depth,
                     dim: self.matches.is_some(),
@@ -3287,12 +3423,19 @@ impl Disktree {
             }
         }
 
-        labels.sort_by(|left, right| {
+        let by_area = |left: &Label, right: &Label| {
             let left_area = left.rect.w * left.rect.h;
             let right_area = right.rect.w * right.rect.h;
             right_area.total_cmp(&left_area)
-        });
+        };
+        labels.sort_by(by_area);
         labels.truncate(MAX_LABELS);
+        // The level being left gets what the new one leaves of the budget,
+        // and goes first: it is painted under the new level.
+        leaving_labels.sort_by(by_area);
+        leaving_labels.truncate(MAX_LABELS - labels.len());
+        leaving_labels.append(&mut labels);
+        let labels = leaving_labels;
 
         Mosaic {
             tiles: decorations,
@@ -4949,9 +5092,9 @@ impl Disktree {
 
         match event.button {
             // A later press of a double or triple click. One gesture opens
-            // at most one level: once a press of it has opened, the view
-            // has changed under the pointer, and acting on what is there
-            // now would open a second level nobody aimed at.
+            // at most once: once a press of it has opened, the view has
+            // changed under the pointer, and acting on what is there now
+            // would open something nobody aimed at.
             MouseButton::Left if event.click_count >= 2 => {
                 if self.click_opened {
                     return;
@@ -5043,7 +5186,7 @@ impl Disktree {
 
     /// Advance the layout transition, if one is running.
     pub fn tick_transition(&mut self, window: &Window, cx: &mut gpui_kit::App) {
-        let Some(transition) = self.transition else {
+        let Some(transition) = &self.transition else {
             return;
         };
         // Asked only mid-flight: the answer is a platform call, and no other
@@ -5063,7 +5206,7 @@ impl Disktree {
     /// A tile's rectangle for this frame: mid-transition it is on its way from
     /// where it was to where it is.
     fn animated_rect(&self, rect: Rect) -> Rect {
-        match self.transition {
+        match &self.transition {
             Some(transition) => transition.sample(rect).0,
             None => rect,
         }
@@ -5508,6 +5651,77 @@ mod tests {
             origin.x > 100.0 && origin.x < 300.0,
             "and where the child was: {origin:?}"
         );
+    }
+
+    #[test]
+    fn a_transition_starts_exactly_on_the_tile_it_grows_out_of() {
+        // A tall tile entered into a wide viewport: the new level must start
+        // as that tile, not as a box of the viewport's shape at its top.
+        let tile = Rect::new(2.0, 26.0, 160.0, 192.0);
+        let viewport = Rect::new(0.0, 0.0, 360.0, 220.0);
+        let start = LayoutTransition::new(tile, viewport).origin_of(viewport);
+        for (got, want) in [
+            (start.x, tile.x),
+            (start.y, tile.y),
+            (start.w, tile.w),
+            (start.h, tile.h),
+        ] {
+            assert!((got - want).abs() < 0.001, "{start:?} is not {tile:?}");
+        }
+    }
+
+    #[test]
+    fn a_smaller_tile_takes_longer_to_fill_the_window() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let duration =
+            |from: Rect| LayoutTransition::new(from, viewport).duration;
+        let small = duration(Rect::new(10.0, 10.0, 40.0, 30.0));
+        let large = duration(Rect::new(0.0, 0.0, 600.0, 450.0));
+        assert!(small > large, "{small:?} is not longer than {large:?}");
+        // How far the camera travels decides it, not which way.
+        let out =
+            LayoutTransition::new(viewport, Rect::new(10.0, 10.0, 40.0, 30.0))
+                .duration;
+        assert_eq!(small, out);
+        // And never so long that the next click waits on it.
+        assert!(
+            duration(Rect::new(0.0, 0.0, 1.0, 1.0))
+                <= Duration::from_millis(400)
+        );
+    }
+
+    proptest::proptest! {
+        /// The level being left and the level entered are one camera move:
+        /// at every instant the region being entered is where the old frame
+        /// puts it, so the neighbours stay flush against it, and pushing a
+        /// rectangle out undoes pulling it in.
+        #[test]
+        fn the_level_left_moves_with_the_level_entered(
+            x in 0.0_f32..700.0,
+            y in 0.0_f32..500.0,
+            w in 4.0_f32..800.0,
+            h in 4.0_f32..600.0,
+            eased in 0.0_f32..=1.0,
+            probe in (0.0_f32..800.0, 0.0_f32..600.0, 1.0_f32..400.0, 1.0_f32..300.0),
+        ) {
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let tile = Rect::new(x, y, w.min(800.0 - x), h.min(600.0 - y));
+            let transition = LayoutTransition::new(tile, viewport);
+            let near = |a: Rect, b: Rect| {
+                let tolerance = 0.01 * (1.0 + b.w.max(b.h));
+                (a.x - b.x).abs() < tolerance
+                    && (a.y - b.y).abs() < tolerance
+                    && (a.w - b.w).abs() < tolerance
+                    && (a.h - b.h).abs() < tolerance
+            };
+            let pushed = lerp_rect(tile, transition.destination_of(tile), eased);
+            let grown =
+                lerp_rect(transition.origin_of(viewport), viewport, eased);
+            proptest::prop_assert!(near(pushed, grown), "{pushed:?} vs {grown:?}");
+            let probe = Rect::new(probe.0, probe.1, probe.2, probe.3);
+            let back = transition.origin_of(transition.destination_of(probe));
+            proptest::prop_assert!(near(back, probe), "{back:?} vs {probe:?}");
+        }
     }
 
     #[test]
