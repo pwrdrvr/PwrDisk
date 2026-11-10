@@ -2489,10 +2489,11 @@ impl Disktree {
         if !node.is_dir() || node.children().is_empty() {
             return;
         }
+        let motion = !prefers_reduced_motion(cx);
         // Only a level that grows out of one of its tiles has neighbours to
         // push aside; without `from` the new level simply lands.
-        let outgoing = if from.is_some() {
-            self.drawn_outside(&target)
+        let outgoing = if motion && from.is_some() {
+            self.take_drawn_outside(&target)
         } else {
             Vec::new()
         };
@@ -2511,34 +2512,35 @@ impl Disktree {
             area.width.as_f32().max(1.0),
             area.height.as_f32().max(1.0),
         );
-        self.transition =
-            (!prefers_reduced_motion(cx)).then(|| LayoutTransition {
-                outgoing,
-                ..LayoutTransition::new(src, dst)
-            });
+        self.transition = motion.then(|| LayoutTransition {
+            outgoing,
+            ..LayoutTransition::new(src, dst)
+        });
         cx.notify();
     }
 
-    /// The tiles on screen now, in viewport coordinates, except `target` and
-    /// what is drawn inside it: the level a transition into `target` pushes
-    /// aside.
-    fn drawn_outside(&self, target: &[usize]) -> Vec<Tile> {
+    /// The tiles on screen now, where they are drawn this instant (mid-zoom
+    /// included), in viewport coordinates, except `target` and what is drawn
+    /// inside it: the level a transition into `target` pushes aside. Takes
+    /// the layout cache, which entering drops anyway.
+    fn take_drawn_outside(&mut self, target: &[usize]) -> Vec<Tile> {
         let Some(cache) = self
             .cache
-            .as_ref()
+            .take()
             .filter(|cache| cache.key.crumbs == self.crumbs)
         else {
             return Vec::new();
         };
         let view = self.view;
+        let drawn = |rect: Rect| view.project(self.animated_rect(rect));
         cache
             .tiles
-            .iter()
+            .into_iter()
             .filter(|tile| !tile.crumbs().starts_with(target))
             .map(|tile| Tile {
-                rect: view.project(tile.rect),
-                header: tile.header.map(|header| view.project(header)),
-                ..tile.clone()
+                rect: drawn(tile.rect),
+                header: tile.header.map(drawn),
+                ..tile
             })
             .collect()
     }
@@ -3266,6 +3268,7 @@ impl Disktree {
             .as_ref()
             .map(|transition| transition.outgoing_now(viewport))
             .unwrap_or_default();
+        let leaving = tiles.len();
         tiles.extend(current.into_iter().map(|tile| Tile {
             rect: self.animated_rect(tile.rect),
             header: tile.header.map(|header| self.animated_rect(header)),
@@ -3278,7 +3281,15 @@ impl Disktree {
         let now = self.scanned_at;
         let mut decorations = Vec::with_capacity(tiles.len());
         let mut labels = Vec::new();
-        for tile in &tiles {
+        // Names of the level being left, kept apart so they never take the
+        // new level's share of the label budget.
+        let mut leaving_labels = Vec::new();
+        for (index, tile) in tiles.iter().enumerate() {
+            let sink = if index < leaving {
+                &mut leaving_labels
+            } else {
+                &mut labels
+            };
             #[cfg(test)]
             crate::marks::work::TILES.set(crate::marks::work::TILES.get() + 1);
             let crumbs = tile.crumbs();
@@ -3379,7 +3390,7 @@ impl Disktree {
                             range.start + unreadable.len()
                                 ..range.end + unreadable.len()
                         });
-                    labels.push(Label {
+                    sink.push(Label {
                         text: format!("{unreadable}{}", node.name()),
                         found,
                         rect: tile.rect,
@@ -3398,7 +3409,7 @@ impl Disktree {
                         decoration: decoration.clone(),
                     });
                 }
-                TileKind::Others { count, .. } => labels.push(Label {
+                TileKind::Others { count, .. } => sink.push(Label {
                     text: format!("+{count} more"),
                     found: None,
                     rect: tile.rect,
@@ -3412,12 +3423,19 @@ impl Disktree {
             }
         }
 
-        labels.sort_by(|left, right| {
+        let by_area = |left: &Label, right: &Label| {
             let left_area = left.rect.w * left.rect.h;
             let right_area = right.rect.w * right.rect.h;
             right_area.total_cmp(&left_area)
-        });
+        };
+        labels.sort_by(by_area);
         labels.truncate(MAX_LABELS);
+        // The level being left gets what the new one leaves of the budget,
+        // and goes first: it is painted under the new level.
+        leaving_labels.sort_by(by_area);
+        leaving_labels.truncate(MAX_LABELS - labels.len());
+        leaving_labels.append(&mut labels);
+        let labels = leaving_labels;
 
         Mosaic {
             tiles: decorations,

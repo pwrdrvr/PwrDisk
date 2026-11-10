@@ -1657,6 +1657,43 @@ fn an_opening_click_shows_the_tile_that_was_clicked(cx: &mut TestAppContext) {
     }
 }
 
+/// Mid-zoom the level being left never costs the new level a name: every
+/// name the settled frame shows is drawn, after (so over) the old level's.
+#[gpui_kit::test]
+fn the_level_left_never_takes_the_new_levels_names(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    // A neighbour smaller than the folder entered, but still labelled: by
+    // area alone its name would sort among the new level's.
+    std::fs::write(temp.path().join("small.bin"), vec![b'x'; 60_000])
+        .expect("write");
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    cx.update(|_, cx| cx.set_reduce_motion(false));
+    let more = temp.path().join("junk/deeper/more.bin");
+    update(&view, cx, |app, cx| {
+        let crumbs = app.crumbs_for_path(&more).expect("in the tree");
+        app.select(Some(crumbs), cx);
+        app.descend(cx);
+        let texts = |labels: Vec<crate::state::Label>| -> Vec<String> {
+            labels.into_iter().map(|label| label.text).collect()
+        };
+        assert!(app.transition.is_some(), "with motion");
+        let mid = texts(app.prepare().labels);
+        app.transition = None;
+        let settled = texts(app.prepare().labels);
+        assert!(!settled.is_empty());
+        assert!(
+            mid.len() > settled.len(),
+            "the old level is labelled too: {mid:?}"
+        );
+        assert!(
+            mid.ends_with(&settled),
+            "the new level's names, last: {mid:?} vs {settled:?}"
+        );
+    });
+}
+
 /// Going in is one camera move: on its first frame the level being left is
 /// still drawn around the tile that grows out of it, rather than vanishing.
 #[gpui_kit::test]
