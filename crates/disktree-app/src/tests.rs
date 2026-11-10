@@ -1504,7 +1504,7 @@ fn place(view: &Entity<Disktree>, cx: &Window) -> (PathBuf, Option<PathBuf>) {
 }
 
 #[gpui_kit::test]
-fn a_double_click_on_a_nested_tile_opens_one_level(cx: &mut TestAppContext) {
+fn a_double_click_on_a_nested_tile_opens_it(cx: &mut TestAppContext) {
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
@@ -1518,19 +1518,20 @@ fn a_double_click_on_a_nested_tile_opens_one_level(cx: &mut TestAppContext) {
         (temp.path().to_path_buf(), Some(more.clone()))
     );
 
-    // Press 2 opens one level toward it, not the three it is drawn down.
+    // Press 2 opens what was clicked: a file opens the folder holding it,
+    // two levels down, with the file still selected.
     press_on(&view, cx, &more, 2);
     assert_eq!(
         place(&view, cx),
-        (temp.path().join("junk"), Some(more.clone())),
-        "one level, with the tile still selected"
+        (temp.path().join("junk/deeper"), Some(more.clone())),
+        "straight to the clicked tile's folder"
     );
 
     // A triple click is still the same gesture.
     press_on(&view, cx, &more, 3);
-    assert_eq!(place(&view, cx).0, temp.path().join("junk"));
+    assert_eq!(place(&view, cx).0, temp.path().join("junk/deeper"));
 
-    // A new click on the selection opens the next level.
+    // A new click on the selection has nothing further to open.
     press_on(&view, cx, &more, 1);
     assert_eq!(
         place(&view, cx),
@@ -1539,7 +1540,7 @@ fn a_double_click_on_a_nested_tile_opens_one_level(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_double_click_on_the_selection_opens_one_level(cx: &mut TestAppContext) {
+fn a_double_click_on_the_selection_opens_once(cx: &mut TestAppContext) {
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
@@ -1555,11 +1556,11 @@ fn a_double_click_on_the_selection_opens_one_level(cx: &mut TestAppContext) {
     });
     assert!(opens, "a click on the selection opens");
 
-    // Then double-click it. Press 1 opens a level; press 2 lands on the
-    // level press 1 opened and used to open whatever was under it there.
+    // Then double-click it. Press 1 opens it; press 2 lands on what press 1
+    // opened and used to open whatever was under it there.
     press_on(&view, cx, &more, 1);
-    assert_eq!(place(&view, cx).0, temp.path().join("junk"));
-    let at_junk = read(&view, cx, |app| app.crumbs.clone());
+    assert_eq!(place(&view, cx).0, temp.path().join("junk/deeper"));
+    let opened = read(&view, cx, |app| app.crumbs.clone());
     cx.simulate_event(gpui_kit::MouseDownEvent {
         button: gpui_kit::MouseButton::Left,
         position: read(&view, cx, |app| {
@@ -1577,9 +1578,112 @@ fn a_double_click_on_the_selection_opens_one_level(cx: &mut TestAppContext) {
     draw(cx);
     assert_eq!(
         read(&view, cx, |app| app.crumbs.clone()),
-        at_junk,
+        opened,
         "the second press of the gesture is ignored"
     );
+}
+
+/// The rule, for every tile a click can land on: an opening click shows the
+/// clicked tile when it is a directory with something in it, else the
+/// nearest folder holding it, however deep it is drawn. The filesystem is
+/// the oracle, not the layout.
+#[gpui_kit::test]
+fn an_opening_click_shows_the_tile_that_was_clicked(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    // Deep enough that the default depth draws `deep/a/b` as a leaf.
+    for (path, bytes) in [
+        ("deep/a/b/c/one.bin", 400_000_usize),
+        ("deep/a/b/two.bin", 50_000),
+    ] {
+        let file = temp.path().join(path);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&file, vec![b'x'; bytes]).expect("write");
+    }
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+
+    // Every drawn tile whose own centre a press lands on.
+    let clickable: Vec<PathBuf> = update(&view, cx, |app, _| {
+        let tiles: Vec<Vec<usize>> = app
+            .layout()
+            .expect("a layout")
+            .iter()
+            .filter(|tile| {
+                matches!(
+                    tile.kind,
+                    disktree_core::treemap::TileKind::Node { .. }
+                )
+            })
+            .map(|tile| tile.crumbs().to_vec())
+            .collect();
+        let mut paths = Vec::new();
+        for crumbs in tiles {
+            let Some(rect) = app.tile_rect(&crumbs) else {
+                continue;
+            };
+            let screen = app.view.project(rect);
+            let centre = (screen.x + screen.w / 2.0, screen.y + screen.h / 2.0);
+            if app.tile_at(centre.0, centre.1).as_ref() == Some(&crumbs) {
+                paths.extend(app.path_at(&crumbs));
+            }
+        }
+        paths
+    });
+    assert!(
+        clickable.iter().any(|path| path.ends_with("deep/a/b")),
+        "a directory is drawn as a leaf: {clickable:?}"
+    );
+
+    let opens = |path: &Path| {
+        path.ancestors()
+            .take_while(|ancestor| *ancestor != temp.path())
+            .find(|ancestor| {
+                std::fs::read_dir(ancestor)
+                    .is_ok_and(|mut entries| entries.next().is_some())
+            })
+            .map_or_else(|| temp.path().to_path_buf(), Path::to_path_buf)
+    };
+    for path in clickable {
+        update(&view, cx, |app, cx| app.go_to(Vec::new(), cx));
+        draw(cx);
+        press_on(&view, cx, &path, 1);
+        press_on(&view, cx, &path, 1);
+        assert_eq!(
+            place(&view, cx),
+            (opens(&path), Some(path.clone())),
+            "an opening click on {path:?}"
+        );
+    }
+}
+
+/// Going in is one camera move: on its first frame the level being left is
+/// still drawn around the tile that grows out of it, rather than vanishing.
+#[gpui_kit::test]
+fn the_level_left_is_drawn_while_the_clicked_tile_grows(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    cx.update(|_, cx| cx.set_reduce_motion(false));
+    let deeper = temp.path().join("junk/deeper");
+    let more = deeper.join("more.bin");
+    press_on(&view, cx, &more, 1);
+    update(&view, cx, |app, cx| {
+        let crumbs = app.crumbs_for_path(&more).expect("in the tree");
+        assert!(app.open_toward(&crumbs, cx), "it opens");
+        assert_eq!(app.current_path(), deeper);
+        assert!(app.transition.is_some(), "with motion");
+        let drawn = app.prepare().tiles.len();
+        let laid_out = app.layout().expect("a layout").len();
+        assert!(
+            drawn > laid_out,
+            "the old level's {} tiles are drawn behind the new one",
+            drawn - laid_out
+        );
+    });
 }
 
 #[gpui_kit::test]
@@ -3838,6 +3942,9 @@ fn after_descending_every_tile_is_inside_the_directory_drawn(
     draw(cx);
 
     let (paths, labels) = update(&view, cx, |app, _| {
+        // The frame once the move has landed. Mid-move the level left is
+        // still drawn, sliding out around junk as it grows.
+        app.transition = None;
         let tiles = app.layout().map(<[Tile]>::to_vec).unwrap_or_default();
         let paths: Vec<_> = tiles
             .iter()
