@@ -161,7 +161,7 @@ fn mosaic_inner(
 
     let colors = Colors::new(&theme);
     let font = theme.font.clone();
-    let name_size = rem_px(0.75, rem);
+    let name_size = rem_px(NAME_REMS, rem);
     let size_size = rem_px(0.6875, rem);
 
     let Mosaic {
@@ -231,11 +231,14 @@ fn mosaic_inner(
                     bounds.size
                 },
                 move |bounds, _, window, cx| {
-                    paint_tiles(&tiles, bounds, view, &colors, window);
+                    let outlines =
+                        paint_tiles(&tiles, bounds, view, &colors, window);
                     paint_labels(
                         &labels, bounds, view, &colors, &font, name_size,
                         size_size, window, cx,
                     );
+                    paint_outlines(outlines, window);
+                    // The push cue is the gesture's own feedback, on top.
                     if let Some(push) = &push {
                         paint_push(push, bounds, view, &colors, window);
                     }
@@ -390,20 +393,38 @@ impl Colors {
     }
 }
 
+/// A tile name's type size, in rem.
+const NAME_REMS: f32 = 0.75;
+/// The gap a name keeps from its tile's left and right edges, in names.
+const TEXT_PADDING: f32 = 0.42;
+/// The narrowest tile that gets a name at all, in names.
+const LABEL_MIN_WIDTH: f32 = 3.3;
+
+/// A tile's state ring: its rank (the higher paints on top), its bounds,
+/// its width and its colour.
+type Outline = (u8, Bounds<Pixels>, f32, Hsla);
+
+/// The rings a tile's state draws inside its own edge, in pixels.
+const SELECTED_RING: f32 = 3.0;
+const HOVER_RING: f32 = 1.0;
+const MARKED_RING: f32 = 2.0;
+
 fn paint_tiles(
     tiles: &[TileDeco],
     bounds: Bounds<Pixels>,
     view: View,
     colors: &Colors,
     window: &mut Window,
-) {
+) -> Vec<Outline> {
     let none = Edges::all(px(0.));
     let solid = gpui_kit::BorderStyle::Solid;
     let scale = window.scale_factor();
-    // Outlines are drawn after every fill: a directory's children paint over
-    // its body, and would otherwise cover its selection ring, leaving only
-    // slivers of it showing in the gaps between them.
-    let mut outlines: Vec<(u8, Bounds<Pixels>, f32, Hsla)> = Vec::new();
+    // Outlines are returned to be drawn after every fill and every label: a
+    // directory's children paint over its body, and would otherwise cover
+    // its selection ring, leaving only slivers of it showing in the gaps
+    // between them; a label's glyph backgrounds would cover it wherever a
+    // name comes near an edge.
+    let mut outlines: Vec<Outline> = Vec::new();
     for tile in tiles {
         let fill = colors.fill(tile);
         let rect = view.project(tile.rect);
@@ -489,11 +510,11 @@ fn paint_tiles(
 
         // Ranked so the most important ring is painted last, on top.
         let outline = if tile.selected {
-            Some((3, 3.0, colors.selected_border))
+            Some((3, SELECTED_RING, colors.selected_border))
         } else if tile.hovered {
-            Some((2, 1.0, colors.hover_border))
+            Some((2, HOVER_RING, colors.hover_border))
         } else if tile.marked {
-            Some((1, 2.0, colors.marked_border))
+            Some((1, MARKED_RING, colors.marked_border))
         } else {
             None
         }
@@ -504,6 +525,12 @@ fn paint_tiles(
             outlines.push((rank, quad_bounds, width, color));
         }
     }
+    outlines
+}
+
+/// The rings, last of all, ranked so the most important one is on top.
+fn paint_outlines(mut outlines: Vec<Outline>, window: &mut Window) {
+    let solid = gpui_kit::BorderStyle::Solid;
     outlines.sort_by_key(|(rank, ..)| *rank);
     for (_, ring, width, color) in outlines {
         window.paint_quad(quad(
@@ -601,9 +628,9 @@ fn paint_labels(
     // Label geometry is proportioned to the label's own type size, which
     // already follows `rem`: padding, thresholds and gaps then keep their
     // relationship to the text at every interface zoom step.
-    let text_padding = name_size * 0.42;
+    let text_padding = name_size * TEXT_PADDING;
     let text_inset = name_size * 0.25;
-    let min_width = name_size * 3.3;
+    let min_width = name_size * LABEL_MIN_WIDTH;
     let size_gap = name_size * 0.67;
     // Strike and underline are read as state, so they stay visible at the
     // smallest interface zoom rather than thinning to a hairline.
@@ -664,7 +691,9 @@ fn paint_labels(
         );
 
         window.with_content_mask(
-            Some(ContentMask { bounds: mask }),
+            Some(ContentMask {
+                bounds: label_clip(mask, text_padding),
+            }),
             |window| {
                 let _ = line.paint(
                     origin,
@@ -781,6 +810,18 @@ fn paint_labels(
 /// as far as needed to stay inside the region the label may draw in.
 fn underline_top(natural: Pixels, bottom: Pixels, thickness: Pixels) -> Pixels {
     natural.min(bottom - thickness)
+}
+
+/// The region a label's text may paint in: the region it owns, less the
+/// padding the name starts with, on the right too. Cut at the edge itself,
+/// a long name ran flush to it and its glyph backgrounds covered the
+/// hover and selection rings drawn inside that edge; the rings now paint
+/// last, and the margin keeps a cut name from butting into them.
+fn label_clip(owned: Bounds<Pixels>, padding: Pixels) -> Bounds<Pixels> {
+    Bounds::new(
+        owned.origin,
+        Size::new((owned.size.width - padding).max(px(0.)), owned.size.height),
+    )
 }
 
 /// Where a label's line box starts: `inset` below the top of the region
@@ -1002,6 +1043,50 @@ mod tests {
                 px(top), height, name * 0.25, name * 1.35, ascent, descent,
             );
             prop_assert!((glyph_top - top).abs() < 0.01, "{glyph_top} vs {top}");
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        /// A long name is cut where it began: as far in from the tile's
+        /// right edge as it starts from its left, and never on the rings a
+        /// selected, hovered or marked tile draws inside that edge.
+        #[test]
+        fn a_long_name_stops_short_of_the_right_edge(
+            x in -500.0f32..500.0,
+            y in -500.0f32..500.0,
+            // A tile narrower than LABEL_MIN_WIDTH names gets no label.
+            width_over in 0.0f32..2000.0,
+            height in 0.0f32..2000.0,
+            // Across every interface zoom step.
+            zoom in prop::sample::select(crate::ui::ZOOM_STEPS.to_vec()),
+        ) {
+            let name_size = NAME_REMS * zoom * crate::ui::BASE_REM;
+            let width = name_size.mul_add(LABEL_MIN_WIDTH, width_over);
+            let owned = Bounds::new(
+                Point::new(px(x), px(y)),
+                Size::new(px(width), px(height)),
+            );
+            let padding = px(name_size) * TEXT_PADDING;
+            let clip = label_clip(owned, padding);
+            let right = (owned.origin.x + owned.size.width).as_f32();
+            let clip_right = (clip.origin.x + clip.size.width).as_f32();
+            prop_assert!(
+                clip_right <= right - padding.as_f32() + 0.01,
+                "{clip_right} past {right} less {padding:?}"
+            );
+            prop_assert!(clip_right <= right - SELECTED_RING + 0.01);
+            for ring in [SELECTED_RING, HOVER_RING, MARKED_RING] {
+                prop_assert!(padding.as_f32() >= ring);
+            }
+            prop_assert!(clip.size.width >= px(0.));
+            prop_assert_eq!(clip.origin, owned.origin);
+            prop_assert_eq!(clip.size.height, owned.size.height);
         }
     }
 
