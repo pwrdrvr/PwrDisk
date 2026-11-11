@@ -10,10 +10,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  # A new push cancels a PR's stale run, but never main's: only main saves
-  # the Rust cache every PR starts from, and a cancelled job saves nothing.
-  # A newer main push waits instead, replacing any run already waiting.
+  # A PR's runs share a group, so a new push cancels the stale run.
+  #
+  # A push to main groups on its commit, so main's runs never share a group:
+  # each runs at once and none is cancelled. Main's runs must not be
+  # cancelled, since only main saves the Rust cache every PR starts from and
+  # a cancelled job saves nothing. Grouping them on the branch instead made
+  # each wait for the one before, and a group keeps one run waiting, so the
+  # middle of three quick merges was dropped: the very commit needed to tell
+  # which one broke main.
+  group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

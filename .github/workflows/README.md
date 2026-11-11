@@ -107,8 +107,9 @@ and the next PR compiled from scratch: the macOS job's lint went from under
 a minute to six, and its tests from two minutes to eight. As in PwrRoute,
 the prune script removes the runner image's own stable toolchain before the
 cache step, because rust-cache hashes every installed toolchain and image
-rollouts would otherwise change the key. A push to `main` never cancels the
-`main` run in progress, since a cancelled job saves nothing.
+rollouts would otherwise change the key. Nothing cancels a `main` run, since
+a cancelled job saves nothing: each push to `main` has its own concurrency
+group, so its run starts at once instead of queueing behind the last.
 
 Lint and test stay one job per platform. They compile separately anyway
 (clippy builds dependencies as metadata, tests as full code), so splitting
