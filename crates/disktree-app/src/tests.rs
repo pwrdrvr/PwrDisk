@@ -4037,6 +4037,49 @@ fn a_push_names_what_it_opens_and_a_pause_clears_it(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("push-hint").is_none());
 }
 
+/// A push counts only toward the directory it began on: moving the pointer
+/// to another directory mid-push starts the bar again rather than opening
+/// the new one with the old one's progress.
+#[gpui_kit::test]
+fn a_push_starts_over_on_another_directory(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+
+    update(&view, cx, |app, cx| {
+        let centre = |app: &mut Disktree, name: &str| {
+            let crumbs = child_crumbs(app, &[], name);
+            let body = app.tile_body(&crumbs).expect("drawn");
+            (body.x + body.w / 2.0, body.y + body.h / 2.0)
+        };
+        let junk = centre(app, "junk");
+        let keep = centre(app, ".cache");
+        let phase = crate::wheel::Phase::Moved;
+        let mut progress = 0.0;
+        for _ in 0..200 {
+            let at = app.view.project(disktree_core::treemap::Rect::new(
+                junk.0, junk.1, 0.0, 0.0,
+            ));
+            app.wheel_zoom(at.x, at.y, 0.02, phase, cx);
+            if let Some(cue) = app.push_cue() {
+                progress = cue.progress;
+                if progress > 0.5 {
+                    break;
+                }
+            }
+        }
+        assert!(progress > 0.5, "the push on junk got going: {progress}");
+        let at = app.view.project(disktree_core::treemap::Rect::new(
+            keep.0, keep.1, 0.0, 0.0,
+        ));
+        app.wheel_zoom(at.x, at.y, 0.001, phase, cx);
+        let after = app.push_cue().map_or(0.0, |cue| cue.progress);
+        assert!(after < progress, "{after} carried over from {progress}");
+        assert!(app.crumbs.is_empty());
+    });
+}
+
 /// Over a file straight under the root there is nothing to zoom into, so
 /// the wheel no longer magnifies the mosaic like a page.
 #[gpui_kit::test]
@@ -4061,7 +4104,6 @@ fn a_drag_pans_a_zoomed_view(cx: &mut TestAppContext) {
     let (view, cx) = view_over(temp.path(), cx);
     draw(cx);
 
-    let at = centre_of(&view, cx, "chain");
     let chain = update(&view, cx, |app, cx| {
         let chain = child_crumbs(app, &[], "chain");
         app.select(Some(chain.clone()), cx);
@@ -4084,11 +4126,9 @@ fn a_drag_pans_a_zoomed_view(cx: &mut TestAppContext) {
         let x = (rect.x + rect.w / 2.0).clamp(10.0, size.width.as_f32() - 10.0);
         let y =
             (rect.y + rect.h / 2.0).clamp(10.0, size.height.as_f32() - 10.0);
-        let _ = at;
         Point::new(origin.x + px(x), origin.y + px(y))
     });
     let before = read(&view, cx, |app| app.view);
-    let selected = read(&view, cx, |app| app.selected.clone());
 
     cx.simulate_mouse_down(
         at,
@@ -4132,7 +4172,6 @@ fn a_drag_pans_a_zoomed_view(cx: &mut TestAppContext) {
             (rect.y + rect.h / 2.0).clamp(10.0, size.height.as_f32() - 10.0);
         Point::new(origin.x + px(x), origin.y + px(y))
     });
-    let _ = selected;
     cx.simulate_mouse_down(
         at,
         gpui_kit::MouseButton::Left,

@@ -15,8 +15,13 @@ use std::time::{Duration, Instant};
 
 /// Trackpad travel, in logical pixels, that doubles or halves the zoom.
 pub const PIXELS_PER_DOUBLING: f32 = 240.0;
-/// Wheel notches that double or halve it: about 1.26× a notch.
+/// Wheel lines that double or halve it: three notches, about 1.26× a
+/// notch. Windows reports a notch as the system's lines-per-notch setting,
+/// three by default, where macOS and Linux report one line.
+#[cfg(not(windows))]
 pub const LINES_PER_DOUBLING: f32 = 3.0;
+#[cfg(windows)]
+pub const LINES_PER_DOUBLING: f32 = 9.0;
 /// Travel past the limit, in doublings, that crosses a level: half a
 /// doubling, 120 px on a trackpad or about two notches. Long enough that
 /// reaching the limit never crosses by accident; short enough to be a
@@ -170,6 +175,12 @@ impl Gesture {
     /// Forget the gesture: the view changed under it some other way.
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Empty the bar but keep the gesture: what it was pushing toward
+    /// changed, so the push so far no longer counts.
+    pub const fn drop_push(&mut self) {
+        self.clear_push();
     }
 
     const fn clear_push(&mut self) {
@@ -412,7 +423,8 @@ mod tests {
         use gpui_kit::{ScrollDelta, point, px};
         let pixels = ScrollDelta::Pixels(point(px(0.), px(240.)));
         assert!((doublings(pixels) - 1.0).abs() < 1e-6);
-        let notch = ScrollDelta::Lines(point(0., 1.));
+        let notch =
+            ScrollDelta::Lines(point(0., if cfg!(windows) { 3. } else { 1. }));
         assert!((doublings(notch).exp2() - 1.26).abs() < 0.01);
         assert!((pinch_doublings(1.0) - 1.0).abs() < 1e-6);
     }

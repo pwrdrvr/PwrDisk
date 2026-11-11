@@ -253,8 +253,6 @@ pub struct PushCue {
     pub edge: crate::wheel::Edge,
     /// How full the bar is, `0..=1`.
     pub progress: f32,
-    /// The directory a full bar opens or goes up to.
-    pub name: String,
     /// Where the directory being opened is drawn, in base space.
     pub ring: Option<Rect>,
 }
@@ -532,8 +530,13 @@ pub struct Disktree {
     drag: Option<Drag>,
     /// The wheel, trackpad or pinch gesture under way on the mosaic.
     wheel: crate::wheel::Gesture,
-    /// The directory a push into the zoom's limit would open.
+    /// The directory a push into the zoom's limit would open, and the level
+    /// it was measured at. A push only counts toward the same target on the
+    /// same level; navigating any other way leaves it behind.
     push_target: Option<Vec<usize>>,
+    push_level: Vec<usize>,
+    /// Empties the push bar once the input pauses; replaced, not stacked.
+    push_expiry: Option<gpui_kit::Task<()>>,
     pub view: View,
     /// The in-flight layout transition, if a level was just entered or left.
     pub transition: Option<LayoutTransition>,
@@ -869,6 +872,8 @@ impl Disktree {
             drag: None,
             wheel: crate::wheel::Gesture::default(),
             push_target: None,
+            push_level: Vec::new(),
+            push_expiry: None,
             view: View::default(),
             transition: None,
             file_list: false,
@@ -3641,9 +3646,14 @@ impl Disktree {
             can_open: target.is_some(),
             can_leave: !self.crumbs.is_empty(),
         };
+        if self.push_target != target || self.push_level != self.crumbs {
+            self.wheel.drop_push();
+            self.push_target.clone_from(&target);
+            self.push_level.clone_from(&self.crumbs);
+        }
+        let cue = self.wheel.cue();
         let now = cx.background_executor().now();
         let outcome = self.wheel.feed(doublings, phase, now, room);
-        self.push_target.clone_from(&target);
 
         if outcome.zoom != 0.0 {
             self.view = self
@@ -3662,14 +3672,21 @@ impl Disktree {
             None => {}
         }
         if self.wheel.cue().is_some() {
-            Self::expire_push_later(cx);
+            self.expire_push_later(cx);
         }
-        cx.notify();
+        // A sideways swipe or a swallowed event changes nothing to draw.
+        if outcome.zoom != 0.0
+            || outcome.cross.is_some()
+            || self.wheel.cue() != cue
+        {
+            cx.notify();
+        }
     }
 
-    /// Empty the push bar once the input pauses.
-    fn expire_push_later(cx: &Context<'_, Self>) {
-        cx.spawn(async move |this, cx| {
+    /// Empty the push bar once the input pauses. Each event restarts the
+    /// wait: dropping the previous task cancels it.
+    fn expire_push_later(&mut self, cx: &Context<'_, Self>) {
+        self.push_expiry = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(crate::wheel::GESTURE_GAP)
                 .await;
@@ -3679,8 +3696,7 @@ impl Disktree {
                     cx.notify();
                 }
             });
-        })
-        .detach();
+        }));
     }
 
     /// The directory a full push bar would open or go up to.
@@ -3689,6 +3705,9 @@ impl Disktree {
     ) -> Option<(crate::wheel::Edge, f32, Vec<usize>)> {
         use crate::wheel::Edge;
         let (edge, progress) = self.wheel.cue()?;
+        if self.push_level != self.crumbs {
+            return None;
+        }
         let crumbs = match edge {
             Edge::In => self.push_target.clone()?,
             Edge::Out => self.parent_crumbs()?,
@@ -3704,11 +3723,9 @@ impl Disktree {
             Edge::In => self.tile_body(&crumbs),
             Edge::Out => None,
         };
-        let name = self.node_at(&crumbs)?.name().to_string();
         Some(PushCue {
             edge,
             progress,
-            name,
             ring,
         })
     }
@@ -5156,10 +5173,6 @@ impl Disktree {
             event.position.x - origin.x,
             event.position.y - origin.y,
         );
-        // Moves are delivered here even when the pointer is elsewhere in the
-        // window. Outside the mosaic there is nothing to hover, and a stale
-        // tooltip would cover whatever the pointer went to — the panel's
-        // resize handle, for one.
         if let Some(drag) = &mut self.drag {
             if event.pressed_button == Some(MouseButton::Left) {
                 let dx = (event.position.x - drag.start.x).as_f32();
@@ -5184,6 +5197,10 @@ impl Disktree {
                 self.drag = None;
             }
         }
+        // Moves are delivered here even when the pointer is elsewhere in the
+        // window. Outside the mosaic there is nothing to hover, and a stale
+        // tooltip would cover whatever the pointer went to — the panel's
+        // resize handle, for one.
         let area = self.treemap_size.get();
         let inside = local.x >= px(0.)
             && local.y >= px(0.)
