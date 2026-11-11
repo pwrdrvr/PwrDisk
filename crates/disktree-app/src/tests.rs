@@ -81,6 +81,20 @@ fn removable_tempdir() -> tempfile::TempDir {
         .expect("removable fixture")
 }
 
+/// A directory for the sockets a test binds. A Unix socket path must fit
+/// in `sun_path` (104 bytes on macOS, 108 on Linux), and a fixture beside a
+/// deep checkout is already close before `.mcp` is appended to name the
+/// MCP stream, so sockets never live in the fixture. Windows pipes are
+/// named after this directory and take no path.
+fn socket_dir() -> tempfile::TempDir {
+    let parent = if cfg!(unix) {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    tempfile::tempdir_in(parent).expect("socket directory")
+}
+
 /// A small tree on disk: two directories, a nested file, and a hidden one.
 ///
 /// The hidden directory holds the largest file, which is both the common case
@@ -6221,20 +6235,20 @@ fn await_removal_preview(
     panic!("preview worker did not finish");
 }
 
-/// Link `view` to an agent over a real socket or pipe named after `temp`,
-/// as `pwrdisk mcp` does.
+/// Link `view` to an agent over a real socket or pipe named after
+/// `sockets`, a [`socket_dir`], as `pwrdisk mcp` does.
 #[cfg(any(unix, windows))]
 fn link_agent(
     view: &Entity<Disktree>,
-    temp: &Path,
+    sockets: &Path,
     cx: &mut Window,
 ) -> disktree_link::Link {
     #[cfg(not(windows))]
-    let socket = temp.join("link.sock");
+    let socket = sockets.join("link.sock");
     #[cfg(windows)]
     let socket = PathBuf::from(format!(
         r"\\.\pipe\pwrdisk-test-{}",
-        temp.file_name().expect("temp name").to_string_lossy()
+        sockets.file_name().expect("temp name").to_string_lossy()
     ));
     let listener =
         disktree_link::Listener::bind_at(&socket).expect("bind the link");
@@ -6292,7 +6306,8 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
     let (view, cx) = view_over(temp.path(), cx);
     draw(cx);
 
-    let mut link = Some(link_agent(&view, temp.path(), cx));
+    let sockets = socket_dir();
+    let mut link = Some(link_agent(&view, sockets.path(), cx));
     let mut ask = |cx: &mut Window, request: Request| -> Response {
         ask_over(&view, &mut link, cx, request)
     };
@@ -7012,14 +7027,16 @@ fn desktop_mcp_reconnect_keeps_the_tree_and_marks(cx: &mut TestAppContext) {
     let root = temp.path().to_path_buf();
     let (view, cx) = view_over(temp.path(), cx);
     draw(cx);
+    let sockets = socket_dir();
     #[cfg(not(windows))]
-    let command_path = root.join("desktop-link.sock");
+    let command_path = sockets.path().join("desktop-link.sock");
     #[cfg(windows)]
     let command_path = PathBuf::from(format!(
         r"\\.\pipe\pwrdisk-mcp-reconnect-{}",
-        temp.path()
+        sockets
+            .path()
             .file_name()
-            .expect("fixture name")
+            .expect("socket dir name")
             .to_string_lossy()
     ));
     let listener =
@@ -11015,12 +11032,14 @@ fn raw_inspection_prepares_off_thread_and_execution_rechecks(
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
+    let sockets = socket_dir();
     #[cfg(not(windows))]
-    let socket = temp.path().join("inspection.sock");
+    let socket = sockets.path().join("inspection.sock");
     #[cfg(windows)]
     let socket = PathBuf::from(format!(
         r"\\.\pipe\pwrdisk-inspection-{}",
-        temp.path()
+        sockets
+            .path()
             .file_name()
             .expect("temp name")
             .to_string_lossy()
@@ -11966,7 +11985,8 @@ fn an_agent_removal_stays_at_the_agent_limit_with_the_windows_off(
     });
     draw(cx);
 
-    let mut link = Some(link_agent(&view, temp.path(), cx));
+    let sockets = socket_dir();
+    let mut link = Some(link_agent(&view, sockets.path(), cx));
     let mut ask = |cx: &mut Window, request: Request| -> Response {
         ask_over(&view, &mut link, cx, request)
     };
@@ -12537,7 +12557,8 @@ fn an_agent_confirms_cache_decisions_by_path_with_both_intents_named(
     cx.update(init);
     let temp = fixture();
     let (view, cx, [uvdata, stale, junk], bin) = cache_cleanup_view(&temp, cx);
-    let socket = temp.path().join("cleanup.sock");
+    let sockets = socket_dir();
+    let socket = sockets.path().join("cleanup.sock");
     let listener = disktree_link::Listener::bind_at(&socket).expect("link");
     update(&view, cx, |app, cx| app.attach_agent(listener, cx));
     let mut ask = |cx: &mut Window, request: Request| {

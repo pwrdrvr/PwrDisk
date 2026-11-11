@@ -41,8 +41,12 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
                     .expect("removable fixture");
             let file = temp.path().join("candidate");
             std::fs::write(&file, b"fixture").expect("fixture data");
+            // Not in `temp`: beside a deep checkout its path would not fit
+            // in a Unix socket's 104-byte (macOS) `sun_path`.
             #[cfg(not(windows))]
-            let socket = temp.path().join("window.sock");
+            let sockets = tempfile::tempdir_in("/tmp").expect("socket dir");
+            #[cfg(not(windows))]
+            let socket = sockets.path().join("window.sock");
             #[cfg(windows)]
             let socket = std::path::PathBuf::from(format!(
                 r"\\.\pipe\pwrdisk-confirmation-{}",
