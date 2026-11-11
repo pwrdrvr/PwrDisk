@@ -11,20 +11,23 @@
 use std::path::{Path, PathBuf};
 
 use disktree_core::size::{human_bytes, human_count};
-use disktree_core::usage_report::diff::{self, Bound, Changed, Diff, OneSided};
+use disktree_core::usage_report::diff::{
+    self, Bound, Changed, Diff, OneSided, signed,
+};
 use disktree_core::usage_report::library::{self, Saved, Unreadable};
-use disktree_core::usage_report::{Header, SizeMode};
+use disktree_core::usage_report::{Header, SizeMode, is_within};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, Context, Div, ElementId, FocusHandle, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    WindowHandle, div, px, relative,
+    WindowHandle, div, relative,
 };
 use gpui_omarchy::{ActiveTheme as _, ButtonVariant, Theme, button};
 
 use crate::aux_window::{self, Spec};
 use crate::chrome::Drags;
+use crate::palette::growth;
 use crate::ui::{size, space, text};
 use crate::widgets;
 
@@ -102,6 +105,8 @@ pub struct UsageHistory {
     reports: Vec<Saved>,
     opened: Vec<Saved>,
     unreadable: Vec<Unreadable>,
+    /// What the listed reports take on disk, measured when listed.
+    on_disk: u64,
     before: Option<PathBuf>,
     after: Option<PathBuf>,
     comparison: Option<Comparison>,
@@ -132,6 +137,7 @@ impl UsageHistory {
             reports: Vec::new(),
             opened: Vec::new(),
             unreadable: Vec::new(),
+            on_disk: 0,
             before: None,
             after: None,
             comparison: None,
@@ -160,6 +166,7 @@ impl UsageHistory {
         };
         self.before = known(self.before.take());
         self.after = known(self.after.take());
+        self.on_disk = library::bytes(&reports);
         self.reports = reports;
         self.unreadable = unreadable;
     }
@@ -185,7 +192,11 @@ impl UsageHistory {
         if before.path == report.path {
             return None;
         }
-        if before.header.root != report.header.root {
+        // One root inside the other compares over the inner one, as
+        // `report-diff` does; two apart have nothing in common.
+        let separator = before.header.path_style.separator();
+        let (a, b) = (&before.header.root, &report.header.root);
+        if !is_within(a, b, separator) && !is_within(b, a, separator) {
             return Some("another root".to_owned());
         }
         diff::incompatible(&before.header, &report.header)
@@ -229,31 +240,46 @@ impl UsageHistory {
         cx.notify();
     }
 
-    /// Reads both picks whole and compares them, older first whichever way
-    /// round they were picked: Before is the earlier capture.
-    pub fn compare(&mut self, cx: &mut Context<'_, Self>) {
-        let (Some(before), Some(after)) = (
-            self.report(self.before.as_ref()),
-            self.report(self.after.as_ref()),
-        ) else {
+    /// Reads both picks whole and compares them off the UI thread, older
+    /// first whichever way round they were picked: Before is the earlier
+    /// capture. A whole disk's report is megabytes of JSON.
+    pub fn compare(&self, cx: &Context<'_, Self>) {
+        let Some((first, second)) = self.ordered_picks() else {
             return;
         };
-        let (first, second) =
-            if after.header.captured_at < before.header.captured_at {
-                (after.path.clone(), before.path.clone())
-            } else {
-                (before.path.clone(), after.path.clone())
-            };
-        let outcome = library::read(&first)
-            .and_then(|a| library::read(&second).map(|b| (a, b)))
-            .map_err(|error| error.to_string())
-            .and_then(|(a, b)| {
-                diff::compare(&a, &b).map(|diff| Comparison {
-                    before: a.header,
-                    after: b.header,
-                    diff,
-                })
-            });
+        let task = cx
+            .background_executor()
+            .spawn(async move { load_comparison(&first, &second) });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            let _ = this.update(cx, |this, cx| this.show(outcome, cx));
+        })
+        .detach();
+    }
+
+    /// [`Self::compare`] on this thread, for a picture that cannot wait.
+    #[cfg(feature = "screenshots")]
+    pub fn compare_now(&mut self, cx: &mut Context<'_, Self>) {
+        if let Some((first, second)) = self.ordered_picks() {
+            self.show(load_comparison(&first, &second), cx);
+        }
+    }
+
+    fn ordered_picks(&self) -> Option<(PathBuf, PathBuf)> {
+        let before = self.report(self.before.as_ref())?;
+        let after = self.report(self.after.as_ref())?;
+        Some(if after.header.captured_at < before.header.captured_at {
+            (after.path.clone(), before.path.clone())
+        } else {
+            (before.path.clone(), after.path.clone())
+        })
+    }
+
+    fn show(
+        &mut self,
+        outcome: Result<Comparison, String>,
+        cx: &mut Context<'_, Self>,
+    ) {
         match outcome {
             Ok(comparison) => {
                 self.comparison = Some(comparison);
@@ -309,6 +335,17 @@ impl UsageHistory {
         })
         .detach();
     }
+}
+
+/// Both reports, whole, compared.
+fn load_comparison(first: &Path, second: &Path) -> Result<Comparison, String> {
+    let before = library::read(first).map_err(|error| error.to_string())?;
+    let after = library::read(second).map_err(|error| error.to_string())?;
+    diff::compare(&before, &after).map(|diff| Comparison {
+        before: before.header,
+        after: after.header,
+        diff,
+    })
 }
 
 impl Render for UsageHistory {
@@ -405,10 +442,14 @@ impl UsageHistory {
             "{} report{} \u{00b7} {} on disk{}",
             self.reports.len(),
             if self.reports.len() == 1 { "" } else { "s" },
-            human_bytes(library::bytes(&self.reports)),
+            human_bytes(self.on_disk),
             self.dir.as_deref().map_or_else(String::new, |dir| format!(
                 " \u{00b7} {}",
-                home_relative(dir)
+                crate::marks::display_path(
+                    dir,
+                    std::env::home_dir().as_deref(),
+                    disktree_core::path_style::PathStyle::Native,
+                )
             )),
         );
         div()
@@ -634,18 +675,6 @@ fn empty_note(dir: Option<&Path>) -> String {
     )
 }
 
-/// `dir` with the home folder written `~`, as the window's paths are.
-fn home_relative(dir: &Path) -> String {
-    std::env::home_dir()
-        .and_then(|home| dir.strip_prefix(home).ok().map(Path::to_path_buf))
-        .map_or_else(
-            || dir.display().to_string(),
-            |below| {
-                format!("~{}{}", std::path::MAIN_SEPARATOR, below.display())
-            },
-        )
-}
-
 /// A right-aligned figure in a fixed lane, so the rows line up.
 fn lane(value: String, color: Hsla) -> Div {
     div()
@@ -667,30 +696,6 @@ fn local_time(seconds: i64) -> String {
                 .to_string()
         },
     )
-}
-
-/// Growth, in orange: lighter than the accent's blue in a dark theme and
-/// darker in a light one, so the two are told apart by lightness too.
-pub const fn growth(theme: &Theme) -> Hsla {
-    let dark =
-        matches!(theme.appearance, gpui_kit::base::ThemeAppearance::Dark);
-    Hsla {
-        h: 0.065,
-        s: 0.9,
-        l: if dark { 0.68 } else { 0.42 },
-        a: 1.0,
-    }
-}
-
-/// `+1.2 GB`, `-300 MB` or `0 B`.
-pub fn signed(delta: i128) -> String {
-    let size =
-        human_bytes(u64::try_from(delta.unsigned_abs()).unwrap_or(u64::MAX));
-    match delta.signum() {
-        1 => format!("+{size}"),
-        -1 => format!("\u{2212}{size}"),
-        _ => size,
-    }
 }
 
 /// What free space did beside what the listing did. `unlisted` is space
@@ -1048,9 +1053,13 @@ fn change_row(
     };
     let fraction = (delta.unsigned_abs() as f32 / scale as f32).clamp(0.0, 1.0);
     let (name, folder) = name_and_folder(&entry.path, scope);
+    // The positive half's left edge is the zero line.
     let half = |filled: bool, end: bool| {
         div()
             .flex_1()
+            .when(!end, |side| {
+                side.border_l_1().border_color(theme.control_border())
+            })
             .h_full()
             .flex()
             .when(end, gpui_kit::Styled::justify_end)
@@ -1094,11 +1103,10 @@ fn change_row(
         .child(
             div()
                 .w(size::SHARE_LANE)
-                .h(px(10.))
+                .h(space::SM)
                 .flex_shrink_0()
                 .flex()
                 .child(half(delta < 0, true))
-                .child(div().w(px(1.)).h_full().bg(theme.control_border()))
                 .child(half(delta > 0, false)),
         )
         .child(
@@ -1171,9 +1179,14 @@ fn one_sided_row(
         .debug_selector(move || format!("history-{side}-only-{index}"))
         .role(Role::ListItem)
         .aria_label(format!(
-            "{}: {}; {bound}",
+            "{}: {}{}; {bound}",
             entry.path,
-            human_bytes(entry.bytes)
+            human_bytes(entry.bytes),
+            if entry.uncertain {
+                ", partly unreadable"
+            } else {
+                ""
+            }
         ))
         .flex()
         .items_center()
@@ -1208,6 +1221,10 @@ fn one_sided_row(
                         .child(folder),
                 ),
         )
+        .children(entry.uncertain.then(|| {
+            widgets::chip("partly unreadable", theme.warning, cx)
+                .flex_shrink_0()
+        }))
         .child(widgets::chip(bound, color, cx).flex_shrink_0());
     widgets::with_tooltip(row, SharedString::from(entry.path.clone()))
 }

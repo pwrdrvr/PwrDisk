@@ -12797,6 +12797,18 @@ fn saved_report(
     folders: &[(&str, u64)],
     options: ScanOptions,
 ) -> PathBuf {
+    saved_report_of(dir, "/r", captured_at, free, folders, options)
+}
+
+/// [`saved_report`] of a tree scanned at `root`.
+fn saved_report_of(
+    dir: &Path,
+    root_path: &str,
+    captured_at: i64,
+    free: u64,
+    folders: &[(&str, u64)],
+    options: ScanOptions,
+) -> PathBuf {
     use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
     use disktree_core::usage_report::{self, Capture, library};
 
@@ -12824,7 +12836,7 @@ fn saved_report(
         native: None,
     };
     let capture = Capture {
-        root: "/r".to_owned(),
+        root: root_path.to_owned(),
         style: PathStyle::Posix,
         options,
         captured_at,
@@ -12901,6 +12913,9 @@ fn usage_history_compares_two_saved_reports(cx: &mut TestAppContext) {
     );
     click_on(cx, "history-after-1");
     click_on(cx, COMPARE_ID);
+    // The reports are read off the UI thread.
+    cx.run_until_parked();
+    draw(cx);
     let (first, own, total) = view.read_with(cx, |view, _| {
         let comparison = view.comparison().expect("compared");
         let total: i128 = comparison
@@ -12947,4 +12962,40 @@ fn usage_history_without_reports_says_how_to_make_one(cx: &mut TestAppContext) {
     assert!(view.read_with(cx, |view, _| view.reports().is_empty()));
     assert!(view.read_with(cx, |view, _| view.comparison().is_none()));
     assert!(cx.debug_bounds("history-row-0").is_none());
+}
+
+/// A report of a folder inside another report's root compares over that
+/// folder, as `report-diff` does; a report of an unrelated tree does not.
+#[gpui_kit::test]
+fn usage_history_compares_a_nested_root_and_refuses_another(
+    cx: &mut TestAppContext,
+) {
+    use crate::usage_history::{COMPARE_ID, UsageHistory};
+
+    cx.update(init);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let dir = temp.path().join("reports");
+    let options = ScanOptions::default;
+    saved_report(&dir, 1_000, 10_000, &[("a", 300), ("b", 150)], options());
+    saved_report_of(&dir, "/r/a", 2_000, 9_000, &[("x", 400)], options());
+    saved_report_of(&dir, "/q", 3_000, 8_000, &[("y", 400)], options());
+    let (view, cx) =
+        cx.add_window_view(|_, cx| UsageHistory::new(Some(dir.clone()), cx));
+    // Newest first: /q, /r/a, /r.
+    click_on(cx, "history-before-2");
+    click_on(cx, "history-after-0");
+    click_on(cx, COMPARE_ID);
+    cx.run_until_parked();
+    assert!(
+        view.read_with(cx, |view, _| view.comparison().is_none()),
+        "an unrelated root is not an After"
+    );
+    click_on(cx, "history-after-1");
+    click_on(cx, COMPARE_ID);
+    cx.run_until_parked();
+    let scope = view.read_with(cx, |view, _| {
+        view.comparison()
+            .map(|comparison| comparison.diff.scope.clone())
+    });
+    assert_eq!(scope.as_deref(), Some("/r/a"));
 }

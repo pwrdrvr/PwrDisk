@@ -534,16 +534,22 @@ pub fn render(diff: &Diff, limit: usize) -> String {
             };
             let _ = writeln!(
                 text,
-                "  {:>10}  {}  (other report: {other})",
+                "  {:>10}  {}  (other report: {other}){}",
                 human_bytes(entry.bytes),
-                short(&entry.path)
+                short(&entry.path),
+                if entry.uncertain {
+                    ", partly unreadable"
+                } else {
+                    ""
+                }
             );
         }
     }
     text
 }
 
-fn signed(delta: i128) -> String {
+/// `+1.2 GB`, `-300 MB` or `0 B`.
+pub fn signed(delta: i128) -> String {
     let size =
         human_bytes(u64::try_from(delta.unsigned_abs()).unwrap_or(u64::MAX));
     match delta.signum() {

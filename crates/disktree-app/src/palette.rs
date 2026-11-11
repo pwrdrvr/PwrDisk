@@ -69,6 +69,18 @@ pub fn category_accent(theme: &Theme, category: Category) -> Hsla {
     Hsla { h, s, l, a: 1.0 }
 }
 
+/// Growth in a comparison of usage reports, in orange: lighter than the
+/// accent's blue, which marks shrinkage, in a dark theme and darker in a
+/// light one, so the two are told apart by lightness too.
+pub const fn growth(theme: &Theme) -> Hsla {
+    Hsla {
+        h: 0.065,
+        s: 0.9,
+        l: if dark(theme) { 0.68 } else { 0.42 },
+        a: 1.0,
+    }
+}
+
 /// The age ramp, newest first: this week, this month, this half-year, this
 /// year, older.
 pub const AGE_BUCKETS: [(i64, &str); 5] = [

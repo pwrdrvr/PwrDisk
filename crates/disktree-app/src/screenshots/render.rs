@@ -116,7 +116,7 @@ fn render(scenario: &Scenario, root: &Path, out: &Path) -> Result<()> {
                             history.pick_before(1, cx);
                             history.pick_after(0, cx);
                             if compare {
-                                history.compare(cx);
+                                history.compare_now(cx);
                             }
                             history
                         })

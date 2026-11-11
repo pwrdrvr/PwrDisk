@@ -329,7 +329,7 @@ pub fn build(tree: &Tree, capture: &Capture, threshold: u64) -> Report {
         // An error no child can account for is this folder's own. One it
         // met beside a kept subfolder's is merged into the same flag by
         // `aggregate` and cannot be seen here; see the field.
-        residual_errors |= node.read_error && !kept_errors && !residual_errors;
+        residual_errors |= node.read_error && !kept_errors;
         folders.push(Folder {
             path: path.clone(),
             depth,
@@ -557,7 +557,7 @@ pub(crate) fn is_child(path: &str, parent: &str, separator: char) -> bool {
 }
 
 /// Whether `path` is `base` or below it.
-pub(crate) fn is_within(path: &str, base: &str, separator: char) -> bool {
+pub fn is_within(path: &str, base: &str, separator: char) -> bool {
     path == base
         || path.strip_prefix(base).is_some_and(|rest| {
             base.ends_with(separator) || rest.starts_with(separator)
