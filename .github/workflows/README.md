@@ -54,8 +54,14 @@ does not package again. A push it cannot read as a complete fast-forward
 the packaging checks. Lint, tests and the notice check always run on
 `main`.
 
-To run everything on a PR anyway, add the `full-ci` label and re-run the
-workflow, or push. The classifier reads labels live, so a re-run sees it.
+To run everything on a PR anyway, add the `full-ci` label, then push or
+use **Re-run all jobs**. The classifier reads labels live, so a full
+re-run sees it. **Re-run failed jobs** does not: it keeps the classifier's
+earlier answer and leaves the skipped jobs skipped.
+
+The bundle used to be CI's only release-profile build. Code under
+`debug_assertions` differs between the profiles, so the Linux job now runs
+`cargo check --release` on every code change.
 Releases and `build-preview` builds still build every architecture,
 including Intel macOS in the universal app.
 
@@ -84,7 +90,8 @@ eight-minute ARM execution limits. macOS gets 20 minutes to compile and
 15 to execute.
 Both feature combinations compile in the build phase so screenshot code
 generation cannot consume the execution budget. The job limits are 45
-minutes for Linux x64, 35 for Linux ARM and 60 for macOS, including
+minutes for Linux x64 (with its release-profile check), 35 for Linux ARM
+and 60 for macOS, including
 setup, lint where applicable, APFS fixtures, packaging
 where applicable and cleanup. The deadline model in
 `scripts/ci/test-budgets.test.cjs` reproduces the old cutoffs and verifies

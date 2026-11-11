@@ -30,7 +30,8 @@ jobs:
   # it pending. PRs that touch only docs, Markdown, agent skills and
   # templates skip the jobs below instead. The bundle checks and the ARM
   # test legs also wait for a packaging input to change, on PRs and on main
-  # pushes alike, or for a PR's full-ci label (add it, then re-run).
+  # pushes alike, or for a PR's full-ci label (add it, then push or use
+  # Re-run all jobs: Re-run failed jobs keeps the classifier's answer).
   # The classifier was ported from PwrRoute, which took
   # it from PwrAgent; scripts/ci/classify-changes.test.cjs runs this script
   # against fixtures, and the allowlist's reasons are at its top. Should
@@ -209,7 +210,6 @@ jobs:
               .addTable([
                 [{data: "Classification", header: true}, {data: "Files", header: true}],
                 [nonCodeOnly ? "Non-code only" : "Code impacting", String(files.length)],
-                [packagingHit ? "Packaging impacting" : "No packaging inputs", ""],
               ])
               .addRaw(
                 (nonCodeOnly
@@ -217,7 +217,7 @@ jobs:
                   : `Full CI runs because \`${codeImpactingFile.filename}\` requires it.`) +
                 (packagingHit
                   ? ` Packaging checks and ARM tests run because \`${packagingHit.filename}\` changed.`
-                  : " Packaging checks and ARM tests are skipped; add the full-ci label and re-run to force them."),
+                  : " Packaging checks and ARM tests are skipped; add the full-ci label and use Re-run all jobs to force them."),
               )
               .write();
 
@@ -277,7 +277,8 @@ jobs:
   check:
     name: Lint and test
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Lint, release check (15), compile (20), tests (10), setup.
+    timeout-minutes: 60
     needs: changes
     # Runs unless the classifier succeeded and said non-code only.
     if: >-
@@ -303,6 +304,13 @@ jobs:
 
       - name: Lint
         run: cargo xtask lint
+
+      # The macOS bundle used to be the only release-profile build, and it
+      # now waits for a packaging input. Code under `debug_assertions`
+      # differs between the profiles, so type-check the release one here.
+      - name: Check release profile
+        timeout-minutes: 15
+        run: cargo check --release --workspace --locked
 
       # Cold GPUI code generation exceeded the old test deadline before
       # any test ran. Keep compilation out of the execution budget.
