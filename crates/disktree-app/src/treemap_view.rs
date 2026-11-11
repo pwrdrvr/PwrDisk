@@ -851,11 +851,8 @@ mod tests {
         assert_eq!(underline_top(px(17.), px(22.), px(1.)), px(17.));
     }
 
-    /// GPUI centres the glyph box (ascent over descent) in the line
-    /// height. Measured against the region a label owns, that box has to
-    /// stay inside it, or its mask cuts off descenders such as the `g` in
-    /// `.git`. macOS's system font at 12 px, in the 16 px band of a deeper
-    /// directory, is the case that did.
+    /// The glyph box (ascent over descent) a label paints, as GPUI
+    /// centres it in the line height: its top and bottom.
     fn glyph_box(
         top: Pixels,
         height: Pixels,
@@ -870,6 +867,9 @@ mod tests {
         (glyph_top.as_f32(), (glyph_top + ascent + descent).as_f32())
     }
 
+    /// The glyph box has to stay inside the region a label owns, or its
+    /// mask cuts off descenders such as the `g` in `.git`. macOS's system
+    /// font at 12 px, in the 16 px band of a deeper directory, did.
     #[test]
     fn a_descender_stays_inside_a_slim_band() {
         let (top, bottom) =
@@ -909,13 +909,32 @@ mod tests {
                 "{glyph_bottom} below {}",
                 top + height.as_f32()
             );
-            let natural = top + inset.as_f32()
-                + (line_height - ascent - descent).as_f32() / 2.;
-            if natural + (ascent + descent).as_f32()
-                <= top + height.as_f32()
-            {
+            // Where the label would sit with all the room it wants.
+            let (natural, natural_bottom) = glyph_box(
+                px(top), px(1e6), inset, line_height, ascent, descent,
+            );
+            if natural_bottom <= top + height.as_f32() {
                 prop_assert!((glyph_top - natural).abs() < slack);
             }
+        }
+
+        /// A band too short for the glyphs keeps their top, not their
+        /// bottom: a name loses its descenders before its ascenders.
+        #[test]
+        fn a_short_band_pins_the_glyph_top_to_its_own(
+            top in -500.0f32..500.0,
+            size in 6.0f32..40.0,
+            ascent_em in 0.7f32..1.1,
+            descent_em in 0.1f32..0.35,
+            short in 0.05f32..1.0,
+        ) {
+            let name = px(size);
+            let (ascent, descent) = (name * ascent_em, name * descent_em);
+            let height = (ascent + descent) * short;
+            let (glyph_top, _) = glyph_box(
+                px(top), height, name * 0.25, name * 1.35, ascent, descent,
+            );
+            prop_assert!((glyph_top - top).abs() < 0.01, "{glyph_top} vs {top}");
         }
     }
 
