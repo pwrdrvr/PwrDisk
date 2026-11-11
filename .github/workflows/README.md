@@ -90,8 +90,7 @@ eight-minute ARM execution limits. macOS gets 20 minutes to compile and
 15 to execute.
 Both feature combinations compile in the build phase so screenshot code
 generation cannot consume the execution budget. The job limits are 45
-minutes for Linux x64 (with its release-profile check), 35 for Linux ARM
-and 60 for macOS, including
+minutes for Linux x64, 35 for Linux ARM and 60 for macOS, including
 setup, lint where applicable, APFS fixtures, packaging
 where applicable and cleanup. The deadline model in
 `scripts/ci/test-budgets.test.cjs` reproduces the old cutoffs and verifies
