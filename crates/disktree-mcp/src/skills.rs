@@ -13,6 +13,16 @@ use sha2::{Digest as _, Sha256};
 /// The skills extension, as servers that carry skills declare it.
 pub const EXTENSION: &str = "io.modelcontextprotocol/skills";
 
+/// How long a host may reuse a `skills/list` or `skills/get` answer.
+///
+/// The skills are compiled in, so they change only with the binary, and a
+/// host that cached a stale manifest finds out when a digest disagrees.
+pub const TTL_MS: u64 = 300_000;
+
+/// The skills are the same for everyone who runs this build: nothing in
+/// them depends on the user, the scan or the window.
+pub const CACHE_SCOPE: &str = "public";
+
 /// One file of a skill.
 #[derive(Debug)]
 pub struct File {
@@ -123,6 +133,20 @@ impl Skill {
     }
 }
 
+/// A `skills/list` or `skills/get` result holding `value` under `key`.
+///
+/// The extension requires `resultType`, `ttlMs` and `cacheScope` on both,
+/// and rmcp passes a custom result through as it is, so they are added
+/// here.
+pub fn complete(key: &str, value: Value) -> Value {
+    let mut body = Map::new();
+    body.insert(key.into(), value);
+    body.insert("resultType".into(), json!("complete"));
+    body.insert("ttlMs".into(), json!(TTL_MS));
+    body.insert("cacheScope".into(), json!(CACHE_SCOPE));
+    Value::Object(body)
+}
+
 /// The skill named `name`.
 pub fn named(name: &str) -> Option<&'static Skill> {
     SKILLS.iter().find(|skill| skill.name == name)
@@ -216,6 +240,38 @@ mod tests {
             // One `key: value` per line: what [`frontmatter`] reads.
             for line in text[4..4 + end].lines() {
                 assert!(line.contains(": "), "{}: {line}", skill.name);
+                // A plain YAML scalar, so a host's YAML parser reads the
+                // same string the manifest's `frontmatter` sends: no
+                // second `: `, no ` #` comment, no quote or indicator
+                // up front.
+                let (_, value) = line.split_once(": ").expect("key: value");
+                assert!(!value.contains(": "), "{}: {line}", skill.name);
+                assert!(!value.contains(" #"), "{}: {line}", skill.name);
+                assert!(
+                    !value
+                        .starts_with(|c: char| "'\"[{>|*&!%@`#-?".contains(c)),
+                    "{}: {line}",
+                    skill.name
+                );
+                // YAML would read these as a bool, null or number, not
+                // the string the manifest sends.
+                let lower = value.to_ascii_lowercase();
+                assert!(
+                    !matches!(
+                        lower.as_str(),
+                        "true"
+                            | "false"
+                            | "yes"
+                            | "no"
+                            | "on"
+                            | "off"
+                            | "null"
+                            | "~"
+                            | ""
+                    ) && value.parse::<f64>().is_err(),
+                    "{}: {line}",
+                    skill.name
+                );
             }
             let fields = skill.frontmatter();
             assert_eq!(fields["name"], skill.name);

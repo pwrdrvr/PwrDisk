@@ -265,6 +265,15 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
     instruction, and never to delete by other means. A change to what
     the guards refuse, what removal does, or what a system hides from a
     scan updates the matching `references/<system>.md` in the same PR.
+    They follow the MCP Skills extension (`io.modelcontextprotocol/skills`,
+    [spec](https://modelcontextprotocol.io/extensions/skills/overview)):
+    declare it with `resources` in the capabilities, answer `skills/list`
+    and `skills/get` with each skill's frontmatter and every file's
+    `sha256:` digest and byte size, add `resultType`, `ttlMs` and
+    `cacheScope` to both (rmcp passes custom results through as they
+    are), and serve the bytes through `resources/read`. Plain resources
+    and `pwrdisk_read_skill` remain for clients without the extension;
+    `skills_host_tests.rs` walks the host's sequence.
 
 15. **A tree owns a handful of buffers, by index.** Nodes live in one
     vector, each directory's children a contiguous run of it, names in one
