@@ -424,6 +424,17 @@ fn warnings(a: &Header, b: &Header, scope: &str) -> Vec<String> {
 /// largest changes of each kind.
 pub fn render(diff: &Diff, limit: usize) -> String {
     let mut text = String::new();
+    // Below the scope, which heads the list, a path reads shorter.
+    let short = |path: &str| -> String {
+        match path.strip_prefix(diff.scope.as_str()) {
+            Some("") => "(scope)".to_owned(),
+            Some(rest) if diff.scope.ends_with(['/', '\\']) => {
+                format!("./{rest}")
+            }
+            Some(rest) => format!(".{rest}"),
+            None => path.to_owned(),
+        }
+    };
     let when = |seconds: i64| {
         chrono::DateTime::from_timestamp(seconds, 0).map_or_else(
             || seconds.to_string(),
@@ -486,7 +497,7 @@ pub fn render(diff: &Diff, limit: usize) -> String {
             text,
             "  {:>10}  {}  (folder {} -> {}){}",
             signed(entry.own_delta()),
-            entry.path,
+            short(&entry.path),
             human_bytes(entry.before),
             human_bytes(entry.after),
             if entry.uncertain {
@@ -523,7 +534,7 @@ pub fn render(diff: &Diff, limit: usize) -> String {
                 text,
                 "  {:>10}  {}  (other report: {other})",
                 human_bytes(entry.bytes),
-                entry.path
+                short(&entry.path)
             );
         }
     }

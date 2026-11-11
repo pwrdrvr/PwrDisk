@@ -149,10 +149,14 @@ pwrdisk            # choose a source and a folder
 pwrdisk ~/src      # scan a folder straight away
 pwrdisk --disk     # the whole disk
 pwrdisk ssh myserver /var   # a server over SSH, read-only
+pwrdisk report -D -o today.jsonl   # folders of 100 MB or more, no window
+pwrdisk report-diff monday.jsonl today.jsonl   # where the space went
 ```
 
 The [user guide](docs/guide.md) covers every screen and key, how sizes are
 measured, SSH, and what differs on macOS and Windows.
+[Usage reports](docs/usage-reports.md) explains what a report keeps and
+what a comparison of two can and cannot say.
 
 ## With an AI agent
 
