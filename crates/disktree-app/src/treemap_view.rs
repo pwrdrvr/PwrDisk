@@ -14,9 +14,10 @@ use std::rc::Rc;
 use disktree_core::treemap::Rect;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Bounds, ContentMask, Context, Corners, Edges, Font, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, MouseDownEvent, MouseMoveEvent,
-    ParentElement as _, Pixels, Point, ScrollWheelEvent, SharedString, Size,
+    App, Bounds, ContentMask, Context, Corners, CursorStyle, Edges, Font,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement as _, PinchEvent, Pixels,
+    Point, ScrollWheelEvent, SharedString, Size,
     StatefulInteractiveElement as _, StrikethroughStyle, Styled, TextAlign,
     TextRun, Window, canvas, div, pattern_slash, px, quad, underline_y_offset,
 };
@@ -25,7 +26,8 @@ use gpui_omarchy::{ActiveTheme, Theme};
 use disktree_core::classify::Category;
 
 use crate::palette;
-use crate::state::{Disktree, Filtered, Label, View};
+use crate::state::{Disktree, Filtered, Label, PushCue, View};
+use crate::wheel::Edge;
 
 /// How one tile should be drawn, resolved before the paint callback runs so
 /// that painting never has to look anything up.
@@ -60,6 +62,8 @@ pub struct Mosaic {
     pub tiles: Vec<TileDeco>,
     pub labels: Vec<Label>,
     pub view: View,
+    /// A wheel push into the zoom's limit, drawn over everything.
+    pub push: Option<PushCue>,
 }
 
 /// Build the treemap viewport: canvas, input, and the cursor tooltip.
@@ -164,11 +168,13 @@ fn mosaic_inner(
         tiles,
         labels,
         view,
+        push,
     } = mosaic;
     let canvas_origin = Rc::clone(&origin);
     let canvas_measured = Rc::clone(&measured);
     // A hand over a tile a click would open: the selection, clicked again.
     let opens = interactive && app.click_opens_hovered();
+    let dragging = interactive && app.dragging();
 
     div()
         .id("disktree-treemap")
@@ -180,6 +186,7 @@ fn mosaic_inner(
         .overflow_hidden()
         .bg(theme.inset)
         .when(opens, Styled::cursor_pointer)
+        .when(dragging, |this| this.cursor(CursorStyle::ClosedHand))
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             if interactive && !hovered {
                 this.on_mouse_leave(cx);
@@ -200,6 +207,16 @@ fn mosaic_inner(
                 if interactive { this.on_scroll_wheel(event, cx); }
             },
         ))
+        .on_pinch(cx.listener(move |this, event: &PinchEvent, _, cx| {
+            if interactive { this.on_pinch(event, cx); }
+        }))
+        // Up anywhere: a drag may end outside the mosaic.
+        .on_mouse_up(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            this.on_mouse_up(cx);
+        }))
+        .on_mouse_up_out(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            this.on_mouse_up(cx);
+        }))
         .child(
             canvas(
                 move |bounds, window, _| {
@@ -219,6 +236,9 @@ fn mosaic_inner(
                         &labels, bounds, view, &colors, &font, name_size,
                         size_size, window, cx,
                     );
+                    if let Some(push) = &push {
+                        paint_push(push, bounds, view, &colors, window);
+                    }
                 },
             )
             .absolute()
@@ -232,6 +252,8 @@ struct Colors {
     label_dim: Hsla,
     hover_border: Hsla,
     selected_border: Hsla,
+    /// The push bar and the ring round what it would open.
+    push: Hsla,
     marked_border: Hsla,
     marked_label: Hsla,
     warning: Hsla,
@@ -290,6 +312,7 @@ impl Colors {
             label_dim: theme.secondary,
             hover_border: theme.bright.opacity(0.55),
             selected_border: palette::highlight(theme),
+            push: theme.accent,
             marked_border: theme.danger,
             marked_label: theme.danger,
             warning: theme.warning,
@@ -492,6 +515,50 @@ fn paint_tiles(
             solid,
         ));
     }
+}
+
+/// Height of the push bar along the top of the mosaic.
+const PUSH_BAR: f32 = 3.0;
+
+/// The push into the zoom's limit: a bar along the top that fills as the
+/// input goes on, and, going in, a ring round the directory it opens. Going
+/// out the bar fills from the right, backing out.
+fn paint_push(
+    push: &PushCue,
+    bounds: Bounds<Pixels>,
+    view: View,
+    colors: &Colors,
+    window: &mut Window,
+) {
+    let solid = gpui_kit::BorderStyle::Solid;
+    let none = gpui_kit::transparent_black();
+    if let Some(ring) = push.ring {
+        let rect = view.project(ring);
+        window.paint_quad(quad(
+            to_window(&rect, bounds),
+            Corners::default(),
+            none,
+            Edges::all(px(2.)),
+            colors.push,
+            solid,
+        ));
+    }
+    let width = bounds.size.width * push.progress.clamp(0.0, 1.0);
+    let left = match push.edge {
+        Edge::In => bounds.origin.x,
+        Edge::Out => bounds.origin.x + bounds.size.width - width,
+    };
+    window.paint_quad(quad(
+        Bounds::new(
+            Point::new(left, bounds.origin.y),
+            Size::new(width, px(PUSH_BAR)),
+        ),
+        Corners::default(),
+        colors.push,
+        Edges::default(),
+        none,
+        solid,
+    ));
 }
 
 /// Round a rectangle's edges to device pixels. Tiles land on fractional

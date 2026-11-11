@@ -5274,7 +5274,7 @@ fn key_bar(app: &Disktree, theme: &Theme, cx: &App) -> Div {
         ("enter", "open"),
         ("\u{232b}", "up"),
         ("c", "review"),
-        ("hjkl", "move"),
+        ("hjkl", "select"),
         ("/", "filter"),
         ("[ ]", "depth"),
         ("t", "mode"),
@@ -5304,6 +5304,16 @@ fn key_bar(app: &Disktree, theme: &Theme, cx: &App) -> Div {
         .border_t_1()
         .border_color(theme.divider())
         .child(lane);
+    if let Some(hint) = app.push_hint() {
+        row = row.child(
+            div()
+                .flex_shrink_0()
+                .debug_selector(|| "push-hint".into())
+                .text_size(text::CAPTION)
+                .text_color(theme.accent)
+                .child(hint),
+        );
+    }
     if (app.view.scale - 1.0).abs() > 0.01 {
         row = row.child(
             div()

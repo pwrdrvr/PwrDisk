@@ -156,10 +156,16 @@ Marking is reversible — press it again — and the saving is never counted twi
 
 ## Zooming and going in
 
-Scroll to magnify toward the pointer. The wheel magnifies until the directory
-under the pointer fills the view, and the next notch goes into it — one
-continuous motion, with the directory's contents growing into place. Scroll the
-other way to come back out. Enter goes into the selected directory at any
+Scroll, or pinch on a trackpad, to magnify toward the pointer. The zoom follows
+how far your fingers or the wheel travel: about 240 px of trackpad travel, or
+three notches, doubles it. It stops where the directory under the pointer fills
+the view; keep pushing and a bar fills along the top of the treemap while the
+status bar says `scroll to open …`, and a full bar goes inside, with the
+directory's contents growing into place. One swipe opens at most one level:
+the rest of it, and its momentum, is ignored until you pause or touch again.
+Over a file with nothing to go into, the wheel does nothing. Scroll the other
+way to come back out; at full size the same push goes up one level. While
+zoomed in, drag to pan. Enter goes into the selected directory at any
 depth, and Backspace or Escape goes up one level. `<` and `>`, beside the
 Size / Files / Age switch, go back and forward through the directories visited,
 as do `alt ←` `alt →` (also `⌘[` `⌘]` on macOS) and the mouse's side
@@ -226,10 +232,11 @@ until the next scan.
 | `enter` | open that directory, at any depth |
 | `⌫` / `esc` | go up one directory |
 | `alt ←` `alt →` | back and forward through where you have been |
-| `←` `↑` `↓` `→` | move between tiles at this level |
+| `←` `↑` `↓` `→` / `hjkl` | select the neighbouring tile at this level |
 | `tab` / `shift-tab` | next / previous control; Escape returns to files |
 | `n` / `shift-n` | next / previous largest sibling |
-| scroll | zoom toward a directory, then go into it |
+| scroll or pinch | zoom toward a directory, then push to go into it |
+| drag | pan the magnified view |
 | `shift`-scroll | pan the magnified view |
 | `[` `]` | draw fewer or more levels at once |
 | `-` `=` `0` | magnify, shrink, reset the view |

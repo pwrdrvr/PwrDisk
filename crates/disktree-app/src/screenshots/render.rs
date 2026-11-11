@@ -6,7 +6,8 @@ use anyhow::{Context as _, Result, ensure};
 use disktree_core::{classify::Category, scan::ScanOptions};
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Entity, HeadlessAppContext, MouseButton,
-    MouseDownEvent, MouseUpEvent, PlatformInput, point, px, size,
+    MouseDownEvent, MouseUpEvent, PlatformInput, ScrollDelta, ScrollWheelEvent,
+    TouchPhase, point, px, size,
 };
 
 use super::scenario::{Scenario, State, Step, Theme};
@@ -115,6 +116,17 @@ fn render(scenario: &Scenario, root: &Path, out: &Path) -> Result<()> {
                 }
                 pointer = Some(*at);
             }
+            Step::Scroll { at, pixels, events } => {
+                move_pointer(&mut cx, window, *at)?;
+                draw(&mut cx, window)?;
+                for input in scroll_events(*at, *pixels, *events) {
+                    cx.update_window(window, |_, window, cx| {
+                        window.dispatch_event(input, cx);
+                    })?;
+                    draw(&mut cx, window)?;
+                }
+                pointer = Some(*at);
+            }
             Step::Wait { ms } => {
                 cx.advance_clock(Duration::from_millis(*ms));
             }
@@ -185,6 +197,29 @@ fn move_pointer(
 ) -> Result<()> {
     cx.update_window(window, |_, window, cx| {
         window.simulate_mouse_move(point(px(at[0]), px(at[1])), cx);
+    })
+}
+
+/// A swipe as macOS reports one, with no clock between events: began,
+/// moved, ended. Positive `pixels` is a swipe up, which zooms in.
+fn scroll_events(
+    at: [f32; 2],
+    pixels: f32,
+    events: u16,
+) -> impl Iterator<Item = PlatformInput> {
+    let position = point(px(at[0]), px(at[1]));
+    (0..events).map(move |index| {
+        let touch_phase = match index {
+            0 => TouchPhase::Started,
+            _ if index + 1 == events => TouchPhase::Ended,
+            _ => TouchPhase::Moved,
+        };
+        PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position,
+            delta: ScrollDelta::Pixels(point(px(0.), px(pixels))),
+            modifiers: gpui_kit::Modifiers::default(),
+            touch_phase,
+        })
     })
 }
 

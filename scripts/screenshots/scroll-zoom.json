@@ -1,0 +1,14 @@
+{
+  "size": [1180, 620],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "scroll", "at": [147, 265], "pixels": 5.0, "events": 24},
+    {"op": "capture", "name": "half-swipe.png", "pointer": true},
+    {"op": "wait", "ms": 400},
+    {"op": "scroll", "at": [147, 265], "pixels": 10.0, "events": 16},
+    {"op": "capture", "name": "push.png", "pointer": true},
+    {"op": "wait", "ms": 400},
+    {"op": "scroll", "at": [147, 265], "pixels": 10.0, "events": 40},
+    {"op": "capture", "name": "opened.png", "pointer": true}
+  ]
+}

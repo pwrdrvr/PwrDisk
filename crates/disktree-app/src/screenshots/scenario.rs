@@ -31,6 +31,13 @@ pub enum Step {
     Click {
         at: [f32; 2],
     },
+    /// One trackpad swipe at `at`: `events` events of `pixels` each, the
+    /// first began and the last ended, with no time between them.
+    Scroll {
+        at: [f32; 2],
+        pixels: f32,
+        events: u16,
+    },
     Wait {
         ms: u64,
     },
@@ -84,6 +91,23 @@ impl Scenario {
         for step in &self.steps {
             match step {
                 Step::Settings => {}
+                Step::Scroll { at, pixels, events } => {
+                    ensure!(
+                        at.iter().zip(self.size).all(|(&v, side)| {
+                            v.is_finite() && v >= 0.0 && v < f32::from(side)
+                        }),
+                        "pointer must be inside the logical window"
+                    );
+                    moved = true;
+                    ensure!(
+                        pixels.is_finite() && pixels.abs() <= 200.0,
+                        "scroll pixels must be at most 200 per event"
+                    );
+                    ensure!(
+                        (1..=600).contains(events),
+                        "a swipe needs 1..600 events"
+                    );
+                }
                 Step::Hover { at } | Step::Click { at } => {
                     ensure!(
                         at.iter().zip(self.size).all(|(&v, side)| {
@@ -194,6 +218,7 @@ mod tests {
             {"op": "setup", "state": {"type": "removal_refused"}},
             {"op": "hover", "at": [100, 200]},
             {"op": "click", "at": [100, 200]},
+            {"op": "scroll", "at": [100, 200], "pixels": 5.0, "events": 24},
             {"op": "wait", "ms": 900},
             {"op": "capture", "name": "hover.png", "pointer": true}
         ]);
