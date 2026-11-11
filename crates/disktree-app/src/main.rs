@@ -43,6 +43,7 @@ mod mark_guard;
 mod marks;
 mod palette;
 mod placement;
+mod pointer_card;
 mod power;
 mod raw_inspection;
 mod report_cli;
