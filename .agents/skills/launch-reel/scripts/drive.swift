@@ -7,6 +7,12 @@ import AppKit
 import CoreGraphics
 import ApplicationServices
 let a = CommandLine.arguments
+let need = ["wid": 3, "frame": 3, "front": 3, "resize": 7, "move": 4, "key": 3,
+            "type": 3, "screen": 2, "click": 4, "glide": 7, "scroll": 6]
+guard a.count >= 2, let n = need[a[1]], a.count >= n else {
+    FileHandle.standardError.write("usage: see the header of drive.swift\n".data(using: .utf8)!)
+    exit(2)
+}
 func windows(_ pid: Int) -> [[String: Any]] {
     let all = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
     return all.filter { $0[kCGWindowOwnerPID as String] as? Int == pid && $0[kCGWindowLayer as String] as? Int == 0 }

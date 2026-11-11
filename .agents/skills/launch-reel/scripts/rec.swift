@@ -73,6 +73,8 @@ Task {
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         try await stream.stopCapture()
+        // An unstarted writer raises on finish; say why instead of crashing.
+        guard rec.started else { print("rec: no complete frame arrived"); flag.done = true; return }
         rec.input.markAsFinished()
         await rec.writer.finishWriting()
         print("rec: \(rec.frames) frames, \(pw)x\(ph), status \(rec.writer.status.rawValue) \(rec.writer.error.map { "\($0)" } ?? "")")

@@ -1,12 +1,12 @@
 #!/bin/bash
-# shoot.sh BIN: open BIN on the contrived home and record its window as one
+# shoot.sh BIN HOME: open BIN on the contrived home HOME (as fixture.sh made it) and record its window as one
 # ProRes take, scene by scene, with a marker per scene. Run it from the
 # guest checkout, after building target/drive, target/rec and target/mcp.py.
 # Fixture data only.
 set -uo pipefail
 BIN=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 S=$PWD/target/lab-clips; mkdir -p "$S"; D=$PWD/target/drive; REC=$PWD/target/rec
-H=/Volumes/Fixtures/Users/alex; P=$H/Projects
+H=${2:?usage: shoot.sh BIN HOME}; P=$H/Projects
 export HOME=$H PWRDISK_LINK=/tmp/pd-clips.sock PWRDISK=$BIN MARKERS=$S/markers.tsv
 rm -f "$PWRDISK_LINK" "$S/stop"; : > "$MARKERS"
 log() { echo "[$(date +%T)] $*"; }
@@ -26,6 +26,8 @@ $D front $pid; $D resize $pid $W $WH $WX $WY; sleep 0.5
 "$REC" "$wid" "$S/pwrdisk-take.mov" "$S/stop" 400 > "$S/rec.log" 2>&1 & rec=$!
 for _ in $(seq 100); do grep -q 'rec: start' "$S/rec.log" && break; sleep 0.1; done
 cat "$S/rec.log"
+# No recording, no shoot: the steps below remove files.
+grep -q 'rec: start' "$S/rec.log" || { log "recorder did not start"; kill $rec $pid; exit 1; }
 # Window-relative point, as fractions of the window.
 pt() { python3 -c "print(int($WX+$W*$1), int($WY+$WH*$2))"; }
 glide() { $D glide $(pt $1 $2) $(pt $3 $4) $5; }
@@ -52,7 +54,7 @@ $D move $(pt 0.98 0.98)
 mark nav-end; sleep 1
 
 # 3-6. The agent finds junk and marks it; Review; the removal; Done.
-cat > /tmp/steps.json <<JSON
+cat > "$S/steps.json" <<JSON
 [["mark","agent"],["tool","pwrdisk_status",{}],["sleep",0.6],
  ["tool","pwrdisk_find",{"reclaimable":true,"kind":"dir"}],["sleep",0.6],
  ["tool","pwrdisk_show",{"path":"$P"}],["sleep",2.2],
@@ -71,9 +73,9 @@ cat > /tmp/steps.json <<JSON
  ["mark","remove"],["remove","permanent"],["sleep",10.0],
  ["mark","done"],["tool","pwrdisk_status",{}],["sleep",6.0],["mark","done-end"]]
 JSON
-python3 "$PWD/target/mcp.py" /tmp/steps.json > "$S/mcp.log" 2>&1
-log "steps done"
+python3 "$PWD/target/mcp.py" "$S/steps.json" > "$S/mcp.log" 2>&1; steps=$?
+log "steps exit $steps"
 touch "$S/stop"; wait $rec; cat "$S/rec.log"
 screencapture -o -x -l "$wid" "$S/last-frame.png" 2>/dev/null
 kill $pid; wait $pid 2>/dev/null
-log done
+log done; exit $steps

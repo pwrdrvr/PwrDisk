@@ -38,7 +38,8 @@ one continuous take of its window, scene by scene, with a marker file.
 | script | what it does |
 | --- | --- |
 | `fixture.sh HOME` | the contrived home: projects with `target/` and `node_modules`, caches, models, movies, a 300k-file archive |
-| `shoot.sh BIN` | launches PwrDisk, sizes its window to 16:9, records, and drives the scenes |
+| `job.sh` | the job's whole command: dark mode, the `Fixtures` image, `fixture.sh`, `shoot.sh`, and putting both back on exit |
+| `shoot.sh BIN HOME` | launches PwrDisk on HOME, sizes its window to 16:9, records, and drives the scenes |
 | `rec.swift` | ScreenCaptureKit → ProRes 422 LT `.mov`, up to 60 fps, cursor shown |
 | `drive.swift` | keys, clicks, glides, scrolls and window placement, in the guest only |
 | `mcp.py` | one `pwrdisk mcp` session that runs the agent's steps and marks scenes |
@@ -56,10 +57,8 @@ committed worktree, as the lab requires), commit it there, and run one
 - `setup`: install rustup if missing, `cargo build --release --locked -p
   disktree-app`, then `swiftc -O` `drive.swift` and `rec.swift` into
   `target/` and copy `mcp.py` there.
-- `command`: switch the guest to dark mode and restore it on exit;
-  `hdiutil create -size 14g -type SPARSE -fs APFS -volname Fixtures
-  -attach`; `fixture.sh /Volumes/Fixtures/Users/alex`; `shoot.sh
-  target/release/pwrdisk`; detach the image on exit.
+- `command`: `job.sh`. Change the image size or the scenes in the scripts,
+  not by retyping the command, so the next take starts from what worked.
 - `artifacts`: `target/lab-clips`. The take is about 300 MB for 96 s.
 
 The whole job takes 7–8 minutes. Then collect it and check it before use:
@@ -92,10 +91,15 @@ Lessons from the takes that went wrong:
   acceptable on the lab fixture. Never use it against real data or a
   window outside the guest.
 
+`shoot.sh` and `mcp.py` exit non-zero, and stop before filming Done, when
+the recorder never starts or the removal is refused: a take that removed
+nothing is not footage.
+
 Write a `markers.json` beside the take: each scene's in/out seconds, what
-happens when, and the facts captions may use. Those are the marked path
-count, the listed bytes, the removed count and the observed change from
-`pwrdisk_status` in `mcp.log`.
+happens when, and the facts captions may use. `markers.tsv` holds wall-clock
+epochs; subtract the epoch on `rec.log`'s `rec: start` line to get seconds
+into the take. The facts are the marked path count, the listed bytes, the
+removed count and the observed change from `pwrdisk_status` in `mcp.log`.
 
 ## 2. Script and voice
 
