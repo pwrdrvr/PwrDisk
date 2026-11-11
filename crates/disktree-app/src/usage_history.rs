@@ -258,7 +258,7 @@ impl UsageHistory {
     }
 
     /// [`Self::compare`] on this thread, for a picture that cannot wait.
-    #[cfg(feature = "screenshots")]
+    #[cfg(all(feature = "screenshots", target_os = "macos"))]
     pub fn compare_now(&mut self, cx: &mut Context<'_, Self>) {
         if let Some((first, second)) = self.ordered_picks() {
             self.show(load_comparison(&first, &second), cx);
