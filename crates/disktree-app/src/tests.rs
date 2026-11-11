@@ -3124,7 +3124,7 @@ fn the_treemap_zooms_with_the_wheel_and_resets(cx: &mut TestAppContext) {
         Point::new(size.width / 2.0, size.height / 2.0)
     });
     update(&view, cx, |app, cx| {
-        app.zoom_at(middle.x.as_f32(), middle.y.as_f32(), 1.5, false, cx);
+        app.zoom_at(middle.x.as_f32(), middle.y.as_f32(), 1.5, cx);
     });
     let zoomed = read(&view, cx, |app| app.view.scale);
     assert!(zoomed > 1.0, "scale after zooming: {zoomed}");
@@ -3838,34 +3838,317 @@ fn the_wheel_goes_into_the_directory_it_zoomed_into(cx: &mut TestAppContext) {
 
     // Point at the middle of junk/deeper's contents: a directory one level
     // below a top-level one.
-    let (deeper, point) = update(&view, cx, |app, _| {
+    let (deeper, at) = update(&view, cx, |app, _| {
         let junk = child_crumbs(app, &[], "junk");
         let deeper = child_crumbs(app, &junk, "deeper");
         let body = app.tile_body(&deeper).expect("deeper is drawn");
-        (deeper, (body.x + body.w / 2.0, body.y + body.h / 2.0))
+        let origin = app.treemap_origin.get();
+        let at = Point::new(
+            origin.x + px(body.x + body.w / 2.0),
+            origin.y + px(body.y + body.h / 2.0),
+        );
+        (deeper, at)
     });
 
-    let mut entered = None;
-    for _ in 0..40 {
-        let crumbs = update(&view, cx, |app, cx| {
-            let (x, y) = app.view.unproject(point.0, point.1);
-            let screen = app
-                .view
-                .project(disktree_core::treemap::Rect::new(x, y, 0.0, 0.0));
-            app.zoom_at(screen.x, screen.y, 1.15, true, cx);
-            app.crumbs.clone()
+    swipe(cx, at, 10.0, 120);
+    assert_eq!(
+        read(&view, cx, |app| app.crumbs.clone()),
+        deeper,
+        "descended into the pointed-at directory, not its top-level ancestor"
+    );
+}
+
+/// A tree deep enough that a long swipe has levels to run through: each
+/// directory holds the next and a file beside it.
+fn deep_fixture() -> tempfile::TempDir {
+    let temp = removable_tempdir();
+    let root = temp.path();
+    let mut dir = root.join("chain");
+    for level in 0..6 {
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("side.bin"), vec![b'x'; 20_000])
+            .expect("write");
+        dir = dir.join(format!("level{level}"));
+    }
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(dir.join("end.bin"), vec![b'x'; 400_000]).expect("write");
+    std::fs::write(root.join("loose.bin"), vec![b'x'; 300_000]).expect("write");
+    temp
+}
+
+/// One trackpad swipe of `events` events of `pixels` each, a frame apart
+/// and without a pause, as macOS sends it: began, moved, ended.
+fn swipe(cx: &mut Window, at: Point<Pixels>, pixels: f32, events: usize) {
+    for index in 0..events {
+        let touch_phase = match index {
+            0 => gpui_kit::TouchPhase::Started,
+            _ if index + 1 == events => gpui_kit::TouchPhase::Ended,
+            _ => gpui_kit::TouchPhase::Moved,
+        };
+        cx.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: at,
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                px(0.0),
+                px(pixels),
+            )),
+            touch_phase,
+            ..Default::default()
         });
         draw(cx);
-        if !crumbs.is_empty() {
-            entered = Some(crumbs);
+    }
+}
+
+/// The centre of the drawn tile for `name` under the root, in the window.
+fn centre_of(
+    view: &Entity<Disktree>,
+    cx: &mut Window,
+    name: &str,
+) -> Point<Pixels> {
+    update(view, cx, |app, _| {
+        let crumbs = child_crumbs(app, &[], name);
+        let rect = app.tile_body(&crumbs).expect("drawn");
+        let origin = app.treemap_origin.get();
+        Point::new(
+            origin.x + px(rect.x + rect.w / 2.0),
+            origin.y + px(rect.y + rect.h / 2.0),
+        )
+    })
+}
+
+/// The rule a fixed step per event broke: one swipe, however long and
+/// however many events carry it, changes the level at most once. Momentum
+/// keeps streaming after the fingers lift, so the rest of it is ignored.
+#[gpui_kit::test]
+fn one_swipe_opens_one_level(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = deep_fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+
+    let at = centre_of(&view, cx, "chain");
+    // 2,400 px: ten doublings, far past any ceiling, in 240 events.
+    let mut levels = vec![read(&view, cx, |app| app.crumbs.clone())];
+    for _ in 0..240 {
+        swipe_step(cx, at, 10.0, gpui_kit::TouchPhase::Moved);
+        let crumbs = read(&view, cx, |app| app.crumbs.clone());
+        if levels.last() != Some(&crumbs) {
+            levels.push(crumbs);
+        }
+    }
+    assert_eq!(levels.len(), 2, "one level change: {levels:?}");
+    assert!(
+        (read(&view, cx, |app| app.view.scale) - 1.0).abs() < 1e-3,
+        "the new level lands unmagnified, and the rest of the swipe is \
+         ignored"
+    );
+
+    // After a pause, the next swipe opens the next level.
+    cx.executor().advance_clock(crate::wheel::GESTURE_GAP);
+    swipe(cx, at, 10.0, 240);
+    let crumbs = read(&view, cx, |app| app.crumbs.clone());
+    assert!(
+        crumbs.len() > levels[1].len() && crumbs.starts_with(&levels[1]),
+        "{crumbs:?} under {:?}",
+        levels[1]
+    );
+}
+
+fn swipe_step(
+    cx: &mut Window,
+    at: Point<Pixels>,
+    pixels: f32,
+    touch_phase: gpui_kit::TouchPhase,
+) {
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: at,
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+            px(0.0),
+            px(pixels),
+        )),
+        touch_phase,
+        ..Default::default()
+    });
+    draw(cx);
+}
+
+/// Zooming out at 1× goes up one level per swipe, never to the root.
+#[gpui_kit::test]
+fn one_swipe_out_goes_up_one_level(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = deep_fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+
+    let deep = update(&view, cx, |app, cx| {
+        let crumbs = app
+            .crumbs_for_path(&temp.path().join("chain/level0/level1/level2"))
+            .expect("in the tree");
+        app.go_to(crumbs.clone(), cx);
+        crumbs
+    });
+    draw(cx);
+    let at = centre_of_view(&view, cx);
+    swipe(cx, at, -10.0, 240);
+    assert_eq!(
+        read(&view, cx, |app| app.crumbs.clone()),
+        deep[..deep.len() - 1].to_vec()
+    );
+}
+
+fn centre_of_view(view: &Entity<Disktree>, cx: &Window) -> Point<Pixels> {
+    read(view, cx, |app| {
+        let origin = app.treemap_origin.get();
+        let size = app.treemap_size.get();
+        Point::new(origin.x + size.width / 2.0, origin.y + size.height / 2.0)
+    })
+}
+
+/// The push shows before it crosses: a bar and a status line naming the
+/// directory, which a pause takes away again.
+#[gpui_kit::test]
+fn a_push_names_what_it_opens_and_a_pause_clears_it(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = deep_fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+
+    let at = centre_of(&view, cx, "chain");
+    // Up to the ceiling and a little past it, but short of a crossing.
+    let mut shown = None;
+    for _ in 0..200 {
+        swipe_step(cx, at, 2.0, gpui_kit::TouchPhase::Moved);
+        shown = read(&view, cx, Disktree::push_hint);
+        if shown.is_some() {
             break;
         }
     }
-    assert_eq!(
-        entered.as_deref(),
-        Some(deeper.as_slice()),
-        "descended into the pointed-at directory, not its top-level ancestor"
+    let hint = shown.expect("a push begins at the ceiling");
+    assert!(hint.starts_with("scroll to open "), "{hint}");
+    assert!(
+        read(&view, cx, |app| app.crumbs.is_empty()),
+        "not crossed yet"
     );
+    assert!(cx.debug_bounds("push-hint").is_some());
+
+    cx.executor().advance_clock(crate::wheel::GESTURE_GAP);
+    cx.run_until_parked();
+    draw(cx);
+    assert_eq!(read(&view, cx, Disktree::push_hint), None);
+    assert!(cx.debug_bounds("push-hint").is_none());
+}
+
+/// Over a file straight under the root there is nothing to zoom into, so
+/// the wheel no longer magnifies the mosaic like a page.
+#[gpui_kit::test]
+fn the_wheel_never_magnifies_what_cannot_open(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = deep_fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+
+    let at = centre_of(&view, cx, "loose.bin");
+    swipe(cx, at, 10.0, 240);
+    assert!((read(&view, cx, |app| app.view.scale) - 1.0).abs() < 1e-3);
+    assert!(read(&view, cx, |app| app.crumbs.is_empty()));
+}
+
+/// Zoomed in, a drag pans the view and opens nothing; a press on the
+/// selection that does not move still opens it, on release.
+#[gpui_kit::test]
+fn a_drag_pans_a_zoomed_view(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = deep_fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+
+    let at = centre_of(&view, cx, "chain");
+    let chain = update(&view, cx, |app, cx| {
+        let chain = child_crumbs(app, &[], "chain");
+        app.select(Some(chain.clone()), cx);
+        let size = app.treemap_size.get();
+        app.zoom_at(
+            size.width.as_f32() / 2.0,
+            size.height.as_f32() / 2.0,
+            2.0,
+            cx,
+        );
+        chain
+    });
+    draw(cx);
+    let at = update(&view, cx, |app, _| {
+        let body = app.tile_body(&chain).expect("drawn");
+        let rect = app.view.project(body);
+        let origin = app.treemap_origin.get();
+        let size = app.treemap_size.get();
+        // Somewhere on chain that is on screen.
+        let x = (rect.x + rect.w / 2.0).clamp(10.0, size.width.as_f32() - 10.0);
+        let y =
+            (rect.y + rect.h / 2.0).clamp(10.0, size.height.as_f32() - 10.0);
+        let _ = at;
+        Point::new(origin.x + px(x), origin.y + px(y))
+    });
+    let before = read(&view, cx, |app| app.view);
+    let selected = read(&view, cx, |app| app.selected.clone());
+
+    cx.simulate_mouse_down(
+        at,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    let to = Point::new(at.x + px(60.), at.y + px(40.));
+    cx.simulate_mouse_move(
+        to,
+        Some(gpui_kit::MouseButton::Left),
+        gpui_kit::Modifiers::none(),
+    );
+    assert!(read(&view, cx, Disktree::dragging));
+    cx.simulate_mouse_up(
+        to,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    draw(cx);
+    let after = read(&view, cx, |app| app.view);
+    assert!((after.scale - before.scale).abs() < f32::EPSILON);
+    assert!(
+        after.origin_x < before.origin_x || after.origin_y < before.origin_y,
+        "{before:?} -> {after:?}"
+    );
+    assert!(
+        read(&view, cx, |app| app.crumbs.is_empty()),
+        "nothing opened"
+    );
+    assert!(!read(&view, cx, Disktree::dragging));
+
+    // The selection, pressed and released in place: it opens.
+    let at = update(&view, cx, |app, _| {
+        let selected = app.selected.clone().expect("a selection");
+        let tile = app.tile_rect(&selected).expect("drawn");
+        let rect = app.view.project(tile);
+        let origin = app.treemap_origin.get();
+        let size = app.treemap_size.get();
+        let x = (rect.x + rect.w / 2.0).clamp(10.0, size.width.as_f32() - 10.0);
+        let y =
+            (rect.y + rect.h / 2.0).clamp(10.0, size.height.as_f32() - 10.0);
+        Point::new(origin.x + px(x), origin.y + px(y))
+    });
+    let _ = selected;
+    cx.simulate_mouse_down(
+        at,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    assert!(
+        read(&view, cx, |app| app.crumbs.is_empty()),
+        "a zoomed press waits to see if it is a drag"
+    );
+    cx.simulate_mouse_up(
+        at,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    draw(cx);
+    assert!(!read(&view, cx, |app| app.crumbs.is_empty()), "opened");
 }
 
 /// Regression, keyboard side: Enter on a deep selection enters that
@@ -9926,7 +10209,7 @@ fn reduced_motion_lands_navigation_history_and_zoom(cx: &mut TestAppContext) {
         assert!(app.crumbs.is_empty());
         assert!(app.transition.is_none());
         app.go_to(junk.clone(), cx);
-        app.zoom_at(100., 100., 1.2, false, cx);
+        app.zoom_at(100., 100., 1.2, cx);
         assert!(app.view.scale > 1.0, "user-controlled zoom still works");
         assert!(app.transition.is_none());
         app.reset_view(cx);
@@ -9943,7 +10226,13 @@ fn reduced_motion_lands_navigation_history_and_zoom(cx: &mut TestAppContext) {
                 break;
             }
             let screen = app.view.project(pivot);
-            app.zoom_at(screen.x, screen.y, 1.15, true, cx);
+            app.wheel_zoom(
+                screen.x,
+                screen.y,
+                0.2,
+                crate::wheel::Phase::Moved,
+                cx,
+            );
         }
         assert_eq!(app.crumbs, deeper, "wheel zoom reaches its directory");
         assert!(app.transition.is_none());

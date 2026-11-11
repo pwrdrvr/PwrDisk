@@ -115,8 +115,9 @@ the window and human-readable agent reports.
 
 1. **Pick what to scan.** Choose **This computer** or an SSH host, then a
    drive or folder. Nothing is scanned until you choose.
-2. **Look around.** Click a tile, or use the arrow keys. Scroll to zoom into
-   a folder and keep scrolling to go inside; scroll back to come out.
+2. **Look around.** Click a tile, or use the arrow keys. Scroll or pinch to
+   zoom into a folder and keep pushing to go inside, one level per swipe;
+   scroll back to come out. Drag to pan while zoomed in.
    **Enter** opens the selected folder, **Backspace** goes up.
 3. **Mark what should go.** **Space** marks the tile under the pointer; press
    it again to unmark. The side panel shows how much free space you would
@@ -133,7 +134,7 @@ the window and human-readable agent reports.
 | --- | --- |
 | `space` | mark or unmark |
 | `enter` / `⌫` | open the folder / go up |
-| scroll | zoom in, then go inside |
+| scroll or pinch | zoom in, then push to go inside |
 | `/` | filter by name |
 | `c` | review what is marked |
 | `t` | colour by size, file count or age |

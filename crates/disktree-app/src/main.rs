@@ -62,6 +62,7 @@ mod ui;
 mod update_channel;
 mod updater;
 mod views;
+mod wheel;
 mod widgets;
 mod window_frame;
 

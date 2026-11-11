@@ -31,7 +31,7 @@ use gpui_kit::base::input::{InputEvent, InputState};
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, NavigationDirection, Pixels, Point, Render,
-    ScrollDelta, ScrollWheelEvent, Size, Window, px, size,
+    ScrollWheelEvent, Size, Window, px, size,
 };
 use gpui_omarchy::{ActiveTheme as _, Status};
 use rustc_hash::FxHashSet;
@@ -229,6 +229,34 @@ impl View {
             origin_y: self.origin_y.clamp(0.0, max_y),
         }
     }
+}
+
+/// A left press on a zoomed mosaic. Past [`DRAG_SLOP`] it pans the view;
+/// released before that, it was a click.
+#[derive(Clone, Debug)]
+struct Drag {
+    start: Point<Pixels>,
+    origin: (f32, f32),
+    moved: bool,
+    /// The selection, pressed again: it opens on release, unless the press
+    /// became a drag. Opening on the press would change the level under a
+    /// hand that meant to pan.
+    open: Option<Vec<usize>>,
+}
+
+/// How far a press may wander, in pixels, and still be a click.
+const DRAG_SLOP: f32 = 4.0;
+
+/// What the push bar is pushing toward, for the status bar and the mosaic.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PushCue {
+    pub edge: crate::wheel::Edge,
+    /// How full the bar is, `0..=1`.
+    pub progress: f32,
+    /// The directory a full bar opens or goes up to.
+    pub name: String,
+    /// Where the directory being opened is drawn, in base space.
+    pub ring: Option<Rect>,
 }
 
 /// A layout transition: the region the user is looking at, and where that same
@@ -500,6 +528,12 @@ pub struct Disktree {
     /// already opened a level. Its later presses land on the level it
     /// opened, so they are ignored rather than opening another.
     click_opened: bool,
+    /// A left press on a zoomed mosaic, which pans if it moves.
+    drag: Option<Drag>,
+    /// The wheel, trackpad or pinch gesture under way on the mosaic.
+    wheel: crate::wheel::Gesture,
+    /// The directory a push into the zoom's limit would open.
+    push_target: Option<Vec<usize>>,
     pub view: View,
     /// The in-flight layout transition, if a level was just entered or left.
     pub transition: Option<LayoutTransition>,
@@ -832,6 +866,9 @@ impl Disktree {
             history_hover: None,
             pointer_active: false,
             click_opened: false,
+            drag: None,
+            wheel: crate::wheel::Gesture::default(),
+            push_target: None,
             view: View::default(),
             transition: None,
             file_list: false,
@@ -3441,6 +3478,7 @@ impl Disktree {
             tiles: decorations,
             labels,
             view,
+            push: self.push_cue(),
         }
     }
 
@@ -3554,56 +3592,140 @@ impl Disktree {
 
     // ── view ────────────────────────────────────────────────────────────
 
-    /// Zoom toward a point.
-    ///
-    /// When `descend` is set the wheel stops magnifying at the point where the
-    /// directory under the pointer exactly fits the viewport, and the next
-    /// notch goes inside it. That ceiling is what keeps the two gestures
-    /// continuous: at the moment the level changes, the tiles inside the
-    /// directory are already as large as they will be, so entering makes them
-    /// grow rather than shrink.
+    /// Magnify toward a point, as `=` and `-` do: no further than
+    /// [`View::MAX_SCALE`], and never through a level.
     pub fn zoom_at(
         &mut self,
         x: f32,
         y: f32,
         factor: f32,
-        descend: bool,
         cx: &mut Context<'_, Self>,
     ) {
         let area = self.treemap_size.get();
-
-        // At the bottom of the zoom, zooming out goes up a level.
-        if factor < 1.0 && self.view.scale <= View::MIN_SCALE + f32::EPSILON {
-            if descend {
-                self.ascend(cx);
-            }
-            return;
-        }
-
-        // One directory decides both how far the wheel magnifies and where it
-        // then goes: the deepest one under the pointer. At the ceiling its
-        // contents fill the view, so going inside continues the same motion.
-        let target = if descend {
-            self.zoom_target(x, y)
-        } else {
-            None
-        };
-        let body = target.as_ref().and_then(|crumbs| self.tile_body(crumbs));
-        let ceiling = body
-            .map_or(View::MAX_SCALE, |rect| View::fit_scale(rect, area))
-            .clamp(View::MIN_SCALE, View::MAX_SCALE);
-
-        if factor > 1.0
-            && self.view.scale >= ceiling - f32::EPSILON
-            && let Some(target) = target
-        {
-            let from = body.map(|rect| self.view.project(rect));
-            self.enter(target, from, cx);
-            return;
-        }
-
-        self.view = self.view.zoomed_at(x, y, factor, ceiling).clamped(area);
+        self.wheel.reset();
+        self.view = self
+            .view
+            .zoomed_at(x, y, factor, View::MAX_SCALE)
+            .clamped(area);
         cx.notify();
+    }
+
+    /// Zoom by a wheel, trackpad or pinch gesture, `doublings` of travel
+    /// toward `(x, y)` (positive in). See [`crate::wheel`].
+    ///
+    /// Zooming in stops where the deepest directory under the pointer
+    /// exactly fits the viewport, so at the moment a push opens it its
+    /// contents are already as large as they will be and entering makes them
+    /// grow rather than shrink. With no directory there, nothing magnifies.
+    pub fn wheel_zoom(
+        &mut self,
+        x: f32,
+        y: f32,
+        doublings: f32,
+        phase: crate::wheel::Phase,
+        cx: &mut Context<'_, Self>,
+    ) {
+        use crate::wheel::{Edge, Room};
+        let area = self.treemap_size.get();
+        let target = self.zoom_target(x, y);
+        let body = target.as_ref().and_then(|crumbs| self.tile_body(crumbs));
+        let scale = self.view.scale;
+        let ceiling = body
+            .map_or(View::MIN_SCALE, |rect| View::fit_scale(rect, area))
+            .clamp(View::MIN_SCALE, View::MAX_SCALE)
+            // Magnified past it by the keys: hold there, never snap back.
+            .max(scale);
+        let room = Room {
+            zoom_in: (ceiling / scale).log2(),
+            zoom_out: (scale / View::MIN_SCALE).log2(),
+            can_open: target.is_some(),
+            can_leave: !self.crumbs.is_empty(),
+        };
+        let now = cx.background_executor().now();
+        let outcome = self.wheel.feed(doublings, phase, now, room);
+        self.push_target.clone_from(&target);
+
+        if outcome.zoom != 0.0 {
+            self.view = self
+                .view
+                .zoomed_at(x, y, outcome.zoom.exp2(), ceiling)
+                .clamped(area);
+        }
+        match outcome.cross {
+            Some(Edge::In) => {
+                if let Some(target) = target {
+                    let from = body.map(|rect| self.view.project(rect));
+                    self.enter(target, from, cx);
+                }
+            }
+            Some(Edge::Out) => self.ascend(cx),
+            None => {}
+        }
+        if self.wheel.cue().is_some() {
+            Self::expire_push_later(cx);
+        }
+        cx.notify();
+    }
+
+    /// Empty the push bar once the input pauses.
+    fn expire_push_later(cx: &Context<'_, Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::wheel::GESTURE_GAP)
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let now = cx.background_executor().now();
+                if this.wheel.expire(now) {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The directory a full push bar would open or go up to.
+    fn push_destination(
+        &self,
+    ) -> Option<(crate::wheel::Edge, f32, Vec<usize>)> {
+        use crate::wheel::Edge;
+        let (edge, progress) = self.wheel.cue()?;
+        let crumbs = match edge {
+            Edge::In => self.push_target.clone()?,
+            Edge::Out => self.parent_crumbs()?,
+        };
+        Some((edge, progress, crumbs))
+    }
+
+    /// The push bar's state, when one is showing.
+    pub fn push_cue(&mut self) -> Option<PushCue> {
+        use crate::wheel::Edge;
+        let (edge, progress, crumbs) = self.push_destination()?;
+        let ring = match edge {
+            Edge::In => self.tile_body(&crumbs),
+            Edge::Out => None,
+        };
+        let name = self.node_at(&crumbs)?.name().to_string();
+        Some(PushCue {
+            edge,
+            progress,
+            name,
+            ring,
+        })
+    }
+
+    /// What the status bar says while a push is under way.
+    pub fn push_hint(&self) -> Option<String> {
+        use crate::wheel::Edge;
+        let (edge, _, crumbs) = self.push_destination()?;
+        let name = if crumbs.is_empty() {
+            crumb_label(&self.root_path, self.path_style())
+        } else {
+            self.node_at(&crumbs)?.name().to_string()
+        };
+        Some(match edge {
+            Edge::In => format!("scroll to open {name}"),
+            Edge::Out => format!("scroll to go up to {name}"),
+        })
     }
 
     pub fn reset_view(&mut self, cx: &mut Context<'_, Self>) {
@@ -4926,18 +5048,11 @@ impl Disktree {
                     self.half_width(),
                     self.half_height(),
                     1.0 / 1.25,
-                    false,
                     cx,
                 );
             }
             "=" | "+" => {
-                self.zoom_at(
-                    self.half_width(),
-                    self.half_height(),
-                    1.25,
-                    false,
-                    cx,
-                );
+                self.zoom_at(self.half_width(), self.half_height(), 1.25, cx);
             }
             "0" => self.reset_view(cx),
             "t" if !control => {
@@ -5045,6 +5160,30 @@ impl Disktree {
         // window. Outside the mosaic there is nothing to hover, and a stale
         // tooltip would cover whatever the pointer went to — the panel's
         // resize handle, for one.
+        if let Some(drag) = &mut self.drag {
+            if event.pressed_button == Some(MouseButton::Left) {
+                let dx = (event.position.x - drag.start.x).as_f32();
+                let dy = (event.position.y - drag.start.y).as_f32();
+                if drag.moved || dx.hypot(dy) > DRAG_SLOP {
+                    drag.moved = true;
+                    let (origin_x, origin_y) = drag.origin;
+                    let area = self.treemap_size.get();
+                    self.view = View {
+                        origin_x: origin_x - dx / self.view.scale,
+                        origin_y: origin_y - dy / self.view.scale,
+                        ..self.view
+                    }
+                    .clamped(area);
+                    // No hover card while the hand is busy.
+                    self.hovered = None;
+                    cx.notify();
+                    return;
+                }
+            } else {
+                // Released where the mosaic never heard it.
+                self.drag = None;
+            }
+        }
         let area = self.treemap_size.get();
         let inside = local.x >= px(0.)
             && local.y >= px(0.)
@@ -5113,6 +5252,14 @@ impl Disktree {
             }
             MouseButton::Left => {
                 self.click_opened = false;
+                // Zoomed in, a press may be the start of a pan.
+                let zoomed = self.view.scale > View::MIN_SCALE + 0.01;
+                self.drag = zoomed.then_some(Drag {
+                    start: event.position,
+                    origin: (self.view.origin_x, self.view.origin_y),
+                    moved: false,
+                    open: None,
+                });
                 // A second click on the selection opens it, like a file
                 // manager, without needing a double click.
                 if let Some(crumbs) = crumbs
@@ -5120,6 +5267,10 @@ impl Disktree {
                     .filter(|crumbs| self.selected.as_ref() == Some(*crumbs))
                 {
                     let crumbs = crumbs.clone();
+                    if let Some(drag) = &mut self.drag {
+                        drag.open = Some(crumbs);
+                        return;
+                    }
                     self.click_opened = self.open_toward(&crumbs, cx);
                     if self.click_opened {
                         return;
@@ -5166,22 +5317,61 @@ impl Disktree {
         let origin = self.treemap_origin.get();
         let x = (event.position.x - origin.x).as_f32();
         let y = (event.position.y - origin.y).as_f32();
-        let lines = match event.delta {
-            ScrollDelta::Lines(delta) => delta.y,
-            ScrollDelta::Pixels(delta) => delta.y.as_f32() / 24.0,
-        };
-        if lines.abs() < f32::EPSILON {
-            return;
-        }
         if event.modifiers.shift {
             // Pan instead of zoom, for looking around a magnified view.
-            self.view.origin_y =
-                (self.view.origin_y - lines * 40.0 / self.view.scale).max(0.0);
-            cx.notify();
+            // macOS turns a shifted wheel sideways, so both axes count.
+            let delta = event.delta.pixel_delta(px(40.));
+            self.pan_by(delta.x.as_f32(), delta.y.as_f32(), cx);
             return;
         }
-        let factor = if lines > 0.0 { 1.15 } else { 1.0 / 1.15 };
-        self.zoom_at(x, y, factor, true, cx);
+        let doublings = crate::wheel::doublings(event.delta);
+        self.wheel_zoom(x, y, doublings, event.touch_phase.into(), cx);
+    }
+
+    /// A trackpad pinch: the same gesture as the wheel.
+    pub fn on_pinch(
+        &mut self,
+        event: &gpui_kit::PinchEvent,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let origin = self.treemap_origin.get();
+        let x = (event.position.x - origin.x).as_f32();
+        let y = (event.position.y - origin.y).as_f32();
+        let doublings = crate::wheel::pinch_doublings(event.delta);
+        self.wheel_zoom(x, y, doublings, event.phase.into(), cx);
+    }
+
+    /// Move the view by a viewport distance, inside the layout.
+    fn pan_by(&mut self, dx: f32, dy: f32, cx: &mut Context<'_, Self>) {
+        let area = self.treemap_size.get();
+        let view = View {
+            origin_x: self.view.origin_x - dx / self.view.scale,
+            origin_y: self.view.origin_y - dy / self.view.scale,
+            ..self.view
+        }
+        .clamped(area);
+        if view != self.view {
+            self.view = view;
+            cx.notify();
+        }
+    }
+
+    /// A press is being dragged across a zoomed mosaic.
+    pub fn dragging(&self) -> bool {
+        self.drag.as_ref().is_some_and(|drag| drag.moved)
+    }
+
+    /// The left button came up: a press that never moved was a click, and
+    /// opens what it deferred.
+    pub fn on_mouse_up(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(drag) = self.drag.take() else {
+            return;
+        };
+        if drag.moved {
+            cx.notify();
+        } else if let Some(crumbs) = drag.open {
+            self.click_opened = self.open_toward(&crumbs, cx);
+        }
     }
 
     /// Advance the layout transition, if one is running.
