@@ -32,8 +32,12 @@ const script = workflow.match(/          script: \|\n((?:            .*\n|\n)+)/
 assert.ok(script, 'the classifier must remain covered by these tests');
 const classify = new (async function () {}).constructor('github', 'context', 'core', script);
 
+const sha = (c) => c.repeat(40);
+
 async function run({ paths, files = paths?.map(filename => ({ filename, status: 'modified' })),
-  count = files?.length, event = 'pull_request', apiError = false, summaryError = false }) {
+  count = files?.length, event = 'pull_request', apiError = false, summaryError = false,
+  labels = [], labelError = false, before = sha('a'), after = sha('b'),
+  compare = { status: 'ahead', files }, compareError = false }) {
   const outputs = {};
   const calls = [];
   const summary = {
@@ -43,7 +47,23 @@ async function run({ paths, files = paths?.map(filename => ({ filename, status: 
     async write() { if (summaryError) throw new Error('summary unavailable'); },
   };
   await classify({
-    rest: { pulls: { listFiles: 'pulls.listFiles' } },
+    rest: {
+      pulls: {
+        listFiles: 'pulls.listFiles',
+        async get(args) {
+          calls.push({ method: 'pulls.get', args });
+          if (labelError) throw new Error('labels unavailable');
+          return { data: { labels: labels.map(name => ({ name })) } };
+        },
+      },
+      repos: {
+        async compareCommitsWithBasehead(args) {
+          calls.push({ method: 'repos.compareCommitsWithBasehead', args });
+          if (compareError) throw new Error('compare unavailable');
+          return { data: compare };
+        },
+      },
+    },
     async paginate(method, args) {
       calls.push({ method, args });
       if (apiError) throw new Error('API unavailable');
@@ -53,7 +73,7 @@ async function run({ paths, files = paths?.map(filename => ({ filename, status: 
     eventName: event,
     repo: { owner: 'pwrdrvr', repo: 'PwrDisk' },
     issue: { number: 11 },
-    payload: { pull_request: { changed_files: count } },
+    payload: event === 'push' ? { before, after } : { pull_request: { changed_files: count } },
   }, {
     setOutput(name, value) { outputs[name] = value; },
     notice() {},
@@ -139,6 +159,7 @@ for (const [name, input] of [
     const { outputs } = await run(input);
     assert.equal(outputs.code_impacting, 'true');
     assert.equal(outputs.licenses_impacting, 'true');
+    assert.equal(outputs.packaging_impacting, 'true');
   });
 }
 
@@ -146,17 +167,103 @@ test('uses the paginating API for more than one page', async () => {
   const paths = Array.from({ length: 205 }, (_, i) => `docs/${i}.md`);
   const result = await run({ paths });
   assert.equal(result.outputs.code_impacting, 'false');
-  assert.deepEqual(result.calls, [{ method: 'pulls.listFiles', args: {
+  assert.deepEqual(result.calls.filter(c => c.method !== 'pulls.get'), [{ method: 'pulls.listFiles', args: {
     owner: 'pwrdrvr', repo: 'PwrDisk', pull_number: 11, per_page: 100,
   } }]);
 });
 
-test('pushes always run full CI without querying PR files', async () => {
-  const result = await run({ paths: agentGuidance, event: 'push' });
-  assert.equal(result.outputs.code_impacting, 'true');
-  assert.equal(result.outputs.licenses_impacting, 'true');
-  assert.equal(result.calls.length, 0);
+test('pushes always lint, test and check notices, without querying PR files', async () => {
+  for (const paths of [agentGuidance, ['crates/disktree-core/src/scan.rs']]) {
+    const result = await run({ paths, event: 'push' });
+    assert.equal(result.outputs.code_impacting, 'true');
+    assert.equal(result.outputs.licenses_impacting, 'true');
+    assert.ok(result.calls.every(c => !c.method.startsWith('pulls.')));
+  }
 });
+
+// Bundles, installers and the ARM legs: what they are built from, the
+// dependencies and toolchain, and CI's own setup.
+const packagingPaths = [
+  'packaging/macos/Info.plist.in', 'packaging/macos/AppIcon.icon/icon.json',
+  'packaging/pwrdisk.desktop.in', 'assets/disktree.svg',
+  'scripts/release/install-vpk.sh', 'xtask/src/bundle.rs', 'xtask/Cargo.toml',
+  'crates/disktree-app/build.rs', 'Cargo.lock', 'Cargo.toml',
+  'crates/disktree-core/Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml',
+  '.github/workflows/ci.yml', '.github/actions/setup-rust/action.yml',
+];
+const ordinaryCode = [
+  'crates/disktree-core/src/scan.rs', 'crates/disktree-app/src/views.rs',
+  'skills/pwrdisk-free-space/SKILL.md', 'CHANGELOG.md', 'Makefile',
+  'docs/packaging.md', 'packaging-notes.txt', 'other/xtask/main.rs',
+];
+
+test('packaging inputs select the packaging checks on PRs, including renames', async () => {
+  for (const path of packagingPaths) {
+    for (const paths of [[path], [...ordinaryCode, path]]) {
+      const { outputs } = await run({ paths });
+      assert.equal(outputs.packaging_impacting, 'true', path);
+      assert.equal(outputs.code_impacting, 'true', path);
+    }
+    for (const [previous_filename, filename] of [[path, 'src/moved.rs'], ['src/moved.rs', path]]) {
+      assert.equal((await run({ files: [{ filename, previous_filename, status: 'renamed' }] }))
+        .outputs.packaging_impacting, 'true', `rename: ${previous_filename} to ${filename}`);
+    }
+  }
+});
+
+test('ordinary code and docs skip the packaging checks on PRs', async () => {
+  for (const paths of [ordinaryCode, agentGuidance]) {
+    assert.equal((await run({ paths })).outputs.packaging_impacting, 'false');
+  }
+});
+
+test('the full-ci label runs everything, even for docs, read live', async () => {
+  const result = await run({ paths: agentGuidance, labels: ['documentation', 'full-ci'] });
+  for (const field of ['code_impacting', 'licenses_impacting', 'packaging_impacting']) {
+    assert.equal(result.outputs[field], 'true', field);
+  }
+  assert.deepEqual(result.calls[0], { method: 'pulls.get', args: {
+    owner: 'pwrdrvr', repo: 'PwrDisk', pull_number: 11 } });
+  const other = await run({ paths: ordinaryCode, labels: ['build-preview'] });
+  assert.equal(other.outputs.packaging_impacting, 'false');
+});
+
+test('a failed label lookup runs full CI', async () => {
+  const { outputs } = await run({ paths: agentGuidance, labelError: true });
+  assert.equal(outputs.code_impacting, 'true');
+  assert.equal(outputs.packaging_impacting, 'true');
+});
+
+test('main pushes run packaging checks only when the pushed range has a packaging input', async () => {
+  for (const path of packagingPaths) {
+    const result = await run({ event: 'push', paths: [...ordinaryCode, path] });
+    assert.equal(result.outputs.packaging_impacting, 'true', path);
+  }
+  const result = await run({ event: 'push', paths: ordinaryCode });
+  assert.equal(result.outputs.packaging_impacting, 'false');
+  assert.deepEqual(result.calls, [{ method: 'repos.compareCommitsWithBasehead', args: {
+    owner: 'pwrdrvr', repo: 'PwrDisk', basehead: `${sha('a')}...${sha('b')}` } }]);
+});
+
+for (const [name, input] of [
+  ['new branch (zero before)', { before: sha('0') }],
+  ['missing before', { before: null }],
+  ['malformed after', { after: 'main' }],
+  ['compare failure', { compareError: true }],
+  ['force push', { compare: { status: 'diverged', files: [] } }],
+  ['identical range', { compare: { status: 'identical', files: [] } }],
+  ['empty file list', { compare: { status: 'ahead', files: [] } }],
+  ['300-file compare cap', { compare: { status: 'ahead',
+    files: Array.from({ length: 300 }, (_, i) => ({ filename: `src/${i}.rs` })) } }],
+  ['malformed file', { compare: { status: 'ahead', files: [{}] } }],
+  ['missing files', { compare: { status: 'ahead' } }],
+]) {
+  test(`main push with ${name} runs the packaging checks`, async () => {
+    const { outputs } = await run({ event: 'push', paths: ordinaryCode, ...input });
+    assert.equal(outputs.packaging_impacting, 'true');
+    assert.equal(outputs.code_impacting, 'true');
+  });
+}
 
 test('license inputs and gate changes select the notice check, including renames', async () => {
   for (const path of [
@@ -187,7 +294,7 @@ test('unrelated changes skip the notice check even when they run full CI', async
   }
 });
 
-for (const field of ['code_impacting', 'licenses_impacting']) {
+for (const field of ['code_impacting', 'licenses_impacting', 'packaging_impacting']) {
   test(`${field} job output fails open after script failures or missing output`, async () => {
     assert.match(workflow, /continue-on-error: true/);
     const expression = workflow.match(new RegExp(`${field}: \\$\\{\\{ (.+) \\}\\}`))[1];
@@ -221,12 +328,30 @@ test('every other job runs on classifier failure and skips only on explicit irre
       ['success', '', true], ['failure', 'false', true], ['failure', '', true],
       ['skipped', '', true],
     ]) {
-      const field = id === 'licenses' ? 'licenses_impacting' : 'code_impacting';
-      const otherField = id === 'licenses' ? 'code_impacting' : 'licenses_impacting';
-      const needs = { changes: { result, outputs: { [field]: output, [otherField]: 'false' } } };
+      const field = id === 'licenses' ? 'licenses_impacting'
+        : ['bundle-macos-26', 'other-architectures'].includes(id) ? 'packaging_impacting'
+        : 'code_impacting';
+      const outputs = { code_impacting: 'false', licenses_impacting: 'false',
+        packaging_impacting: 'false', [field]: output };
+      const needs = { changes: { result, outputs } };
       assert.equal(evaluate(needs, () => false), expected, `${id}: ${result}/${output}`);
       assert.equal(evaluate(needs, () => true), false, `${id}: cancelled`);
     }
+  }
+});
+
+test('the Apple silicon job bundles only when packaging inputs changed', () => {
+  const job = workflow.split('\n  check-macos:\n')[1].split(/\n  [a-z][\w-]*:\n/)[0];
+  const step = job.split(/^      - /m).find(s => /run: cargo xtask bundle/.test(s));
+  const expression = step.match(/if: >-\n([\s\S]*?)\n        run:/)?.[1];
+  assert.ok(expression, 'the Bundle step must be gated');
+  const evaluate = new Function('needs', `return (${expression});`);
+  for (const [result, output, expected] of [
+    ['success', 'false', false], ['success', 'true', true],
+    ['failure', 'false', true], ['skipped', '', true],
+  ]) {
+    assert.equal(evaluate({ changes: { result, outputs: { packaging_impacting: output } } }),
+      expected, `${result}/${output}`);
   }
 });
 

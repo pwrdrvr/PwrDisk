@@ -8,7 +8,7 @@ check out source. Every build step is a `cargo xtask` task or a script under
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | push to `main`, PRs | Lint and test on Linux, macOS and Windows; tests on Linux and Windows ARM; an ad hoc signed bundle and DMG on macOS; check third-party notices when their inputs change. |
+| `ci.yml` | push to `main`, PRs | Lint and test on Linux, macOS (Apple silicon) and Windows x64. When a packaging input changes, or a PR has the `full-ci` label: tests on Linux and Windows ARM, and ad hoc signed bundles and a DMG on macOS. Third-party notices are checked when their inputs change. |
 | `preview-build.yml` | `build-preview` PR label, manual dispatch | The release's packaging, unsigned: a macOS universal DMG cut from the vpk-packed app, and Windows x64 and ARM64 Setup.exe, MSI and portable zip, as workflow artifacts. |
 | `release.yml` | `v*` tag push, manual dispatch with a tag | Checks the tag against `Cargo.toml` and `CHANGELOG.md`, lints, builds every platform in unprivileged jobs, packs and signs macOS and Windows with Velopack in credentialed jobs, then creates a GitHub Pre-release with every asset and the Velopack update feeds. |
 
@@ -35,6 +35,29 @@ paths of renames. Unrelated PRs skip it; a failed classifier or incomplete
 file list runs it. The workflow trigger stays unfiltered so the job always
 reports a result. A stale file fails with instructions to run
 `cargo xtask licenses` and commit `THIRD_PARTY_LICENSES`.
+
+The bundle checks (`bundle-macos-26` and the `Bundle` step of the macOS
+job) and the Linux and Windows ARM test legs run only when a packaging
+input changes. Those inputs are `packaging/**`, `assets/**`,
+`scripts/release/**`, `xtask/**`, `crates/disktree-app/build.rs`,
+`Cargo.lock`, any `Cargo.toml`, `rust-toolchain.toml`, `.cargo/**`,
+`ci.yml` and the `setup-rust` action. They are what the bundles and
+installers are built from, and where breaks specific to one architecture
+come from: dependencies and the toolchain. Other code builds and tests the
+same way on every architecture, so Linux x64, Apple silicon and Windows x64
+cover it on every PR.
+
+The same rule applies to pushes to `main`. The classifier compares the push's
+`before` and `after` commits, so a merge that changes no packaging input
+does not package again. A push it cannot read as a complete fast-forward
+(a new branch, a force push, a compare failure, or 300 files or more) runs
+the packaging checks. Lint, tests and the notice check always run on
+`main`.
+
+To run everything on a PR anyway, add the `full-ci` label and re-run the
+workflow, or push. The classifier reads labels live, so a re-run sees it.
+Releases and `build-preview` builds still build every architecture,
+including Intel macOS in the universal app.
 
 Each CI job has a deadline, and test steps have their own so a hang does
 not consume the rest of the job's budget. In nine successful runs on
