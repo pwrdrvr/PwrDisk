@@ -127,6 +127,8 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
   detail goes in code, docs, commits or PRs. The last section of
   [docs/headed-e2e-pwrsuitelab.md](docs/headed-e2e-pwrsuitelab.md) lists
   what counts. Targets come from `lab_status` at run time.
+* **A launch or demo video** records its app footage in that VM: follow
+  [.agents/skills/launch-reel/SKILL.md](.agents/skills/launch-reel/SKILL.md).
 
 ## House rules
 
@@ -145,6 +147,9 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
   press keys — so a screen that panics while painting fails a test.
 * **Never delete anything outside a marked path.** See `removal.rs`; the guards
   are load-bearing and are covered by tests.
+* **Scratch files go in `.local/` in the worktree**, which is gitignored:
+  benchmark output, recordings, renders, lab job sources. System temp
+  folders are cleaned on their own schedule and have lost work before.
 
 ## Invariants
 
