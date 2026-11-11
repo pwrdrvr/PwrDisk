@@ -133,11 +133,14 @@ impl Skill {
     }
 }
 
-/// Finish a `skills/list` or `skills/get` result.
+/// A `skills/list` or `skills/get` result holding `value` under `key`.
 ///
-/// The extension requires `resultType`, `ttlMs` and `cacheScope` on both, and rmcp passes a
-/// custom result through as it is, so they are added here.
-pub fn complete(mut body: Map<String, Value>) -> Value {
+/// The extension requires `resultType`, `ttlMs` and `cacheScope` on both,
+/// and rmcp passes a custom result through as it is, so they are added
+/// here.
+pub fn complete(key: &str, value: Value) -> Value {
+    let mut body = Map::new();
+    body.insert(key.into(), value);
     body.insert("resultType".into(), json!("complete"));
     body.insert("ttlMs".into(), json!(TTL_MS));
     body.insert("cacheScope".into(), json!(CACHE_SCOPE));
@@ -247,6 +250,25 @@ mod tests {
                 assert!(
                     !value
                         .starts_with(|c: char| "'\"[{>|*&!%@`#-?".contains(c)),
+                    "{}: {line}",
+                    skill.name
+                );
+                // YAML would read these as a bool, null or number, not
+                // the string the manifest sends.
+                let lower = value.to_ascii_lowercase();
+                assert!(
+                    !matches!(
+                        lower.as_str(),
+                        "true"
+                            | "false"
+                            | "yes"
+                            | "no"
+                            | "on"
+                            | "off"
+                            | "null"
+                            | "~"
+                            | ""
+                    ) && value.parse::<f64>().is_err(),
                     "{}: {line}",
                     skill.name
                 );

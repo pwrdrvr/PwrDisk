@@ -785,9 +785,7 @@ pub fn custom(
         "skills/list" => {
             let skills: Vec<serde_json::Value> =
                 SKILLS.iter().map(skills::Skill::manifest).collect();
-            let mut body = serde_json::Map::new();
-            body.insert("skills".into(), skills.into());
-            Ok(CustomResult::new(skills::complete(body)))
+            Ok(CustomResult::new(skills::complete("skills", skills.into())))
         }
         "skills/get" => {
             let address = params
@@ -796,9 +794,10 @@ pub fn custom(
                 .ok_or_else(|| invalid("skills/get needs a uri"))?;
             let skill = skills::by_uri(address)
                 .ok_or_else(|| invalid(format!("no skill at {address}")))?;
-            let mut body = serde_json::Map::new();
-            body.insert("skill".into(), skill.manifest());
-            Ok(CustomResult::new(skills::complete(body)))
+            Ok(CustomResult::new(skills::complete(
+                "skill",
+                skill.manifest(),
+            )))
         }
         _ => Err(ErrorData::new(
             ErrorCode::METHOD_NOT_FOUND,
