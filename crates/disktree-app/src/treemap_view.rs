@@ -552,10 +552,6 @@ fn paint_labels(
             continue;
         }
         let mask = to_window(&rect, bounds);
-        let origin = Point::new(
-            mask.origin.x + text_padding,
-            mask.origin.y + text_inset,
-        );
         let (fill, color, value_color) =
             colors.label_inks(&label.decoration, label.dim, label.marked);
         // The first level is set in bold in its band: it names a region.
@@ -587,6 +583,17 @@ fn paint_labels(
             name_size,
             &[run],
             None,
+        );
+        let origin = Point::new(
+            mask.origin.x + text_padding,
+            label_top(
+                mask.origin.y,
+                mask.size.height,
+                text_inset,
+                name_line_height,
+                line.ascent,
+                line.descent,
+            ),
         );
 
         window.with_content_mask(
@@ -709,6 +716,27 @@ fn underline_top(natural: Pixels, bottom: Pixels, thickness: Pixels) -> Pixels {
     natural.min(bottom - thickness)
 }
 
+/// Where a label's line box starts: `inset` below the top of the region
+/// the label owns, raised as far as its descenders need to stay inside it.
+/// GPUI centres the glyph box in the line height, so a deeper directory's
+/// one-rem band is shorter than inset plus line box: with macOS's system
+/// font the bottom of `.git`'s `g` fell about 2 px past it and was masked.
+/// The glyphs' top never rises above the region's own.
+fn label_top(
+    top: Pixels,
+    height: Pixels,
+    inset: Pixels,
+    line_height: Pixels,
+    ascent: Pixels,
+    descent: Pixels,
+) -> Pixels {
+    let glyphs = ascent + descent;
+    // How far into the line box the glyphs start.
+    let lead = (line_height - glyphs) / 2.;
+    let fits = top + height - glyphs - lead;
+    (top + inset).min(fits).max(top - lead)
+}
+
 fn to_window(rect: &Rect, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
     Bounds::new(
         Point::new(bounds.origin.x + px(rect.x), bounds.origin.y + px(rect.y)),
@@ -723,6 +751,7 @@ fn rem_px(rems: f32, rem_size: Pixels) -> Pixels {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     /// Exercise the production fill/ink path, including the deeper age ramp,
     /// filtered and marked combinations the upstream diagnostic omitted.
@@ -820,6 +849,93 @@ mod tests {
     fn a_find_underline_stays_inside_its_label() {
         assert_eq!(underline_top(px(17.), px(16.), px(1.)), px(15.));
         assert_eq!(underline_top(px(17.), px(22.), px(1.)), px(17.));
+    }
+
+    /// The glyph box (ascent over descent) a label paints, as GPUI
+    /// centres it in the line height: its top and bottom.
+    fn glyph_box(
+        top: Pixels,
+        height: Pixels,
+        inset: Pixels,
+        line_height: Pixels,
+        ascent: Pixels,
+        descent: Pixels,
+    ) -> (f32, f32) {
+        let origin =
+            label_top(top, height, inset, line_height, ascent, descent);
+        let glyph_top = origin + (line_height - ascent - descent) / 2.;
+        (glyph_top.as_f32(), (glyph_top + ascent + descent).as_f32())
+    }
+
+    /// The glyph box has to stay inside the region a label owns, or its
+    /// mask cuts off descenders such as the `g` in `.git`. macOS's system
+    /// font at 12 px, in the 16 px band of a deeper directory, did.
+    #[test]
+    fn a_descender_stays_inside_a_slim_band() {
+        let (top, bottom) =
+            glyph_box(px(100.), px(16.), px(3.), px(16.2), px(11.42), px(2.89));
+        assert!(top >= 100. && bottom <= 116., "{top}..{bottom}");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        /// Wherever the band is tall enough for the glyphs, they all fit;
+        /// where there is room to spare, the name keeps its inset.
+        #[test]
+        fn a_label_glyph_box_stays_inside_its_band(
+            top in -500.0f32..500.0,
+            size in 6.0f32..40.0,
+            ascent_em in 0.7f32..1.1,
+            descent_em in 0.1f32..0.35,
+            spare in 0.0f32..30.0,
+        ) {
+            let name = px(size);
+            let (ascent, descent) = (name * ascent_em, name * descent_em);
+            let inset = name * 0.25;
+            let line_height = name * 1.35;
+            let height = ascent + descent + px(spare);
+            let (glyph_top, glyph_bottom) = glyph_box(
+                px(top), height, inset, line_height, ascent, descent,
+            );
+            let slack = 0.01;
+            prop_assert!(glyph_top >= top - slack, "{glyph_top} above {top}");
+            prop_assert!(
+                glyph_bottom <= top + height.as_f32() + slack,
+                "{glyph_bottom} below {}",
+                top + height.as_f32()
+            );
+            // Where the label would sit with all the room it wants.
+            let (natural, natural_bottom) = glyph_box(
+                px(top), px(1e6), inset, line_height, ascent, descent,
+            );
+            if natural_bottom <= top + height.as_f32() {
+                prop_assert!((glyph_top - natural).abs() < slack);
+            }
+        }
+
+        /// A band too short for the glyphs keeps their top, not their
+        /// bottom: a name loses its descenders before its ascenders.
+        #[test]
+        fn a_short_band_pins_the_glyph_top_to_its_own(
+            top in -500.0f32..500.0,
+            size in 6.0f32..40.0,
+            ascent_em in 0.7f32..1.1,
+            descent_em in 0.1f32..0.35,
+            short in 0.05f32..1.0,
+        ) {
+            let name = px(size);
+            let (ascent, descent) = (name * ascent_em, name * descent_em);
+            let height = (ascent + descent) * short;
+            let (glyph_top, _) = glyph_box(
+                px(top), height, name * 0.25, name * 1.35, ascent, descent,
+            );
+            prop_assert!((glyph_top - top).abs() < 0.01, "{glyph_top} vs {top}");
+        }
     }
 
     #[test]
