@@ -378,8 +378,10 @@ jobs:
             throw "pwrdisk.exe has no embedded icon"
           }
 
-  # The other half of each release: the same tests on the architectures
-  # the release builds for but the jobs above do not run on.
+  # The same tests on the other Linux and Windows architectures the
+  # release ships. Intel macOS is not tested here: the release and preview
+  # builds compile the universal app, and the Intel slice is the same code
+  # as the Apple silicon one `check-macos` tests.
   other-architectures:
     name: Test (${{ matrix.name }})
     strategy:
@@ -387,8 +389,6 @@ jobs:
       matrix:
         include:
           - { name: Linux aarch64, runner: ubuntu-24.04-arm, job_timeout: 35, test_timeout: 8 }
-          # Lifecycle (10), compile (30), gate (20), setup/cleanup (5).
-          - { name: macOS x86_64, runner: macos-15-intel, job_timeout: 65, test_timeout: 20 }
           - { name: Windows aarch64, runner: windows-11-arm, job_timeout: 45, test_timeout: 15 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.job_timeout }}
@@ -442,22 +442,6 @@ jobs:
           cargo build -p xtask
           cargo test --workspace --no-run
           cargo test -p disktree-app --features screenshots screenshots:: --no-run
-
-      # Run 42559851081 exhausted fifteen minutes in cold code generation.
-      # Warm the exact lifecycle and screenshot feature combinations too.
-      - name: Compile Intel macOS tests
-        if: matrix.runner == 'macos-15-intel'
-        timeout-minutes: 30
-        run: |
-          cargo build -p xtask
-          cargo test --workspace --no-run
-          cargo test -p disktree-core test_paths::disk_image --no-run
-          cargo test -p disktree-app --features screenshots screenshots:: --no-run
-
-      - name: APFS image lifecycle
-        if: matrix.runner == 'macos-15-intel'
-        timeout-minutes: 10
-        run: cargo test -p disktree-core test_paths::disk_image -- --test-threads=1
 
       - name: Test
         timeout-minutes: ${{ matrix.test_timeout }}

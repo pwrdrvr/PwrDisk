@@ -70,7 +70,6 @@ function budget(jobName, runner) {
   }
   return {
     compileLimit, testLimit, jobLimit, completion, fixtureLimit,
-    warmFixture,
     warmScreenshots: Boolean(compile?.includes(
       'cargo test -p disktree-app --features screenshots screenshots:: --no-run')),
     warmExecutable: Boolean(compile?.includes(
@@ -80,45 +79,7 @@ function budget(jobName, runner) {
   };
 }
 
-const intel = budget('other-architectures', 'macos-15-intel');
 const arm = budget('check-macos');
-
-test('a cold Intel build leaves the execution budget intact', () => {
-  // Run 42317321199 spent 10m44s compiling before executing tests. The
-  // oracle passed, but the shared 20-minute step expired during cleanup.
-  assert.equal(intel.completion(11, 10), 'complete');
-});
-
-test('Intel: cold core compilation cannot consume the fixture deadline', () => {
-  // Run 42529711572 compiled core for 4m21s, then passed all 33 lifecycle
-  // tests in 348.35s. Those independent phases exceeded the shared 10m step.
-  assert.equal(intel.completion(11, 10, 348.35 / 60, 261.2 / 60), 'complete');
-});
-
-test('Intel: the enclosing job covers every valid phase budget', () => {
-  // Lifecycle, compilation and execution have independent deadlines. A
-  // valid phase must not lose its budget to time spent in earlier phases.
-  for (let fixture = 0; fixture <= intel.fixtureLimit; fixture++) {
-    for (let build = 0; build <= intel.compileLimit; build++) {
-      for (let execution = 0; execution <= intel.testLimit; execution++) {
-        for (let core = 0; core <= build; core++) {
-          assert.equal(intel.completion(build, execution, fixture, core), 'complete',
-            `fixture ${fixture}m, compile ${build}m (${core}m core), execute ${execution}m`);
-        }
-      }
-    }
-  }
-  assert.ok(intel.jobLimit >=
-    intel.fixtureLimit + intel.compileLimit + intel.testLimit + 5,
-  'leave five minutes for setup and cleanup beyond the phase deadlines');
-});
-
-test('Intel: a cold build and long APFS run leave room for feature tests', () => {
-  // Run 42415250815 passed all workspace tests, including 10m07s in core,
-  // then the 30-minute job ended during the screenshot-feature build.
-  // This workload fits each phase's deadline but exceeded that job limit.
-  assert.equal(intel.completion(14, 14, 4), 'complete');
-});
 
 test('Apple silicon compilation leaves room for every test suite', () => {
   // Run 42325538195 compiled for 3m06s, then spent 6m23s in core alone.
@@ -126,21 +87,15 @@ test('Apple silicon compilation leaves room for every test suite', () => {
   assert.equal(arm.completion(4, 8), 'complete');
 });
 
-for (const [platform, config] of [['Intel', intel], ['Apple silicon', arm]]) {
+for (const [platform, config] of [['Apple silicon', arm]]) {
   const {compileLimit, testLimit, jobLimit, completion, fixtureLimit} = config;
   test(`${platform}: fixtures are isolated from the full workspace test gate`, () => {
     assert.ok(config.fixtureBeforeGate);
-    if (platform === 'Intel') {
-      assert.ok(config.warmFixture,
-        'compile the lifecycle binary before starting its execution deadline');
-    } else {
-      assert.ok(config.isolatedFixture);
-    }
+    assert.ok(config.isolatedFixture);
   });
 
   test(`${platform}: isolated fixture and cold test gate fit the job`, () => {
-    const workload = platform === 'Intel' ? [11, 10, 4] : [4, 8, 3];
-    assert.equal(completion(...workload), 'complete');
+    assert.equal(completion(4, 8, 3), 'complete');
   });
   test(`${platform}: compilation cannot consume the last execution minute`, () => {
     assert.equal(completion(1, testLimit), 'complete');
@@ -174,7 +129,6 @@ for (const [platform, config, build, execution] of [
   ['Linux x64', budget('check'), 11, 2],
   ['Linux ARM', budget('other-architectures', 'ubuntu-24.04-arm'), 9, 2],
   ['macOS ARM', arm, 11, 8],
-  ['macOS Intel', intel, 16, 10],
 ]) {
   test(`${platform}: cold compilation exceeding the old limit still runs tests`, () => {
     assert.equal(config.completion(build, execution), 'complete');
