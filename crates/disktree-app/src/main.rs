@@ -45,6 +45,7 @@ mod palette;
 mod placement;
 mod power;
 mod raw_inspection;
+mod report_cli;
 mod run_list;
 mod run_view;
 mod safety;
@@ -99,6 +100,8 @@ usage: pwrdisk [OPTIONS] [PATH]
        pwrdisk ssh HOST [OPTIONS] [PATH]
        pwrdisk extract-scanner ARCH OUTPUT
        pwrdisk mcp
+       pwrdisk report [OPTIONS] [--threshold SIZE] [-o FILE] (PATH | -D)
+       pwrdisk report-diff BEFORE AFTER
 
 Linux packaged builds deploy an embedded static scanner over SSH on demand.
 Unbundled development builds need disktree-scan on the remote PATH or in
@@ -111,6 +114,8 @@ arguments:
   PATH              explicit directory to scan; omitted opens root selection
   mcp               connect an AI agent to the running desktop over stdio
                     (--standalone explicitly scans without a desktop)
+  report            write a folder-level usage report without a window;
+                    report-diff compares two (see pwrdisk report --help)
 
 Without PATH, choose this computer or SSH, then a mount or directory.
 No scan starts before explicit acceptance. Nested mounts are excluded.
@@ -213,6 +218,20 @@ fn run() -> Result<()> {
             eprintln!("Cannot load Power Efficiency: {error}; using Balanced");
             power::PowerEfficiency::default()
         });
+    // Reports scan and write files only; like `mcp`, never a window.
+    match std::env::args_os()
+        .nth(1)
+        .as_deref()
+        .and_then(|arg| arg.to_str())
+    {
+        Some("report") => {
+            return report_cli::report(std::env::args_os().skip(2), saved);
+        }
+        Some("report-diff") => {
+            return report_cli::compare(std::env::args_os().skip(2));
+        }
+        _ => {}
+    }
     let args = parse_args_with_power(std::env::args_os().skip(1), saved)?;
 
     if args.check {
