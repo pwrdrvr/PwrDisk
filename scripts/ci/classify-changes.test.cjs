@@ -13,6 +13,9 @@
 // - `.agents/skills/**`: agent resources, not app or CI inputs.
 // - `.github/ISSUE_TEMPLATE/**`, `.github/PULL_REQUEST_TEMPLATE/**` and
 //   exactly `.github/dependabot.yml`.
+// - exactly the root `.gitignore`: git reads it, and no build or test does.
+//   Cargo's packaging honours it, but CI never packages a crate. A nested
+//   `.gitignore` still runs full CI.
 //
 // If a build, test or `include_str!` starts reading one of these, take it
 // out of the allowlist first. The last test below catches the
@@ -80,6 +83,8 @@ for (const [name, paths] of [
     'docs/performance/mark-resolution/additional-audit.patch',
   ]],
   ['Dependabot configuration', ['.github/dependabot.yml']],
+  ['the root .gitignore', ['.gitignore']],
+  ['docs and the root .gitignore together', ['.gitignore', 'docs/guide.md', '.agents/skills/example/SKILL.md']],
   ['issue and PR templates', ['.github/ISSUE_TEMPLATE/bug_report.yml', '.github/PULL_REQUEST_TEMPLATE/custom.yml']],
 ]) {
   test(`${name} skips expensive CI`, async () => {
@@ -96,7 +101,7 @@ for (const path of [
   '.github/workflows/ci.yml', '.github/workflows/release.yml',
   '.github/actions/setup-rust/action.yml', 'scripts/ci/classify-changes.test.cjs', 'licenses/velopack.txt',
   'LICENSE', 'CHANGELOG.md', 'skills/pwrdisk-free-space/SKILL.md',
-  'skills/pwrdisk-free-space/references/macos.md', '.gitignore', '.agents/config.toml', 'unknown.yaml',
+  'skills/pwrdisk-free-space/references/macos.md', 'crates/disktree-app/.gitignore', '.agents/config.toml', 'unknown.yaml',
 ]) {
   test(`${path} alone or mixed with docs runs full CI`, async () => {
     for (const paths of [[path], [...agentGuidance, path]]) {
