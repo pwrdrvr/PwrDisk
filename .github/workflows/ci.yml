@@ -28,10 +28,13 @@ jobs:
   # The pull_request trigger stays path-unfiltered so every job reports on
   # every PR: a skipped job satisfies a required check, a missing one leaves
   # it pending. PRs that touch only docs, Markdown, agent skills,
-  # templates and the root .gitignore skip the jobs below instead. Ported
-  # from PwrRoute, which took it from PwrAgent;
-  # scripts/ci/classify-changes.test.cjs runs this script against fixtures,
-  # and the allowlist's reasons are at its top. Should
+  # templates and the root .gitignore skip the jobs below instead. The
+  # bundle checks and the ARM test legs also wait for a packaging input to
+  # change, on PRs and on main pushes alike, or for a PR's full-ci label
+  # (add it, then push or use Re-run all jobs: Re-run failed jobs keeps the
+  # classifier's answer). The classifier was ported from PwrRoute, which
+  # took it from PwrAgent; scripts/ci/classify-changes.test.cjs runs this
+  # script against fixtures, and the allowlist's reasons are at its top. Should
   # branch protection come, note that a skipped matrix job reports one check
   # under its unexpanded name, `Test (${{ matrix.name }})`, so require the
   # other jobs or an aggregate, not a matrix leg.
@@ -47,6 +50,7 @@ jobs:
       # Only an explicit false from a successful classifier may skip CI.
       code_impacting: ${{ steps.classify.outcome != 'success' || steps.classify.outputs.code_impacting != 'false' }}
       licenses_impacting: ${{ steps.classify.outcome != 'success' || steps.classify.outputs.licenses_impacting != 'false' }}
+      packaging_impacting: ${{ steps.classify.outcome != 'success' || steps.classify.outputs.packaging_impacting != 'false' }}
     steps:
       - name: Classify changed files
         id: classify
@@ -58,21 +62,99 @@ jobs:
             const fullCi = (reason) => {
               core.setOutput("code_impacting", "true");
               core.setOutput("licenses_impacting", "true");
+              core.setOutput("packaging_impacting", "true");
               core.notice(`Running full CI: ${reason}`);
             };
+
+            const {owner, repo} = context.repo;
+            const pathsOf = (file) =>
+              [file.filename, file.previous_filename].filter(Boolean);
+            // Unknown/malformed entries are not evidence for skipping CI.
+            const malformed = (files) => files.some((file) => !file ||
+              typeof file.filename !== "string" || file.filename.length === 0 ||
+              (file.previous_filename !== undefined &&
+               (typeof file.previous_filename !== "string" || file.previous_filename.length === 0)) ||
+              (file.status === "renamed" && !file.previous_filename)) ||
+              new Set(files.map((file) => file.filename)).size !== files.length;
+
+            // Packaging, and the arch-specific breaks the ARM test legs exist for,
+            // come from these: what the bundles and installers are built from, the
+            // dependencies and toolchain, and CI's own setup.
+            const isPackagingPath = (path) =>
+              path === "Cargo.lock" || path === "Cargo.toml" ||
+              path.endsWith("/Cargo.toml") || path === "rust-toolchain.toml" ||
+              path.startsWith(".cargo/") || path.startsWith("packaging/") ||
+              path.startsWith("assets/") || path.startsWith("scripts/release/") ||
+              path.startsWith("xtask/") || path === "crates/disktree-app/build.rs" ||
+              path === ".github/workflows/ci.yml" ||
+              path.startsWith(".github/actions/setup-rust/");
+            const packagingFile = (files) =>
+              files.find((file) => pathsOf(file).some(isPackagingPath));
+
+            if (context.eventName === "push") {
+              // Main always lints, tests and checks notices; only packaging and the
+              // ARM legs wait for a commit range that needs them.
+              core.setOutput("code_impacting", "true");
+              core.setOutput("licenses_impacting", "true");
+              const runPackaging = (reason) => {
+                core.setOutput("packaging_impacting", "true");
+                core.notice(`Running packaging checks: ${reason}`);
+              };
+              const {before, after} = context.payload;
+              if (!/^[0-9a-f]{40}$/.test(before ?? "") || /^0+$/.test(before) ||
+                  !/^[0-9a-f]{40}$/.test(after ?? "")) {
+                runPackaging("the push has no previous commit to compare");
+                return;
+              }
+              let data;
+              try {
+                ({data} = await github.rest.repos.compareCommitsWithBasehead({
+                  owner, repo, basehead: `${before}...${after}`,
+                }));
+              } catch (error) {
+                runPackaging(`compare failed (${error.message})`);
+                return;
+              }
+              // The compare API lists at most 300 files; a force push is "diverged".
+              if (data?.status !== "ahead" || !Array.isArray(data.files) ||
+                  data.files.length === 0 || data.files.length >= 300 ||
+                  malformed(data.files)) {
+                runPackaging(`compare was not a complete fast-forward (${data?.status}, ${data?.files?.length} files)`);
+                return;
+              }
+              const hit = packagingFile(data.files);
+              core.setOutput("packaging_impacting", String(hit !== undefined));
+              core.notice(hit
+                ? `Packaging checks run because \`${hit.filename}\` changed.`
+                : "No packaging input changed; packaging checks and ARM tests are skipped.");
+              return;
+            }
 
             if (context.eventName !== "pull_request") {
               fullCi(`${context.eventName} events always run full CI`);
               return;
             }
 
+            // Read live, so adding the label and re-running the workflow is enough.
+            let labels;
+            try {
+              const {data} = await github.rest.pulls.get({
+                owner, repo, pull_number: context.issue.number,
+              });
+              labels = data.labels.map((label) => label.name);
+            } catch (error) {
+              fullCi(`label lookup failed (${error.message})`);
+              return;
+            }
+            if (labels.includes("full-ci")) {
+              fullCi("the PR has the full-ci label");
+              return;
+            }
+
             let files;
             try {
               files = await github.paginate(github.rest.pulls.listFiles, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.issue.number,
-                per_page: 100,
+                owner, repo, pull_number: context.issue.number, per_page: 100,
               });
             } catch (error) {
               fullCi(`changed-file lookup failed (${error.message})`);
@@ -88,13 +170,7 @@ jobs:
               return;
             }
 
-            // Unknown/malformed entries are not evidence for skipping CI.
-            if (files.some((file) => !file || typeof file.filename !== "string" ||
-                file.filename.length === 0 ||
-                (file.previous_filename !== undefined &&
-                 (typeof file.previous_filename !== "string" || file.previous_filename.length === 0)) ||
-                (file.status === "renamed" && !file.previous_filename)) ||
-                new Set(files.map((file) => file.filename)).size !== reportedCount) {
+            if (malformed(files)) {
               fullCi("changed-file list had invalid or duplicate entries");
               return;
             }
@@ -112,10 +188,8 @@ jobs:
                 path.startsWith(".github/PULL_REQUEST_TEMPLATE/") ||
                 path.toLowerCase().endsWith(".md");
             };
-            const codeImpactingFile = files.find((file) => {
-              const paths = [file.filename, file.previous_filename].filter(Boolean);
-              return paths.some((path) => !isNonCodePath(path));
-            });
+            const codeImpactingFile = files.find((file) =>
+              pathsOf(file).some((path) => !isNonCodePath(path)));
             const nonCodeOnly = codeImpactingFile === undefined;
             const isLicensePath = (path) =>
               path === "Cargo.lock" || path === "Cargo.toml" ||
@@ -126,11 +200,12 @@ jobs:
               path.startsWith(".github/actions/setup-rust/") ||
               path === "xtask/src/licenses.rs";
             const licensesImpacting = files.some((file) =>
-              [file.filename, file.previous_filename].filter(Boolean)
-                .some(isLicensePath));
+              pathsOf(file).some(isLicensePath));
+            const packagingHit = packagingFile(files);
 
             core.setOutput("code_impacting", String(!nonCodeOnly));
             core.setOutput("licenses_impacting", String(licensesImpacting));
+            core.setOutput("packaging_impacting", String(packagingHit !== undefined));
             await core.summary
               .addHeading("Changed-file classification")
               .addTable([
@@ -138,9 +213,12 @@ jobs:
                 [nonCodeOnly ? "Non-code only" : "Code impacting", String(files.length)],
               ])
               .addRaw(
-                nonCodeOnly
+                (nonCodeOnly
                   ? "Only documentation, agent skills, PR/issue templates, Dependabot configuration or the root .gitignore changed; expensive CI jobs are skipped."
-                  : `Full CI runs because \`${codeImpactingFile.filename}\` requires it.`,
+                  : `Full CI runs because \`${codeImpactingFile.filename}\` requires it.`) +
+                (packagingHit
+                  ? ` Packaging checks and ARM tests run because \`${packagingHit.filename}\` changed.`
+                  : " Packaging checks and ARM tests are skipped; add the full-ci label and use Re-run all jobs to force them."),
               )
               .write();
 
@@ -227,6 +305,14 @@ jobs:
       - name: Lint
         run: cargo xtask lint
 
+      # The macOS bundle used to be the only release-profile build, and it
+      # now waits for a packaging input. Code under `debug_assertions`
+      # differs between the profiles, so type-check the release one here.
+      # 71s on the first run, with no release artifacts cached.
+      - name: Check release profile
+        timeout-minutes: 5
+        run: cargo check --release --workspace --locked
+
       # Cold GPUI code generation exceeded the old test deadline before
       # any test ran. Keep compilation out of the execution budget.
       - name: Compile Linux tests
@@ -284,8 +370,12 @@ jobs:
       # The app bundle, signed ad hoc, and the DMG release.yml cuts the same
       # way: catches a broken Info.plist, icon, signature or DMG layout
       # before a release does. This runner's Xcode has no actool 26, so
-      # this is the bundle without the Icon Composer icon.
+      # this is the bundle without the Icon Composer icon. Only when a
+      # packaging input changed, as bundle-macos-26.
       - name: Bundle
+        if: >-
+          needs.changes.result != 'success' ||
+          needs.changes.outputs.packaging_impacting != 'false'
         run: cargo xtask bundle
 
   bundle-macos-26:
@@ -295,10 +385,11 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 20
     needs: changes
-    # Runs unless the classifier succeeded and said non-code only.
+    # Runs unless the classifier succeeded and said no packaging input
+    # changed: on PRs, on main pushes, or with the full-ci label.
     if: >-
       !cancelled() &&
-      (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
+      (needs.changes.result != 'success' || needs.changes.outputs.packaging_impacting != 'false')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -380,8 +471,10 @@ jobs:
             throw "pwrdisk.exe has no embedded icon"
           }
 
-  # The other half of each release: the same tests on the architectures
-  # the release builds for but the jobs above do not run on.
+  # The same tests on the other Linux and Windows architectures the
+  # release ships. Intel macOS is not tested here: the release and preview
+  # builds compile the universal app, and the Intel slice is the same code
+  # as the Apple silicon one `check-macos` tests.
   other-architectures:
     name: Test (${{ matrix.name }})
     strategy:
@@ -389,16 +482,15 @@ jobs:
       matrix:
         include:
           - { name: Linux aarch64, runner: ubuntu-24.04-arm, job_timeout: 35, test_timeout: 8 }
-          # Lifecycle (10), compile (30), gate (20), setup/cleanup (5).
-          - { name: macOS x86_64, runner: macos-15-intel, job_timeout: 65, test_timeout: 20 }
           - { name: Windows aarch64, runner: windows-11-arm, job_timeout: 45, test_timeout: 15 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.job_timeout }}
     needs: changes
-    # Runs unless the classifier succeeded and said non-code only.
+    # Runs unless the classifier succeeded and said no packaging input
+    # changed: on PRs, on main pushes, or with the full-ci label.
     if: >-
       !cancelled() &&
-      (needs.changes.result != 'success' || needs.changes.outputs.code_impacting != 'false')
+      (needs.changes.result != 'success' || needs.changes.outputs.packaging_impacting != 'false')
     steps:
       - name: Use runner temporary storage
         if: runner.os == 'Windows'
@@ -444,22 +536,6 @@ jobs:
           cargo build -p xtask
           cargo test --workspace --no-run
           cargo test -p disktree-app --features screenshots screenshots:: --no-run
-
-      # Run 42559851081 exhausted fifteen minutes in cold code generation.
-      # Warm the exact lifecycle and screenshot feature combinations too.
-      - name: Compile Intel macOS tests
-        if: matrix.runner == 'macos-15-intel'
-        timeout-minutes: 30
-        run: |
-          cargo build -p xtask
-          cargo test --workspace --no-run
-          cargo test -p disktree-core test_paths::disk_image --no-run
-          cargo test -p disktree-app --features screenshots screenshots:: --no-run
-
-      - name: APFS image lifecycle
-        if: matrix.runner == 'macos-15-intel'
-        timeout-minutes: 10
-        run: cargo test -p disktree-core test_paths::disk_image -- --test-threads=1
 
       - name: Test
         timeout-minutes: ${{ matrix.test_timeout }}

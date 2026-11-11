@@ -8,7 +8,7 @@ check out source. Every build step is a `cargo xtask` task or a script under
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | push to `main`, PRs | Lint and test on Linux, macOS and Windows; tests on the other architectures releases build for; an ad hoc signed bundle and DMG on macOS; check third-party notices when their inputs change. |
+| `ci.yml` | push to `main`, PRs | Lint and test on Linux, macOS (Apple silicon) and Windows x64. When a packaging input changes, or a PR has the `full-ci` label: tests on Linux and Windows ARM, and ad hoc signed bundles and a DMG on macOS. Third-party notices are checked when their inputs change. |
 | `preview-build.yml` | `build-preview` PR label, manual dispatch | The release's packaging, unsigned: a macOS universal DMG cut from the vpk-packed app, and Windows x64 and ARM64 Setup.exe, MSI and portable zip, as workflow artifacts. |
 | `release.yml` | `v*` tag push, manual dispatch with a tag | Checks the tag against `Cargo.toml` and `CHANGELOG.md`, lints, builds every platform in unprivileged jobs, packs and signs macOS and Windows with Velopack in credentialed jobs, then creates a GitHub Pre-release with every asset and the Velopack update feeds. |
 
@@ -36,35 +36,62 @@ file list runs it. The workflow trigger stays unfiltered so the job always
 reports a result. A stale file fails with instructions to run
 `cargo xtask licenses` and commit `THIRD_PARTY_LICENSES`.
 
+The bundle checks (`bundle-macos-26` and the `Bundle` step of the macOS
+job) and the Linux and Windows ARM test legs run only when a packaging
+input changes. Those inputs are `packaging/**`, `assets/**`,
+`scripts/release/**`, `xtask/**`, `crates/disktree-app/build.rs`,
+`Cargo.lock`, any `Cargo.toml`, `rust-toolchain.toml`, `.cargo/**`,
+`ci.yml` and the `setup-rust` action. They are what the bundles and
+installers are built from, and where breaks specific to one architecture
+come from: dependencies and the toolchain. Other code builds and tests the
+same way on every architecture, so Linux x64, Apple silicon and Windows x64
+cover it on every PR.
+
+The same rule applies to pushes to `main`. The classifier compares the push's
+`before` and `after` commits, so a merge that changes no packaging input
+does not package again. A push it cannot read as a complete fast-forward
+(a new branch, a force push, a compare failure, or 300 files or more) runs
+the packaging checks. Lint, tests and the notice check always run on
+`main`.
+
+To run everything on a PR anyway, add the `full-ci` label, then push or
+use **Re-run all jobs**. The classifier reads labels live, so a full
+re-run sees it. **Re-run failed jobs** does not: it keeps the classifier's
+earlier answer and leaves the skipped jobs skipped.
+
+The bundle used to be CI's only release-profile build. Code under
+`debug_assertions` differs between the profiles, so the Linux job now runs
+`cargo check --release` on every code change.
+Releases and `build-preview` builds still build every architecture,
+including Intel macOS in the universal app.
+
 Each CI job has a deadline, and test steps have their own so a hang does
 not consume the rest of the job's budget. In nine successful runs on
-November 6, 2026, the Intel macOS test step took 8–13 minutes, Windows
-tests at most 9, and the other test steps at most 5. Their limits allow
-roughly twice those times; Intel gets 20 minutes. One earlier Intel run
-took 46 minutes in the test step: it would now fail instead of holding up
-the check. Both macOS jobs run the isolated APFS image fixture tests
-with a ten-minute deadline before the full test gate repeats those tests
-alongside the deletion oracle. Intel compiles workspace tests and the exact
-core lifecycle invocation first so the lifecycle step's execution deadline
-cannot be spent compiling core under another feature combination; run
-42529711572 passed all 33 lifecycle tests in 5m48s but its preceding 4m21s
-core build exhausted that step. Apple silicon runs the fixture tests before
-compiling the GUI dependency graph.
+November 6, 2026, Windows tests took at most 9 minutes and the other test
+steps at most 5. Their limits allow roughly twice those times. The macOS
+job runs the isolated APFS image fixture tests with a ten-minute deadline,
+before compiling the GUI dependency graph, and the full test gate repeats
+them alongside the deletion oracle.
+
+CI tests macOS on Apple silicon only. An Intel macOS leg took 26–33
+minutes per run, the longest job in CI, and tested the same code as the
+Apple silicon job. The release and preview builds still compile the
+universal app, so an Intel-only build break shows up there.
 Linux and macOS compile xtask, workspace tests and screenshot-feature tests
 before starting the execution deadline. In run 42559851081, Linux x64 and
 ARM reached their ten- and eight-minute test deadlines while still
-compiling. The macOS ARM and Intel compile steps likewise exhausted ten
-and fifteen minutes. No tests ran in those four failed steps. These jobs
+compiling. The macOS compile step likewise exhausted ten minutes. No tests
+ran in those failed steps. These jobs
 must work with a cold cache, including dependency feature changes that
 invalidate restored artifacts.
 
 Linux gets a 20-minute compile phase, with the existing ten-minute x64 and
-eight-minute ARM execution limits. macOS gets 20 minutes to compile on
-Apple silicon and 30 on Intel; execution stays at 15 and 20 respectively.
+eight-minute ARM execution limits. macOS gets 20 minutes to compile and
+15 to execute.
 Both feature combinations compile in the build phase so screenshot code
 generation cannot consume the execution budget. The job limits are 45
-minutes for Linux x64, 35 for Linux ARM, 60 for Apple silicon and 65 for
-Intel, including setup, lint where applicable, APFS fixtures, packaging
+minutes for Linux x64, 35 for Linux ARM and 60 for macOS, including
+setup, lint where applicable, APFS fixtures, packaging
 where applicable and cleanup. The deadline model in
 `scripts/ci/test-budgets.test.cjs` reproduces the old cutoffs and verifies
 that separate compilation and execution fit the enclosing jobs. Every
