@@ -29,8 +29,9 @@ jobs:
   # every PR: a skipped job satisfies a required check, a missing one leaves
   # it pending. PRs that touch only docs, Markdown, agent skills,
   # templates and the root .gitignore skip the jobs below instead. Ported
-  # from PwrRoute, which took it from PwrAgent; scripts/ci/classify-changes.test.cjs runs this script
-  # against fixtures, and the allowlist's reasons are at its top. Should
+  # from PwrRoute, which took it from PwrAgent;
+  # scripts/ci/classify-changes.test.cjs runs this script against fixtures,
+  # and the allowlist's reasons are at its top. Should
   # branch protection come, note that a skipped matrix job reports one check
   # under its unexpanded name, `Test (${{ matrix.name }})`, so require the
   # other jobs or an aggregate, not a matrix leg.
