@@ -12,6 +12,11 @@ build and test. This study measures the application, its workspace, the
 actual quality gates and the normal release profile. No Blaze integration,
 product setting, global configuration or CI default was added.
 
+The [November 11 Cargo-seeding follow-up](../cargo-seed-2026-11-11/README.md)
+completed the same full workflow with PwrGit bounded and strict target
+seeding, using the pinned compiler. It measures a separate reuse mechanism;
+it does not supply the missing Blaze completion time.
+
 ## Source, host and commands
 
 Both owned detached Git worktrees were created at origin/main commit

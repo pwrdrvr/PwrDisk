@@ -1,0 +1,25 @@
+"""Remove only the explicitly owned, completed experiment's disposable data."""
+import json,pathlib,shutil,subprocess,time,os
+E=pathlib.Path(__file__).resolve().parent;W=E.parent.parent
+assert (E/'OWNER.txt').read_text()=='Owned PwrDisk pwrgit-share evaluation 2026-11-11 mw8odhs6\n'
+for mode in ('plain','bounded','strict'):
+ rows=json.loads((E/'logs'/f'{mode}-results.json').read_text());assert len(rows)==4 and all(r['exit']==0 and r['stopped_by'] is None for r in rows)
+for lane in ('d','b','s'):
+ p=W/lane;assert p.is_dir() and not p.is_symlink()
+ assert subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD'],text=True).strip()=='6a7bad7e5fc53fd54bdbb271fc5b68f789b2d597'
+ assert not subprocess.check_output(['git','-C',str(p),'status','--porcelain'],text=True)
+for lane in ('b','s'):
+ common=subprocess.check_output(['git','-C',str(W/lane),'rev-parse','--git-common-dir'],text=True).strip()
+ assert pathlib.Path(common).resolve()==W/'d/.git'
+ subprocess.run(['git','-C',str(W/'d'),'worktree','remove','--force',str(W/lane)],check=True)
+shutil.rmtree(W/'d')
+removed=['d/','b/','s/']
+for name in ('tool-target','tool-git','cargo-home','cli-home','__pycache__'):
+ p=E/name
+ if p.exists():assert not p.is_symlink();shutil.rmtree(p);removed.append('target/cargo-seed-2026-11-11/'+name+'/')
+for name in ('Cargo.toml','Cargo.lock'):
+ p=E/name
+ if p.exists():p.unlink();removed.append('target/cargo-seed-2026-11-11/'+name)
+s=os.statvfs(E)
+(E/'logs/cleanup.json').write_text(json.dumps({'removed':removed,'at_epoch':time.time(),'available_bytes_after':s.f_bavail*s.f_frsize,'scope':'Only owned experiment data; prior Blaze evidence retained.'},indent=2)+'\n')
+print('Removed only owned sources, targets, tool clone/build, temporary Cargo home and CLI home.')
