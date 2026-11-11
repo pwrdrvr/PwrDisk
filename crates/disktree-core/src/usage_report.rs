@@ -32,6 +32,7 @@ use crate::space::SpaceInfo;
 use crate::tree::{Node, Tree};
 
 pub mod diff;
+pub mod library;
 #[cfg(test)]
 mod tests;
 
@@ -438,28 +439,8 @@ impl Report {
     /// Read a report, refusing one that is cut off or out of order: a
     /// missing line would read as a folder that went away.
     pub fn read(input: impl BufRead) -> io::Result<Self> {
-        let invalid = |message: String| {
-            io::Error::new(io::ErrorKind::InvalidData, message)
-        };
         let mut lines = input.lines();
-        let first = lines
-            .next()
-            .ok_or_else(|| invalid("an empty file is not a report".into()))??;
-        let Ok(Line::Header(header)) = serde_json::from_str(&first) else {
-            return Err(invalid(
-                "the first line is not a report header".into(),
-            ));
-        };
-        if header.format != FORMAT {
-            return Err(invalid(format!("not a {FORMAT} file")));
-        }
-        if header.version > VERSION {
-            return Err(invalid(format!(
-                "report version {} is newer than this PwrDisk reads \
-                 ({VERSION})",
-                header.version
-            )));
-        }
+        let header = header_of(lines.next())?;
         let separator = header.path_style.separator();
         let mut folders: Vec<Folder> = Vec::new();
         // The path of the last folder at each depth: a folder's parent.
@@ -513,6 +494,12 @@ impl Report {
         })
     }
 
+    /// Only the header: what a list of saved reports shows, without
+    /// reading every folder.
+    pub fn read_header(input: impl BufRead) -> io::Result<Header> {
+        header_of(input.lines().next()).map(|header| *header)
+    }
+
     /// Each folder's parent, by index; `None` for the root.
     pub fn parents(&self) -> Vec<Option<usize>> {
         let mut open: Vec<usize> = Vec::new();
@@ -528,6 +515,29 @@ impl Report {
             })
             .collect()
     }
+}
+
+fn invalid(message: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+/// The first line as a header this version reads.
+fn header_of(first: Option<io::Result<String>>) -> io::Result<Box<Header>> {
+    let first = first
+        .ok_or_else(|| invalid("an empty file is not a report".into()))??;
+    let Ok(Line::Header(header)) = serde_json::from_str(&first) else {
+        return Err(invalid("the first line is not a report header".into()));
+    };
+    if header.format != FORMAT {
+        return Err(invalid(format!("not a {FORMAT} file")));
+    }
+    if header.version > VERSION {
+        return Err(invalid(format!(
+            "report version {} is newer than this PwrDisk reads ({VERSION})",
+            header.version
+        )));
+    }
+    Ok(header)
 }
 
 /// Whether `path` is one level directly beneath `parent`.

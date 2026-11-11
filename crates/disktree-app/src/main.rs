@@ -62,6 +62,7 @@ mod treemap_view;
 mod ui;
 mod update_channel;
 mod updater;
+mod usage_history;
 mod views;
 mod wheel;
 mod widgets;

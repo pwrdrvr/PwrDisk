@@ -11,9 +11,34 @@ pwrdisk report-diff ~/reports/monday.jsonl ~/reports/today.jsonl
 
 `report` takes the same scan options as `pwrdisk` itself (`-a`, `-H`,
 `-X`, `--power-efficiency` …), a `PATH` or `-D` for the whole disk,
-`--threshold SIZE` (default `100MB`) and `-o FILE` (default standard
-output). Sizes are bytes unless given a unit: `kB`, `MB`, `GB`, `TB` are
-powers of 1000; `KiB`, `MiB`, `GiB`, `TiB` of 1024.
+`--threshold SIZE` (default `100MB`), and either `-o FILE` (default
+standard output) or `--save`. Sizes are bytes unless given a unit: `kB`,
+`MB`, `GB`, `TB` are powers of 1000; `KiB`, `MiB`, `GiB`, `TiB` of 1024.
+
+`--save` writes the report to PwrDisk's reports folder, beside its
+settings: `~/Library/Application Support/pwrdisk/usage-reports` on macOS,
+`%APPDATA%\pwrdisk\usage-reports` on Windows and
+`$XDG_CONFIG_HOME/pwrdisk/usage-reports` (else `~/.config/…`) on Linux.
+The folder is made private to its owner, and each report is named by its
+capture time in UTC and its root, so the names sort by time.
+
+## Usage History
+
+File › Usage History… lists the reports in that folder, grouped by root and
+newest first, with Open a Report… for one kept elsewhere. Pick B on one and
+A on another, then Compare. A report measured differently from Before
+(another size mode or scan options) is dimmed and cannot be After, since
+the comparison would refuse it; picks in either order compare older to
+newer. The comparison shows:
+
+* free space after each scan, its change, the listed total's change, and
+  what no listing accounts for, with a bar splitting the free space lost
+  into the two;
+* each folder's own change, largest first, the same figures as
+  `report-diff` (the first 200; the rest are summed in one line);
+* the folders only one report kept, with what the other can say of them.
+
+The window reads saved reports only, never the scan on screen.
 
 A report holds real paths. Keep it where you would keep the disk's
 contents, and do not attach one to an issue.
@@ -93,7 +118,8 @@ Header notes:
 
 ## What a comparison says
 
-`report-diff BEFORE AFTER` compares two reports of the same tree.
+`report-diff BEFORE AFTER` and Usage History compare two reports of the
+same tree.
 
 **Where it changed.** Every folder kept in *both* reports gets its subtree
 less its subfolders kept in both. Those parts never overlap, and their

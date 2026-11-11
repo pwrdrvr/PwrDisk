@@ -100,7 +100,7 @@ pub fn cpu_threads() -> usize {
 
 /// Follow each desktop's user configuration location; never write beside
 /// the executable or scanned root. No home/config location means session-only.
-fn config_base() -> Option<PathBuf> {
+pub fn config_base() -> Option<PathBuf> {
     let home = std::env::home_dir();
     if cfg!(target_os = "macos") {
         home.map(|home| home.join("Library/Application Support"))

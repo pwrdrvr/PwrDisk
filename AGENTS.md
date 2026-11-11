@@ -313,7 +313,7 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
 | tile geometry, nesting, the merged tail | `crates/disktree-core/src/treemap.rs` |
 | anything that deletes, or refuses to | `crates/disktree-core/src/removal.rs` |
 | free space and projections | `crates/disktree-core/src/space.rs` |
-| the folder-level usage report and comparing two | `crates/disktree-core/src/usage_report.rs`, `usage_report/diff.rs`; the CLI in `crates/disktree-app/src/report_cli.rs`; format in `docs/usage-reports.md` |
+| the folder-level usage report and comparing two | `crates/disktree-core/src/usage_report.rs`, `usage_report/diff.rs`; the CLI in `crates/disktree-app/src/report_cli.rs`; the Usage History window in `crates/disktree-app/src/usage_history.rs`; format in `docs/usage-reports.md` |
 | what macOS lists and measures in bulk | `crates/disktree-core/src/macos.rs` — `unsafe` for `getattrlistbulk` |
 | what Windows lists, measures and compares differently | `crates/disktree-core/src/windows.rs` — `unsafe` for Win32 |
 | reading a whole NTFS drive from its file table | `crates/disktree-core/src/mft.rs` |

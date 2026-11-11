@@ -314,7 +314,9 @@ fn bound(header: &Header, ancestor: &Folder, depth: u32) -> Bound {
     Bound::Under(header.threshold_bytes)
 }
 
-fn incompatible(a: &Header, b: &Header) -> Vec<String> {
+/// Differences that make two reports measure different things; empty when
+/// they compare.
+pub fn incompatible(a: &Header, b: &Header) -> Vec<String> {
     let mut found = Vec::new();
     let mut differs = |what: &str, left: String, right: String| {
         if left != right {

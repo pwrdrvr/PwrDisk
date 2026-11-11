@@ -21,7 +21,8 @@ use disktree_core::usage_report::{
 };
 
 pub const USAGE: &str = "\
-usage: pwrdisk report [SCAN OPTIONS] [--threshold SIZE] [-o FILE] (PATH | -D)
+usage: pwrdisk report [SCAN OPTIONS] [--threshold SIZE] [-o FILE | --save]
+                      (PATH | -D)
        pwrdisk report-diff BEFORE AFTER [--json] [--limit N]
                            [--allow-incompatible]
 
@@ -29,7 +30,8 @@ report scans PATH (or, with -D, the whole disk the home directory is on)
 and writes every folder whose total reaches SIZE, at any depth, as JSON
 Lines: a header, then one line per folder. No file is listed. SIZE is in
 bytes unless given a unit: 100MB and 1GB are decimal, 512MiB binary
-(default 100MB). Without -o the report goes to standard output. Scan
+(default 100MB). Without -o the report goes to standard output; --save
+writes it to PwrDisk's reports folder, which File > Usage History lists. Scan
 options are those of pwrdisk itself. Paths in a report are private: keep
 it where you would keep the disk's contents.
 
@@ -45,6 +47,7 @@ pub fn report(
 ) -> Result<()> {
     let mut threshold = DEFAULT_THRESHOLD;
     let mut output: Option<PathBuf> = None;
+    let mut save = false;
     let mut scan_args = Vec::new();
     let mut args = args;
     while let Some(arg) = args.next() {
@@ -63,6 +66,7 @@ pub fn report(
                         format!("{value} is not a size; try 100MB or 1GiB")
                     })?;
             }
+            Some("--save") => save = true,
             Some("-o" | "--output") => {
                 output = Some(PathBuf::from(
                     args.next().context("-o needs a file")?,
@@ -71,6 +75,18 @@ pub fn report(
             _ => scan_args.push(arg),
         }
     }
+    anyhow::ensure!(
+        !(save && output.is_some()),
+        "--save and -o cannot be combined"
+    );
+    let folder = if save {
+        Some(
+            crate::usage_history::reports_dir()
+                .context("this system has no folder for PwrDisk's data")?,
+        )
+    } else {
+        None
+    };
     let parsed = crate::parse_args_with_power(scan_args.into_iter(), saved)?;
     anyhow::ensure!(
         parsed.remote.is_none(),
@@ -137,7 +153,14 @@ pub fn report(
     let report = usage_report::build(&tree, &capture, threshold);
     drop(tree);
 
+    if let Some(folder) = &folder {
+        output = Some(
+            usage_report::library::save(folder, &report)
+                .with_context(|| format!("save in {}", folder.display()))?,
+        );
+    }
     match &output {
+        _ if folder.is_some() => {}
         Some(path) if path != Path::new("-") => {
             let file = File::create(path)
                 .with_context(|| format!("create {}", path.display()))?;

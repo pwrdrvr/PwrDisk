@@ -12787,3 +12787,164 @@ fn size_units_settings_apply_and_save_every_choice(cx: &mut TestAppContext) {
         assert!(cx.debug_bounds("size-units").is_some());
     }
 }
+
+/// A saved report of a contrived tree under `/r`: `folders` are
+/// `(name, bytes)` of one file each, `a` holds its file one level down.
+fn saved_report(
+    dir: &Path,
+    captured_at: i64,
+    free: u64,
+    folders: &[(&str, u64)],
+    options: ScanOptions,
+) -> PathBuf {
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+    use disktree_core::usage_report::{self, Capture, library};
+
+    let mut root = Draft::directory("r");
+    for &(name, bytes) in folders {
+        let mut folder = Draft::directory(name);
+        let file = Draft::entry("data", NodeKind::File, bytes);
+        if name == "a" {
+            let mut inner = Draft::directory("x");
+            inner.children.push(file);
+            folder.children.push(inner);
+        } else {
+            folder.children.push(file);
+        }
+        root.children.push(folder);
+    }
+    root.children
+        .push(Draft::entry("loose", NodeKind::File, 50));
+    let mut tree = Tree::from(root);
+    aggregate(&mut tree, Metric::Bytes);
+    let space = SpaceInfo {
+        total: 1_000_000_000_000,
+        free,
+        available: free,
+        native: None,
+    };
+    let capture = Capture {
+        root: "/r".to_owned(),
+        style: PathStyle::Posix,
+        options,
+        captured_at,
+        scan_started_at: Some(captured_at - 30),
+        scan_elapsed_ms: Some(30_000),
+        host: None,
+        volume: usage_report::Volume {
+            device: Some("/dev/fixture".to_owned()),
+            mount: Some("/".to_owned()),
+            space_before: Some(space),
+            space_after: Some(space),
+        },
+        cancelled: false,
+        unreadable: 0,
+        unreadable_detail: Vec::new(),
+        excluded: Vec::new(),
+    };
+    let report = usage_report::build(&tree, &capture, 100);
+    library::save(dir, &report).expect("saved")
+}
+
+/// Usage History lists saved reports newest first, refuses an After
+/// measured differently from Before, compares the two older first however
+/// they were picked, and draws where it changed and what free space did.
+#[gpui_kit::test]
+fn usage_history_compares_two_saved_reports(cx: &mut TestAppContext) {
+    use crate::usage_history::{BACK_ID, COMPARE_ID, UsageHistory};
+
+    cx.update(init);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let dir = temp.path().join("reports");
+    saved_report(
+        &dir,
+        1_000,
+        48_000_000_000,
+        &[("a", 300), ("b", 150)],
+        ScanOptions::default(),
+    );
+    saved_report(
+        &dir,
+        2_000,
+        26_000_000_000,
+        &[("a", 500), ("c", 120)],
+        ScanOptions::default(),
+    );
+    saved_report(
+        &dir,
+        500,
+        50_000_000_000,
+        &[("a", 300)],
+        ScanOptions {
+            apparent_size: true,
+            ..ScanOptions::default()
+        },
+    );
+    let (view, cx) =
+        cx.add_window_view(|_, cx| UsageHistory::new(Some(dir.clone()), cx));
+    draw(cx);
+    let order: Vec<i64> = view.read_with(cx, |view, _| {
+        view.reports()
+            .iter()
+            .map(|report| report.header.captured_at)
+            .collect()
+    });
+    assert_eq!(order, [2_000, 1_000, 500], "newest first");
+
+    // Before is the newer one: the comparison still runs older to newer.
+    click_on(cx, "history-before-0");
+    click_on(cx, "history-after-2");
+    click_on(cx, COMPARE_ID);
+    assert!(
+        view.read_with(cx, |view, _| view.comparison().is_none()),
+        "an apparent-size report is not an After for an allocated one"
+    );
+    click_on(cx, "history-after-1");
+    click_on(cx, COMPARE_ID);
+    let (first, own, total) = view.read_with(cx, |view, _| {
+        let comparison = view.comparison().expect("compared");
+        let total: i128 = comparison
+            .diff
+            .changed
+            .iter()
+            .map(disktree_core::usage_report::diff::Changed::own_delta)
+            .sum();
+        let first = &comparison.diff.changed[0];
+        (
+            (comparison.before.captured_at, first.path.clone()),
+            first.own_delta(),
+            total,
+        )
+    });
+    assert_eq!(first, (1_000, "/r/a/x".to_owned()));
+    assert_eq!(own, 200);
+    assert_eq!(total, (500 + 120 + 50) - (300 + 150 + 50));
+    for drawn in [
+        "history-change-0",
+        "history-gap",
+        "history-before-only-0",
+        "history-after-only-0",
+    ] {
+        assert!(cx.debug_bounds(drawn).is_some(), "{drawn} is drawn");
+    }
+    click_on(cx, BACK_ID);
+    assert!(view.read_with(cx, |view, _| view.comparison().is_none()));
+    assert!(cx.debug_bounds("history-row-0").is_some());
+}
+
+/// With no reports the window says how to make one, and Compare does
+/// nothing.
+#[gpui_kit::test]
+fn usage_history_without_reports_says_how_to_make_one(cx: &mut TestAppContext) {
+    use crate::usage_history::{COMPARE_ID, UsageHistory};
+
+    cx.update(init);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let dir = temp.path().join("none-yet");
+    let (view, cx) =
+        cx.add_window_view(|_, cx| UsageHistory::new(Some(dir.clone()), cx));
+    click_on(cx, COMPARE_ID);
+    assert!(view.read_with(cx, |view, _| view.reports().is_empty()));
+    assert!(view.read_with(cx, |view, _| view.comparison().is_none()));
+    assert!(cx.debug_bounds("history-row-0").is_none());
+}

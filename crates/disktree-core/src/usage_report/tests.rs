@@ -469,3 +469,10 @@ fn a_report_of_a_real_scan_uses_its_allocation() {
     assert_eq!(folder.direct_bytes, folder.bytes);
     assert_eq!(report.header.size_mode, SizeMode::Allocated);
 }
+
+/// A small report of [`fixture`] rooted at `root`, for the library's tests.
+pub fn sample(root: &str) -> Report {
+    let mut capture = capture(ScanOptions::default());
+    capture.root = root.to_owned();
+    build(&tree_of(&fixture()), &capture, 100)
+}
