@@ -7,6 +7,17 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.23.1
+
+- Treemap navigation - Open the clicked directory directly, however deep its
+  tile is drawn, instead of opening one intermediate level at a time. A file
+  opens its containing directory and remains selected; a double- or
+  triple-click still opens at most once.
+- Navigation motion - Grow the clicked tile to fill the window while its
+  neighbours slide off the edges. Match both width and height, and give
+  larger zooms more time in either direction. Reduced Motion still lands
+  immediately.
+
 ## v0.23.0
 
 - Desktop MCP - Make the running desktop own MCP tools, skills, reports and
