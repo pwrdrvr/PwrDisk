@@ -25,6 +25,9 @@ mod confirmation_tests;
 #[cfg(test)]
 mod desktop_tests;
 
+#[cfg(test)]
+mod skills_host_tests;
+
 pub use desktop::DesktopHost;
 pub use session::Session;
 
