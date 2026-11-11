@@ -390,6 +390,11 @@ impl Colors {
     }
 }
 
+/// The rings a tile's state draws inside its own edge, in pixels.
+const SELECTED_RING: f32 = 3.0;
+const HOVER_RING: f32 = 1.0;
+const MARKED_RING: f32 = 2.0;
+
 fn paint_tiles(
     tiles: &[TileDeco],
     bounds: Bounds<Pixels>,
@@ -489,11 +494,11 @@ fn paint_tiles(
 
         // Ranked so the most important ring is painted last, on top.
         let outline = if tile.selected {
-            Some((3, 3.0, colors.selected_border))
+            Some((3, SELECTED_RING, colors.selected_border))
         } else if tile.hovered {
-            Some((2, 1.0, colors.hover_border))
+            Some((2, HOVER_RING, colors.hover_border))
         } else if tile.marked {
-            Some((1, 2.0, colors.marked_border))
+            Some((1, MARKED_RING, colors.marked_border))
         } else {
             None
         }
@@ -664,7 +669,9 @@ fn paint_labels(
         );
 
         window.with_content_mask(
-            Some(ContentMask { bounds: mask }),
+            Some(ContentMask {
+                bounds: label_clip(mask, text_padding),
+            }),
             |window| {
                 let _ = line.paint(
                     origin,
@@ -781,6 +788,18 @@ fn paint_labels(
 /// as far as needed to stay inside the region the label may draw in.
 fn underline_top(natural: Pixels, bottom: Pixels, thickness: Pixels) -> Pixels {
     natural.min(bottom - thickness)
+}
+
+/// The region a label's text may paint in: the region it owns, less the
+/// padding the name starts with, on the right too. Cut at the edge itself,
+/// a long name ran flush to it and, since labels paint after the tiles,
+/// its glyph backgrounds covered the hover and selection rings drawn
+/// inside that edge.
+fn label_clip(owned: Bounds<Pixels>, padding: Pixels) -> Bounds<Pixels> {
+    Bounds::new(
+        owned.origin,
+        Size::new((owned.size.width - padding).max(px(0.)), owned.size.height),
+    )
 }
 
 /// Where a label's line box starts: `inset` below the top of the region
@@ -1002,6 +1021,49 @@ mod tests {
                 px(top), height, name * 0.25, name * 1.35, ascent, descent,
             );
             prop_assert!((glyph_top - top).abs() < 0.01, "{glyph_top} vs {top}");
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        /// A long name is cut where it began: as far in from the tile's
+        /// right edge as it starts from its left, and never on the rings a
+        /// selected, hovered or marked tile draws inside that edge.
+        #[test]
+        fn a_long_name_stops_short_of_the_right_edge(
+            x in -500.0f32..500.0,
+            y in -500.0f32..500.0,
+            // A tile narrower than 3.3 names' size gets no label at all.
+            width_over in 0.0f32..2000.0,
+            height in 0.0f32..2000.0,
+            // The name's size across every interface zoom step.
+            name_size in 9.0f32..24.0,
+        ) {
+            let width = name_size.mul_add(3.3, width_over);
+            let owned = Bounds::new(
+                Point::new(px(x), px(y)),
+                Size::new(px(width), px(height)),
+            );
+            let padding = px(name_size) * 0.42;
+            let clip = label_clip(owned, padding);
+            let right = (owned.origin.x + owned.size.width).as_f32();
+            let clip_right = (clip.origin.x + clip.size.width).as_f32();
+            prop_assert!(
+                clip_right <= right - padding.as_f32() + 0.01,
+                "{clip_right} past {right} less {padding:?}"
+            );
+            prop_assert!(clip_right <= right - SELECTED_RING + 0.01);
+            for ring in [SELECTED_RING, HOVER_RING, MARKED_RING] {
+                prop_assert!(padding.as_f32() >= ring);
+            }
+            prop_assert!(clip.size.width >= px(0.));
+            prop_assert_eq!(clip.origin, owned.origin);
+            prop_assert_eq!(clip.size.height, owned.size.height);
         }
     }
 
