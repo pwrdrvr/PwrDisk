@@ -3109,17 +3109,20 @@ mod tests {
     #[cfg(any(unix, windows))]
     use std::thread;
 
+    /// The window's socket or pipe for a test, named after the test's
+    /// temporary directory `dir`. A Unix socket path must fit in
+    /// `sun_path` (104 bytes on macOS, 108 on Linux), and a fixture beside
+    /// a deep checkout does not leave room for one, so the socket goes in
+    /// `/tmp` rather than in `dir`. The listener removes it when dropped.
     fn endpoint(dir: &Path) -> PathBuf {
+        let name = dir.file_name().expect("temp name").to_string_lossy();
         #[cfg(windows)]
         {
-            PathBuf::from(format!(
-                r"\\.\pipe\pwrdisk-test-{}",
-                dir.file_name().expect("temp name").to_string_lossy()
-            ))
+            PathBuf::from(format!(r"\\.\pipe\pwrdisk-test-{name}"))
         }
         #[cfg(not(windows))]
         {
-            dir.join("window.sock")
+            PathBuf::from(format!("/tmp/pwrdisk-test-{name}.sock"))
         }
     }
 
@@ -5902,7 +5905,7 @@ mod tests {
     #[test]
     fn covered_marks_use_the_windows_root_for_handover() {
         let temp = fixture();
-        let socket = temp.path().join("window.sock");
+        let socket = endpoint(temp.path());
         let mut session = Session::detached(socket.clone(), None);
         scanned(&mut session, temp.path());
         session
@@ -5927,7 +5930,7 @@ mod tests {
     #[test]
     fn linking_never_moves_the_window_to_cover_earlier_marks() {
         let temp = fixture();
-        let socket = temp.path().join("window.sock");
+        let socket = endpoint(temp.path());
         let mut session = Session::detached(socket.clone(), None);
         // Separate scan roots used to cause a Mark request for each root,
         // leaving the user's window on the last one.
@@ -5992,7 +5995,7 @@ mod tests {
     #[test]
     fn a_scan_that_does_not_cover_earlier_marks_keeps_them_here() {
         let temp = fixture();
-        let socket = temp.path().join("window.sock");
+        let socket = endpoint(temp.path());
         let mut session = Session::detached(socket.clone(), None);
         scanned(&mut session, temp.path());
         let path = temp.path().join("Downloads");
@@ -6024,7 +6027,7 @@ mod tests {
     #[test]
     fn a_mark_missing_from_the_windows_tree_is_kept_and_explained() {
         let temp = fixture();
-        let socket = temp.path().join("window.sock");
+        let socket = endpoint(temp.path());
         let mut session = Session::detached(socket.clone(), None);
         scanned(&mut session, temp.path());
         let path = temp.path().join("notes/todo.txt");
@@ -6049,7 +6052,7 @@ mod tests {
     fn unmark_after_a_partial_handover_clears_both_copies() {
         for clear_all in [false, true] {
             let temp = fixture();
-            let socket = temp.path().join("window.sock");
+            let socket = endpoint(temp.path());
             let mut session = Session::detached(socket.clone(), None);
             scanned(&mut session, temp.path());
             let missing = temp.path().join("notes/todo.txt");
@@ -6105,7 +6108,7 @@ mod tests {
     #[test]
     fn review_launches_one_window_covering_every_offline_scan_root() {
         let temp = fixture();
-        let socket = temp.path().join("window.sock");
+        let socket = endpoint(temp.path());
         let windows = Arc::new(Mutex::new(Vec::new()));
         let launched = Arc::clone(&windows);
         let expected = temp.path().to_path_buf();
