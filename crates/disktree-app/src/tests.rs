@@ -13064,14 +13064,17 @@ fn the_hover_card_never_leaves_the_window(cx: &mut TestAppContext) {
 }
 
 /// A control's tooltip stays inside the window's content, inside a
-/// client-side frame and in a short window. GPUI places these by their
-/// measured size; this holds it to that with the longest one, the disk
-/// panel's accounting note, against the window's right edge.
+/// client-side frame and in a short window. GPUI keeps these inside the
+/// window by their measured size but knew nothing of the frame's resize
+/// ring, so a tooltip against the window's edge sat in it. Tried with the
+/// longest one, the disk panel's accounting note, and with ⋮, the control
+/// nearest the window's right edge.
 #[gpui_kit::test]
 fn control_tooltips_never_leave_the_content(cx: &mut TestAppContext) {
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
+    let mut tried = Vec::new();
     for frame in [None, Some("GNOME, controls right")] {
         update(&view, cx, |app, cx| {
             app.chrome_pin = frame.and_then(|frame| {
@@ -13085,19 +13088,29 @@ fn control_tooltips_never_leave_the_content(cx: &mut TestAppContext) {
         for (width, height) in [(1440., 900.), (1000., 600.)] {
             cx.simulate_resize(gpui_kit::size(px(width), px(height)));
             draw(cx);
-            {
-                let control = "disk-accounting";
-                let bounds = cx.debug_bounds(control).expect("the note");
-                // Each corner of the control, so a tooltip near any edge of
-                // the window is tried.
-                for at in [
-                    bounds.origin + Point::new(px(1.), px(1.)),
-                    bounds.bottom_right() - Point::new(px(1.), px(1.)),
-                ] {
+            for control in ["disk-accounting", "more-toggle"] {
+                // ⋮ shows only once the bar folds, below full width.
+                let Some(bounds) = cx.debug_bounds(control) else {
+                    assert_eq!(control, "more-toggle", "{width} wide");
+                    continue;
+                };
+                tried.push(control);
+                // Across the control's width in 2 px steps, at its top and
+                // bottom: GPUI places a tooltip at the pointer, so one of
+                // these ends a tooltip of any width within the ring's
+                // width of the window's edge, whatever the platform's text
+                // makes that width.
+                let steps = (bounds.size.width.as_f32() / 2.) as usize;
+                let points = (0..steps).flat_map(|step| {
+                    let x = bounds.left() + px(2_f32.mul_add(step as f32, 1.));
+                    [bounds.top() + px(1.), bounds.bottom() - px(1.)]
+                        .map(|y| Point::new(x, y))
+                });
+                for at in points {
                     rest_at(cx, at);
                     let tip = cx
                         .debug_bounds("app-tooltip-surface")
-                        .expect("the note's tooltip");
+                        .unwrap_or_else(|| panic!("{control}'s tooltip"));
                     let inset = read(&view, cx, |app| app.content_edges);
                     let window = cx.update(|window, _| window.viewport_size());
                     assert!(
@@ -13113,4 +13126,5 @@ fn control_tooltips_never_leave_the_content(cx: &mut TestAppContext) {
             }
         }
     }
+    assert!(tried.contains(&"more-toggle"), "⋮ was tried");
 }

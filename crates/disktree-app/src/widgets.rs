@@ -29,6 +29,11 @@ pub const TOOLTIP_DELAY: std::time::Duration =
 /// lower inside a transparent frame, which keeps it clear of the arrow.
 /// Near the window's bottom GPUI flips the frame above the pointer; the
 /// gap is then above the surface, which still clears the tip.
+///
+/// GPUI keeps the frame inside the window, but a client-side frame's
+/// resize ring and border are window too, not content: a tooltip against
+/// the window's edge sat in the shadow ring. The frame's other sides carry
+/// that inset as transparent padding, so the surface stops at the content.
 pub fn with_tooltip<T: gpui_kit::StatefulInteractiveElement>(
     control: T,
     text: impl Into<SharedString>,
@@ -46,12 +51,21 @@ struct ClearTooltip(SharedString);
 impl gpui_kit::Render for ClearTooltip {
     fn render(
         &mut self,
-        _: &mut gpui_kit::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut gpui_kit::Context<'_, Self>,
     ) -> impl gpui_kit::IntoElement {
+        // The ring, then the frame's one-pixel border, as `content_edges`
+        // has it; nothing at all without a client-side frame.
+        let inset = window
+            .client_inset()
+            .filter(|ring| *ring > gpui_kit::px(0.))
+            .map_or(gpui_kit::px(0.), |ring| ring + gpui_kit::px(1.));
         div()
             .debug_selector(|| "app-tooltip".into())
-            .pt(size::TOOLTIP_CLEARANCE)
+            .pt(size::TOOLTIP_CLEARANCE.max(inset))
+            .pr(inset)
+            .pb(inset)
+            .pl(inset)
             .child(
                 div()
                     .debug_selector(|| "app-tooltip-surface".into())
