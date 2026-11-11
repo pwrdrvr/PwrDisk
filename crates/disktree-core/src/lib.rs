@@ -47,5 +47,6 @@ mod test_rng;
 mod test_tree;
 pub mod tree;
 pub mod treemap;
+pub mod usage_report;
 #[cfg(windows)]
 mod windows;

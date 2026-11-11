@@ -1,0 +1,10 @@
+{
+  "size": [960, 1040],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "usage_history"},
+    {"op": "capture", "name": "usage-history-pick.png"},
+    {"op": "usage_history", "compare": true},
+    {"op": "capture", "name": "usage-history-compare.png"}
+  ]
+}

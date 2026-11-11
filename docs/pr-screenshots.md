@@ -118,6 +118,7 @@ The simulated clock still advances tooltip delays and other timed tasks.
 | `wait`, `ms` | Advance the deterministic clock, up to 60000 ms per step; useful for tooltips. |
 | `capture`, `name`, `pointer` | Write a PNG. `pointer` defaults false; true draws an arrow at the last hover/click. |
 | `setup`, `state` | A named app state hook, described below. |
+| `usage_history`, `compare` | Switch to the Usage History window over two invented reports of the fixture root, written to `/Volumes/Fixtures/usage-reports`, with Before and After picked; `compare: true` also runs Compare. `scripts/screenshots/usage-history.json` captures both. |
 
 Setup hooks are `legend` with a `kind` (the core category name, such as
 `code`, `cache`, `media` or `documents`), `select` or `mark` with a relative

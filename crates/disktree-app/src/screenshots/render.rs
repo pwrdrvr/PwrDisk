@@ -100,6 +100,29 @@ fn render(scenario: &Scenario, root: &Path, out: &Path) -> Result<()> {
                     })?;
                 window = settings.into();
             }
+            Step::UsageHistory { compare } => {
+                let dir = invented_reports(root, out)?;
+                let compare = *compare;
+                let history =
+                    cx.open_window(size(px(width), px(height)), |_, cx| {
+                        cx.new(|cx| {
+                            let mut history =
+                                crate::usage_history::UsageHistory::new(
+                                    Some(dir),
+                                    cx,
+                                );
+                            // Newest first: today is After, a week ago
+                            // Before.
+                            history.pick_before(1, cx);
+                            history.pick_after(0, cx);
+                            if compare {
+                                history.compare_now(cx);
+                            }
+                            history
+                        })
+                    })?;
+                window = history.into();
+            }
             Step::Hover { at } => {
                 move_pointer(&mut cx, window, *at)?;
                 pointer = Some(*at);
@@ -178,6 +201,111 @@ fn render(scenario: &Scenario, root: &Path, out: &Path) -> Result<()> {
         draw(&mut cx, window)?;
     }
     Ok(())
+}
+
+/// Two usage reports of `root` a week apart, written into `out`. Every
+/// folder and size is invented, under the fixture's own root: nothing is
+/// read from this computer.
+fn invented_reports(root: &Path, out: &Path) -> Result<std::path::PathBuf> {
+    use disktree_core::path_style::PathStyle;
+    use disktree_core::space::SpaceInfo;
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+    use disktree_core::usage_report::{self, Capture, Volume, library};
+
+    const GB: u64 = 1_000_000_000;
+    const MB: u64 = 1_000_000;
+    // Beside the fixture tree, on the fixture image: the window prints its
+    // folder, and that must be invented too.
+    let dir = root.parent().map_or_else(
+        || out.join("usage-reports"),
+        |up| up.join("usage-reports"),
+    );
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)?;
+    }
+    // (path below the root, bytes) a week ago and today.
+    let week_ago: &[(&str, u64)] = &[
+        ("Projects/worktrees", 41 * GB),
+        ("Projects/agent-shell/node_modules", 2_400 * MB),
+        ("Projects/pwr-tools/target", 3 * GB),
+        ("Cache/build", 6_200 * MB),
+        ("Media/recordings", 2_100 * MB),
+        ("Documents", 7_900 * MB),
+    ];
+    let today: &[(&str, u64)] = &[
+        ("Projects/worktrees", 50_600 * MB),
+        ("Projects/worktrees/wt-4821", 6_400 * MB),
+        ("Projects/agent-shell/node_modules", 4_200 * MB),
+        ("Projects/pwr-tools/target", 2_400 * MB),
+        ("Cache/build", 9_300 * MB),
+        ("Media/recordings", 40 * MB),
+        ("Documents", 6_800 * MB),
+    ];
+    for (captured_at, free, folders) in [
+        (1_789_200_000, 48 * GB, week_ago),
+        (1_789_804_800, 26 * GB, today),
+    ] {
+        let mut tree = Draft::directory("Demo");
+        for (path, bytes) in folders {
+            let mut node = &mut tree;
+            for name in path.split('/') {
+                let at = node
+                    .children
+                    .iter()
+                    .position(|child| &*child.name == name)
+                    .unwrap_or_else(|| {
+                        node.children.push(Draft::directory(name));
+                        node.children.len() - 1
+                    });
+                node = &mut node.children[at];
+            }
+            // A nested folder's bytes are part of its parent's.
+            let nested: u64 = folders
+                .iter()
+                .filter(|(other, _)| {
+                    other.len() > path.len()
+                        && other.starts_with(path)
+                        && other.as_bytes()[path.len()] == b'/'
+                })
+                .map(|(_, bytes)| bytes)
+                .sum();
+            node.children.push(Draft::entry(
+                "data",
+                NodeKind::File,
+                bytes - nested,
+            ));
+        }
+        let mut tree = Tree::from(tree);
+        aggregate(&mut tree, Metric::Bytes);
+        let space = SpaceInfo {
+            total: 245 * GB,
+            free,
+            available: free,
+            native: None,
+        };
+        let capture = Capture {
+            root: root.to_string_lossy().into_owned(),
+            style: PathStyle::Native,
+            options: ScanOptions::default(),
+            captured_at,
+            scan_started_at: Some(captured_at - 31),
+            scan_elapsed_ms: Some(31_000),
+            host: None,
+            volume: Volume {
+                device: Some("/dev/fixture".to_owned()),
+                mount: Some(root.to_string_lossy().into_owned()),
+                space_before: Some(space),
+                space_after: Some(space),
+            },
+            cancelled: false,
+            unreadable: 0,
+            unreadable_detail: Vec::new(),
+            excluded: Vec::new(),
+        };
+        let report = usage_report::build(&tree, &capture, 100 * MB);
+        library::save(&dir, &report)?;
+    }
+    Ok(dir)
 }
 
 fn draw(cx: &mut HeadlessAppContext, window: AnyWindowHandle) -> Result<()> {

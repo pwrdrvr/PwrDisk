@@ -190,6 +190,7 @@ pub fn install(cx: &mut App) {
     }
     settings::install(cx);
     help::install(cx);
+    crate::usage_history::install(cx);
 
     let platform = Platform::current();
     cx.bind_keys(bindings(platform));
@@ -352,6 +353,11 @@ pub fn menus(platform: Platform) -> Vec<Menu> {
         MenuItem::action(platform.file_manager(), ShowInFinder),
         MenuItem::action("Rescan", Rescan),
         MenuItem::separator(),
+        MenuItem::action(
+            "Usage History\u{2026}",
+            crate::usage_history::OpenUsageHistory,
+        ),
+        MenuItem::separator(),
     ];
     if !mac {
         file.push(MenuItem::action("Settings\u{2026}", settings::OpenSettings));
@@ -512,6 +518,8 @@ mod tests {
                 "---",
                 "Show in Finder",
                 "Rescan",
+                "---",
+                "Usage History…",
                 "---",
                 "Close Window"
             ]

@@ -25,6 +25,12 @@ pub enum Theme {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Step {
     Settings,
+    /// Usage History over two invented reports of the fixture root, Before
+    /// and After picked; `compare` also runs the comparison.
+    UsageHistory {
+        #[serde(default)]
+        compare: bool,
+    },
     Hover {
         at: [f32; 2],
     },
@@ -90,7 +96,7 @@ impl Scenario {
         let mut moved = false;
         for step in &self.steps {
             match step {
-                Step::Settings => {}
+                Step::Settings | Step::UsageHistory { .. } => {}
                 Step::Scroll { at, pixels, events } => {
                     ensure!(
                         at.iter().zip(self.size).all(|(&v, side)| {
@@ -197,6 +203,32 @@ mod tests {
     fn script(steps: &serde_json::Value) -> String {
         json!({"size": [1180, 620], "theme": "tokyo_night", "steps": steps})
             .to_string()
+    }
+
+    #[test]
+    fn usage_history_compares_only_when_asked() {
+        let scenario = Scenario::parse(&script(&json!([
+            {"op": "usage_history"},
+            {"op": "usage_history", "compare": true},
+            {"op": "capture", "name": "history.png"}
+        ])))
+        .expect("valid");
+        let compares: Vec<bool> = scenario
+            .steps
+            .iter()
+            .filter_map(|step| match step {
+                Step::UsageHistory { compare } => Some(*compare),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(compares, [false, true]);
+        assert!(
+            Scenario::parse(&script(&json!([
+                {"op": "usage_history", "compare": "yes"},
+                {"op": "capture", "name": "history.png"}
+            ])))
+            .is_err()
+        );
     }
 
     #[test]
