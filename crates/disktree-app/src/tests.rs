@@ -7036,7 +7036,7 @@ fn desktop_mcp_reconnect_keeps_the_tree_and_marks(cx: &mut TestAppContext) {
         sockets
             .path()
             .file_name()
-            .expect("fixture name")
+            .expect("socket dir name")
             .to_string_lossy()
     ));
     let listener =
