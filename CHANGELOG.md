@@ -7,6 +7,23 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.24.0
+
+- Scroll and pinch zoom - Make zoom follow input travel rather than event
+  count, so a light trackpad swipe no longer races through directories.
+  Stop when the directory under the pointer fills the view, then show a
+  progress bar and destination hint as you push further to open it.
+- Gesture navigation - Open or leave at most one level per scroll gesture.
+  Momentum can zoom but cannot trigger a level change; reversing or pausing
+  clears the push. Scrolling over a file with nothing to open no longer
+  magnifies it like a page.
+- Panning - Drag to pan a zoomed view, with movement clamped to the layout.
+  A drag on the selection no longer opens it accidentally. Shift-scroll
+  pans both ways; the keyboard hint now says that hjkl selects tiles.
+- Treemap labels - Keep descenders visible in slim directory bands and
+  leave padding before the right edge of long names. Draw hover, selection
+  and marked rings above labels so text cannot cover them.
+
 ## v0.23.1
 
 - Treemap navigation - Open the clicked directory directly, however deep its
