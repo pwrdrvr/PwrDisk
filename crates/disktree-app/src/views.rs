@@ -7019,8 +7019,13 @@ pub fn cursor_tooltip(
             window_size.height - inset.bottom - edge,
         ),
     );
+    // Never taller than the area: a path near PATH_MAX wraps past a short
+    // window's height, and the card's head, its name and size, matters
+    // more than the end of the path or the key hints under it.
     let card = card_surface(cx)
         .debug_selector(|| "cursor-tooltip".into())
+        .max_h(area.size.height)
+        .overflow_hidden()
         .child(content);
     Some(PointerCard::new(
         card,

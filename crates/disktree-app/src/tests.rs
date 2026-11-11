@@ -13014,7 +13014,23 @@ fn the_hover_card_never_leaves_the_window(cx: &mut TestAppContext) {
     std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
     std::fs::write(&file, vec![b'x'; 300_000]).expect("write");
     let (view, cx) = view_over(temp.path(), cx);
-    for (width, height) in [(1440., 900.), (720., 420.)] {
+    // Inside a client-side frame too, whose resize ring is not content; the
+    // shortest window is shorter than the card's wrapped text.
+    let frames = [None, Some("GNOME, controls right")];
+    let sizes = [(1440., 900.), (720., 420.), (720., 300.)];
+    for (frame, (width, height)) in frames
+        .into_iter()
+        .flat_map(|frame| sizes.map(|size| (frame, size)))
+    {
+        update(&view, cx, |app, cx| {
+            app.chrome_pin = frame.and_then(|frame| {
+                window_frames()
+                    .into_iter()
+                    .find(|(name, _)| *name == frame)
+                    .map(|(_, frame)| frame)
+            });
+            cx.notify();
+        });
         cx.simulate_resize(gpui_kit::size(px(width), px(height)));
         draw(cx);
         let origin = read(&view, cx, |app| app.treemap_origin.get());
@@ -13032,12 +13048,14 @@ fn the_hover_card_never_leaves_the_window(cx: &mut TestAppContext) {
                 .debug_bounds("cursor-tooltip")
                 .unwrap_or_else(|| panic!("a tooltip at {at:?} in {area:?}"));
             let window = cx.update(|window, _| window.viewport_size());
+            let inset = read(&view, cx, |app| app.content_edges);
             assert!(
-                tip.left() >= px(0.)
-                    && tip.top() >= px(0.)
-                    && tip.right() <= window.width
-                    && tip.bottom() <= window.height,
-                "{tip:?} leaves a {window:?} window for a pointer at {at:?}"
+                tip.left() >= inset.left
+                    && tip.top() >= inset.top
+                    && tip.right() <= window.width - inset.right
+                    && tip.bottom() <= window.height - inset.bottom,
+                "{tip:?} leaves a {window:?} window inset by {inset:?} \
+                 for a pointer at {at:?}"
             );
             // Placed beside the pointer, the card never covers its tip.
             assert!(!tip.contains(&at), "{tip:?} covers the pointer at {at:?}");
