@@ -9,6 +9,10 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## v0.24.0
 
+- MCP skills - Make skill discovery return complete results with cache
+  metadata, so clients supporting the MCP Skills extension can load and
+  verify the bundled skills. Plain resources and the read-skill tool remain
+  available to other clients.
 - Scroll and pinch zoom - Make zoom follow input travel rather than event
   count, so a light trackpad swipe no longer races through directories.
   Stop when the directory under the pointer fills the view, then show a
