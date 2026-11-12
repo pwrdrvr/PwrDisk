@@ -1,0 +1,31 @@
+"""Delete only this study's explicitly owned disposable trees after inventory."""
+import pathlib,subprocess,json,shutil,os,time,socket,stat
+R=pathlib.Path(__file__).resolve().parent;W=R.parent.parent
+assert (R/'OWNER.txt').read_text()=='PwrDisk local sccache study mwdmi3wl 2026-11-12\n'
+assert (R/'logs/before-cleanup-inventory.json').exists()
+assert (R/'logs/sequence-complete.json').exists()
+sock=R/'s.sock'
+if sock.exists():
+ assert stat.S_ISSOCK(sock.lstat().st_mode), 'unexpected endpoint type'
+ client=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);client.settimeout(1)
+ try:
+  client.connect(str(sock))
+ except ConnectionRefusedError:
+  (R/'logs/stale-socket-proof.json').write_text(json.dumps({'endpoint':str(sock),'connect':'ECONNREFUSED','all_started_servers_waited_for_exit':True},indent=2))
+ else:raise RuntimeError('owned endpoint still has a listener; do not clean')
+ finally:client.close()
+ sock.unlink()
+for lane in ['a','b','c']:
+ p=W/lane
+ assert subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD'],text=True).strip()=='1673f3ea95264a8b8c5077340148852443ff226a'
+ assert not subprocess.check_output(['git','-C',str(p),'status','--porcelain','--untracked-files=no'],text=True).strip()
+for p in [W/'a',W/'b',W/'c',*[R/x for x in ['cargo-home','cache','sccache-v0.19.0-aarch64-apple-darwin','clang-cache','probes','drift','eviction','cli-home']]]:
+ assert p.parent in [W,R] and not p.is_symlink()
+ if p.exists():shutil.rmtree(p)
+# Archives are disposable too; keep small upstream docs/source evidence locally.
+for p in (R/'upstream').glob('*.tar.gz'):p.unlink()
+for name in ['cached-config','apfs.dylib']:
+ p=R/name
+ if p.exists():p.unlink()
+(R/'logs/cleanup.json').write_text(json.dumps({'epoch':time.time(),'removed':['a','b','c','cargo-home','cache','sccache distribution','clang-cache','probes','drift','eviction','cli-home','download archive','cached-config','apfs.dylib'],'available_bytes':os.statvfs(R).f_bavail*os.statvfs(R).f_frsize},indent=2))
+print((R/'logs/cleanup.json').read_text())

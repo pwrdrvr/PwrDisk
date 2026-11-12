@@ -1,0 +1,48 @@
+"""Publish compact, sanitized measurements and exact command/guard snapshots."""
+import pathlib,json,os,re,hashlib,runpy,io,contextlib,shutil
+R=pathlib.Path(__file__).resolve().parent;W=R.parent.parent;D=W/'docs/performance/sccache-2026-11-12';D.mkdir(parents=True,exist_ok=True)
+def sanitize(s):
+ for p,label in [(str(W),'$WORKSPACE'),(os.environ.get('TMPDIR','__NO_TMP__'),'$NATIVE_TMPDIR/'),(str(pathlib.Path.home()),'$HOME')]:s=s.replace(p,label)
+ return s
+with contextlib.redirect_stdout(io.StringIO()):ns=runpy.run_path(str(R/'analyze.py'))
+A=json.loads((R/'analysis.json').read_text());tests={};baseline=None
+for m in ['plain','populate','hit','warm','edit']:
+ c,_,_=ns['tests'](R/'logs'/f'{m}-test.log');records=[{'test':n,'outcome':s,'count':c[(n,s)]} for n,s in sorted(c)];digest=hashlib.sha256(json.dumps(records,sort_keys=True).encode()).hexdigest();tests[m]={'sha256_sorted_test_outcomes':digest,**A[m]['tests']}
+ if m=='plain':baseline=records
+(D/'test-outcomes.json').write_text(json.dumps(baseline,indent=2)+'\n')
+phases={m:json.loads((R/'logs'/f'{m}-results.json').read_text()) for m in A};stats={};idle={};starts={};envelopes={};timing={}
+for m in A:
+ for phase in ['dev','lint','test','release']:
+  p=R/'logs'/f'{m}-{phase}-stats.json'
+  if p.exists():stats[m+'-'+phase]=json.loads(p.read_text())
+  p=R/'logs'/f'{m}-{phase}-idle.json'
+  if p.exists():idle[m+'-'+phase]=json.loads(p.read_text())
+ if m=='plain':start=(R/'logs/plain-dev.log').stat().st_birthtime;end=(R/'logs/plain-results.json').stat().st_mtime
+ else:
+  p=R/'logs'/f'{m}-startup.json';starts[m]=json.loads(p.read_text());start=p.stat().st_mtime-starts[m]['wall_seconds'];end=(R/'logs'/f'{m}-shutdown.txt').stat().st_mtime
+ envelopes[m]={'seconds':end-start,'method':'File timestamps: initial dev log birth to final results write (plain); server-ready timestamp minus measured startup to stop-server response write (cached). Includes measurement/statistics overhead; wall-clock envelope, not a monotonic timer.'}
+ s=(R/'logs'/f'{m}-test.log').read_text();timing[m]={'cargo_finished_lines':re.findall(r'^\s*Finished .+$',s,re.M),'suite_lines':re.findall(r'^test result: .+$',s,re.M),'python_lines':re.findall(r'^Ran \d+ tests? in [0-9.]+s',s,re.M)}
+monitor=[json.loads(x) for x in (R/'logs/monitor.jsonl').read_text().splitlines()]
+resources={'peak_sampled_allocated_bytes':max(x['allocated_bytes'] for x in monitor),'minimum_available_bytes':min(x['available_bytes'] for x in monitor),'peak_sampled_physical_bytes':max(x['owned_physical_bytes'] for x in monitor),'per_mode':{m:{'peak_physical_bytes':max(x['owned_physical_bytes'] for x in monitor if x['phase'].startswith(m+'-')),'peak_allocated_bytes':max(x['allocated_bytes'] for x in monitor if x['phase'].startswith(m+'-'))} for m in A}}
+extra={}
+for name in ['probes-outcomes','drift-outcomes','drift-concurrent-stats','drift-stable-stats','eviction-outcomes','incremental-oracle','test-output-interleaving','loose-object-difference','donor-absence','outputs','cleanup','stale-socket-proof','physical-oracle','setup-failures','sequence-complete']:
+ p=R/'logs'/f'{name}.json'
+ if p.exists():extra[name]=json.loads(p.read_text())
+for p in sorted((R/'logs').glob('oracle-*-stats.json')):extra[p.stem]=json.loads(p.read_text())
+inventories={name:json.loads((R/'logs'/f'{name}-inventory.json').read_text()) for name in ['plain-complete','population-complete','three-workflows','before-cleanup','after-cleanup']}
+result={'source':json.loads((R/'logs/environment.json').read_text()),'setup':json.loads((R/'setup.json').read_text()),'analysis':A,'phases':phases,'cache_stats':stats,'server_startup':starts,'server_idle':idle,'workflow_envelopes':envelopes,'test_matches':tests,'timing_observations':timing,'resources':resources,'inventories':inventories,'checks':extra}
+(D/'results.json').write_text(sanitize(json.dumps(result,indent=2))+'\n')
+(D/'monitor.jsonl').write_text((R/'logs/monitor.jsonl').read_text())
+lines=[]
+for m in A:
+ for phase in ['dev','lint','test','release']:
+  lines.append(f'=== {m}-{phase} ===')
+  s=(R/'logs'/f'{m}-{phase}.log').read_text()
+  lines.extend(re.findall(r'^\s*Finished .+$|^test result: .+$|^Ran \d+ tests? in [0-9.]+s|^OK(?: \(.*\))?$',s,re.M))
+(D/'phase-output.txt').write_text(sanitize('\n'.join(lines))+'\n')
+H=D/'harness';H.mkdir(exist_ok=True)
+for f in ['setup.py','flow.py','guard.py','inventory.py','apfs.c','sequence.py','probes.py','drift.py','eviction.py','incremental-oracle.py','analyze.py','check-outputs.py','cleanup.py','collect.py']:
+ (H/(f+'.txt')).write_text((R/f).read_text())
+for f in ['flow-plain-executed.py.txt','sequence-executed.py.txt']:(H/f).write_text((R/'logs'/f).read_text())
+(D/'provenance.json').write_text(json.dumps({'sccache_tag':'v0.19.0','development_main':'7df8044dcabc3f7a0948e3df30678bf6f7b72eae','downloaded_official_source_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((R/'upstream').iterdir()) if p.is_file()}},indent=2)+'\n')
+print(json.dumps({'workflow_seconds':{m:A[m]['workflow_seconds'] for m in A},'envelope_seconds':{m:envelopes[m]['seconds'] for m in A},'resources':resources,'idle_MiB_range':[min(x['physical_bytes'] for x in idle.values())/1024**2,max(x['physical_bytes'] for x in idle.values())/1024**2],'after_cleanup':inventories['after-cleanup']['totals_inode_dedup']},indent=2))

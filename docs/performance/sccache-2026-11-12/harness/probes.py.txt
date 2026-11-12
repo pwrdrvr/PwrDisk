@@ -1,0 +1,49 @@
+"""Small adversarial correctness fixtures; separate from PwrDisk timing."""
+import guard as g
+import os,pathlib,subprocess,time,json,signal
+R=g.ROOT;P=R/'probes';P.mkdir(exist_ok=True)
+def write(p,s):p.parent.mkdir(parents=True,exist_ok=True);p.write_text(s)
+def crate(p,name,body,extras=''):
+ write(p/'Cargo.toml',f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n{extras}\n[workspace]\n')
+ write(p/'src/lib.rs',body)
+# Manifest and generated runtime paths must remain valid without the donor.
+d=P/'dep'
+crate(d,'runtime_dep','pub fn value()->String { std::fs::read_to_string(concat!(env!("OUT_DIR"),"/data")).unwrap()+&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"),"/data")).unwrap() }\n')
+write(d/'data','manifest')
+write(d/'build.rs','fn main(){std::fs::write(std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("data"),"generated-").unwrap();}\n')
+m=P/'macro'
+crate(m,'fs_macro','extern crate proc_macro;\n#[proc_macro]\npub fn external(_:proc_macro::TokenStream)->proc_macro::TokenStream { let root=std::env::var("CARGO_MANIFEST_DIR").unwrap();let s=std::fs::read_to_string(std::path::Path::new(&root).join("input")).unwrap();format!("{:?}",s).parse().unwrap() }\n','[lib]\nproc-macro=true')
+for lane in ['a','b']:
+ p=P/lane
+ crate(p,'oracle','pub fn value()->String { runtime_dep::value()+fs_macro::external!() }\n','[dependencies]\nruntime_dep={path="../dep"}\nfs_macro={path="../macro"}')
+ write(p/'src/main.rs','fn main(){println!("{}",oracle::value());}\n');write(p/'input','7')
+# These are independent Cargo projects using their default release profile.
+env=g.cache_env(); serverlog=(R/'logs/probes-server.log').open('w');e=env.copy();e.update(SCCACHE_START_SERVER='1',SCCACHE_NO_DAEMON='1')
+server=subprocess.Popen([str(g.BIN)],env=e,cwd=R,stdout=serverlog,stderr=serverlog,start_new_session=True)
+rows=[]
+def build(label,lane,cached=True):
+ g.stats(['--zero-stats']);use=env.copy() if cached else g.common.copy()
+ g.run(label,['cargo','build','--release','--offline'],use,P/lane,120,(server.pid,))
+ st=json.loads(g.stats(['--show-stats','--stats-format','json']));(R/'logs'/f'{label}-stats.json').write_text(json.dumps(st,indent=2))
+ out=subprocess.check_output([str(P/lane/'target/release/oracle')],text=True).strip();rows.append({'label':label,'output':out});return out
+try:
+ for _ in range(200):
+  if (R/'s.sock').exists():break
+  if server.poll() is not None:raise RuntimeError('server stopped')
+  time.sleep(.05)
+ assert build('oracle-donor','a')=='generated-manifest7'
+ (P/'a').rename(P/'donor-absent')
+ assert build('oracle-relocated','b')=='generated-manifest7'
+ time.sleep(1.1);write(P/'b/input','9');os.utime(P/'b/src/lib.rs',None)
+ cached=build('oracle-proc-macro-changed','b')
+ # Remove only this small consumer's outputs to force the plain oracle.
+ g.run('oracle-plain-clean',['cargo','clean','--release','-p','oracle'],g.common,P/'b',120,(server.pid,))
+ plain=build('oracle-proc-macro-plain','b',False)
+ assert plain=='generated-manifest9'
+ rows.append({'proc_macro_untracked_input_stale':cached!=plain,'cached':cached,'plain':plain,'donor_present':(P/'a').exists()})
+finally:
+ (R/'logs/probes-outcomes.json').write_text(json.dumps(rows,indent=2))
+ try:(R/'logs/probes-shutdown.txt').write_text(g.stats(['--stop-server']))
+ finally:
+  try:server.wait(timeout=10)
+  except subprocess.TimeoutExpired:os.killpg(server.pid,signal.SIGKILL);server.wait()

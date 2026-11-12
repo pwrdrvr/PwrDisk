@@ -1,0 +1,52 @@
+"""Continue only after the complete passing control; keep all caches isolated."""
+import json,subprocess,time,pathlib,os,sys
+R=pathlib.Path(__file__).resolve().parent;W=R.parent.parent
+start=json.loads((R/'setup.json').read_text())['epoch']
+def go(script,*args):subprocess.run([sys.executable,str(R/script),*args],check=True)
+while True:
+ assert time.time()-start<5400,'overall guard waiting for control'
+ p=R/'logs/plain-results.json'
+ rows=json.loads(p.read_text()) if p.exists() else []
+ assert all(row['exit']==0 and not row['stopped_by'] for row in rows), 'control failed'
+ if len(rows)==4:break
+ time.sleep(1)
+# Plain inventory already captured before the first server setup attempt.
+go('flow.py','populate')
+go('inventory.py','population-complete-inventory.json')
+# Retain and count the donor while making its original source/target unavailable.
+assert not (R/'donor-absent').exists()
+(W/'b').rename(R/'donor-absent')
+try:
+ go('flow.py','hit')
+ # Recipient CLI checks while the donor's original path remains absent.
+ home=R/'cli-home';home.mkdir(exist_ok=True)
+ rows=[]
+ for lane in ['a','c']:
+  for profile in ['debug','release']:
+   for binary in ['pwrdisk','disktree-scan']:
+    env=os.environ.copy();env['HOME']=str(home)
+    p=W/lane/'target'/profile/binary
+    q=subprocess.run([str(p),'--help'],cwd=W/lane,env=env,text=True,capture_output=True,timeout=30)
+    rows.append({'lane':lane,'profile':profile,'binary':binary,'exit':q.returncode,'stdout':q.stdout,'stderr':q.stderr})
+    assert q.returncode==0
+ for row in rows:
+  other=next(x for x in rows if x['lane']=='a' and x['profile']==row['profile'] and x['binary']==row['binary'])
+  assert (row['stdout'],row['stderr'])==(other['stdout'],other['stderr'])
+ (R/'logs/donor-absence.json').write_text(json.dumps({'donor_original_path_exists':(W/'b').exists(),'cli_checks':rows},indent=2))
+finally:
+ (R/'donor-absent').rename(W/'b')
+go('inventory.py','three-workflows-inventory.json')
+go('analyze.py')
+go('check-outputs.py')
+go('flow.py','warm')
+# A bounded comment-only edit exercises source invalidation, not changed behavior.
+p=W/'c/crates/disktree-core/src/lib.rs';before=p.read_bytes()
+try:
+ p.write_bytes(before+b'\n// Experiment-only edit to measure source invalidation.\n')
+ go('flow.py','edit')
+finally:p.write_bytes(before)
+go('probes.py','oracles')
+go('drift.py','drift')
+go('eviction.py','eviction')
+go('inventory.py','before-cleanup-inventory.json')
+(R/'logs/sequence-complete.json').write_text(json.dumps({'epoch':time.time(),'overall_seconds':time.time()-start}))
