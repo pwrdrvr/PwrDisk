@@ -134,10 +134,11 @@ pub fn find<'a>(
     let mut matches = walker.found;
     matches.sort_by(|a, b| a.0.cmp(&b.0));
     let mut ancestors: Vec<&Path> = Vec::new();
-    let mut bytes = 0_u64;
+    let (mut bytes, mut private_bytes) = (0_u64, 0_u64);
     for (path, node) in &matches {
         if !ancestors.iter().any(|parent| path.starts_with(parent)) {
             bytes = bytes.saturating_add(node.bytes);
+            private_bytes = private_bytes.saturating_add(node.private_bytes());
             ancestors.push(path);
         }
     }
@@ -148,6 +149,7 @@ pub fn find<'a>(
         matches,
         count,
         bytes,
+        private_bytes,
     }
 }
 
@@ -207,8 +209,13 @@ mod tests {
                     name,
                     ..Filter::default()
                 };
-                let expected =
-                    super::super::find(path, tree.root(), &filter, 200);
+                let expected = super::super::find(
+                    path,
+                    tree.root(),
+                    &filter,
+                    super::super::Order::Size,
+                    200,
+                );
                 let got = super::find(path, tree.root(), &filter, 200);
                 let paths = |f: &Found<'_>| {
                     f.matches

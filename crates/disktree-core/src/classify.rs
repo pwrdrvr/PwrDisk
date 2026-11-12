@@ -886,6 +886,7 @@ mod tests {
                     category: Some(category),
                     ..Filter::default()
                 },
+                crate::query::Order::Size,
                 20,
             );
             assert_eq!(found.count, 1);

@@ -39,6 +39,8 @@ pub mod sharing;
 pub mod size;
 pub mod size_preferences;
 pub mod space;
+#[cfg(test)]
+mod test_clones;
 #[cfg(all(test, unix))]
 mod test_paths;
 #[cfg(test)]

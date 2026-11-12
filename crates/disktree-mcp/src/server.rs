@@ -332,8 +332,11 @@ impl Server {
 
     /// List a scanned directory, largest first: each entry's share, size,
     /// kind of data, whether its space can be had back and why, and when it
-    /// was last written. Sorts by listed allocation, not predicted recovery;
-    /// compare explicit candidates with `pwrdisk_rank`. Never moves the view.
+    /// was last written. Sorts by listed allocation unless `by` is `private`,
+    /// which ranks by what each child holds alone: on APFS, where clones
+    /// share blocks, that finds what removing one path would hand back.
+    /// Neither predicts recovery; compare explicit candidates with
+    /// `pwrdisk_rank`. Never moves the view.
     #[tool(
         name = "pwrdisk_ls",
         annotations(title = "List a directory", read_only_hint = true)
@@ -349,8 +352,10 @@ impl Server {
     /// every scanned root: files over a size, everything reclaimable
     /// (caches, build output, package stores), one kind of data, a name,
     /// or what nobody has written to in a while. A matching directory is
-    /// listed once, without its contents. Sorts by listed allocation;
-    /// compare explicit candidates with `pwrdisk_rank` before recommending.
+    /// listed once, without its contents. Sorts by listed allocation, or
+    /// with `by: private` (and `min_private_bytes`) by what each match holds
+    /// alone: the way to find space that is not shared with APFS clones.
+    /// Compare explicit candidates with `pwrdisk_rank` before recommending.
     #[tool(
         name = "pwrdisk_find",
         annotations(title = "Find the largest matches", read_only_hint = true)

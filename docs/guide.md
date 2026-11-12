@@ -70,7 +70,8 @@ a root. Explicit command-line paths and `--disk` still start directly;
 
 - **Top:** the trail from `/`, then **Treemap | List**, how the directory is
   drawn, and what is measured — **Size**, **Files** or **Age**, **Hidden
-  files**, **Apparent size**, and the depth drawn. The list shows the same
+  files**, **Sizes** (what a size counts: on disk, private or apparent), and
+  the depth drawn. The list shows the same
   directory one entry per row and is the view for screen readers. When the
   window is too narrow for every control, the ones used least move into
   **⋮** at the end of the bar: the scan options first, then back, forward
@@ -246,7 +247,7 @@ until the next scan.
 | `c` | review the marked list |
 | `t` | size, files or age: what areas and colours say |
 | `ctrl 1` `ctrl 2` (`⌘` on macOS) | treemap or file list; the list is read by screen readers |
-| `d` | disk usage or apparent size |
+| `d` | next Sizes choice: on disk, private, apparent |
 | `i` | include or skip hidden entries |
 | `r` | scan again |
 | `esc` while scanning | stop the scan |
@@ -284,8 +285,17 @@ scroll within long wrapped lines, while Up/Down selects lines for copying.
 ## What it measures
 
 - **Disk usage** by default: `st_blocks × 512`, the number `du` reports and the
-  space that actually comes back when a file is deleted. Apparent size (what
-  `ls -l` shows) is one toggle away.
+  space that actually comes back when a file is deleted. **Sizes** in the bar
+  (or `d`) changes what a size counts:
+  - **On disk**, the default: every file's allocation, APFS clone blocks it
+    shares with other clones included.
+  - **Private** (macOS): only what each file and folder holds alone, so a
+    worktree or copy made of clones shrinks to what removing it would hand
+    back. It is the same scan, weighted differently, so it needs no rescan.
+    Where a tile's private size differs from its size on disk and there is
+    room, the other figure is shown on a second line, either way round.
+  - **Apparent** (what `ls -l` shows): file lengths. It is a scan of its
+    own, so choosing it, or leaving it, rescans; it has no clone facts.
 - **Hardlinks once.** Two names for one inode cost one file.
 - **Hidden entries included**, because `~/.cache` is often the biggest thing in
   a home directory. Symlinks are not followed.

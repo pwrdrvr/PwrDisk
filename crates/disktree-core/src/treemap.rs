@@ -122,6 +122,12 @@ pub struct LayoutOptions {
     /// open. A directory drawn closed has no band: its label sits in its
     /// corner, over nothing but its own fill.
     pub header_inner: f32,
+    /// Weight bytes by what each node holds alone
+    /// ([`Node::private_bytes`]) instead of its whole allocation, so
+    /// APFS clones that share their blocks shrink to what removing them
+    /// would hand back. Only [`Metric::Bytes`] has a private size; a
+    /// file count ignores this.
+    pub private: bool,
 }
 
 impl Default for LayoutOptions {
@@ -134,6 +140,7 @@ impl Default for LayoutOptions {
             padding_outer: 3.0,
             header: 20.0,
             header_inner: 15.0,
+            private: false,
         }
     }
 }
@@ -193,6 +200,7 @@ fn place_children(
     out: &mut Vec<Tile>,
 ) {
     let (metric, options) = (place.metric, place.options);
+    let private = options.private && metric == Metric::Bytes;
     if node.children().is_empty() || area.w <= 0.0 || area.h <= 0.0 {
         return;
     }
@@ -205,12 +213,18 @@ fn place_children(
         .enumerate()
         .filter_map(|(index, child)| {
             let value = match place.filter {
+                None if private => child.private_bytes(),
                 None => child.value(metric),
                 Some(filter) => {
                     crumbs.push(index);
                     let keep = filter.keep_at(crumbs, child);
                     crumbs.pop();
-                    Matches::value(keep?, child, metric)
+                    let kept = Matches::value(keep?, child, metric);
+                    if private {
+                        private_share(kept, child)
+                    } else {
+                        kept
+                    }
                 }
             };
             Some((index, value as f64))
@@ -293,6 +307,20 @@ fn place_children(
         }
         crumbs.pop();
     }
+}
+
+/// The private part of `kept` of `node`'s bytes. A filter records only
+/// the bytes it kept, not which files, so they are taken to be as private
+/// as the node is on the whole: exact for a node kept whole, and never
+/// more than either figure.
+fn private_share(kept: u64, node: Node<'_>) -> u64 {
+    let (bytes, private) = (node.bytes, node.private_bytes());
+    if kept >= bytes || bytes == 0 {
+        return private.min(kept);
+    }
+    // In u128: two byte counts of a large volume overflow u64 multiplied.
+    let share = u128::from(kept) * u128::from(private) / u128::from(bytes);
+    u64::try_from(share).unwrap_or(u64::MAX)
 }
 
 /// The band a directory keeps for its name, or `None` when the tile is too
@@ -444,6 +472,129 @@ mod tests {
 
     fn area() -> Rect {
         Rect::new(0.0, 0.0, 800.0, 500.0)
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 256,
+            failure_persistence: None,
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// Private weights give each top-level tile its share of what the
+        /// level holds alone: a tile's area, padding aside, is its share
+        /// of the private total. A node holding nothing alone, however
+        /// large on disk, gets no tile.
+        #[test]
+        fn private_weights_size_tiles_by_what_they_hold_alone(
+            spec in crate::test_clones::dir(),
+        ) {
+            let tree = spec.tree();
+            let root = tree.root();
+            let options = LayoutOptions {
+                max_depth: 1,
+                padding_outer: 0.0,
+                min_tile: 0.0,
+                private: true,
+                ..LayoutOptions::default()
+            };
+            let tiles = layout(root, &[], area(), Metric::Bytes, &options);
+            let total: u64 =
+                root.children().iter().map(Node::private_bytes).sum();
+            let kept = root
+                .children()
+                .iter()
+                .filter(|child| child.private_bytes() > 0)
+                .count();
+            proptest::prop_assert_eq!(tiles.len(), kept.min(options.max_children));
+            for tile in &tiles {
+                let TileKind::Node { crumbs } = &tile.kind else {
+                    continue;
+                };
+                let node = root.resolve(crumbs).expect("tile resolves");
+                let share = node.private_bytes() as f32 / total as f32;
+                let drawn = tile.rect.area() / area().area();
+                proptest::prop_assert!(
+                    (drawn - share).abs() < 1e-3,
+                    "{} drawn {drawn}, holds {share}",
+                    node.name()
+                );
+            }
+        }
+
+        /// A filter's kept bytes are counted as private as their node is,
+        /// never more than either figure, and exactly the node's private
+        /// size when it is kept whole.
+        #[test]
+        fn a_filtered_share_of_private_never_exceeds_either_figure(
+            spec in crate::test_clones::dir(),
+            fraction in 0.0_f64..=1.5,
+        ) {
+            let tree = spec.tree();
+            let root = tree.root();
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::cast_precision_loss,
+                reason = "a test's fraction of a small byte count"
+            )]
+            let kept = (root.bytes as f64 * fraction) as u64;
+            let share = private_share(kept, root);
+            proptest::prop_assert!(share <= kept);
+            proptest::prop_assert!(share <= root.private_bytes());
+            if kept >= root.bytes {
+                proptest::prop_assert_eq!(share, root.private_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn on_disk_weights_ignore_private_sizes() {
+        use crate::sharing::{Allocation, CloneInfo};
+        let mut shared = file("shared", 900);
+        shared.allocation = Some(Box::new(Allocation {
+            bytes: 900,
+            identity: None,
+            links: 1,
+            followed: false,
+            clone: Some(CloneInfo {
+                device: 1,
+                id: 7,
+                references: 2,
+                private_bytes: Some(0),
+                data_bytes: 900,
+            }),
+        }));
+        let root = tree("root", vec![shared, file("plain", 100)]);
+        let options = LayoutOptions {
+            max_depth: 1,
+            ..LayoutOptions::default()
+        };
+        let on_disk = layout(root.root(), &[], area(), Metric::Bytes, &options);
+        assert_eq!(on_disk.len(), 2, "both take space on disk");
+        let private = layout(
+            root.root(),
+            &[],
+            area(),
+            Metric::Bytes,
+            &LayoutOptions {
+                private: true,
+                ..options
+            },
+        );
+        assert_eq!(private.len(), 1, "the full clone holds nothing alone");
+        // A file count has no private size: the option changes nothing.
+        let files = |private| {
+            layout(
+                root.root(),
+                &[],
+                area(),
+                Metric::Files,
+                &LayoutOptions { private, ..options },
+            )
+            .len()
+        };
+        assert_eq!(files(true), files(false));
     }
 
     #[test]

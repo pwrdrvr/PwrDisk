@@ -257,7 +257,11 @@ marking and removal-confirmation rules still apply.
    largest first, and *worth a look*: the biggest directories that could
    plausibly go.
 3. **Walk and compare physical candidates.** Allocation-sorted tools show
-   large listings, not the largest likely savings. Pass a bounded explicit
+   large listings, not the largest likely savings. Where clones share
+   blocks (macOS), `pwrdisk_find` and `pwrdisk_ls` take `by: "private"`
+   to rank by what each entry holds alone, and `pwrdisk_find` takes
+   `min_private_bytes`: start there to find space one removal can free,
+   instead of listings that are mostly shared clone blocks. Pass a bounded explicit
    candidate path list to `pwrdisk_rank` (`by: "private"` or
    `"reclaim_lower"`) to compare scan-derived physical figures; null is
    unavailable and distinct from measured zero. The returned union is not

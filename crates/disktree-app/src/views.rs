@@ -125,8 +125,11 @@ pub fn root(
     // What ⋮ held at the old width is not what it holds at the new one.
     if fit != app.bar_fit {
         app.more_menu = None;
+        // The Sizes button folds into ⋮ and back; its menu goes with it.
+        app.sizes_menu = None;
         // ⋮ may vanish under the pointer, which then never reports leaving.
         app.more_hover = false;
+        app.sizes_hover = false;
     }
     app.bar_fit = fit;
     // A dialog owns the keys; a menu left open behind it would take them
@@ -134,6 +137,7 @@ pub fn root(
     if app.has_modal() {
         app.more_menu = None;
         app.power_menu = None;
+        app.sizes_menu = None;
     }
     let theme = cx.omarchy().clone();
     let readable_status = app.accessibility_status();
@@ -1689,22 +1693,7 @@ fn view_settings(
             window.focus(&focus, cx);
         })
     });
-    let apparent = fit.shows_scan_options().then(|| {
-        let entity = entity.clone();
-        let focus = focus.clone();
-        checkbox(
-            "apparent",
-            "Apparent size",
-            check(app.options.apparent_size),
-            cx,
-        )
-        .self_center()
-        .tab_stop(true)
-        .on_change(move |_, _, window, cx| {
-            let _ = entity.update(cx, Disktree::toggle_apparent);
-            window.focus(&focus, cx);
-        })
-    });
+    let sizes = fit.shows_scan_options().then(|| sizes_control(app, cx));
 
     let theme = cx.omarchy().clone();
     // Back and forward through the directories visited, beside the choices
@@ -1844,7 +1833,7 @@ fn view_settings(
         .child(switch)
         .children(mode)
         .children(hidden)
-        .children(apparent)
+        .children(sizes)
         .children(depth_control)
         .map(|row| {
             if fit.shows_scan_options() {
@@ -2140,11 +2129,9 @@ fn more_menu(app: &Disktree, cx: &Context<'_, Disktree>) -> Div {
                 "Hidden files".into(),
                 None,
             ),
-            MoreItem::Apparent => (
-                check(app.options.apparent_size),
-                "Apparent size".into(),
-                None,
-            ),
+            MoreItem::Sizes(sizes) => {
+                (check(app.sizes() == sizes), sizes.name().into(), None)
+            }
             MoreItem::Workers => (
                 check(false),
                 "Scan workers".into(),
@@ -2222,6 +2209,163 @@ fn more_menu(app: &Disktree, cx: &Context<'_, Disktree>) -> Div {
         menu = menu.child(row);
     }
     control.child(
+        div().absolute().top_full().right_0().child(
+            deferred(
+                anchored()
+                    .anchor(gpui_kit::Anchor::TopRight)
+                    .snap_to_window_with_margin(px(8.))
+                    .offset(gpui_kit::point(px(0.), px(4.)))
+                    .child(menu),
+            )
+            .with_priority(2),
+        ),
+    )
+}
+
+/// What a size counts, as a button that names the choice and a menu of
+/// the three, built like the Power Efficiency menu. It replaced the
+/// Apparent size checkbox, which rescanned without saying so; the menu
+/// says which choice rescans before it is picked.
+fn sizes_control(app: &Disktree, cx: &Context<'_, Disktree>) -> Div {
+    use crate::toolbar::Sizes;
+
+    let theme = cx.omarchy().clone();
+    let current = app.sizes();
+    let open = app.sizes_menu.is_some();
+    let trigger = div()
+        .id("sizes")
+        .debug_selector(|| "sizes".into())
+        .flex()
+        .flex_row()
+        .items_center()
+        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+            this.sizes_hover = *hovered;
+            cx.notify();
+        }))
+        .child(
+            button("sizes-toggle", "", ButtonVariant::Outline, cx)
+                .accessibility_label(format!("Sizes: {}", current.name()))
+                .selected(open)
+                .tab_stop(true)
+                .child(
+                    div()
+                        .text_size(text::BODY)
+                        .text_color(theme.foreground)
+                        .whitespace_nowrap()
+                        .child(format!("Sizes: {}", current.name())),
+                )
+                .child(
+                    div()
+                        .text_size(text::CAPTION)
+                        .text_color(theme.secondary)
+                        .child("\u{25be}"),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.toggle_sizes_menu(cx);
+                    window.focus(&this.focus, cx);
+                })),
+        );
+    let trigger = if open {
+        trigger
+    } else {
+        with_tooltip(trigger, format!("{} \u{00b7} d", current.detail()))
+    };
+    let Some(highlighted) = app.sizes_menu else {
+        return div().relative().flex_shrink_0().child(trigger);
+    };
+
+    let mut menu = div()
+        .id("sizes-menu")
+        .debug_selector(|| "sizes-menu".into())
+        .occlude()
+        .flex()
+        .flex_col()
+        .w(size::POWER_MENU)
+        .p(space::XS)
+        .bg(theme.surface)
+        .border_1()
+        .border_color(theme.control_border())
+        .shadow_lg()
+        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+            // A press on the button is the button's.
+            if !this.sizes_hover {
+                this.sizes_menu = None;
+                cx.notify();
+            }
+        }));
+    for (index, choice) in Sizes::ALL.into_iter().enumerate() {
+        let offered = app.sizes_offered(choice);
+        let chosen = choice == current;
+        // Apparent is a scan of its own: a rule above it says the two
+        // above are one scan and it is another.
+        if choice == Sizes::Apparent {
+            menu =
+                menu.child(div().h(px(1.)).my(space::XS).bg(theme.divider()));
+        }
+        let row = div()
+            .id(choice.key())
+            .debug_selector(move || choice.key().into())
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(space::MD)
+            .px(space::SM)
+            .py(space::XS)
+            .when(index == highlighted && offered, |this| {
+                this.bg(theme.hover_fill())
+            })
+            .child(div().flex_shrink_0().w(icon::SM).when(chosen, |this| {
+                this.child(
+                    gpui_omarchy::icon(gpui_omarchy::IconName::Check)
+                        .size(icon::SM)
+                        .text_color(theme.accent),
+                )
+            }))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_size(text::BODY)
+                            .text_color(theme.bright)
+                            .when(chosen, |this| {
+                                this.font_weight(FontWeight::BOLD)
+                            })
+                            .child(choice.name()),
+                    )
+                    .child(
+                        div()
+                            .text_size(text::CAPTION)
+                            .text_color(theme.secondary)
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(choice.detail()),
+                    ),
+            );
+        let row = if offered {
+            row.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered && this.sizes_menu.is_some() {
+                    this.sizes_menu = Some(index);
+                    cx.notify();
+                }
+            }))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.set_sizes(choice, cx);
+                window.focus(&this.focus, cx);
+            }))
+        } else {
+            with_tooltip(
+                row.opacity(0.45),
+                "Needs clone facts: a local scan on macOS",
+            )
+        };
+        menu = menu.child(row);
+    }
+    div().relative().flex_shrink_0().child(trigger).child(
         div().absolute().top_full().right_0().child(
             deferred(
                 anchored()
@@ -3577,7 +3721,14 @@ fn selection_section(
                     })),
             );
 
+    // With private weights the card leads with the figure the tile is
+    // sized by; the clone split under it still gives both.
     let (mut number, mut unit) = match app.options.metric {
+        Metric::Bytes if app.sizes() == crate::toolbar::Sizes::Private => {
+            let (number, unit) =
+                widgets::split_size(&human_bytes(node.private_bytes()));
+            (number, format!("{unit} private"))
+        }
         Metric::Bytes => widgets::split_size(&human_bytes(node.bytes)),
         Metric::Files => (widgets::human_count(node.files), "files".into()),
     };
@@ -7317,7 +7468,7 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
         ("v", "Scan another volume"),
         (MODIFIER_OPEN, "Choose another directory to scan"),
         ("g", "The whole disk; click any directory above to widen"),
-        ("d", "Disk usage or apparent size"),
+        ("d", "Sizes: on disk, private or apparent"),
         ("i", "Include or skip hidden entries"),
         ("p", "Show or hide the selection line"),
         (

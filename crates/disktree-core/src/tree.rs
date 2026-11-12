@@ -137,6 +137,20 @@ impl Node<'_> {
             .unwrap_or_else(|| crate::sharing::leaf_summary(self))
     }
 
+    /// Bytes this node holds alone: everything outside clone files plus
+    /// each clone's private data. Clone blocks that other clones may hold
+    /// are left out, inside the scan or not, and an unknown private size
+    /// counts as shared. It adds up like `bytes` (a directory's is the sum
+    /// of its children's), so it can weight a treemap; never more than
+    /// `bytes`, and equal to it where nothing is cloned.
+    pub fn private_bytes(self) -> u64 {
+        let sharing = self.sharing();
+        if sharing.files == 0 {
+            return self.bytes;
+        }
+        self.bytes - sharing.shared_bytes().min(self.bytes)
+    }
+
     pub const fn is_dir(self) -> bool {
         self.facts().kind.is_dir()
     }
@@ -454,6 +468,56 @@ pub fn path_of(
         }
     }
     path
+}
+
+#[cfg(test)]
+mod private_tests {
+    use proptest::prelude::*;
+
+    use super::Node;
+    use crate::test_clones;
+
+    /// Every node's private size, checked against its children's and
+    /// against what its files hold alone, worked out file by file.
+    fn check(node: Node<'_>) {
+        let private = node.private_bytes();
+        assert!(private <= node.bytes, "{}: {private}", node.name());
+        if node.is_dir() {
+            let children: u64 =
+                node.children().iter().map(Node::private_bytes).sum();
+            assert_eq!(private, children, "{} adds up", node.name());
+            node.children().iter().for_each(check);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        /// A treemap weighted by private bytes needs them to add up as
+        /// `bytes` do, and never to exceed them. The oracle sums each
+        /// file's own figure: plain files whole, a clone's private part,
+        /// an unknown private part as nothing.
+        #[test]
+        fn private_bytes_add_up_and_match_each_file(
+            spec in test_clones::dir(),
+        ) {
+            let tree = spec.tree();
+            check(tree.root());
+            let oracle: u64 =
+                spec.all_files().iter().map(|file| file.private()).sum();
+            prop_assert_eq!(tree.root().private_bytes(), oracle);
+            if spec
+                .all_files()
+                .iter()
+                .all(|file| file.clone == test_clones::Cloned::Plain) {
+                prop_assert_eq!(tree.root().private_bytes(), tree.root().bytes);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

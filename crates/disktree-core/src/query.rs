@@ -41,12 +41,50 @@ impl Kind {
     }
 }
 
+/// Which figure a search ranks its matches by, largest first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Order {
+    /// Listed allocation: what the entry takes on disk.
+    #[default]
+    Size,
+    /// What the entry holds alone ([`Node::private_bytes`]): on APFS, the
+    /// part of a clone no other clone may hold.
+    Private,
+}
+
+impl Order {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Size => "size",
+            Self::Private => "private",
+        }
+    }
+
+    pub fn named(name: &str) -> Option<Self> {
+        match name {
+            "size" => Some(Self::Size),
+            "private" => Some(Self::Private),
+            _ => None,
+        }
+    }
+
+    /// `node`'s figure in this order.
+    pub fn value(self, node: Node<'_>) -> u64 {
+        match self {
+            Self::Size => node.bytes,
+            Self::Private => node.private_bytes(),
+        }
+    }
+}
+
 /// What a search keeps. Every field narrows; the default keeps everything.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filter {
     pub kind: Kind,
     /// Only entries of at least this many bytes.
     pub min_bytes: u64,
+    /// Only entries holding at least this many bytes alone.
+    pub min_private_bytes: u64,
     pub category: Option<Category>,
     /// Cleanup candidates by classification, independent of removal guards.
     pub reclaimable: bool,
@@ -66,6 +104,7 @@ impl Filter {
         };
         kind_ok
             && node.bytes >= self.min_bytes
+            && self.private_enough(node)
             && self
                 .category
                 .is_none_or(|category| node.category == category)
@@ -79,16 +118,26 @@ impl Filter {
             })
     }
 
+    /// Whether `node` holds enough alone. Reading a private size costs a
+    /// look at sharing figures, so it is skipped when nothing is asked.
+    fn private_enough(&self, node: Node<'_>) -> bool {
+        self.min_private_bytes == 0
+            || node.private_bytes() >= self.min_private_bytes
+    }
+
     /// Collect matches beneath `node`, topmost only: a matching directory
-    /// is listed once, without what is inside it. Sizes shrink going down,
-    /// so a node below the minimum ends the walk there.
+    /// is listed once, without what is inside it. Sizes, private ones too,
+    /// shrink going down, so a node below a minimum ends the walk there.
     pub fn collect<'a>(
         &self,
         path: &Path,
         node: Node<'a>,
         found: &mut Vec<(PathBuf, Node<'a>)>,
     ) {
-        if node.bytes < self.min_bytes || node.kind == NodeKind::Other {
+        if node.bytes < self.min_bytes
+            || !self.private_enough(node)
+            || node.kind == NodeKind::Other
+        {
             return;
         }
         if self.matches(node) {
@@ -110,28 +159,117 @@ pub struct Found<'a> {
     pub count: usize,
     /// Bytes of every match, not only the ones listed.
     pub bytes: u64,
+    /// What every match holds alone, summed. Matches never nest, and a
+    /// private size adds up, so the sum is the union's own.
+    pub private_bytes: u64,
 }
 
 /// The largest `limit` entries beneath `root` (at `root_path`) that pass
-/// `filter`. The root itself is never a match.
+/// `filter`, ranked by `order`. The root itself is never a match.
 pub fn find<'a>(
     root_path: &Path,
     root: Node<'a>,
     filter: &Filter,
+    order: Order,
     limit: usize,
 ) -> Found<'a> {
     let mut matches = Vec::new();
     for child in root.children() {
         filter.collect(&root_path.join(child.name()), child, &mut matches);
     }
-    matches.sort_by_key(|(_, node)| std::cmp::Reverse(node.bytes));
-    let count = matches.len();
-    let bytes = matches.iter().map(|(_, node)| node.bytes).sum();
-    matches.truncate(limit);
+    let mut ranked: Vec<(u64, (PathBuf, Node<'a>))> = matches
+        .into_iter()
+        .map(|found| (order.value(found.1), found))
+        .collect();
+    // Stable: ties keep the walk's order, as they always have.
+    ranked.sort_by_key(|(value, _)| std::cmp::Reverse(*value));
+    let count = ranked.len();
+    let bytes = ranked.iter().map(|(_, (_, node))| node.bytes).sum();
+    let private_bytes = ranked
+        .iter()
+        .map(|(value, (_, node))| match order {
+            Order::Private => *value,
+            Order::Size => node.private_bytes(),
+        })
+        .sum();
+    ranked.truncate(limit);
     Found {
-        matches,
+        matches: ranked.into_iter().map(|(_, found)| found).collect(),
         count,
         bytes,
+        private_bytes,
+    }
+}
+
+#[cfg(test)]
+mod private_tests {
+    use std::path::{Path, PathBuf};
+
+    use proptest::prelude::*;
+
+    use super::{Filter, Order, find};
+    use crate::test_clones;
+    use crate::tree::{Node, NodeKind};
+
+    /// The topmost entries holding at least `min` alone, found by visiting
+    /// every node: no pruning, so it is the oracle for the walk that
+    /// stops early.
+    fn every_topmost(
+        path: &Path,
+        node: Node<'_>,
+        min: u64,
+        out: &mut Vec<PathBuf>,
+    ) {
+        if node.kind != NodeKind::Other && node.private_bytes() >= min {
+            out.push(path.to_path_buf());
+            return;
+        }
+        for child in node.children() {
+            every_topmost(&path.join(child.name()), child, min, out);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        /// Ranking by private finds what an exhaustive walk finds, most
+        /// private first, and its total is what they hold alone together.
+        #[test]
+        fn finding_by_private_matches_an_exhaustive_walk(
+            spec in test_clones::dir(),
+            min in 0_u64..20_000,
+        ) {
+            let tree = spec.tree();
+            let root = Path::new("/r");
+            let filter = Filter {
+                min_private_bytes: min,
+                ..Filter::default()
+            };
+            let found = find(root, tree.root(), &filter, Order::Private, 10_000);
+
+            let mut oracle = Vec::new();
+            for child in tree.root().children() {
+                every_topmost(&root.join(child.name()), child, min, &mut oracle);
+            }
+            let mut got: Vec<PathBuf> =
+                found.matches.iter().map(|(path, _)| path.clone()).collect();
+            got.sort();
+            oracle.sort();
+            prop_assert_eq!(&got, &oracle);
+            prop_assert_eq!(found.count, oracle.len());
+
+            let values: Vec<u64> = found
+                .matches
+                .iter()
+                .map(|(_, node)| node.private_bytes())
+                .collect();
+            prop_assert!(values.windows(2).all(|pair| pair[0] >= pair[1]));
+            prop_assert_eq!(found.private_bytes, values.iter().sum::<u64>());
+        }
     }
 }
 
@@ -181,6 +319,7 @@ mod tests {
                 reclaimable: true,
                 ..Filter::default()
             },
+            Order::Size,
             10,
         );
         let paths: Vec<PathBuf> =
@@ -208,6 +347,7 @@ mod tests {
                 min_bytes: 260,
                 ..Filter::default()
             },
+            Order::Size,
             10,
         );
         assert_eq!(big.matches.len(), 2);
@@ -221,6 +361,7 @@ mod tests {
                 name: Some("iso".into()),
                 ..Filter::default()
             },
+            Order::Size,
             1,
         );
         assert_eq!(named.count, 1);
@@ -236,13 +377,15 @@ mod tests {
                 before: Some(2_000),
                 ..Filter::default()
             },
+            Order::Size,
             10,
         );
         assert_eq!(old.count, 1);
         assert_eq!(old.matches[0].1.name(), "blob.bin");
 
         // The limit trims the list but not the totals.
-        let one = find(Path::new("/r"), root, &Filter::default(), 1);
+        let one =
+            find(Path::new("/r"), root, &Filter::default(), Order::Size, 1);
         assert_eq!(one.matches.len(), 1);
         assert_eq!(one.count, 3);
     }
