@@ -12999,3 +12999,132 @@ fn usage_history_compares_a_nested_root_and_refuses_another(
     });
     assert_eq!(scope.as_deref(), Some("/r/a"));
 }
+
+/// The treemap's hover card stays whole inside the window's content at
+/// every corner the pointer can reach, however tall its text wraps. It was
+/// placed from a guessed height, so a long path or a clone split ran a card
+/// near the bottom off the window.
+#[gpui_kit::test]
+fn the_hover_card_never_leaves_the_window(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = removable_tempdir();
+    // A name long enough that the card's path wraps over several lines.
+    let long = "a-directory-name-long-enough-to-wrap-the-card/".repeat(6);
+    let file = temp.path().join(long).join("blob.bin");
+    std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&file, vec![b'x'; 300_000]).expect("write");
+    let (view, cx) = view_over(temp.path(), cx);
+    // Inside a client-side frame too, whose resize ring is not content; the
+    // shortest window is shorter than the card's wrapped text.
+    let frames = [None, Some("GNOME, controls right")];
+    let sizes = [(1440., 900.), (720., 420.), (720., 300.)];
+    for (frame, (width, height)) in frames
+        .into_iter()
+        .flat_map(|frame| sizes.map(|size| (frame, size)))
+    {
+        update(&view, cx, |app, cx| {
+            app.chrome_pin = frame.and_then(|frame| {
+                window_frames()
+                    .into_iter()
+                    .find(|(name, _)| *name == frame)
+                    .map(|(_, frame)| frame)
+            });
+            cx.notify();
+        });
+        cx.simulate_resize(gpui_kit::size(px(width), px(height)));
+        draw(cx);
+        let origin = read(&view, cx, |app| app.treemap_origin.get());
+        let area = read(&view, cx, |app| app.treemap_size.get());
+        let inset = 12.;
+        for (fx, fy) in [(0., 0.), (1., 0.), (0., 1.), (1., 1.), (0.5, 0.5)] {
+            let at = origin
+                + Point::new(
+                    (area.width - px(2. * inset)) * fx + px(inset),
+                    (area.height - px(2. * inset)) * fy + px(inset),
+                );
+            cx.simulate_mouse_move(at, None, gpui_kit::Modifiers::default());
+            draw(cx);
+            let tip = cx
+                .debug_bounds("cursor-tooltip")
+                .unwrap_or_else(|| panic!("a tooltip at {at:?} in {area:?}"));
+            let window = cx.update(|window, _| window.viewport_size());
+            let inset = read(&view, cx, |app| app.content_edges);
+            assert!(
+                tip.left() >= inset.left
+                    && tip.top() >= inset.top
+                    && tip.right() <= window.width - inset.right
+                    && tip.bottom() <= window.height - inset.bottom,
+                "{tip:?} leaves a {window:?} window inset by {inset:?} \
+                 for a pointer at {at:?}"
+            );
+            // Placed beside the pointer, the card never covers its tip.
+            assert!(!tip.contains(&at), "{tip:?} covers the pointer at {at:?}");
+        }
+    }
+}
+
+/// A control's tooltip stays inside the window's content, inside a
+/// client-side frame and in a short window. GPUI keeps these inside the
+/// window by their measured size but knew nothing of the frame's resize
+/// ring, so a tooltip against the window's edge sat in it. Tried with the
+/// longest one, the disk panel's accounting note, and with ⋮, the control
+/// nearest the window's right edge.
+#[gpui_kit::test]
+fn control_tooltips_never_leave_the_content(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let mut tried = Vec::new();
+    for frame in [None, Some("GNOME, controls right")] {
+        update(&view, cx, |app, cx| {
+            app.chrome_pin = frame.and_then(|frame| {
+                window_frames()
+                    .into_iter()
+                    .find(|(name, _)| *name == frame)
+                    .map(|(_, frame)| frame)
+            });
+            cx.notify();
+        });
+        for (width, height) in [(1440., 900.), (1000., 600.)] {
+            cx.simulate_resize(gpui_kit::size(px(width), px(height)));
+            draw(cx);
+            for control in ["disk-accounting", "more-toggle"] {
+                // ⋮ shows only once the bar folds, below full width.
+                let Some(bounds) = cx.debug_bounds(control) else {
+                    assert_eq!(control, "more-toggle", "{width} wide");
+                    continue;
+                };
+                tried.push(control);
+                // Across the control's width in 2 px steps, at its top and
+                // bottom: GPUI places a tooltip at the pointer, so one of
+                // these ends a tooltip of any width within the ring's
+                // width of the window's edge, whatever the platform's text
+                // makes that width.
+                let steps = (bounds.size.width.as_f32() / 2.) as usize;
+                let points = (0..steps).flat_map(|step| {
+                    let x = bounds.left() + px(2_f32.mul_add(step as f32, 1.));
+                    [bounds.top() + px(1.), bounds.bottom() - px(1.)]
+                        .map(|y| Point::new(x, y))
+                });
+                for at in points {
+                    rest_at(cx, at);
+                    let tip = cx
+                        .debug_bounds("app-tooltip-surface")
+                        .unwrap_or_else(|| panic!("{control}'s tooltip"));
+                    let inset = read(&view, cx, |app| app.content_edges);
+                    let window = cx.update(|window, _| window.viewport_size());
+                    assert!(
+                        tip.left() >= inset.left
+                            && tip.top() >= inset.top
+                            && tip.right() <= window.width - inset.right
+                            && tip.bottom() <= window.height - inset.bottom,
+                        "{control}'s {tip:?} leaves a {window:?} window \
+                         inset by {inset:?}"
+                    );
+                    rest_at(cx, Point::new(px(0.), px(0.)));
+                }
+            }
+        }
+    }
+    assert!(tried.contains(&"more-toggle"), "⋮ was tried");
+}

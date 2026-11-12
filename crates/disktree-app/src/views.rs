@@ -17,11 +17,12 @@ use disktree_core::size::human_bytes;
 use disktree_core::tree::Metric;
 use gpui_kit::base::CheckboxState;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Div, DragMoveEvent,
-    ElementId, Focusable as _, FontWeight, InteractiveElement as _,
-    IntoElement, KeyDownEvent, MouseDownEvent, ParentElement, Rems,
-    SharedString, Stateful, StatefulInteractiveElement as _, Styled, Window,
-    anchored, deferred, div, pattern_slash, px, relative,
+    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Div,
+    DragMoveEvent, ElementId, Focusable as _, FontWeight,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseDownEvent,
+    ParentElement, Rems, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled, Window, anchored, deferred, div,
+    pattern_slash, point, px, relative,
 };
 use gpui_omarchy::{
     ActiveTheme, ButtonVariant, ChoiceItem, Theme, alert_dialog, button,
@@ -29,6 +30,7 @@ use gpui_omarchy::{
     dialog_title,
 };
 
+use crate::pointer_card::PointerCard;
 use crate::widgets::with_tooltip;
 
 use gpui_kit::prelude::FluentBuilder as _;
@@ -6996,57 +6998,41 @@ pub fn cursor_tooltip(
     app: &Disktree,
     window: &Window,
     cx: &gpui_kit::App,
-) -> Option<Div> {
-    // Placement is in pixels because the pointer is; the card's own size and
-    // gaps come from the rem scale so they follow interface zoom.
-    const HEIGHT_REMS: f32 = 6.5;
-    // A clone split adds a caption line: its text and the card's gap.
-    const SPLIT_REMS: f32 = text::CAPTION.0 * 1.25 + space::XS.0;
-    let rem = window.rem_size().as_f32();
-    let width = size::TOOLTIP.0 * rem;
-    let split = app
-        .hovered
-        .as_deref()
-        .and_then(|crumbs| app.node_at(crumbs))
-        .and_then(clone_split)
-        .is_some();
-    let height = (HEIGHT_REMS + if split { SPLIT_REMS } else { 0.0 }) * rem;
-    let gap = space::MD.0 * rem;
-    let edge = space::XS.0 * rem;
-
+) -> Option<PointerCard> {
     let pointer = app.pointer?;
     let content = hover_tooltip(app, cx)?;
-    let origin = app.treemap_origin.get();
-    let window_size = window.bounds().size;
-    // The tooltip is placed in the root's coordinates, which a client-side
-    // frame insets from the window's by its resize ring and border.
+    // Gaps come from the rem scale so they follow interface zoom; the
+    // card's height is measured, never guessed, since a long path or a
+    // clone split wraps over as many lines as it needs.
+    let rem = window.rem_size();
+    let gap = rem * space::MD.0;
+    let edge = rem * space::XS.0;
+    // A client-side frame insets the content from the window by its
+    // resize ring and border; the card stays inside the content, an edge
+    // clear of it.
     let inset = &app.content_edges;
-    let content_width = (window_size.width - inset.left - inset.right).as_f32();
-    let content_height =
-        (window_size.height - inset.top - inset.bottom).as_f32();
-
-    // Flip to the other side of the pointer rather than overflow the window.
-    let anchor_x = (origin.x + pointer.x - inset.left).as_f32();
-    let anchor_y = (origin.y + pointer.y - inset.top).as_f32();
-    let x = if anchor_x + gap + width > content_width {
-        (anchor_x - gap - width).max(edge)
-    } else {
-        anchor_x + gap
-    };
-    let y = if anchor_y + gap + height > content_height {
-        (anchor_y - gap - height).max(edge)
-    } else {
-        anchor_y + gap
-    };
-
-    Some(
-        card_surface(cx)
-            .debug_selector(|| "cursor-tooltip".into())
-            .absolute()
-            .left(px(x))
-            .top(px(y))
-            .child(content),
-    )
+    let window_size = window.viewport_size();
+    let area = Bounds::from_corners(
+        point(inset.left + edge, inset.top + edge),
+        point(
+            window_size.width - inset.right - edge,
+            window_size.height - inset.bottom - edge,
+        ),
+    );
+    // Never taller than the area: a path near PATH_MAX wraps past a short
+    // window's height, and the card's head, its name and size, matters
+    // more than the end of the path or the key hints under it.
+    let card = card_surface(cx)
+        .debug_selector(|| "cursor-tooltip".into())
+        .max_h(area.size.height)
+        .overflow_hidden()
+        .child(content);
+    Some(PointerCard::new(
+        card,
+        app.treemap_origin.get() + pointer,
+        area,
+        gap,
+    ))
 }
 
 /// The same surface treatment as Omarchy's tooltip, square and bordered,
