@@ -3393,7 +3393,7 @@ impl Disktree {
                 age_bucket,
                 reclaimable: node.is_some_and(|n| n.reclaim.is_some()),
                 filtered,
-                unreadable: node.is_some_and(|n| n.read_error),
+                unreadable: node.is_some_and(|n| n.read_error()),
                 marked: is_marked,
                 covered: is_covered,
                 removed: is_removed,
@@ -3422,7 +3422,7 @@ impl Disktree {
                     // repeat on every tile in a mark or a search and push
                     // narrow names out of their tiles. Only "unreadable",
                     // which is rare, keeps a prefix.
-                    let unreadable = if node.read_error { "! " } else { "" };
+                    let unreadable = if node.read_error() { "! " } else { "" };
                     // A filtered tile says how much of it is shown, in the
                     // figure it is weighted by: with private weights, the
                     // share of its private bytes the layout gave it.

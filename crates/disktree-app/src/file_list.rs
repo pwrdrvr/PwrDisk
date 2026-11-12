@@ -256,7 +256,11 @@ pub fn list(
             } else {
                 "not marked"
             },
-            if node.read_error { "; unreadable" } else { "" },
+            if node.read_error() {
+                "; unreadable"
+            } else {
+                ""
+            },
             if filtered {
                 "; does not match filter"
             } else {

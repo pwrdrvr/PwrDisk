@@ -1118,7 +1118,9 @@ impl<'h> PendingDir<'h> {
     fn build(&self, builder: &'h Builder) -> Built<'h> {
         let partial = std::mem::take(&mut *lock(&self.partial));
         let facts = crate::tree::Facts {
-            read_error: self.read_error.load(Ordering::Relaxed),
+            unread: crate::tree::Unread::own(
+                self.read_error.load(Ordering::Relaxed),
+            ),
             ..crate::tree::Facts::directory()
         };
         let allocation = self.followed.then_some(crate::sharing::Allocation {
@@ -1866,7 +1868,7 @@ fn finish_tree(
     pool: &rayon::ThreadPool,
 ) -> io::Result<Tree> {
     if context.require_complete
-        && pool.install(|| tree.par_nodes().any(|node| node.read_error))
+        && pool.install(|| tree.par_nodes().any(|node| node.read_error()))
     {
         return Err(io::Error::other(
             "Cannot enforce removal limit: part of the selection is unreadable",
@@ -2520,7 +2522,7 @@ mod tests {
             clone_cache: crate::clone_cache::Cache::default(),
         });
         let tree = scan_blocking(temp.path(), &context).unwrap();
-        assert!(tree.root().read_error);
+        assert!(tree.root().read_error());
         assert_eq!(context.progress.snapshot().errors, 1);
         assert!(
             context.progress.snapshot().messages[0]
@@ -2984,8 +2986,12 @@ mod tests {
         assert_eq!(tree.bytes, if readable.is_err() { 11 } else { 33 });
         let node = child(tree, "locked");
         if readable.is_err() {
-            assert!(node.read_error);
-            assert!(tree.read_error, "unknown contents affect ancestor totals");
+            assert_eq!(node.unread, crate::tree::Unread::Own);
+            assert_eq!(
+                tree.unread,
+                crate::tree::Unread::Below,
+                "unknown contents affect ancestor totals, as theirs"
+            );
             assert!(progress.snapshot().errors >= 1);
             assert!(!progress.snapshot().messages.is_empty());
             assert_eq!(

@@ -10,7 +10,7 @@ use super::diff::{Bound, compare};
 use super::*;
 use crate::scan::ScanOptions;
 use crate::test_rng::Rng;
-use crate::tree::{Draft, Metric, NodeKind, aggregate};
+use crate::tree::{Draft, Metric, NodeKind, Unread, aggregate};
 
 /// A directory or file, sized by hand.
 #[derive(Clone, Debug)]
@@ -62,7 +62,7 @@ impl Model {
         } else {
             Draft::entry(self.name.as_str(), NodeKind::File, self.bytes)
         };
-        draft.read_error = self.error;
+        draft.unread = Unread::own(self.error);
         draft.children = self.children.iter().map(Self::draft).collect();
         draft
     }
@@ -219,26 +219,20 @@ proptest! {
                 .sum();
             prop_assert_eq!(folder.exclusive_bytes, dir.total() - kept_below);
             prop_assert_eq!(folder.unreadable, dir.any_error());
-            // Errors outside kept subfolders are flagged, and so is the
-            // folder's own when no kept subfolder had one. Beside a kept
-            // subfolder's, the tree has merged it: see the field.
+            // Exactly the errors outside kept subfolders: the folder's own,
+            // whatever its kept subfolders met, and any beside it.
             let is_kept =
                 |child: &Model| child.dir && child.total() >= threshold;
-            let hidden = dir
-                .children
-                .iter()
-                .any(|child| !is_kept(child) && child.any_error())
-                || (dir.error
-                    && !dir
-                        .children
-                        .iter()
-                        .any(|child| is_kept(child) && child.any_error()));
-            if hidden {
-                prop_assert!(
-                    folder.residual_unreadable,
-                    "{} hides an unreadable entry", folder.path
-                );
-            }
+            let hidden = dir.error
+                || dir
+                    .children
+                    .iter()
+                    .any(|child| !is_kept(child) && child.any_error());
+            prop_assert_eq!(
+                folder.residual_unreadable,
+                hidden,
+                "{} residual errors", folder.path
+            );
             own += folder.exclusive_bytes;
         }
         prop_assert_eq!(own, model.total());

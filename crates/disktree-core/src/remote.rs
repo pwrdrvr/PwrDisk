@@ -324,7 +324,9 @@ fn write_node(
             node.own_bytes(),
             node.own_files(),
             node.modified,
-            node.read_error,
+            // Its own failure, as the Unix helper sends; the reader
+            // derives the rest.
+            node.unread == crate::tree::Unread::Own,
             node.children().len(),
         ),
     )
@@ -471,7 +473,7 @@ fn read_snapshot_with_progress(
             };
             let facts = Facts {
                 files,
-                read_error,
+                unread: crate::tree::Unread::own(read_error),
                 modified,
                 ..Facts::entry(kind, bytes)
             };
@@ -1187,6 +1189,38 @@ mod tests {
             let path = style.join(&snapshot.header.root, name);
             assert_eq!(path.to_str().unwrap(), format!("/srv/{name}"));
         }
+    }
+
+    /// A directory's own failure survives its children's: a usage report
+    /// must know that the root hid something beside `deep`, whatever
+    /// `deep` hid itself.
+    #[test]
+    fn a_directorys_own_read_error_is_kept_apart_from_its_childrens() {
+        use crate::tree::Unread;
+
+        let mut data = Vec::new();
+        let header: Header = serde_json::from_slice(
+            unix_stream("linux")
+                .split(|&byte| byte == b'\n')
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        send(&mut data, &header).unwrap();
+        for record in [
+            Record("inner".into(), 0, 0, 0, 0, true, 0),
+            Record("deep".into(), 0, 0, 0, 0, false, 1),
+            Record("root".into(), 0, 0, 0, 0, true, 1),
+        ] {
+            send(&mut data, &record).unwrap();
+        }
+        send(&mut data, &"done").unwrap();
+        let snapshot = read_snapshot(&mut data.as_slice()).unwrap();
+        let root = snapshot.tree.root();
+        let deep = root.child_named("deep").unwrap();
+        assert_eq!(root.unread, Unread::Own);
+        assert_eq!(deep.unread, Unread::Below);
+        assert_eq!(deep.child_named("inner").unwrap().unread, Unread::Own);
     }
 
     /// A name no file system could hold is refused as a broken stream, not
