@@ -7,6 +7,21 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.24.1
+
+- Usage reports - Save a compact folder-level record with `pwrdisk report`
+  and compare two with `pwrdisk report-diff`. Keep folders above a chosen
+  threshold, plus the root, without listing individual files. Use `--save`
+  to keep reports in PwrDisk's private reports folder.
+- Usage History - Open File > Usage History to browse saved reports and
+  compare Before and After. Show each folder's own change without counting
+  it again under parents, alongside free-space changes and what the listing
+  cannot explain. Folders kept in only one report are described as below
+  the threshold or absent, rather than assumed new or deleted.
+- Hover cards - Place treemap cards using their measured size so long paths
+  and wrapped details stay inside the window. Keep control tooltips clear
+  of the client-side border and resize ring on Linux and Windows.
+
 ## v0.24.0
 
 - MCP skills - Make skill discovery return complete results with cache
