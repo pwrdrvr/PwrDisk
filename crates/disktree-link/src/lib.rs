@@ -129,28 +129,9 @@ pub struct ScanOptionsRequest {
     pub max_depth: Option<Option<usize>>,
 }
 
-/// What a listing or a search ranks by, largest first; see
-/// [`disktree_core::query::Order`].
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum Rank {
-    /// Listed allocation.
-    #[default]
-    Size,
-    /// What each entry holds alone: on APFS, a clone's private part.
-    Private,
-}
-
-impl Rank {
-    pub const fn order(self) -> disktree_core::query::Order {
-        match self {
-            Self::Size => disktree_core::query::Order::Size,
-            Self::Private => disktree_core::query::Order::Private,
-        }
-    }
-}
+/// What a listing or a search ranks by, largest first: the core's own
+/// order, which is already what the link carries.
+pub use disktree_core::query::Order as Rank;
 
 /// A search, as the agent words it; see [`disktree_core::query::Filter`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,13 +193,7 @@ impl FindRequest {
         Ok(if self.output_roots {
             disktree_core::query::find_outputs(path, node, &filter, self.limit)
         } else {
-            disktree_core::query::find(
-                path,
-                node,
-                &filter,
-                self.by.order(),
-                self.limit,
-            )
+            disktree_core::query::find(path, node, &filter, self.by, self.limit)
         })
     }
 
@@ -593,20 +568,17 @@ impl Listing {
         limit: usize,
         by: Rank,
     ) -> Self {
-        let mut ordered: Vec<Node<'_>> = node.children().iter().collect();
-        if by != Rank::Size {
-            let order = by.order();
+        // By size the tree's order is the answer, read as it lies; only
+        // another rank pays for a sorted copy of the children.
+        let (children, more_bytes) = if by == Rank::Size {
+            listed(node.children().iter(), path, limit)
+        } else {
+            let mut ordered: Vec<Node<'_>> = node.children().iter().collect();
             // Stable: ties keep the tree's own order.
-            ordered.sort_by_key(|child| std::cmp::Reverse(order.value(*child)));
-        }
-        let children: Vec<Entry> = ordered
-            .iter()
-            .take(limit)
-            .map(|child| Entry::at(*child, &path.join(child.name())))
-            .collect();
-        let more = ordered.len().saturating_sub(limit);
-        let more_bytes =
-            ordered.iter().skip(limit).map(|child| child.bytes).sum();
+            ordered.sort_by_key(|child| std::cmp::Reverse(by.value(*child)));
+            listed(ordered.into_iter(), path, limit)
+        };
+        let more = node.children().len().saturating_sub(limit);
         Self {
             path: path.to_path_buf(),
             entry: Entry::at(node, path),
@@ -617,6 +589,20 @@ impl Listing {
             more_bytes,
         }
     }
+}
+
+/// The first `limit` of `children`, at `path`, and the bytes of the rest.
+fn listed<'t>(
+    mut children: impl Iterator<Item = Node<'t>>,
+    path: &Path,
+    limit: usize,
+) -> (Vec<Entry>, u64) {
+    let listed = children
+        .by_ref()
+        .take(limit)
+        .map(|child| Entry::at(child, &path.join(child.name())))
+        .collect();
+    (listed, children.map(|child| child.bytes).sum())
 }
 
 /// One search match, with where it is.

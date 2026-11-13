@@ -309,11 +309,12 @@ fn place_children(
     }
 }
 
-/// The private part of `kept` of `node`'s bytes. A filter records only
-/// the bytes it kept, not which files, so they are taken to be as private
-/// as the node is on the whole: exact for a node kept whole, and never
-/// more than either figure.
-fn private_share(kept: u64, node: Node<'_>) -> u64 {
+/// The private part of `kept` of `node`'s bytes.
+///
+/// A filter records only the bytes it kept, not which files, so they are
+/// taken to be as private as the node is on the whole: exact for a node
+/// kept whole, and never more than either figure.
+pub fn private_share(kept: u64, node: Node<'_>) -> u64 {
     let (bytes, private) = (node.bytes, node.private_bytes());
     if kept >= bytes || bytes == 0 {
         return private.min(kept);

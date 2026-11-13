@@ -243,11 +243,15 @@ impl Disktree {
         cx.notify();
     }
 
-    /// What a size counts now.
-    pub const fn sizes(&self) -> Sizes {
+    /// What a size counts now. A Private choice made earlier reads as On
+    /// disk where Private is not offered (an SSH host, no clone facts),
+    /// and comes back with a scan that offers it.
+    pub fn sizes(&self) -> Sizes {
         if self.options.apparent_size {
             Sizes::Apparent
-        } else if self.layout_options.private {
+        } else if self.layout_options.private
+            && self.sizes_offered(Sizes::Private)
+        {
             Sizes::Private
         } else {
             Sizes::OnDisk

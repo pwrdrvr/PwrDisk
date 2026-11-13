@@ -3723,8 +3723,10 @@ fn selection_section(
 
     // With private weights the card leads with the figure the tile is
     // sized by; the clone split under it still gives both.
+    let private = app.options.metric == Metric::Bytes
+        && app.sizes() == crate::toolbar::Sizes::Private;
     let (mut number, mut unit) = match app.options.metric {
-        Metric::Bytes if app.sizes() == crate::toolbar::Sizes::Private => {
+        Metric::Bytes if private => {
             let (number, unit) =
                 widgets::split_size(&human_bytes(node.private_bytes()));
             (number, format!("{unit} private"))
@@ -3748,7 +3750,16 @@ fn selection_section(
             Usage::Measured(_) => {}
         }
     }
-    let share = node.bytes as f32 / root_value.max(1) as f32;
+    // The bar is the share of the figure above it: with private weights,
+    // of what the scan holds alone.
+    let share = if private {
+        let root = app
+            .tree()
+            .map_or(0, disktree_core::tree::Node::private_bytes);
+        node.private_bytes() as f32 / root.max(1) as f32
+    } else {
+        node.bytes as f32 / root_value.max(1) as f32
+    };
     let measure = div()
         .flex()
         .flex_col()

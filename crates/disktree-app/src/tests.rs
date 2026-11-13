@@ -13271,4 +13271,31 @@ fn tiles_give_the_other_byte_figure_a_second_line(cx: &mut TestAppContext) {
         ("2.0MiB", "40MiB on disk")
     );
     assert_eq!(find(&private, "plain").1, "9.0MiB");
+    // A filter that keeps all of a folder shows all of its private part,
+    // of the private total: the figures its tile is weighted by.
+    let filtered = update(&view, cx, |app, _| {
+        let tree = app.tree.clone().expect("tree");
+        let copy = tree.root().child_named("copy").expect("copy");
+        crate::widgets::short_private_share(copy, copy.bytes)
+    });
+    assert_eq!(filtered, "2.0MiB of 2.0MiB");
+}
+
+/// A Private choice made on a Mac does not claim to apply where it is not
+/// offered: an SSH host's tree has no clone facts, so its sizes are on
+/// disk, and the bar must say so.
+#[gpui_kit::test]
+fn sizes_read_on_disk_where_private_is_not_offered(cx: &mut TestAppContext) {
+    use crate::toolbar::Sizes;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = remote_view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.remote = Some("dev".into());
+        app.options.apparent_size = false;
+        app.layout_options.private = true;
+        cx.notify();
+    });
+    assert!(!read(&view, cx, |app| app.sizes_offered(Sizes::Private)));
+    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::OnDisk);
 }

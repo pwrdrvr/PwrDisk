@@ -100,12 +100,13 @@ pub fn tile_values(
         return (human_count(node.files), String::new());
     }
     let listed = human_bytes_short(node.bytes);
-    // Only clone files carry a private size apart from their own; anything
-    // else reads exactly as it did before private sizes were shown.
-    if node.sharing().files == 0 {
+    // Only clone files hold less than their size alone, so anything else
+    // reads exactly as it did before private sizes were shown.
+    let held = node.private_bytes();
+    if held == node.bytes {
         return (listed, String::new());
     }
-    let alone = human_bytes_short(node.private_bytes());
+    let alone = human_bytes_short(held);
     if alone == listed {
         return (listed, String::new());
     }
@@ -133,6 +134,17 @@ pub fn short_share(
             format!("{} of {}", human_count(files), human_count(node.files))
         }
     }
+}
+
+/// [`short_share`] under private weights: of the `kept` bytes a filter
+/// shows, the private part the layout weighs, of all the node holds
+/// alone. "2.0M of 16M".
+pub fn short_private_share(node: Node<'_>, kept: u64) -> String {
+    format!(
+        "{} of {}",
+        human_bytes_short(disktree_core::treemap::private_share(kept, node)),
+        human_bytes_short(node.private_bytes())
+    )
 }
 
 /// A square chip, used for counts and states.

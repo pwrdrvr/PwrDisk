@@ -3278,7 +3278,7 @@ impl Disktree {
         #[cfg(test)]
         crate::marks::work::FRAMES.set(crate::marks::work::FRAMES.get() + 1);
         let metric = self.options.metric;
-        let private_sizes = self.layout_options.private;
+        let private_sizes = self.sizes() == crate::toolbar::Sizes::Private;
         let view = self.view;
         let hovered = self.hovered.clone();
         let selected = self.selected.clone();
@@ -3423,8 +3423,9 @@ impl Disktree {
                     // narrow names out of their tiles. Only "unreadable",
                     // which is rare, keeps a prefix.
                     let unreadable = if node.read_error { "! " } else { "" };
-                    // A filtered tile says how much of it is shown, which
-                    // has no private figure of its own.
+                    // A filtered tile says how much of it is shown, in the
+                    // figure it is weighted by: with private weights, the
+                    // share of its private bytes the layout gave it.
                     let (size_text, detail_text) = partial.map_or_else(
                         || {
                             crate::widgets::tile_values(
@@ -3434,12 +3435,16 @@ impl Disktree {
                             )
                         },
                         |(bytes, files)| {
-                            (
+                            let text = if private_sizes
+                                && metric == Metric::Bytes
+                            {
+                                crate::widgets::short_private_share(node, bytes)
+                            } else {
                                 crate::widgets::short_share(
                                     node, bytes, files, metric,
-                                ),
-                                String::new(),
-                            )
+                                )
+                            };
+                            (text, String::new())
                         },
                     );
                     // A tile the filter left out holds no match: skip the

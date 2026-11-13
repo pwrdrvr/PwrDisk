@@ -41,8 +41,19 @@ impl Kind {
     }
 }
 
-/// Which figure a search ranks its matches by, largest first.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Which figure a search or a listing ranks by, largest first. On the
+/// link as `"size"` or `"private"`; absent means size.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Order {
     /// Listed allocation: what the entry takes on disk.
     #[default]
@@ -53,21 +64,6 @@ pub enum Order {
 }
 
 impl Order {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Size => "size",
-            Self::Private => "private",
-        }
-    }
-
-    pub fn named(name: &str) -> Option<Self> {
-        match name {
-            "size" => Some(Self::Size),
-            "private" => Some(Self::Private),
-            _ => None,
-        }
-    }
-
     /// `node`'s figure in this order.
     pub fn value(self, node: Node<'_>) -> u64 {
         match self {
