@@ -13257,19 +13257,25 @@ fn tiles_give_the_other_byte_figure_a_second_line(cx: &mut TestAppContext) {
     );
     assert_eq!(find(&on_disk, "plain").2, "", "no clones, one figure");
 
-    // Set directly: off macOS the menu does not offer private weights, but
-    // the labels are the same wherever a tree has clone facts.
+    // Set directly, as a Private choice carried over would be. Only where
+    // Private is offered (a local scan on macOS) do the labels follow it;
+    // elsewhere they stay on disk, as the Sizes menu says.
     update(&view, cx, |app, cx| {
         app.layout_options.private = true;
         cx.notify();
     });
     draw(cx);
+    let offered = read(&view, cx, |app| {
+        app.sizes_offered(crate::toolbar::Sizes::Private)
+    });
     let private = labels(&view, cx);
     let copy = find(&private, "copy");
-    assert_eq!(
-        (copy.1.as_str(), copy.2.as_str()),
+    let expected = if offered {
         ("2.0MiB", "40MiB on disk")
-    );
+    } else {
+        ("40MiB", "2.0MiB private")
+    };
+    assert_eq!((copy.1.as_str(), copy.2.as_str()), expected);
     assert_eq!(find(&private, "plain").1, "9.0MiB");
     // A filter that keeps all of a folder shows all of its private part,
     // of the private total: the figures its tile is weighted by.
