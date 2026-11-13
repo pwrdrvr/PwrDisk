@@ -1156,6 +1156,18 @@ mod tests {
     }
 
     fn unix_stream(platform: &str) -> Vec<u8> {
+        stream(
+            platform,
+            vec![
+                Record(r"a\b".into(), 1, 5, 1, 0, false, 0),
+                Record("c:d".into(), 1, 5, 1, 0, false, 0),
+                Record("root".into(), 0, 0, 0, 0, false, 2),
+            ],
+        )
+    }
+
+    /// A host's header for `/srv`, then `records`, then the end marker.
+    fn stream(platform: &str, records: Vec<Record>) -> Vec<u8> {
         let mut data = Vec::new();
         let header = Header {
             version: VERSION,
@@ -1167,11 +1179,9 @@ mod tests {
             identity: None,
         };
         send(&mut data, &header).unwrap();
-        for name in [r"a\b", "c:d"] {
-            send(&mut data, &Record(name.into(), 1, 5, 1, 0, false, 0))
-                .unwrap();
+        for record in records {
+            send(&mut data, &record).unwrap();
         }
-        send(&mut data, &Record("root".into(), 0, 0, 0, 0, false, 2)).unwrap();
         send(&mut data, &"done").unwrap();
         data
     }
@@ -1198,23 +1208,14 @@ mod tests {
     fn a_directorys_own_read_error_is_kept_apart_from_its_childrens() {
         use crate::tree::Unread;
 
-        let mut data = Vec::new();
-        let header: Header = serde_json::from_slice(
-            unix_stream("linux")
-                .split(|&byte| byte == b'\n')
-                .next()
-                .unwrap(),
-        )
-        .unwrap();
-        send(&mut data, &header).unwrap();
-        for record in [
-            Record("inner".into(), 0, 0, 0, 0, true, 0),
-            Record("deep".into(), 0, 0, 0, 0, false, 1),
-            Record("root".into(), 0, 0, 0, 0, true, 1),
-        ] {
-            send(&mut data, &record).unwrap();
-        }
-        send(&mut data, &"done").unwrap();
+        let data = stream(
+            "linux",
+            vec![
+                Record("inner".into(), 0, 0, 0, 0, true, 0),
+                Record("deep".into(), 0, 0, 0, 0, false, 1),
+                Record("root".into(), 0, 0, 0, 0, true, 1),
+            ],
+        );
         let snapshot = read_snapshot(&mut data.as_slice()).unwrap();
         let root = snapshot.tree.root();
         let deep = root.child_named("deep").unwrap();
@@ -1227,19 +1228,14 @@ mod tests {
     /// taken into the tree.
     #[test]
     fn an_impossibly_long_remote_name_is_refused() {
-        let mut data = Vec::new();
-        let header: Header = serde_json::from_slice(
-            unix_stream("linux")
-                .split(|&byte| byte == b'\n')
-                .next()
-                .unwrap(),
-        )
-        .unwrap();
-        send(&mut data, &header).unwrap();
         let name = "x".repeat(crate::tree::MAX_NAME_BYTES + 1);
-        send(&mut data, &Record(name, 1, 5, 1, 0, false, 0)).unwrap();
-        send(&mut data, &Record("root".into(), 0, 0, 0, 0, false, 1)).unwrap();
-        send(&mut data, &"done").unwrap();
+        let data = stream(
+            "linux",
+            vec![
+                Record(name, 1, 5, 1, 0, false, 0),
+                Record("root".into(), 0, 0, 0, 0, false, 1),
+            ],
+        );
         let error = read_snapshot(&mut data.as_slice()).unwrap_err();
         assert!(error.to_string().contains("bytes long"), "{error}");
     }

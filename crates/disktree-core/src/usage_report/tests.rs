@@ -288,6 +288,10 @@ proptest! {
                             !there.is_some_and(Model::any_error),
                             "{} was unreadable there", entry.path
                         );
+                        prop_assert!(
+                            !listing_failed_above(other, &entry.path, threshold),
+                            "{} may have been hidden there", entry.path
+                        );
                     }
                     Bound::Unknown(_) => {}
                 }
@@ -311,6 +315,33 @@ fn sizes_read_in_the_units_written() {
     for wrong in ["", "MB", "12 parsecs", "-1", "1.2.3"] {
         assert_eq!(parse_size(wrong), None, "{wrong}");
     }
+}
+
+/// Whether a folder on the way to `path`, at or below the deepest one
+/// kept at `threshold`, failed to read its own entries: its listing may
+/// have hidden the path, so the report cannot say it was small.
+fn listing_failed_above(model: &Model, path: &str, threshold: u64) -> bool {
+    let rest = path.strip_prefix(ROOT).expect("under the root");
+    let names: Vec<&str> =
+        rest.split('/').filter(|name| !name.is_empty()).collect();
+    let mut node = model;
+    let mut failed = node.error;
+    for name in &names[..names.len().saturating_sub(1)] {
+        let Some(child) = node
+            .children
+            .iter()
+            .find(|child| child.dir && child.name == *name)
+        else {
+            break;
+        };
+        if child.total() >= threshold {
+            // Listed in the report: only what failed from here down counts.
+            failed = false;
+        }
+        failed |= child.error;
+        node = child;
+    }
+    failed
 }
 
 /// `/r` with `a` (300 bytes in `a/x`), `b` (150) and a 50-byte file.
