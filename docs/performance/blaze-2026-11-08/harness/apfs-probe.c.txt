@@ -1,0 +1,48 @@
+#include <sys/attr.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+
+static uint64_t u64(const unsigned char *buffer, size_t offset) {
+    uint64_t value;
+    memcpy(&value, buffer + offset, sizeof value);
+    return value;
+}
+int main(int argc, char **argv) {
+    if (argc != 2) return 2;
+    struct attrlist request = {0};
+    request.bitmapcount = ATTR_BIT_MAP_COUNT;
+    request.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_FILEID;
+    request.fileattr = ATTR_FILE_DATAALLOCSIZE;
+    request.forkattr = ATTR_CMNEXT_PRIVATESIZE | ATTR_CMNEXT_CLONEID | 0x40;
+    unsigned char buffer[96] = {0};
+    int result = getattrlist(argv[1], &request, buffer, sizeof buffer,
+        FSOPT_ATTR_CMN_EXTENDED | FSOPT_NOFOLLOW | FSOPT_PACK_INVAL_ATTRS);
+    if (result != 0) {
+        printf("{\"errno\":%d}\n", errno);
+        return 1;
+    }
+    attribute_set_t returned;
+    memcpy(&returned, buffer + 4, sizeof returned);
+    uint32_t length;
+    memcpy(&length, buffer, sizeof length);
+    if (length < 60 || !(returned.commonattr & ATTR_CMN_FILEID) ||
+        !(returned.fileattr & ATTR_FILE_DATAALLOCSIZE) ||
+        !(returned.forkattr & ATTR_CMNEXT_PRIVATESIZE) ||
+        !(returned.forkattr & ATTR_CMNEXT_CLONEID)) {
+        printf("{\"fields_unavailable\":true,\"length\":%u}\n",length);
+        return 1;
+    }
+    uint32_t device;
+    memcpy(&device, buffer + 48, sizeof device);
+    printf("{\"inode\":%llu,\"data_allocation\":%llu,\"private_bytes\":%llu,"
+           "\"real_device\":%u,\"clone_id\":%llu}\n",
+        (unsigned long long)u64(buffer,24),
+        (unsigned long long)u64(buffer,32),
+        (unsigned long long)u64(buffer,40),device,
+        (unsigned long long)u64(buffer,52));
+    return 0;
+}

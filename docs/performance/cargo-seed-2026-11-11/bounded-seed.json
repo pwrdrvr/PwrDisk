@@ -1,0 +1,21 @@
+{
+  "unitsSeeded": 1659,
+  "packagesSeeded": 455,
+  "unitsSkipped": {
+    "depends-on-rejected": 17,
+    "donor-path": 7
+  },
+  "packagesRejected": {
+    "depends-on-rejected": 5,
+    "donor-path": 1,
+    "not-built": 75,
+    "workspace": 6
+  },
+  "cloneCount": 10976,
+  "copyCount": 0,
+  "rewrittenCount": 1541,
+  "mode": "bounded",
+  "unitsSeededWithDonorOutDirPaths": 32,
+  "unitsSeededWithDonorDebugMaps": 9,
+  "detail": "ring/ring-df3a2930abd19f91: debug/.fingerprint/ring-df3a2930abd19f91/run-build-script-build-script-build.json names the donor"
+}

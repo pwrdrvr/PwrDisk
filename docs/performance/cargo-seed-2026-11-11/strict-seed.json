@@ -1,0 +1,21 @@
+{
+  "unitsSeeded": 1307,
+  "packagesSeeded": 380,
+  "unitsSkipped": {
+    "depends-on-rejected": 255,
+    "donor-path": 121
+  },
+  "packagesRejected": {
+    "depends-on-rejected": 65,
+    "donor-path": 16,
+    "not-built": 75,
+    "workspace": 6
+  },
+  "cloneCount": 8314,
+  "copyCount": 0,
+  "rewrittenCount": 1233,
+  "mode": "strict",
+  "unitsSeededWithDonorOutDirPaths": 0,
+  "unitsSeededWithDonorDebugMaps": 0,
+  "detail": "derive_more-impl/derive_more-impl-c81130d7b8b7f204: debug/deps/libderive_more_impl-c81130d7b8b7f204.dylib names the donor; gpui-base/gpui-base-49096b9f0d1b3dc8: debug/deps/libgpui_base-49096b9f0d1b3dc8.rlib names the donor; gpui-base/gpui-base-6785ed0f5f2b5611: debug/deps/gpui_base-6785ed0f5f2b5611.gpui_base.f6e8d0962d6f01f1-cgu.11.rcgu.o names the donor; gpui-kit-assets/gpui-kit-assets-767cb39c34c4d3c8: debug/deps/gpui_kit_assets-767cb39c34c4d3c8.gpui_kit_assets.b7ff84bda8782c6b-cgu.3.rcgu.o names the donor; gpui-kit-assets/gpui-kit-assets-b2c1a359ef0d4258: debug/deps/gpui_kit_assets-b2c1a359ef0d4258.gpui_kit_assets.dd972e3542f595cb-cgu.5.rcgu.o names the donor; gpui-kit-assets/gpui-kit-assets-c5ea18f03b5a6121: debug/deps/libgpui_kit_assets-c5ea18f03b5a6121.rmeta names the donor; gpui-kit-assets/gpui-kit-assets-e2834d2bc1c51c46: release/deps/libgpui_kit_assets-e2834d2bc1c51c46.rmeta names the donor; gpui-pre-apple/gpui-pre-apple-0f7014cb480a8236: debug/build/gpui-pre-apple-0f7014cb480a8236/build-script-build names the donor; gpui-pre-apple/gpui-pre-apple-a14705689ea1420c: debug/build/gpui-pre-apple-a14705689ea1420c/build_script_build-a14705689ea1420c names the donor; gpui-pre-macros/gpui-pre-macros-31e19772a88ef86b: debug/deps/libgpui_macros-31e19772a88ef86b.dylib names the donor; gpui-pre/gpui-pre-3e84527b49dc80be: debug/build/gpui-pre-3e84527b49dc80be/build_script_build-3e84527b49dc80be names the donor; gpui-pre/gpui-pre-f61c96196666eb3e: debug/build/gpui-pre-f61c96196666eb3e/build_script_build-f61c96196666eb3e names the donor; 30 more"
+}

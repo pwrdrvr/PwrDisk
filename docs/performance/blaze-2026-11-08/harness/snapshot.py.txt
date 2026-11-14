@@ -1,0 +1,20 @@
+import json,os,pathlib,stat,sys,time
+ROOT=pathlib.Path(__file__).resolve().parent
+areas=[ROOT,ROOT.parent/'bs',ROOT.parent/'bv']
+seen=set();rows=[]
+for area in areas:
+    logical=allocated=files=links=0
+    for base,dirs,names in os.walk(area,followlinks=False):
+        for name in names:
+            p=pathlib.Path(base)/name
+            try:s=p.lstat()
+            except FileNotFoundError:continue
+            if stat.S_ISLNK(s.st_mode):links+=1;continue
+            if not stat.S_ISREG(s.st_mode):continue
+            key=(s.st_dev,s.st_ino)
+            if key in seen:continue
+            seen.add(key);files+=1;logical+=s.st_size;allocated+=s.st_blocks*512
+    rows.append({'path':str(area.relative_to(ROOT.parent)),'logical_bytes':logical,'allocated_bytes':allocated,'files':files,'symlinks_not_followed':links})
+s=os.statvfs(ROOT)
+result={'areas':rows,'logical_bytes':sum(r['logical_bytes'] for r in rows),'allocated_bytes':sum(r['allocated_bytes'] for r in rows),'available_bytes':s.f_bavail*s.f_frsize}
+(ROOT/'logs'/f'{sys.argv[1]}.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))

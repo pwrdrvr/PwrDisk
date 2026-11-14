@@ -1,0 +1,176 @@
+=== canary-helper ===
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/getrandom/56c717109a29e910/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/num-traits/c5d7a931acc677ce/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/rustix/ce63b79bdad34d98/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/serde_core/2be23e3efcc5bd81/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/zmij/905ae8dea71f4d0e/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/serde/8b4d085b46f63dc5/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/serde_json/1f72c997f4bcc169/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/wasm32-wasip1+macros/debug/build/serde_derive/f6941496fdc92e1f/out/serde_derive-f6941496fdc92e1f.wasm (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/disktree-scan/026b4930c0b69f56/out/disktree_scan (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/disktree-scan (first link)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2m 19s
+note: this build took 2m 19s: `blaze slow` says what made it slow and what to fix
+
+=== canary-helper-warm-1 ===
+   Compiling rustix v1.1.4
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling disktree-core v0.22.0 (${WORKSPACE}/crates/disktree-core)
+   Compiling disktree-scan v0.22.0 (${WORKSPACE}/crates/disktree-scan)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/rustix/ce63b79bdad34d98/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/serde_core/2be23e3efcc5bd81/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/serde/8b4d085b46f63dc5/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/disktree-scan/026b4930c0b69f56/out/disktree_scan (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/disktree-scan (first link)
+timeline-us: manifest=161789 script-run=30683850 names=4529721 bodies=2029540 codegen=19379523 store=705490 link=3316746
+    Finished `dev` profile [optimized + debuginfo] target(s) in 45.33s
+note: this build took 45.33s: `blaze slow` says what made it slow and what to fix
+
+=== canary-helper-warm-2 ===
+timeline-us: script-run=474344 names=864390 bodies=202283 codegen=192492 store=115160 link=247730
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2.35s
+
+=== canary-helper-warm-3 ===
+timeline-us: script-run=366798 names=557709 bodies=255360 codegen=110208 store=108112 link=136456
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.88s
+
+=== blaze-helper-edit ===
+   Compiling disktree-scan v0.22.0 (${WORKSPACE}/crates/disktree-scan)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/disktree-scan/026b4930c0b69f56/out/disktree_scan (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/disktree-scan (spliced)
+timeline-us: manifest=12235 script-run=1424840 names=664397 bodies=456326 codegen=2318832 store=441681 link=999327
+    Finished `dev` profile [optimized + debuginfo] target(s) in 7.69s
+
+=== blaze-worktree2-first ===
+   Compiling compiler_builtins v0.1.160 (/rustc/16d1ffac17ad8b739e32483ac2e65fe7e1804977/library/compiler-builtins/compiler-builtins)
+   Compiling std v0.0.0 (/rustc/16d1ffac17ad8b739e32483ac2e65fe7e1804977/library/std)
+   Compiling core v0.0.0 (/rustc/16d1ffac17ad8b739e32483ac2e65fe7e1804977/library/core)
+   Compiling alloc v0.0.0 (/rustc/16d1ffac17ad8b739e32483ac2e65fe7e1804977/library/alloc)
+   Compiling rustc-std-workspace-core v1.99.0 (/rustc/16d1ffac17ad8b739e32483ac2e65fe7e1804977/library/rustc-std-workspace-core)
+   Compiling memchr v2.8.3
+   Compiling rustc-std-workspace-alloc v1.99.0 (/rustc/16d1ffac17ad8b739e32483ac2e65fe7e1804977/library/rustc-std-workspace-alloc)
+   Compiling gimli v0.34.0
+   Compiling hashbrown v0.17.1
+   Compiling std_detect v0.1.5 (/rustc/16d1ffac17ad8b739e32483ac2e65fe7e1804977/library/std_detect)
+   Compiling adler2 v2.0.1
+   Compiling miniz_oxide v0.9.1
+   Compiling addr2line v0.27.1
+   Compiling rustc-demangle v0.1.28
+   Compiling unwind v0.0.0 (/rustc/16d1ffac17ad8b739e32483ac2e65fe7e1804977/library/unwind)
+   Compiling cfg-if v1.0.4
+   Compiling panic_unwind v0.0.0 (/rustc/16d1ffac17ad8b739e32483ac2e65fe7e1804977/library/panic_unwind)
+   Compiling panic_abort v0.0.0 (/rustc/16d1ffac17ad8b739e32483ac2e65fe7e1804977/library/panic_abort)
+   Compiling rustc-literal-escaper v0.0.8
+   Compiling proc_macro v0.0.0 (/rustc/16d1ffac17ad8b739e32483ac2e65fe7e1804977/library/proc_macro)
+   Compiling proc-macro2 v1.0.107
+   Compiling crossbeam-utils v0.8.23
+   Compiling quote v1.0.47
+   Compiling rustix v1.1.4
+   Compiling wasip1 v1.0.0
+   Compiling unicode-ident v1.0.24
+   Compiling autocfg v1.5.1
+   Compiling num-traits v0.2.19
+   Compiling syn v3.0.5
+   Compiling serde_derive v1.0.229
+   Compiling libc v0.2.189
+   Compiling rayon-core v1.13.0
+   Compiling crossbeam-epoch v0.9.21
+   Compiling version_check v0.9.5
+   Compiling generic-array v0.14.7
+   Compiling crossbeam-deque v0.8.8
+   Compiling objc2 v0.6.4
+   Compiling serde_json v1.0.151
+   Compiling serde_core v1.0.229
+   Compiling getrandom v0.4.3
+   Compiling serde v1.0.229
+   Compiling zmij v1.0.23
+   Compiling objc2-encode v4.1.0
+   Compiling bitflags v2.13.2
+   Compiling objc2-foundation v0.3.2
+   Compiling either v1.18.0
+   Compiling rayon v1.12.0
+   Compiling errno v0.3.14
+   Compiling core-foundation-sys v0.8.7
+   Compiling iana-time-zone v0.1.65
+   Compiling chrono v0.4.45
+   Compiling typenum v1.20.1
+   Compiling itoa v1.0.18
+   Compiling sysinfo v0.31.4
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling once_cell v1.21.4
+   Compiling fastrand v2.5.0
+   Compiling log v0.4.34
+   Compiling cpufeatures v0.2.17
+   Compiling sha2 v0.10.9
+   Compiling tempfile v3.27.0
+   Compiling percent-encoding v2.3.2
+   Compiling trash v5.2.9
+   Compiling rustc-hash v2.1.3
+   Compiling disktree-core v0.22.0 (${WORKSPACE}/target/blaze-recheck/worktree2/crates/disktree-core)
+   Compiling blaze_inproc_rt v0.0.0 (/rustc/16d1ffac17ad8b739e32483ac2e65fe7e1804977/library/blaze_inproc_rt)
+   Compiling disktree-scan v0.22.0 (${WORKSPACE}/target/blaze-recheck/worktree2/crates/disktree-scan)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/proc-macro2/07c11223fc63bfd0/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/quote/9534bade02905091/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/rustix/ce63b79bdad34d98/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/num-traits/c5d7a931acc677ce/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/crossbeam-epoch/8fc918cfd387eadb/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/crossbeam-utils/cbc19a5e1742f1f6/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/objc2/abc1928d28508419/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/libc/43049a09e1357e4f/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/crossbeam-deque/2d48ee9c055b0827/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/serde_json/1f72c997f4bcc169/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/getrandom/56c717109a29e910/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/serde_core/2be23e3efcc5bd81/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/serde/8b4d085b46f63dc5/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/zmij/905ae8dea71f4d0e/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/generic-array/c14b322a634ca16b/out/build_script_build (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/wasm32-wasip1+macros/debug/build/serde_derive/f6941496fdc92e1f/out/serde_derive-f6941496fdc92e1f.wasm (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/disktree-scan/026b4930c0b69f56/out/disktree_scan (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/disktree-scan (first link)
+timeline-us: manifest=185364 script-run=53924587 names=26146519 bodies=3337176 codegen=30078917 store=2540280 link=11418438
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 32s
+note: this build took 1m 32s: `blaze slow` says what made it slow and what to fix
+
+=== blaze-concurrent-lane-1 ===
+   Compiling disktree-scan v0.22.0 (${WORKSPACE}/crates/disktree-scan)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/build/disktree-scan/026b4930c0b69f56/out/disktree_scan (first link)
+link: ${WORKSPACE}/target/blaze-recheck/canary-target/debug/disktree-scan (first link)
+timeline-us: manifest=37332 script-run=14131144 names=12252712 bodies=63219 codegen=10874524 store=10272804 link=4021942
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 20s
+note: this build took 1m 20s: `blaze slow` says what made it slow and what to fix
+
+=== blaze-concurrent-lane-2 ===
+   Compiling disktree-core v0.22.0 (${WORKSPACE}/target/blaze-recheck/worktree2/crates/disktree-core)
+   Compiling disktree-scan v0.22.0 (${WORKSPACE}/target/blaze-recheck/worktree2/crates/disktree-scan)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/build/disktree-scan/026b4930c0b69f56/out/disktree_scan (first link)
+link: ${WORKSPACE}/target/blaze-recheck/blaze-target-2/debug/disktree-scan (spliced)
+timeline-us: manifest=1312478 script-run=21644558 names=12959081 bodies=1947372 codegen=17040552 store=567733 link=3151084
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 20s
+note: this build took 1m 20s: `blaze slow` says what made it slow and what to fix
+
+=== canary-status ===
+pid: 8013
+requests: 0
+views: 0
+memory: 12.7 GiB of 3.0 GiB
+settings: BLAZE_DAEMON_MEMORY_GB=4 BLAZE_CORES=2
+bugs: 0
+
+=== canary-stopped-status ===
+no daemon is running
+
+=== helper-stdio-tests ===
+   Compiling disktree-scan v0.22.0 (${WORKSPACE}/crates/disktree-scan)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.82s
+     Running tests/stdio.rs (target/blaze-recheck/cargo-target-1/debug/deps/stdio-f1650b911b0e915c)
+
+running 4 tests
+test executable_discovers_roots_without_scanning_a_path ... ok
+test a_live_supervised_client_receives_a_complete_snapshot ... ok
+test executable_returns_a_read_only_snapshot ... ok
+test disconnect_stops_a_helper_even_when_its_output_is_blocked ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s

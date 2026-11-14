@@ -1,0 +1,990 @@
+{
+  "schema": 1,
+  "date": "2026-11-09",
+  "scope": "Full workspace app build, lint, test gate and normal release build; no completed Blaze GUI executable.",
+  "records": {
+    "inputs.json": {
+      "captured_utc": "2026-11-09T16:43:10.287249+00:00",
+      "source_commit": "6a7bad7e5fc53fd54bdbb271fc5b68f789b2d597",
+      "source_status_b": "",
+      "rustc_vV": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+      "cargo_V": "cargo 1.97.1 (c980f4866 2026-06-30)\n",
+      "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "build_jobs": 4,
+      "blaze_cores": 4,
+      "blaze_daemon_memory_gb_requested": 12,
+      "sampled_rss_limit_gib": 20,
+      "summed_allocation_limit_gib": 64,
+      "available_space_floor_gib": 48,
+      "phase_timeout_seconds": 1200,
+      "release_timeout_seconds": 1800,
+      "candidate_workflow_timeout_seconds": 2700,
+      "native_TMPDIR": "<native-macos-temp>/",
+      "notes": [
+        "Existing Cargo registry/git dependency sources reused offline; targets empty for cold compile.",
+        "APFS st_blocks sums do not measure total unique physical allocation.",
+        "Tests require native macOS temp environment; runtime test fixtures may use native temp or hardcoded /tmp. Downloads, source caches, toolchains and build targets remain scoped to owned roots."
+      ],
+      "profiles": {
+        "dev": {
+          "debug": "limited",
+          "opt-level": 1,
+          "package": {
+            "*": {
+              "opt-level": 2
+            }
+          }
+        },
+        "release": {
+          "lto": "thin",
+          "codegen-units": 1,
+          "overflow-checks": true
+        }
+      },
+      "comparison_scope": [
+        "cargo build --workspace --offline --locked",
+        "cargo xtask lint",
+        "cargo xtask test",
+        "cargo build --release --offline --locked"
+      ]
+    },
+    "logs/distribution-checks.json": [
+      {
+        "version": "0.20261027.0",
+        "archive_bytes": 62622556,
+        "sha256": "47dae8e838765931ed8e216a94e4d75454469fa6c3950d1c02eba2841bc8dad5",
+        "passed": true
+      },
+      {
+        "version": "0.20261105.4",
+        "archive_bytes": 154151309,
+        "sha256": "27da522a507cba1716ecbfbf91fc99546956b6a6f9da21c608539bb70c0da45b",
+        "passed": true
+      }
+    ],
+    "logs/cargo-a-cold-results.json": [
+      {
+        "name": "cargo-a-cold-app-dev",
+        "command": [
+          "cargo",
+          "build",
+          "--workspace",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 0,
+        "wall_seconds": 252.69,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 3769475072,
+        "peak_sampled_rss_bytes": 3148775424,
+        "final_inventory": {
+          "logical_bytes": 3985026980,
+          "allocated_bytes": 4038848512,
+          "files": 7622
+        }
+      },
+      {
+        "name": "cargo-a-cold-lint",
+        "command": [
+          "cargo",
+          "xtask",
+          "lint"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 0,
+        "wall_seconds": 89.341,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 5184106496,
+        "peak_sampled_rss_bytes": 1598980096,
+        "final_inventory": {
+          "logical_bytes": 5350173509,
+          "allocated_bytes": 5420736512,
+          "files": 11612
+        }
+      },
+      {
+        "name": "cargo-a-cold-test-gate",
+        "command": [
+          "cargo",
+          "xtask",
+          "test"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 0,
+        "wall_seconds": 370.147,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 7107579904,
+        "peak_sampled_rss_bytes": 3956817920,
+        "final_inventory": {
+          "logical_bytes": 7154031075,
+          "allocated_bytes": 7203381248,
+          "files": 14648
+        }
+      },
+      {
+        "name": "cargo-a-cold-release",
+        "command": [
+          "cargo",
+          "build",
+          "--release",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 0,
+        "wall_seconds": 166.053,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 8967716864,
+        "peak_sampled_rss_bytes": 4107354112,
+        "final_inventory": {
+          "logical_bytes": 8912164857,
+          "allocated_bytes": 8977260544,
+          "files": 18842
+        }
+      }
+    ],
+    "logs/cargo-output-checks.json": [
+      {
+        "path": "cargo-target-a/debug/pwrdisk",
+        "exit": 0,
+        "help_sha256": "8b1dfd26e80665eb610a6c76d925503423c6a2f91f0364fcbd00d8b2b538d753",
+        "file_sha256": "6c425b37c8bda5b0123adc1b2808f45a59168e59826cc9939592348b7572c332",
+        "logical_bytes": 42670728,
+        "allocated_bytes": 42672128
+      },
+      {
+        "path": "cargo-target-a/debug/disktree-scan",
+        "exit": 0,
+        "help_sha256": "38d869aea58af423daefb2d8c3131a9166200453374781be118887904bd3f52b",
+        "file_sha256": "fd14a5e57c0c61bc86bb10322a1967fab08daf0fbff0a50f744f4c57d8acf327",
+        "logical_bytes": 1066208,
+        "allocated_bytes": 1069056
+      },
+      {
+        "path": "cargo-target-a/release/pwrdisk",
+        "exit": 0,
+        "help_sha256": "8b1dfd26e80665eb610a6c76d925503423c6a2f91f0364fcbd00d8b2b538d753",
+        "file_sha256": "f8c6cebd135b47c5614b685c1444b26e1ee5715e5868e92372b3b2d6836f8643",
+        "logical_bytes": 25388112,
+        "allocated_bytes": 25391104
+      },
+      {
+        "path": "cargo-target-a/release/disktree-scan",
+        "exit": 0,
+        "help_sha256": "38d869aea58af423daefb2d8c3131a9166200453374781be118887904bd3f52b",
+        "file_sha256": "979d4ac2307545dec1ba3f8c51dd0a80fb7cdfbe9bc3c7c16021c9dd5ed91647",
+        "logical_bytes": 735776,
+        "allocated_bytes": 737280
+      }
+    ],
+    "logs/bootstrap-results.json": [
+      {
+        "name": "bootstrap-nightly",
+        "command": [
+          "<workspace>/target/blaze-full/stable-bin/blaze-v0.20261027.0-aarch64-apple-darwin/blaze",
+          "toolchain"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 0,
+        "wall_seconds": 5.652,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 8977264640,
+        "peak_sampled_rss_bytes": 1982464,
+        "final_inventory": {
+          "logical_bytes": 9572238669,
+          "allocated_bytes": 9662210048,
+          "files": 22863
+        }
+      }
+    ],
+    "logs/blaze-a-12gb-results.json": [
+      {
+        "name": "blaze-a-daemon-startup",
+        "command": [
+          "<workspace>/target/blaze-full/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+          "serve"
+        ],
+        "exit": 0,
+        "wall_seconds": 3.117,
+        "stopped_by": null
+      },
+      {
+        "name": "blaze-a-source-fetch",
+        "command": [
+          "<workspace>/target/blaze-full/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+          "fetch",
+          "--locked"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 101,
+        "wall_seconds": 0.571,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 10220625920,
+        "peak_sampled_rss_bytes": 70746112,
+        "final_inventory": {
+          "logical_bytes": 10130527484,
+          "allocated_bytes": 10220634112,
+          "files": 22916
+        }
+      }
+    ],
+    "logs/blaze-a-12gb-physical-memory-stop.json": {
+      "time_epoch": 1794244286.6187499,
+      "owned_driver_pid": 45033,
+      "owned_daemon_pid": 45036,
+      "owned_client_pid": 45461,
+      "reason": "macOS vmmap physical footprint 22.8G, peak 23.7G; RSS undercounted compressed memory on a 32 GiB operator host. Interrupt owned attempt; retry lower private memory budget with footprint enforcement.",
+      "last_monitor_sample": {
+        "phase": "blaze-a-app-dev",
+        "wall_seconds": 482.8162192499731,
+        "available_bytes": 106236141568,
+        "owned_rss_bytes": 7902707712,
+        "logical_bytes": 28385499897,
+        "allocated_bytes": 28582297600,
+        "files": 75119
+      },
+      "approximate_app_wall_seconds_from_file_birthtime": 487.853,
+      "measurement_note": "Wall timestamp difference approximates interruption; primary complete phases use monotonic clock."
+    },
+    "logs/blaze-a-resume-results.json": [
+      {
+        "name": "blaze-a-resume-daemon-startup",
+        "command": [
+          "<workspace>/target/blaze-full/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+          "serve"
+        ],
+        "exit": 0,
+        "wall_seconds": 0.863,
+        "stopped_by": null
+      },
+      {
+        "name": "blaze-a-resume-app-dev",
+        "command": [
+          "<workspace>/target/blaze-full/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+          "build",
+          "--workspace",
+          "--locked"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 101,
+        "wall_seconds": 1.256,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 30038675456,
+        "peak_sampled_rss_bytes": 1485684736,
+        "peak_sampled_physical_bytes": 201886840,
+        "final_inventory": {
+          "logical_bytes": 29825218997,
+          "allocated_bytes": 30038716416,
+          "files": 75091
+        }
+      },
+      {
+        "name": "blaze-a-resume-cargo-lint",
+        "command": [
+          "cargo",
+          "xtask",
+          "lint"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 0,
+        "wall_seconds": 159.45,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 31192895488,
+        "peak_sampled_rss_bytes": 6965837824,
+        "peak_sampled_physical_bytes": 2016882616,
+        "final_inventory": {
+          "logical_bytes": 31440931798,
+          "allocated_bytes": 31673716736,
+          "files": 80434
+        }
+      },
+      {
+        "name": "blaze-a-resume-workspace-tests",
+        "command": [
+          "<workspace>/target/blaze-full/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+          "test",
+          "--workspace",
+          "--locked"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 101,
+        "wall_seconds": 1.332,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 31674044416,
+        "peak_sampled_rss_bytes": 4866375680,
+        "peak_sampled_physical_bytes": 276061024,
+        "final_inventory": {
+          "logical_bytes": 31444381866,
+          "allocated_bytes": 31677186048,
+          "files": 80442
+        }
+      },
+      {
+        "name": "blaze-a-resume-screenshots-tests",
+        "command": [
+          "<workspace>/target/blaze-full/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+          "test",
+          "-p",
+          "disktree-app",
+          "--features",
+          "screenshots",
+          "screenshots::",
+          "--locked"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 101,
+        "wall_seconds": 1.469,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 33004384256,
+        "peak_sampled_rss_bytes": 6276874240,
+        "peak_sampled_physical_bytes": 1660461096,
+        "final_inventory": {
+          "logical_bytes": 31447380849,
+          "allocated_bytes": 31680208896,
+          "files": 80452
+        }
+      },
+      {
+        "name": "blaze-a-resume-python-screenshots",
+        "command": [
+          "python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "<workspace>/a/scripts/screenshots",
+          "-p",
+          "*_test.py"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 1,
+        "wall_seconds": 11.215,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 31680229376,
+        "peak_sampled_rss_bytes": 491094016,
+        "peak_sampled_physical_bytes": 473957816,
+        "final_inventory": {
+          "logical_bytes": 32752212315,
+          "allocated_bytes": 33204072448,
+          "files": 146218
+        }
+      },
+      {
+        "name": "blaze-a-resume-python-release",
+        "command": [
+          "python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "<workspace>/a/scripts/release",
+          "-p",
+          "*_test.py"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 0,
+        "wall_seconds": 1.872,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 33204146176,
+        "peak_sampled_rss_bytes": 4620288,
+        "peak_sampled_physical_bytes": 7389640,
+        "final_inventory": {
+          "logical_bytes": 32752271258,
+          "allocated_bytes": 33204146176,
+          "files": 146224
+        }
+      },
+      {
+        "name": "blaze-a-resume-release",
+        "command": [
+          "<workspace>/target/blaze-full/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+          "build",
+          "--release",
+          "--locked"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": 101,
+        "wall_seconds": 1.852,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 34534670336,
+        "peak_sampled_rss_bytes": 7613382656,
+        "peak_sampled_physical_bytes": 349987840,
+        "final_inventory": {
+          "logical_bytes": 32755795745,
+          "allocated_bytes": 33207697408,
+          "files": 146234
+        }
+      }
+    ],
+    "logs/blaze-a-8gb-results.json": [
+      {
+        "name": "blaze-a-8gb-daemon-startup",
+        "command": [
+          "<workspace>/target/blaze-full/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+          "serve"
+        ],
+        "exit": 0,
+        "wall_seconds": 0.837,
+        "stopped_by": null
+      },
+      {
+        "name": "blaze-a-8gb-app-dev",
+        "command": [
+          "<workspace>/target/blaze-full/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+          "build",
+          "--workspace",
+          "--locked"
+        ],
+        "cwd": "<workspace>/a",
+        "exit": -15,
+        "wall_seconds": 205.259,
+        "stopped_by": "20 GiB sampled aggregate physical-footprint limit",
+        "peak_sampled_allocated_bytes": 33377505280,
+        "peak_sampled_rss_bytes": 15497822208,
+        "peak_sampled_physical_bytes": 21625353704,
+        "final_inventory": {
+          "logical_bytes": 32935063331,
+          "allocated_bytes": 33378603008,
+          "files": 146318
+        }
+      }
+    ],
+    "logs/python-environment-recheck-results.json": [
+      {
+        "command": [
+          "python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "<workspace>/a/scripts/screenshots",
+          "-p",
+          "*_test.py"
+        ],
+        "exit": 0,
+        "wall_seconds": 2.158
+      },
+      {
+        "command": [
+          "python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "<workspace>/a/scripts/release",
+          "-p",
+          "*_test.py"
+        ],
+        "exit": 0,
+        "wall_seconds": 0.139
+      }
+    ],
+    "logs/footprint-meter-oracle.json": {
+      "allocated_and_touched_bytes": 134217728,
+      "before_bytes": 9978360,
+      "after_bytes": 144294488,
+      "delta_bytes": 134316128,
+      "passed": true
+    },
+    "logs/final-before-cleanup.json": {
+      "at_epoch": 1794245173.7103722,
+      "available_bytes": 101990400000,
+      "areas": {
+        "experiment": {
+          "logical_bytes": 19535662279,
+          "allocated_bytes": 19817934848,
+          "files": 91332
+        },
+        "bootstrap": {
+          "logical_bytes": 660071981,
+          "allocated_bytes": 670064640,
+          "files": 4020
+        },
+        "blaze-state": {
+          "logical_bytes": 12177996807,
+          "allocated_bytes": 12305842176,
+          "files": 50314
+        },
+        "temp": {
+          "logical_bytes": 52,
+          "allocated_bytes": 4096,
+          "files": 1
+        },
+        "source-a": {
+          "logical_bytes": 7899197,
+          "allocated_bytes": 8577024,
+          "files": 293
+        },
+        "source-b": {
+          "logical_bytes": 7899197,
+          "allocated_bytes": 8577024,
+          "files": 293
+        },
+        "detail-blaze-target-a": {
+          "logical_bytes": 7718639125,
+          "allocated_bytes": 7724548096,
+          "files": 1847
+        },
+        "detail-canary-bin": {
+          "logical_bytes": 488476299,
+          "allocated_bytes": 488488960,
+          "files": 6
+        },
+        "detail-candidate-lint-a": {
+          "logical_bytes": 1614337123,
+          "allocated_bytes": 1630511104,
+          "files": 5263
+        },
+        "detail-cargo-target-a": {
+          "logical_bytes": 7998793635,
+          "allocated_bytes": 8049983488,
+          "files": 18189
+        },
+        "detail-stable-bin": {
+          "logical_bytes": 188733691,
+          "allocated_bytes": 188760064,
+          "files": 11
+        },
+        "detail-user-home": {
+          "logical_bytes": 1306078614,
+          "allocated_bytes": 1514811392,
+          "files": 65929
+        }
+      },
+      "totals_inode_dedup": {
+        "logical_bytes": 32389529513,
+        "allocated_bytes": 32810999808,
+        "files": 146253
+      }
+    },
+    "logs/git-worktree-metadata.json": [
+      {
+        "lane": "a",
+        "logical_bytes": 32724,
+        "allocated_bytes": 53248,
+        "files": 6
+      },
+      {
+        "lane": "b",
+        "logical_bytes": 32724,
+        "allocated_bytes": 53248,
+        "files": 6
+      }
+    ],
+    "logs/owned-images-check.json": {
+      "owned_backing_paths_found": [],
+      "passed": true
+    },
+    "logs/cargo-results.json": [
+      {
+        "name": "cargo-app-dev",
+        "command": [
+          "cargo",
+          "build",
+          "--workspace",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "<workspace>/target/blaze-full/worktree-a",
+        "exit": 0,
+        "wall_seconds": 254.923,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 3655614464,
+        "peak_sampled_rss_bytes": 3059761152,
+        "final_inventory": {
+          "logical_bytes": 3982474940,
+          "allocated_bytes": 4036435968,
+          "files": 7589
+        }
+      },
+      {
+        "name": "cargo-lint",
+        "command": [
+          "cargo",
+          "xtask",
+          "lint"
+        ],
+        "cwd": "<workspace>/target/blaze-full/worktree-a",
+        "exit": 0,
+        "wall_seconds": 93.124,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 4991873024,
+        "peak_sampled_rss_bytes": 2191687680,
+        "final_inventory": {
+          "logical_bytes": 5347652190,
+          "allocated_bytes": 5384523776,
+          "files": 11579
+        }
+      },
+      {
+        "name": "cargo-test-gate",
+        "command": [
+          "cargo",
+          "xtask",
+          "test"
+        ],
+        "cwd": "<workspace>/target/blaze-full/worktree-a",
+        "exit": 1,
+        "wall_seconds": 110.987,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 6824321024,
+        "peak_sampled_rss_bytes": 3684188160,
+        "final_inventory": {
+          "logical_bytes": 6780282076,
+          "allocated_bytes": 6869553152,
+          "files": 13995
+        }
+      },
+      {
+        "name": "cargo-release",
+        "command": [
+          "cargo",
+          "build",
+          "--release",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "<workspace>/target/blaze-full/worktree-a",
+        "exit": 0,
+        "wall_seconds": 173.282,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 8592728064,
+        "peak_sampled_rss_bytes": 4035526656,
+        "final_inventory": {
+          "logical_bytes": 8538435284,
+          "allocated_bytes": 8589783040,
+          "files": 18189
+        }
+      }
+    ],
+    "logs/cargo-b-results.json": [
+      {
+        "name": "cargo-b-app-dev",
+        "command": [
+          "cargo",
+          "build",
+          "--workspace",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "<workspace>/b",
+        "exit": 0,
+        "wall_seconds": 257.951,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 11250679808,
+        "peak_sampled_rss_bytes": 3080683520,
+        "final_inventory": {
+          "logical_bytes": 11612116136,
+          "allocated_bytes": 11719106560,
+          "files": 25175
+        }
+      },
+      {
+        "name": "cargo-b-lint",
+        "command": [
+          "cargo",
+          "xtask",
+          "lint"
+        ],
+        "cwd": "<workspace>/b",
+        "exit": 0,
+        "wall_seconds": 91.165,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 12786008064,
+        "peak_sampled_rss_bytes": 1388101632,
+        "final_inventory": {
+          "logical_bytes": 12977263247,
+          "allocated_bytes": 13101334528,
+          "files": 29167
+        }
+      },
+      {
+        "name": "cargo-b-test-gate",
+        "command": [
+          "cargo",
+          "xtask",
+          "test"
+        ],
+        "cwd": "<workspace>/b",
+        "exit": 1,
+        "wall_seconds": 328.486,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 14555205632,
+        "peak_sampled_rss_bytes": 3792371712,
+        "final_inventory": {
+          "logical_bytes": 14410275736,
+          "allocated_bytes": 14498373632,
+          "files": 31585
+        }
+      },
+      {
+        "name": "cargo-b-release",
+        "command": [
+          "cargo",
+          "build",
+          "--release",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "<workspace>/b",
+        "exit": 0,
+        "wall_seconds": 167.591,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 16259629056,
+        "peak_sampled_rss_bytes": 3865264128,
+        "final_inventory": {
+          "logical_bytes": 16168409747,
+          "allocated_bytes": 16271724544,
+          "files": 35779
+        }
+      }
+    ],
+    "logs/cargo-b-native-tests-results.json": [
+      {
+        "name": "cargo-b-native-tests-test-gate",
+        "command": [
+          "cargo",
+          "xtask",
+          "test"
+        ],
+        "cwd": "<workspace>/b",
+        "exit": 0,
+        "wall_seconds": 261.934,
+        "stopped_by": null,
+        "peak_sampled_allocated_bytes": 16817254400,
+        "peak_sampled_rss_bytes": 822394880,
+        "final_inventory": {
+          "logical_bytes": 16705642878,
+          "allocated_bytes": 16817254400,
+          "files": 36406
+        }
+      }
+    ],
+    "logs/rejected-cargo-b-setup.json": {
+      "reason": "Stopped before tests: checkout-local fixture paths also require shorter worktree names. Restart clean at owned b/; no source changes.",
+      "logical": 290409751,
+      "allocated": 292798464
+    },
+    "logs/rejected-setup-disposal.json": [
+      {
+        "removed": "cargo-target-a",
+        "logical_bytes": 8140783838,
+        "allocated_bytes": 8203665408
+      },
+      {
+        "removed": "cargo-target-b",
+        "logical_bytes": 8796765914,
+        "allocated_bytes": 8866148352
+      }
+    ],
+    "logs/cargo-cold-final.json": {
+      "at_epoch": 1794243756.216852,
+      "available_bytes": 124108800000,
+      "areas": {
+        "experiment": {
+          "logical_bytes": 8896366810,
+          "allocated_bytes": 8960094208,
+          "files": 18253
+        },
+        "bootstrap": {
+          "logical_bytes": 52,
+          "allocated_bytes": 4096,
+          "files": 1
+        },
+        "blaze-state": {
+          "logical_bytes": 52,
+          "allocated_bytes": 4096,
+          "files": 1
+        },
+        "temp": {
+          "logical_bytes": 52,
+          "allocated_bytes": 4096,
+          "files": 1
+        },
+        "source-a": {
+          "logical_bytes": 7899197,
+          "allocated_bytes": 8577024,
+          "files": 293
+        },
+        "source-b": {
+          "logical_bytes": 7899197,
+          "allocated_bytes": 8577024,
+          "files": 293
+        },
+        "detail-cargo-target-a": {
+          "logical_bytes": 8409596174,
+          "allocated_bytes": 8480759808,
+          "files": 20400
+        }
+      }
+    },
+    "logs/before-blaze.json": {
+      "at_epoch": 1794243794.757712,
+      "available_bytes": 123961004032,
+      "areas": {
+        "experiment": {
+          "logical_bytes": 8896375220,
+          "allocated_bytes": 8960131072,
+          "files": 18262
+        },
+        "bootstrap": {
+          "logical_bytes": 660071981,
+          "allocated_bytes": 684945408,
+          "files": 4020
+        },
+        "blaze-state": {
+          "logical_bytes": 52,
+          "allocated_bytes": 4096,
+          "files": 1
+        },
+        "temp": {
+          "logical_bytes": 52,
+          "allocated_bytes": 4096,
+          "files": 1
+        },
+        "source-a": {
+          "logical_bytes": 7899197,
+          "allocated_bytes": 8577024,
+          "files": 293
+        },
+        "source-b": {
+          "logical_bytes": 7899197,
+          "allocated_bytes": 8577024,
+          "files": 293
+        },
+        "detail-cargo-target-a": {
+          "logical_bytes": 8409596174,
+          "allocated_bytes": 8480759808,
+          "files": 20400
+        }
+      }
+    },
+    "logs/after-12gb-stop.json": {
+      "at_epoch": 1794244367.967525,
+      "available_bytes": 102809600000,
+      "areas": {
+        "experiment": {
+          "logical_bytes": 16616609725,
+          "allocated_bytes": 16674504704,
+          "files": 20318
+        },
+        "bootstrap": {
+          "logical_bytes": 660071981,
+          "allocated_bytes": 670064640,
+          "files": 4020
+        },
+        "blaze-state": {
+          "logical_bytes": 11974445948,
+          "allocated_bytes": 12118654976,
+          "files": 50150
+        },
+        "temp": {
+          "logical_bytes": 52,
+          "allocated_bytes": 4096,
+          "files": 1
+        },
+        "source-a": {
+          "logical_bytes": 7899197,
+          "allocated_bytes": 8577024,
+          "files": 293
+        },
+        "source-b": {
+          "logical_bytes": 7899197,
+          "allocated_bytes": 8577024,
+          "files": 293
+        },
+        "detail-blaze-target-a": {
+          "logical_bytes": 7718709807,
+          "allocated_bytes": 7724642304,
+          "files": 1871
+        },
+        "detail-cargo-target-a": {
+          "logical_bytes": 8409596174,
+          "allocated_bytes": 8465248256,
+          "files": 20400
+        }
+      }
+    },
+    "logs/cleanup.json": {
+      "time_epoch": 1794245767.211562,
+      "removed_only_owned_paths": [
+        "target/blaze-full/cargo-target-a",
+        "target/blaze-full/blaze-target-a",
+        "target/blaze-full/candidate-lint-a",
+        "target/blaze-full/stable-bin",
+        "target/blaze-full/canary-bin",
+        "target/blaze-full/user-home",
+        "target/blaze-full/tmp",
+        "target/blaze-full/blaze-v0.20261105.4-aarch64-apple-darwin.tar.gz",
+        "target/blaze-full/blaze-v0.20261027.0-aarch64-apple-darwin.tar.gz",
+        "target/fB",
+        "target/fV",
+        ".t"
+      ],
+      "removed_owned_worktrees": [
+        "a",
+        "b"
+      ],
+      "retained": "target/blaze-full: raw evidence, metadata and scripts; report in docs/performance/blaze-2026-11-09",
+      "owned_daemons_stopped": true,
+      "owned_disk_images_detached": true
+    },
+    "logs/retained-after-cleanup.json": {
+      "at_epoch": 1794245767.2525911,
+      "available_bytes": 126812717056,
+      "areas": {
+        "experiment": {
+          "logical_bytes": 3834312,
+          "allocated_bytes": 4079616,
+          "files": 91
+        },
+        "bootstrap": {
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "files": 0
+        },
+        "blaze-state": {
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "files": 0
+        },
+        "temp": {
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "files": 0
+        },
+        "source-a": {
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "files": 0
+        },
+        "source-b": {
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "files": 0
+        }
+      },
+      "totals_inode_dedup": {
+        "logical_bytes": 3834312,
+        "allocated_bytes": 4079616,
+        "files": 91
+      }
+    },
+    "logs/source-final-checks.json": {
+      "a": {
+        "source_commit": "6a7bad7e5fc53fd54bdbb271fc5b68f789b2d597",
+        "status": ""
+      },
+      "b": {
+        "source_commit": "6a7bad7e5fc53fd54bdbb271fc5b68f789b2d597",
+        "status": ""
+      }
+    }
+  }
+}
