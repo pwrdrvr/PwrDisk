@@ -334,7 +334,7 @@ impl Disktree {
             Request::Scan { root, options } => {
                 self.agent_scan(root, options, cx)
             }
-            Request::Ls { path, limit } => self.agent_ls(path, *limit),
+            Request::Ls { path, limit, by } => self.agent_ls(path, *limit, *by),
             Request::Find(request) => self.agent_find(request),
             Request::Estimate {
                 paths,
@@ -508,14 +508,20 @@ impl Disktree {
     }
 
     /// What is in a directory of the tree on screen.
-    fn agent_ls(&mut self, path: &Path, limit: usize) -> Response {
+    fn agent_ls(
+        &mut self,
+        path: &Path,
+        limit: usize,
+        by: disktree_link::Rank,
+    ) -> Response {
         let mut listing = match self.agent_node(path) {
-            Ok(node) => Listing::of(
+            Ok(node) => Listing::ranked(
                 &self.root_path,
                 self.tree.as_ref().map_or(0, |tree| tree.root().bytes),
                 path,
                 node,
                 limit,
+                by,
             ),
             Err(message) => return Response::error(message),
         };

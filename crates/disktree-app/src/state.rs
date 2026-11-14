@@ -473,6 +473,12 @@ pub struct Disktree {
     /// The Power Efficiency menu, when open: the row the arrow keys are on,
     /// as an index into [`crate::power::PowerEfficiency::ALL`].
     pub power_menu: Option<usize>,
+    /// The Sizes menu, open, with the highlighted row's index in
+    /// [`crate::toolbar::Sizes::ALL`].
+    pub sizes_menu: Option<usize>,
+    /// The pointer is over the Sizes button: a press there is the
+    /// button's, not one outside the open menu.
+    pub sizes_hover: bool,
     /// The pointer is on the menu's button. A press there is the button's
     /// to toggle, not a press outside the menu that closes it first.
     pub power_hover: bool,
@@ -850,6 +856,8 @@ impl Disktree {
             power_settings_path: crate::power::settings_path(),
             removal_settings_dir: crate::updater::settings_dir(),
             power_menu: None,
+            sizes_menu: None,
+            sizes_hover: false,
             power_hover: false,
             more_menu: None,
             more_hover: false,
@@ -1817,6 +1825,7 @@ impl Disktree {
     /// Open the Power Efficiency menu on the current preset, or close it.
     pub fn toggle_power_menu(&mut self, cx: &mut Context<'_, Self>) {
         use crate::power::PowerEfficiency;
+        self.sizes_menu = None;
         self.power_menu = if self.power_menu.is_some() {
             None
         } else {
@@ -1878,12 +1887,6 @@ impl Disktree {
     /// hidden entries.
     pub fn toggle_hidden(&mut self, cx: &mut Context<'_, Self>) {
         self.options.include_hidden = !self.options.include_hidden;
-        self.start_scan(cx);
-    }
-
-    /// `d`, the Apparent size checkbox and its ⋮ row.
-    pub fn toggle_apparent(&mut self, cx: &mut Context<'_, Self>) {
-        self.options.apparent_size = !self.options.apparent_size;
         self.start_scan(cx);
     }
 
@@ -3275,6 +3278,7 @@ impl Disktree {
         #[cfg(test)]
         crate::marks::work::FRAMES.set(crate::marks::work::FRAMES.get() + 1);
         let metric = self.options.metric;
+        let private_sizes = self.sizes() == crate::toolbar::Sizes::Private;
         let view = self.view;
         let hovered = self.hovered.clone();
         let selected = self.selected.clone();
@@ -3419,6 +3423,30 @@ impl Disktree {
                     // narrow names out of their tiles. Only "unreadable",
                     // which is rare, keeps a prefix.
                     let unreadable = if node.read_error { "! " } else { "" };
+                    // A filtered tile says how much of it is shown, in the
+                    // figure it is weighted by: with private weights, the
+                    // share of its private bytes the layout gave it.
+                    let (size_text, detail_text) = partial.map_or_else(
+                        || {
+                            crate::widgets::tile_values(
+                                node,
+                                metric,
+                                private_sizes,
+                            )
+                        },
+                        |(bytes, files)| {
+                            let text = if private_sizes
+                                && metric == Metric::Bytes
+                            {
+                                crate::widgets::short_private_share(node, bytes)
+                            } else {
+                                crate::widgets::short_share(
+                                    node, bytes, files, metric,
+                                )
+                            };
+                            (text, String::new())
+                        },
+                    );
                     // A tile the filter left out holds no match: skip the
                     // search for it.
                     let found = self
@@ -3440,14 +3468,8 @@ impl Disktree {
                         depth: tile.depth,
                         dim: filtered == Filtered::Out || is_removed,
                         marked: is_marked || is_covered,
-                        size_text: partial.map_or_else(
-                            || crate::widgets::short_value(node, metric),
-                            |(bytes, files)| {
-                                crate::widgets::short_share(
-                                    node, bytes, files, metric,
-                                )
-                            },
-                        ),
+                        size_text,
+                        detail_text,
                         decoration: decoration.clone(),
                     });
                 }
@@ -3460,6 +3482,7 @@ impl Disktree {
                     dim: self.matches.is_some(),
                     marked: false,
                     size_text: String::new(),
+                    detail_text: String::new(),
                     decoration: decoration.clone(),
                 }),
             }
@@ -4595,6 +4618,7 @@ impl Disktree {
             // A modal must not leave another keyboard owner behind it.
             self.crumb_menu = None;
             self.power_menu = None;
+            self.sizes_menu = None;
             self.more_menu = None;
             self.app_menu_open = false;
             self.export_menu_open = false;
@@ -4892,6 +4916,9 @@ impl Disktree {
         if self.power_menu.is_some() && self.on_power_key(key, cx) {
             return;
         }
+        if self.sizes_menu.is_some() && self.on_sizes_key(key, cx) {
+            return;
+        }
         if self.more_menu.is_some() && self.on_more_key(key, cx) {
             return;
         }
@@ -5079,7 +5106,7 @@ impl Disktree {
             "g" if !control => self.go_to_disk(cx),
             "v" if !control && !shift => self.open_volumes(cx),
             "i" if !control => self.toggle_hidden(cx),
-            "d" if !control => self.toggle_apparent(cx),
+            "d" if !control => self.cycle_sizes(cx),
             "p" if !control => {
                 self.show_selection = !self.show_selection;
                 cx.notify();
@@ -5507,6 +5534,10 @@ pub struct Label {
     /// Marked, or inside a mark: struck through, in the marked ink.
     pub marked: bool,
     pub size_text: String,
+    /// The other byte figure, under the value where there is room: private
+    /// beside an on-disk size, or on-disk beside a private one. Empty when
+    /// it would say nothing new; see [`crate::widgets::tile_values`].
+    pub detail_text: String,
     /// The exact fill state is needed for contrast after filtering/marking.
     pub decoration: TileDeco,
 }

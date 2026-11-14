@@ -129,6 +129,10 @@ pub struct ScanOptionsRequest {
     pub max_depth: Option<Option<usize>>,
 }
 
+/// What a listing or a search ranks by, largest first: the core's own
+/// order, which is already what the link carries.
+pub use disktree_core::query::Order as Rank;
+
 /// A search, as the agent words it; see [`disktree_core::query::Filter`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FindRequest {
@@ -137,6 +141,13 @@ pub struct FindRequest {
     /// `any`, `file` or `dir`.
     pub kind: String,
     pub min_bytes: u64,
+    /// Only matches holding at least this many bytes alone. Absent from
+    /// an older peer's request: no minimum.
+    #[serde(default)]
+    pub min_private_bytes: u64,
+    /// What the matches are ranked by, largest first.
+    #[serde(default)]
+    pub by: Rank,
     /// A [`Category::name`].
     pub category: Option<String>,
     pub reclaimable: bool,
@@ -182,7 +193,7 @@ impl FindRequest {
         Ok(if self.output_roots {
             disktree_core::query::find_outputs(path, node, &filter, self.limit)
         } else {
-            disktree_core::query::find(path, node, &filter, self.limit)
+            disktree_core::query::find(path, node, &filter, self.by, self.limit)
         })
     }
 
@@ -200,6 +211,7 @@ impl FindRequest {
         Ok(Filter {
             kind,
             min_bytes: self.min_bytes,
+            min_private_bytes: self.min_private_bytes,
             category,
             reclaimable: self.reclaimable,
             name: self
@@ -338,7 +350,13 @@ pub enum Request {
     },
     /// What is in a directory of the window's tree; answered with
     /// [`Listing`].
-    Ls { path: PathBuf, limit: usize },
+    Ls {
+        path: PathBuf,
+        limit: usize,
+        /// Absent from an older peer: largest listed size first.
+        #[serde(default)]
+        by: Rank,
+    },
     /// The largest entries matching a description; answered with
     /// [`FoundList`].
     Find(FindRequest),
@@ -476,6 +494,12 @@ impl Clones {
 }
 
 impl Entry {
+    /// What this entry holds alone: its listed bytes outside clone blocks
+    /// other clones may hold. All of it where nothing is cloned.
+    pub fn private_bytes(&self) -> u64 {
+        self.clones.map_or(self.bytes, |clones| clones.private)
+    }
+
     pub fn at(node: Node<'_>, path: &Path) -> Self {
         let mut entry = Self::of(node);
         entry.artifact = disktree_core::artifact::assess(
@@ -513,7 +537,7 @@ pub struct Listing {
     pub root_bytes: u64,
     /// The scanned root, for naming it.
     pub root: PathBuf,
-    /// Largest first, at most the limit asked for.
+    /// Largest first by what was asked for, at most the limit.
     pub children: Vec<Entry>,
     /// Children past the limit, and their bytes together.
     pub more: usize,
@@ -530,19 +554,31 @@ impl Listing {
         node: Node<'_>,
         limit: usize,
     ) -> Self {
-        let children: Vec<Entry> = node
-            .children()
-            .iter()
-            .take(limit)
-            .map(|child| Entry::at(child, &path.join(child.name())))
-            .collect();
+        Self::ranked(root, root_bytes, path, node, limit, Rank::Size)
+    }
+
+    /// [`Self::of`], with the children ranked `by`. [`Rank::Size`] keeps
+    /// the tree's own order, as a listing always has; another rank sorts a
+    /// copy of it here.
+    pub fn ranked(
+        root: &Path,
+        root_bytes: u64,
+        path: &Path,
+        node: Node<'_>,
+        limit: usize,
+        by: Rank,
+    ) -> Self {
+        // By size the tree's order is the answer, read as it lies; only
+        // another rank pays for a sorted copy of the children.
+        let (children, more_bytes) = if by == Rank::Size {
+            listed(node.children().iter(), path, limit)
+        } else {
+            let mut ordered: Vec<Node<'_>> = node.children().iter().collect();
+            // Stable: ties keep the tree's own order.
+            ordered.sort_by_key(|child| std::cmp::Reverse(by.value(*child)));
+            listed(ordered.into_iter(), path, limit)
+        };
         let more = node.children().len().saturating_sub(limit);
-        let more_bytes = node
-            .children()
-            .iter()
-            .skip(limit)
-            .map(|child| child.bytes)
-            .sum();
         Self {
             path: path.to_path_buf(),
             entry: Entry::at(node, path),
@@ -553,6 +589,20 @@ impl Listing {
             more_bytes,
         }
     }
+}
+
+/// The first `limit` of `children`, at `path`, and the bytes of the rest.
+fn listed<'t>(
+    mut children: impl Iterator<Item = Node<'t>>,
+    path: &Path,
+    limit: usize,
+) -> (Vec<Entry>, u64) {
+    let listed = children
+        .by_ref()
+        .take(limit)
+        .map(|child| Entry::at(child, &path.join(child.name())))
+        .collect();
+    (listed, children.map(|child| child.bytes).sum())
 }
 
 /// One search match, with where it is.
@@ -568,6 +618,10 @@ pub struct FoundList {
     pub matches: Vec<Found>,
     pub count: usize,
     pub bytes: u64,
+    /// What every match holds alone, together; see
+    /// [`disktree_core::query::Found::private_bytes`].
+    #[serde(default)]
+    pub private_bytes: u64,
 }
 
 impl FoundList {
@@ -583,6 +637,7 @@ impl FoundList {
                 .collect(),
             count: found.count,
             bytes: found.bytes,
+            private_bytes: found.private_bytes,
         }
     }
 }
@@ -867,6 +922,43 @@ fn encode<T: Serialize>(value: &T) -> std::io::Result<String> {
 #[cfg(any(unix, windows))]
 fn decode<T: for<'de> Deserialize<'de>>(line: &str) -> std::io::Result<T> {
     serde_json::from_str(line.trim_end()).map_err(std::io::Error::other)
+}
+
+#[cfg(test)]
+mod rank_tests {
+    use super::{FindRequest, FoundList, Rank, Request};
+
+    /// A peer from before private ranking sends neither field; it must
+    /// still be understood, as a listing or search by size.
+    #[test]
+    fn requests_without_a_rank_read_as_by_size() {
+        let ls: Request =
+            serde_json::from_str(r#"{"op":"ls","path":"/r","limit":3}"#)
+                .expect("an older ls");
+        assert!(matches!(ls, Request::Ls { by: Rank::Size, .. }), "{ls:?}");
+        let find: FindRequest = serde_json::from_str(
+            r#"{"path":null,"kind":"any","min_bytes":0,"category":null,
+                "reclaimable":false,"name":null,"before":null,"limit":5}"#,
+        )
+        .expect("an older find");
+        assert_eq!(find.by, Rank::Size);
+        assert_eq!(find.min_private_bytes, 0);
+        let found: FoundList =
+            serde_json::from_str(r#"{"matches":[],"count":0,"bytes":7}"#)
+                .expect("an older answer");
+        assert_eq!(found.private_bytes, 0);
+        let private: Request = serde_json::from_str(
+            r#"{"op":"ls","path":"/r","limit":3,"by":"private"}"#,
+        )
+        .expect("a private ls");
+        assert!(matches!(
+            private,
+            Request::Ls {
+                by: Rank::Private,
+                ..
+            }
+        ));
+    }
 }
 
 #[cfg(test)]

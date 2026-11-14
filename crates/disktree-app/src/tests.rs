@@ -5139,6 +5139,7 @@ fn apfs_clones_use_private_bytes_in_review_and_refresh(
             &disktree_link::Request::Ls {
                 path: root.clone(),
                 limit: 10,
+                by: disktree_link::Rank::Size,
             },
             cx,
         );
@@ -6409,6 +6410,7 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         Request::Ls {
             path: root.clone(),
             limit: 10,
+            by: disktree_link::Rank::Size,
         },
     );
     let Response::Listing(listing) = listed else {
@@ -6421,6 +6423,7 @@ fn an_agent_marks_shows_and_reviews_over_the_link(cx: &mut TestAppContext) {
         Request::Ls {
             path: PathBuf::from("/definitely/elsewhere"),
             limit: 10,
+            by: disktree_link::Rank::Size,
         },
     );
     assert!(
@@ -8012,6 +8015,7 @@ fn enclosing_removal_preserves_scanned_bytes_in_marks_and_agent_reports(
             &Request::Ls {
                 path: a.clone(),
                 limit: 10,
+                by: disktree_link::Rank::Size,
             },
             cx,
         ) else {
@@ -8060,6 +8064,7 @@ fn an_agent_listing_says_what_was_removed_since_the_scan(
         Request::Ls {
             path: root.clone(),
             limit: 10,
+            by: disktree_link::Rank::Size,
         },
         cx,
     ) else {
@@ -8077,6 +8082,7 @@ fn an_agent_listing_says_what_was_removed_since_the_scan(
         Request::Ls {
             path: root.clone(),
             limit: 10,
+            by: disktree_link::Rank::Size,
         },
         cx,
     ) else {
@@ -8100,6 +8106,7 @@ fn an_agent_listing_says_what_was_removed_since_the_scan(
         Request::Ls {
             path: root.join("junk"),
             limit: 10,
+            by: disktree_link::Rank::Size,
         },
         cx,
     ) else {
@@ -8151,6 +8158,7 @@ fn an_agent_listing_says_what_was_removed_since_the_scan(
         Request::Ls {
             path: root.join("junk"),
             limit: 10,
+            by: disktree_link::Rank::Size,
         },
         cx,
     ) else {
@@ -13127,4 +13135,173 @@ fn control_tooltips_never_leave_the_content(cx: &mut TestAppContext) {
         }
     }
     assert!(tried.contains(&"more-toggle"), "⋮ was tried");
+}
+
+/// The Sizes menu says what a size counts. On disk and Private are one
+/// scan weighted two ways, so moving between them never rescans; Apparent
+/// measures differently, so choosing it or leaving it does, and `d` steps
+/// through what this scan can offer.
+#[gpui_kit::test]
+fn sizes_reweigh_without_a_rescan_and_only_apparent_rescans(
+    cx: &mut TestAppContext,
+) {
+    use crate::toolbar::Sizes;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    // The fixture is scanned with apparent sizes.
+    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::Apparent);
+
+    click_on(cx, "sizes");
+    assert!(cx.debug_bounds("sizes-menu").is_some(), "the menu opens");
+    press(cx, "escape");
+    draw(cx);
+    assert!(cx.debug_bounds("sizes-menu").is_none(), "escape closes it");
+
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::OnDisk, cx));
+    assert!(read(&view, cx, |app| app.scan.is_some()), "leaving rescans");
+    finish_scan(&view, cx);
+    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::OnDisk);
+    assert!(!read(&view, cx, |app| app.options.apparent_size));
+
+    let offered = read(&view, cx, |app| app.sizes_offered(Sizes::Private));
+    assert_eq!(offered, cfg!(target_os = "macos"));
+    let scans = read(&view, cx, |app| app.scans_done);
+    press(cx, "d");
+    if offered {
+        assert_eq!(read(&view, cx, Disktree::sizes), Sizes::Private);
+        assert!(read(&view, cx, |app| app.layout_options.private));
+        assert!(
+            read(&view, cx, |app| app.scan.is_none()),
+            "private weights need no scan"
+        );
+        assert_eq!(read(&view, cx, |app| app.scans_done), scans);
+        draw(cx);
+        press(cx, "d");
+    }
+    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::Apparent);
+    assert!(
+        read(&view, cx, |app| app.scan.is_some()),
+        "apparent rescans"
+    );
+    assert!(!read(&view, cx, |app| app.layout_options.private));
+    finish_scan(&view, cx);
+}
+
+/// A tile shows the other byte figure under its value when it has room
+/// and the two differ: private under an on-disk size, on-disk under a
+/// private one. A tile with no clones shows one figure, as before.
+#[gpui_kit::test]
+fn tiles_give_the_other_byte_figure_a_second_line(cx: &mut TestAppContext) {
+    use disktree_core::sharing::{Allocation, CloneInfo};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+    const MIB: u64 = 1024 * 1024;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let mut root = Draft::directory("fixture");
+        let mut copy = Draft::directory("copy");
+        let mut data = Draft::entry("data", NodeKind::File, 40 * MIB);
+        data.allocation = Some(Box::new(Allocation {
+            bytes: 40 * MIB,
+            identity: None,
+            links: 1,
+            followed: false,
+            clone: Some(CloneInfo {
+                device: 1,
+                id: 3,
+                references: 2,
+                private_bytes: Some(2 * MIB),
+                data_bytes: 40 * MIB,
+            }),
+        }));
+        copy.children.push(data);
+        root.children.push(copy);
+        let mut plain = Draft::directory("plain");
+        plain
+            .children
+            .push(Draft::entry("notes", NodeKind::File, 9 * MIB));
+        root.children.push(plain);
+        let mut root = Tree::from(root);
+        aggregate(&mut root, Metric::Bytes);
+        app.tree = Some(std::sync::Arc::new(root));
+        app.selected = None;
+        app.hovered = None;
+        app.options.apparent_size = false;
+        cx.notify();
+    });
+    draw(cx);
+    let labels = |view: &Entity<Disktree>, cx: &mut Window| {
+        update(view, cx, |app, _| {
+            app.prepare()
+                .labels
+                .into_iter()
+                .map(|label| (label.text, label.size_text, label.detail_text))
+                .collect::<Vec<_>>()
+        })
+    };
+    let find = |labels: &[(String, String, String)], name: &str| {
+        labels
+            .iter()
+            .find(|label| label.0 == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("{name} in {labels:?}"))
+    };
+    let on_disk = labels(&view, cx);
+    let copy = find(&on_disk, "copy");
+    assert_eq!(
+        (copy.1.as_str(), copy.2.as_str()),
+        ("40MiB", "2.0MiB private")
+    );
+    assert_eq!(find(&on_disk, "plain").2, "", "no clones, one figure");
+
+    // Set directly, as a Private choice carried over would be. Only where
+    // Private is offered (a local scan on macOS) do the labels follow it;
+    // elsewhere they stay on disk, as the Sizes menu says.
+    update(&view, cx, |app, cx| {
+        app.layout_options.private = true;
+        cx.notify();
+    });
+    draw(cx);
+    let offered = read(&view, cx, |app| {
+        app.sizes_offered(crate::toolbar::Sizes::Private)
+    });
+    let private = labels(&view, cx);
+    let copy = find(&private, "copy");
+    let expected = if offered {
+        ("2.0MiB", "40MiB on disk")
+    } else {
+        ("40MiB", "2.0MiB private")
+    };
+    assert_eq!((copy.1.as_str(), copy.2.as_str()), expected);
+    assert_eq!(find(&private, "plain").1, "9.0MiB");
+    // A filter that keeps all of a folder shows all of its private part,
+    // of the private total: the figures its tile is weighted by.
+    let filtered = update(&view, cx, |app, _| {
+        let tree = app.tree.clone().expect("tree");
+        let copy = tree.root().child_named("copy").expect("copy");
+        crate::widgets::short_private_share(copy, copy.bytes)
+    });
+    assert_eq!(filtered, "2.0MiB of 2.0MiB");
+}
+
+/// A Private choice made on a Mac does not claim to apply where it is not
+/// offered: an SSH host's tree has no clone facts, so its sizes are on
+/// disk, and the bar must say so.
+#[gpui_kit::test]
+fn sizes_read_on_disk_where_private_is_not_offered(cx: &mut TestAppContext) {
+    use crate::toolbar::Sizes;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = remote_view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.remote = Some("dev".into());
+        app.options.apparent_size = false;
+        app.layout_options.private = true;
+        cx.notify();
+    });
+    assert!(!read(&view, cx, |app| app.sizes_offered(Sizes::Private)));
+    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::OnDisk);
 }

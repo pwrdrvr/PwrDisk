@@ -101,6 +101,7 @@ impl Model {
                 &Request::Ls {
                     path: path.clone(),
                     limit: 0,
+                    by: disktree_link::Rank::Size,
                 },
                 cx,
             ) else {

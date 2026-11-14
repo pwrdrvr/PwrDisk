@@ -140,6 +140,7 @@ pub fn preview(
             dim: false,
             marked: false,
             size_text: crate::widgets::short_value(node, app.options.metric),
+            detail_text: String::new(),
             decoration: decoration.clone(),
         });
         mosaic.tiles.push(decoration);
@@ -738,19 +739,22 @@ fn paint_labels(
                     return;
                 }
                 let room = mask.size.width - (origin.x - mask.origin.x) * 2.;
-                let size_run = TextRun {
-                    len: label.size_text.len(),
-                    font: font.clone(),
-                    color: value_color,
-                    background_color: Some(fill),
-                    ..TextRun::default()
+                let shape_value = |text: String| {
+                    let run = TextRun {
+                        len: text.len(),
+                        font: font.clone(),
+                        color: value_color,
+                        background_color: Some(fill),
+                        ..TextRun::default()
+                    };
+                    text_system.shape_line(
+                        SharedString::from(text),
+                        size_size,
+                        &[run],
+                        None,
+                    )
                 };
-                let size_line = text_system.shape_line(
-                    SharedString::from(label.size_text.clone()),
-                    size_size,
-                    &[size_run],
-                    None,
-                );
+                let size_line = shape_value(label.size_text.clone());
                 // Mixed sizes share the name's baseline, not its box. A line
                 // paints centred in its line height, putting the baseline at
                 // `height / 2 + (ascent - descent) / 2`; equate the two.
@@ -758,41 +762,64 @@ fn paint_labels(
                     + ((line.ascent - line.descent)
                         - (size_line.ascent - size_line.descent))
                         * 0.5;
+                let has_detail = !label.detail_text.is_empty();
                 // A first-level band puts the size at the far end, where the
                 // sizes read as a column; a deeper band follows the name. A
-                // closed tile stacks it under the name when it is tall enough.
+                // closed tile stacks it under the name when it is tall enough,
+                // and the other byte figure under that when there is a third
+                // line's room.
                 let stacked = label.header.is_none()
                     && mask.size.height >= name_line_height * 2.0 + text_inset;
                 if stacked {
+                    let step = name_line_height * 0.92;
                     let _ = size_line.paint(
-                        Point::new(
-                            origin.x,
-                            origin.y + name_line_height * 0.92,
-                        ),
+                        Point::new(origin.x, origin.y + step),
                         name_line_height,
                         TextAlign::Left,
                         None,
                         window,
                         cx,
                     );
+                    if has_detail
+                        && mask.size.height
+                            >= name_line_height * 3.0 + text_inset
+                    {
+                        let _ = shape_value(label.detail_text.clone()).paint(
+                            Point::new(origin.x, origin.y + step * 2.0),
+                            name_line_height,
+                            TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        );
+                    }
                     return;
                 }
-                let size_origin = if label.header.is_some() && label.depth == 0
-                {
-                    Point::new(
-                        mask.origin.x + mask.size.width
-                            - size_line.width()
-                            - text_padding,
-                        baseline,
-                    )
+                // On one line the other figure follows the value, when the
+                // two fit together; otherwise the value alone, as before.
+                let right = mask.origin.x + mask.size.width - text_padding;
+                let after_name = origin.x + line.width() + size_gap;
+                let far_end = label.header.is_some() && label.depth == 0;
+                let joined = has_detail
+                    .then(|| {
+                        shape_value(format!(
+                            "{} \u{b7} {}",
+                            label.size_text, label.detail_text
+                        ))
+                    })
+                    .filter(|joined| after_name + joined.width() <= right);
+                let value_line = joined.as_ref().unwrap_or(&size_line);
+                let size_origin = if far_end {
+                    Point::new(right - value_line.width(), baseline)
                 } else {
-                    if room - line.width() < size_size * 3.0 {
+                    if joined.is_none() && room - line.width() < size_size * 3.0
+                    {
                         return;
                     }
-                    Point::new(origin.x + line.width() + size_gap, baseline)
+                    Point::new(after_name, baseline)
                 };
                 if size_origin.x > origin.x + line.width() + text_padding {
-                    let _ = size_line.paint(
+                    let _ = value_line.paint(
                         size_origin,
                         name_line_height,
                         TextAlign::Left,

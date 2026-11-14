@@ -48,6 +48,13 @@ separately, and do not propose worktrees just to release clone groups.
   how much of the total is listed more than once. Do not present listed
   bytes, or the shared part, as space a clone-backed worktree or copy will
   free. A row without the clause has no clone files.
+- **Look for private bytes first.** On a volume full of clones the largest
+  listings are often almost all shared. `pwrdisk_find` with
+  `by: "private"` (and `min_private_bytes`, `kind: "dir"` as needed) and
+  `pwrdisk_ls` with `by: "private"` rank by what each entry holds alone,
+  so the first rows are what a single removal can hand back. Private bytes
+  are still an estimate before snapshots; confirm a selection with
+  `pwrdisk_estimate`.
 - **Use the selected-set reclaim bounds, not listed bytes.** PwrDisk
   evaluates accepted marks together: a complete clone ID counts shared
   data once toward possible savings only, with a partial estimate. Modified

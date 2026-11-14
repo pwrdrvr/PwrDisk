@@ -1,0 +1,10 @@
+{
+  "size": [1280, 760],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "click", "at": [1010, 20]},
+    {"op": "capture", "name": "sizes-menu.png"},
+    {"op": "click", "at": [832, 110]},
+    {"op": "capture", "name": "private.png"}
+  ]
+}

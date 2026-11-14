@@ -203,11 +203,39 @@ pub struct LsParams {
     pub path: PathBuf,
     /// How many entries to list, largest first. Default 20, at most 200.
     pub limit: Option<usize>,
+    /// `size` (default) ranks children by listed allocation; `private` by
+    /// what each holds alone. On APFS with clones, `private` puts first
+    /// what removing that child alone would hand back.
+    pub by: Option<ListBy>,
     /// Legacy input, accepted without moving the window. Use `pwrdisk_show`
     /// only when the user explicitly asks to see a path.
     #[serde(default)]
     #[schemars(skip)]
     pub show: bool,
+}
+
+/// What `pwrdisk_ls` and `pwrdisk_find` rank by, largest first.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ListBy {
+    /// Listed allocation: everything an entry's files take on disk,
+    /// clone blocks they may share included.
+    #[default]
+    Size,
+    /// Private allocation: what the entry holds alone, outside clone
+    /// blocks other clones may hold, inside the scan or not.
+    Private,
+}
+
+impl From<ListBy> for disktree_link::Rank {
+    fn from(by: ListBy) -> Self {
+        match by {
+            ListBy::Size => Self::Size,
+            ListBy::Private => Self::Private,
+        }
+    }
 }
 
 /// Ranking metric; values remain scan-derived, before retention.
@@ -429,6 +457,13 @@ pub struct FindParams {
     pub kind: Option<KindName>,
     /// Only entries of at least this many bytes.
     pub min_bytes: Option<u64>,
+    /// Only entries holding at least this many bytes alone (private
+    /// allocation). Finds what can be freed without removing every clone
+    /// of an APFS clone group.
+    pub min_private_bytes: Option<u64>,
+    /// `size` (default) lists the largest by listed allocation; `private`
+    /// the largest by what each holds alone.
+    pub by: Option<ListBy>,
     /// Only this kind of data.
     pub category: Option<CategoryName>,
     /// Cleanup candidates: caches, build output, package stores, installed
@@ -453,6 +488,8 @@ impl FindParams {
             path,
             kind: Kind::from(self.kind.unwrap_or_default()).name().to_string(),
             min_bytes: self.min_bytes.unwrap_or(0),
+            min_private_bytes: self.min_private_bytes.unwrap_or(0),
+            by: self.by.unwrap_or_default().into(),
             category: self
                 .category
                 .map(|name| Category::from(name).name().to_string()),
@@ -720,6 +757,7 @@ impl Session {
         let top = match self.call(&Request::Ls {
             path: root.to_path_buf(),
             limit: TOP,
+            by: disktree_link::Rank::Size,
         })? {
             Response::Listing(listing) => listing,
             Response::Error { message } => return Err(message),
@@ -927,12 +965,14 @@ impl Session {
         &mut self,
         path: &Path,
         limit: usize,
+        by: disktree_link::Rank,
     ) -> Result<Listing, String> {
         if self.try_connect() {
             self.window_root_for(path)?;
             return match self.call(&Request::Ls {
                 path: path.to_path_buf(),
                 limit,
+                by,
             })? {
                 Response::Listing(listing) => Ok(listing),
                 Response::Error { message } => Err(message),
@@ -940,12 +980,13 @@ impl Session {
             };
         }
         let found = self.locate(path)?;
-        Ok(Listing::of(
+        Ok(Listing::ranked(
             &found.scan.root,
             found.scan.tree.root().bytes,
             &found.path,
             found.node,
             limit,
+            by,
         ))
     }
 
@@ -1092,7 +1133,8 @@ impl Session {
         let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let now = now();
         let path = self.absolute(&params.path)?;
-        let listing = self.listing(&path, limit)?;
+        let by = params.by.unwrap_or_default();
+        let listing = self.listing(&path, limit, by.into())?;
         let mut out = String::new();
         let _ = writeln!(
             out,
@@ -1111,6 +1153,13 @@ impl Session {
         }
         if let Some(line) = clone_summary(&listing.entry) {
             out.push_str(&line);
+        }
+        if by == ListBy::Private {
+            let _ = writeln!(
+                out,
+                "Ranked by private allocation: {} of it is held alone.",
+                human_bytes(listing.entry.private_bytes())
+            );
         }
         out.push_str(&children(&listing, now));
         if params.show {
@@ -1173,9 +1222,15 @@ impl Session {
             all.matches.extend(found.matches);
             all.count += found.count;
             all.bytes += found.bytes;
+            all.private_bytes += found.private_bytes;
         }
-        all.matches
-            .sort_by_key(|found| std::cmp::Reverse(found.entry.bytes));
+        let by = request.by;
+        all.matches.sort_by_key(|found| {
+            std::cmp::Reverse(match by {
+                disktree_link::Rank::Size => found.entry.bytes,
+                disktree_link::Rank::Private => found.entry.private_bytes(),
+            })
+        });
         all.matches.truncate(request.limit);
         Ok(all)
     }
@@ -1275,6 +1330,7 @@ impl Session {
                 .call(&Request::Ls {
                     path: path.into(),
                     limit: 0,
+                    by: disktree_link::Rank::Size,
                 })
                 .map_err(|e| e.to_string())?
             {
@@ -1635,14 +1691,27 @@ impl Session {
             let _ = writeln!(out, "Nothing under {where_} matches.");
             return Ok(out);
         }
-        let _ = writeln!(
-            out,
-            "{} match{} under {where_}, {} in all; the largest {}:",
-            found.count,
-            if found.count == 1 { "" } else { "es" },
-            human_bytes(found.bytes),
-            found.matches.len(),
-        );
+        if params.by == Some(ListBy::Private) {
+            let _ = writeln!(
+                out,
+                "{} match{} under {where_}, {} in all, {} of it held \
+                 alone; the {} most private:",
+                found.count,
+                if found.count == 1 { "" } else { "es" },
+                human_bytes(found.bytes),
+                human_bytes(found.private_bytes),
+                found.matches.len(),
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "{} match{} under {where_}, {} in all; the largest {}:",
+                found.count,
+                if found.count == 1 { "" } else { "es" },
+                human_bytes(found.bytes),
+                found.matches.len(),
+            );
+        }
         out.push_str(&matches(
             &found.matches,
             found.bytes,
@@ -4084,6 +4153,7 @@ mod tests {
             .ls(&LsParams {
                 path: temp.path().to_path_buf(),
                 limit: Some(2),
+                by: None,
                 show: false,
             })
             .expect("ls");
@@ -4130,6 +4200,7 @@ mod tests {
                 Path::new("fixture"),
                 tree.root(),
                 &filter,
+                query::Order::Size,
                 MAX_LIMIT,
             );
             assert_eq!(found.count, 1);
@@ -4816,7 +4887,7 @@ mod tests {
                     self.root.clone_from(root);
                     Response::State(self.state("explore"))
                 }
-                Request::Ls { path, limit } => {
+                Request::Ls { path, limit, .. } => {
                     let Some((_, node)) =
                         path.strip_prefix(&self.root).ok().and_then(
                             |relative| self.tree.root().descend(relative),
@@ -5428,6 +5499,7 @@ mod tests {
             .ls(&LsParams {
                 path: root.clone(),
                 limit: None,
+                by: None,
                 show: false,
             })
             .expect("ls");
@@ -5475,6 +5547,64 @@ mod tests {
             .expect("mark all");
         assert!(all.contains("estimate: 0 B\u{2013}12 MiB"), "{all}");
         assert!(all.contains("36 MiB of the selection is APFS clone"));
+    }
+
+    /// Three full clones of 12 MiB, private to none of them, beside a
+    /// smaller plain directory that is all its own: by size the clones
+    /// come first, by private only the plain one holds anything.
+    #[test]
+    fn listings_and_searches_rank_by_what_is_held_alone() {
+        const MIB: u64 = 1024 * 1024;
+        let temp = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        let mut session = unlinked(&root);
+        session.store_scan(clone_copies_with_plain(&root, 3, 5 * MIB));
+
+        let first_row = |listing: &str| {
+            ["copy-a", "copy-b", "copy-c", "plain"]
+                .into_iter()
+                .min_by_key(|name| {
+                    listing.find(&format!("{name}/  ")).unwrap_or(usize::MAX)
+                })
+                .expect("a row")
+        };
+        let ls = |session: &mut Session, by| {
+            session
+                .ls(&LsParams {
+                    path: root.clone(),
+                    by,
+                    ..LsParams::default()
+                })
+                .expect("ls")
+        };
+        let by_size = ls(&mut session, None);
+        assert_ne!(first_row(&by_size), "plain", "{by_size}");
+        let by_private = ls(&mut session, Some(ListBy::Private));
+        assert_eq!(first_row(&by_private), "plain", "{by_private}");
+        assert!(
+            by_private.contains("Ranked by private allocation: 5.0 MiB"),
+            "{by_private}"
+        );
+
+        let find = |session: &mut Session, min_private_bytes| {
+            session
+                .find(&FindParams {
+                    path: Some(root.clone()),
+                    kind: Some(KindName::Dir),
+                    by: Some(ListBy::Private),
+                    min_private_bytes,
+                    ..FindParams::default()
+                })
+                .expect("find")
+        };
+        let all = find(&mut session, None);
+        assert!(all.contains("5.0 MiB of it held alone"), "{all}");
+        assert_eq!(first_row(&all), "plain", "{all}");
+        let held = find(&mut session, Some(MIB));
+        assert!(held.starts_with("1 match "), "{held}");
+        assert!(held.contains("plain/"), "{held}");
+        assert!(!held.contains("copy-"), "{held}");
     }
 
     /// Three 10 GiB worktrees sharing all but 100 MiB each. `modified`
@@ -5720,6 +5850,7 @@ mod tests {
             .ls(&LsParams {
                 path: temp.path().join("src"),
                 limit: Some(5),
+                by: None,
                 show: false,
             })
             .expect("ls over the link");
@@ -5840,6 +5971,7 @@ mod tests {
             .ls(&LsParams {
                 path: temp.path().to_path_buf(),
                 limit: Some(10),
+                by: None,
                 show: false,
             })
             .expect("ls");
@@ -5858,6 +5990,7 @@ mod tests {
             .ls(&LsParams {
                 path: temp.path().join(".cache"),
                 limit: Some(10),
+                by: None,
                 show: false,
             })
             .expect("ls");
@@ -5895,6 +6028,7 @@ mod tests {
             .ls(&LsParams {
                 path: temp.path().join("src"),
                 limit: None,
+                by: None,
                 show: true,
             })
             .expect("ls with show");
@@ -6237,6 +6371,7 @@ mod tests {
             .ls(&LsParams {
                 path: temp.path().join("src"),
                 limit: None,
+                by: None,
                 show: true,
             })
             .expect("the listing stands");

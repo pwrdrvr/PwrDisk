@@ -163,9 +163,20 @@ fn ownership_across_roots(
             category: Some(expected),
             ..crate::query::Filter::default()
         };
-        let broad_hits = crate::query::find(&path, subtree, &filter, 100);
-        let narrow_hits =
-            crate::query::find(&path, narrow.root(), &filter, 100);
+        let broad_hits = crate::query::find(
+            &path,
+            subtree,
+            &filter,
+            crate::query::Order::Size,
+            100,
+        );
+        let narrow_hits = crate::query::find(
+            &path,
+            narrow.root(),
+            &filter,
+            crate::query::Order::Size,
+            100,
+        );
         let paths = |hits: crate::query::Found<'_>| {
             hits.matches
                 .into_iter()

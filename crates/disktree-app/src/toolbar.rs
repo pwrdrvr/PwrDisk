@@ -3,6 +3,9 @@
 //! The bar folds by what is changed least: the scan options first (they
 //! apply on the next scan), then history and depth (which have keys), then
 //! Size | Files | Age. The Treemap | List switch never folds.
+//!
+//! Also the Sizes menu, which says what a size counts: on disk, private or
+//! apparent. It sits with the scan options, since one of its three is one.
 
 use gpui_kit::Context;
 
@@ -15,7 +18,7 @@ pub enum BarFit {
     /// Every control in the bar; no ⋮.
     #[default]
     Full,
-    /// Hidden files, Apparent size and the scan workers go in ⋮.
+    /// Hidden files, Sizes and the scan workers go in ⋮.
     Folded,
     /// History and Depth join them.
     Narrow,
@@ -76,13 +79,62 @@ impl BarFit {
             items.extend([MoreItem::Back, MoreItem::Forward, MoreItem::Depth]);
         }
         if !self.shows_scan_options() {
-            items.extend([
-                MoreItem::Hidden,
-                MoreItem::Apparent,
-                MoreItem::Workers,
-            ]);
+            items.push(MoreItem::Hidden);
+            items.extend(Sizes::ALL.map(MoreItem::Sizes));
+            items.push(MoreItem::Workers);
         }
         items
+    }
+}
+
+/// What a size counts, chosen from the Sizes menu or its rows in ⋮.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sizes {
+    /// Allocated blocks: every file's whole allocation, clone blocks it
+    /// may share with other clones included.
+    #[default]
+    OnDisk,
+    /// What each holds alone ([`disktree_core::tree::Node::private_bytes`]).
+    /// The same scan as On disk, weighted differently: no rescan.
+    Private,
+    /// File lengths. A scan of its own, with no clone facts.
+    Apparent,
+}
+
+impl Sizes {
+    pub const ALL: [Self; 3] = [Self::OnDisk, Self::Private, Self::Apparent];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::OnDisk => "On disk",
+            Self::Private => "Private",
+            Self::Apparent => "Apparent",
+        }
+    }
+
+    /// What the choice does, under its name in the menu.
+    pub const fn detail(self) -> &'static str {
+        match self {
+            Self::OnDisk => "Allocated blocks, clones counted in full",
+            Self::Private => "Only what each holds alone. No rescan.",
+            Self::Apparent => "File lengths. Rescans, without clone facts.",
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::OnDisk => "sizes-on-disk",
+            Self::Private => "sizes-private",
+            Self::Apparent => "sizes-apparent",
+        }
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::OnDisk => 0,
+            Self::Private => 1,
+            Self::Apparent => 2,
+        }
     }
 }
 
@@ -96,7 +148,8 @@ pub enum MoreItem {
     /// Depth, adjusted in place with ← → or the row's − and +.
     Depth,
     Hidden,
-    Apparent,
+    /// One of the Sizes menu's choices.
+    Sizes(Sizes),
     /// Opens the Power Efficiency menu in its place.
     Workers,
 }
@@ -107,7 +160,8 @@ impl MoreItem {
         match self {
             Self::Mode(_) => "Measure by",
             Self::Back | Self::Forward | Self::Depth => "View",
-            Self::Hidden | Self::Apparent | Self::Workers => "Scan",
+            Self::Hidden | Self::Workers => "Scan",
+            Self::Sizes(_) => "Sizes",
         }
     }
 }
@@ -130,6 +184,7 @@ impl Disktree {
         // The worker presets open in ⋮'s place; ⋮ then closes them.
         let was_open = self.more_menu.is_some() || self.power_menu.is_some();
         self.power_menu = None;
+        self.sizes_menu = None;
         self.more_menu = if was_open {
             None
         } else {
@@ -159,6 +214,7 @@ impl Disktree {
         match item {
             MoreItem::Back => self.can_go_back(),
             MoreItem::Forward => self.can_go_forward(),
+            MoreItem::Sizes(sizes) => self.sizes_offered(sizes),
             _ => true,
         }
     }
@@ -181,10 +237,119 @@ impl Disktree {
             MoreItem::Forward => self.go_forward(cx),
             MoreItem::Depth => {}
             MoreItem::Hidden => self.toggle_hidden(cx),
-            MoreItem::Apparent => self.toggle_apparent(cx),
+            MoreItem::Sizes(sizes) => self.set_sizes(sizes, cx),
             MoreItem::Workers => self.toggle_power_menu(cx),
         }
         cx.notify();
+    }
+
+    /// What a size counts now. A Private choice made earlier reads as On
+    /// disk where Private is not offered (an SSH host, no clone facts),
+    /// and comes back with a scan that offers it.
+    pub fn sizes(&self) -> Sizes {
+        if self.options.apparent_size {
+            Sizes::Apparent
+        } else if self.layout_options.private
+            && self.sizes_offered(Sizes::Private)
+        {
+            Sizes::Private
+        } else {
+            Sizes::OnDisk
+        }
+    }
+
+    /// Whether `sizes` can be chosen here. Private needs clone facts,
+    /// which only a local scan on macOS with clone metadata gathers;
+    /// anywhere else every private size equals its on-disk one.
+    pub fn sizes_offered(&self, sizes: Sizes) -> bool {
+        sizes != Sizes::Private
+            || (cfg!(target_os = "macos")
+                && self.options.apfs_clone_metadata
+                && self.remote.is_none())
+    }
+
+    /// Count sizes as `sizes`. Between On disk and Private only the weights
+    /// change, so the tree on screen is laid out again; Apparent, or
+    /// leaving it, measures differently and rescans.
+    pub fn set_sizes(&mut self, sizes: Sizes, cx: &mut Context<'_, Self>) {
+        self.sizes_menu = None;
+        if !self.sizes_offered(sizes) {
+            cx.notify();
+            return;
+        }
+        let apparent = sizes == Sizes::Apparent;
+        // The layout is cached by its options, these weights among them,
+        // so the next frame lays the tree out again.
+        self.layout_options.private = sizes == Sizes::Private;
+        if apparent == self.options.apparent_size {
+            cx.notify();
+            return;
+        }
+        self.options.apparent_size = apparent;
+        self.start_scan(cx);
+    }
+
+    /// `d`: the next choice of the Sizes menu this scan can offer.
+    pub fn cycle_sizes(&mut self, cx: &mut Context<'_, Self>) {
+        let at = self.sizes().index();
+        let next = (1..=Sizes::ALL.len())
+            .map(|step| Sizes::ALL[(at + step) % Sizes::ALL.len()])
+            .find(|&sizes| self.sizes_offered(sizes))
+            .unwrap_or_default();
+        self.set_sizes(next, cx);
+    }
+
+    /// Open the Sizes menu on the current choice, or close it.
+    pub fn toggle_sizes_menu(&mut self, cx: &mut Context<'_, Self>) {
+        self.crumb_menu = None;
+        self.power_menu = None;
+        self.more_menu = None;
+        self.sizes_menu = if self.sizes_menu.is_some() {
+            None
+        } else {
+            Some(self.sizes().index())
+        };
+        cx.notify();
+    }
+
+    /// Keys while the Sizes menu is open, as the power menu takes them.
+    /// The arrows step over a choice this scan cannot offer.
+    pub fn on_sizes_key(
+        &mut self,
+        key: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let Some(highlighted) = self.sizes_menu else {
+            return false;
+        };
+        let offered: Vec<usize> = (0..Sizes::ALL.len())
+            .filter(|&index| self.sizes_offered(Sizes::ALL[index]))
+            .collect();
+        let step = |forward: bool| {
+            let next = if forward {
+                offered.iter().find(|&&index| index > highlighted)
+            } else {
+                offered.iter().rev().find(|&&index| index < highlighted)
+            };
+            next.copied().unwrap_or(highlighted)
+        };
+        match key {
+            "down" | "j" => self.sizes_menu = Some(step(true)),
+            "up" | "k" => self.sizes_menu = Some(step(false)),
+            "home" => self.sizes_menu = offered.first().copied(),
+            "end" => self.sizes_menu = offered.last().copied(),
+            "enter" | "space" => {
+                self.set_sizes(Sizes::ALL[highlighted], cx);
+            }
+            "escape" => self.sizes_menu = None,
+            _ => {
+                self.sizes_menu = None;
+                cx.notify();
+                return false;
+            }
+        }
+        cx.notify();
+        true
     }
 
     /// Keys while ⋮ is open, as the sibling and power menus take them. Any
@@ -254,11 +419,17 @@ mod tests {
         assert!(BarFit::Full.more_items().is_empty());
         assert_eq!(
             BarFit::Folded.more_items(),
-            [MoreItem::Hidden, MoreItem::Apparent, MoreItem::Workers]
+            [
+                MoreItem::Hidden,
+                MoreItem::Sizes(Sizes::OnDisk),
+                MoreItem::Sizes(Sizes::Private),
+                MoreItem::Sizes(Sizes::Apparent),
+                MoreItem::Workers
+            ]
         );
-        assert_eq!(BarFit::Narrow.more_items().len(), 6);
+        assert_eq!(BarFit::Narrow.more_items().len(), 8);
         assert_eq!(BarFit::Tight.more_items()[0], MoreItem::Mode(0));
-        assert_eq!(BarFit::Tight.more_items().len(), 9);
+        assert_eq!(BarFit::Tight.more_items().len(), 11);
     }
 
     #[test]
