@@ -7,6 +7,26 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.25.0
+
+- Private sizes - Choose On disk, Private or Apparent from the Sizes menu.
+  For local macOS scans with APFS clone metadata, Private sizes tiles by
+  what each file or folder holds alone, without rescanning. Show both
+  private and on-disk figures where they differ and there is room.
+- Private ranking - Rank the List view, keyboard tile traversal and
+  breadcrumb sibling menu by private size when Private is selected. MCP
+  listings and searches accept `by: "private"`, and searches can filter
+  with `min_private_bytes`. Shared or unknown clone allocation is left out
+  of private size; removal guards and the free-space meter keep their rules.
+- Remembered Sizes - Save On disk or Private for the next launch and carry
+  the active choice through Restart as Administrator. Apparent remains a
+  per-launch scan choice. Use `--sizes on-disk|private|apparent` to override
+  the saved choice for one launch.
+- Usage reports - Preserve a folder's own read errors separately from its
+  children's. Comparisons now keep a missing path's size unknown when the
+  folder's own listing may have hidden it, even if a kept subfolder also
+  had read errors.
+
 ## v0.24.1
 
 - Usage reports - Save a compact folder-level record with `pwrdisk report`
