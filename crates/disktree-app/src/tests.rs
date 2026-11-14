@@ -5049,6 +5049,7 @@ fn mouse_side_buttons_go_back_and_forward(cx: &mut TestAppContext) {
 /// flag it writes is one the command line reads back.
 #[test]
 fn restart_arguments_parse_back_to_the_same_scan() {
+    use crate::toolbar::Sizes;
     use disktree_core::tree::Metric;
     let temp = removable_tempdir();
     let root = temp.path().join("a folder");
@@ -5068,9 +5069,23 @@ fn restart_arguments_parse_back_to_the_same_scan() {
         },
         ..ScanOptions::default()
     };
-    for (options, depth) in [(changed, 5), (ScanOptions::default(), 1)] {
-        let args = crate::state::restart_args(&options, depth, &root);
+    let blocks = ScanOptions {
+        apparent_size: false,
+        ..changed
+    };
+    // Private weights are a Sizes choice, not a scan option: they come
+    // back on the command line too, and under apparent sizes, which have
+    // no private figure, they read as Apparent.
+    for (options, private, depth, sizes) in [
+        (changed, false, 5, Sizes::Apparent),
+        (blocks.clone(), true, 4, Sizes::Private),
+        (blocks, false, 2, Sizes::OnDisk),
+        (ScanOptions::default(), true, 1, Sizes::Private),
+        (ScanOptions::default(), false, 1, Sizes::OnDisk),
+    ] {
+        let args = crate::state::restart_args(&options, private, depth, &root);
         let parsed = crate::parse_args(args.into_iter()).expect("parses");
+        assert_eq!(parsed.sizes, Some(sizes));
         assert_eq!(parsed.root, root);
         assert_eq!(parsed.depth, depth);
         let got = &parsed.options;
@@ -13287,6 +13302,295 @@ fn tiles_give_the_other_byte_figure_a_second_line(cx: &mut TestAppContext) {
         crate::widgets::short_private_share(copy, copy.bytes)
     });
     assert_eq!(filtered, "2.0MiB of 2.0MiB");
+}
+
+/// The Sizes menu remembers On disk or Private for the next launch, as
+/// the Power Efficiency menu remembers its preset, wherever both are
+/// offered. Apparent is not remembered: choosing it keeps the saved
+/// weighing. Nor is On disk where Private is not offered (an SSH host,
+/// clone metadata off), where it is the only weighing on screen. A
+/// choice that cannot be saved still applies, and says it was not saved.
+#[gpui_kit::test]
+fn the_sizes_choice_is_saved_for_the_next_launch(cx: &mut TestAppContext) {
+    use crate::toolbar::{Sizes, load_sizes};
+    cx.update(init);
+    let temp = fixture();
+    let config = tempfile::tempdir().expect("config");
+    let path = config.path().join("pwrdisk/sizes");
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, _| {
+        app.sizes_settings_path = Some(path.clone());
+    });
+    let offered = read(&view, cx, |app| app.sizes_offered(Sizes::Private));
+    // The fixture is scanned with apparent sizes; leaving them rescans.
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::OnDisk, cx));
+    finish_scan(&view, cx);
+    assert_eq!(path.exists(), offered, "saved only where Private is");
+    assert_eq!(load_sizes(&path).expect("saved"), Sizes::OnDisk);
+
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::Private, cx));
+    let weighed = if offered {
+        Sizes::Private
+    } else {
+        Sizes::OnDisk
+    };
+    assert_eq!(load_sizes(&path).expect("saved"), weighed);
+
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::Apparent, cx));
+    finish_scan(&view, cx);
+    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::Apparent);
+    assert_eq!(
+        load_sizes(&path).expect("kept"),
+        weighed,
+        "Apparent is asked for each time"
+    );
+    assert_eq!(read(&view, cx, Disktree::notice), None);
+
+    // Without clone facts On disk is all there is: choosing it keeps the
+    // Private remembered for scans that have them.
+    update(&view, cx, |app, cx| {
+        app.options.apfs_clone_metadata = false;
+        app.set_sizes(Sizes::OnDisk, cx);
+    });
+    finish_scan(&view, cx);
+    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::OnDisk);
+    assert_eq!(load_sizes(&path).expect("kept"), weighed);
+    update(&view, cx, |app, _| app.options.apfs_clone_metadata = true);
+    if !offered {
+        return;
+    }
+
+    // A directory where the file should be: the save fails, the choice
+    // holds for this session, and the notice says so until closed.
+    update(&view, cx, |app, _| {
+        app.sizes_settings_path = Some(config.path().to_owned());
+    });
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::OnDisk, cx));
+    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::OnDisk);
+    let (message, status) =
+        read(&view, cx, Disktree::notice).expect("a notice");
+    assert_eq!(status, gpui_omarchy::Status::Warning);
+    assert!(message.contains("could not be saved"), "{message}");
+}
+
+/// Under private weights the List view, its keys, Tab's walk over the
+/// tiles and the sibling menu rank by what each entry holds alone, as
+/// the tiles are sized, and the list and the menu show that figure. On
+/// disk, every one of them reads the tree's own on-disk order again.
+/// Where Private is not offered nothing changes.
+#[gpui_kit::test]
+fn private_weights_rank_the_list_and_the_sibling_menu(cx: &mut TestAppContext) {
+    use crate::toolbar::Sizes;
+    use disktree_core::sharing::{Allocation, CloneInfo};
+    use disktree_core::size::human_bytes;
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+    const MIB: u64 = 1024 * 1024;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    // On disk: copy (40 MiB, 2 MiB of it its own), plain (9), small (3).
+    // Alone: plain, small, copy.
+    update(&view, cx, |app, cx| {
+        let mut root = Draft::directory("fixture");
+        let mut copy = Draft::directory("copy");
+        let mut data = Draft::entry("data", NodeKind::File, 40 * MIB);
+        data.allocation = Some(Box::new(Allocation {
+            bytes: 40 * MIB,
+            identity: None,
+            links: 1,
+            followed: false,
+            clone: Some(CloneInfo {
+                device: 1,
+                id: 3,
+                references: 2,
+                private_bytes: Some(2 * MIB),
+                data_bytes: 40 * MIB,
+            }),
+        }));
+        copy.children.push(data);
+        root.children.push(copy);
+        for (name, mib) in [("plain", 9), ("small", 3)] {
+            let mut dir = Draft::directory(name);
+            dir.children
+                .push(Draft::entry("notes", NodeKind::File, mib * MIB));
+            root.children.push(dir);
+        }
+        let mut root = Tree::from(root);
+        aggregate(&mut root, Metric::Bytes);
+        app.tree = Some(std::sync::Arc::new(root));
+        app.crumbs = Vec::new();
+        app.selected = None;
+        app.hovered = None;
+        app.options.apparent_size = false;
+        cx.notify();
+    });
+    let offered = read(&view, cx, |app| app.sizes_offered(Sizes::Private));
+    let names = |view: &Entity<Disktree>, cx: &mut Window| {
+        read(view, cx, |app| {
+            let tree = app.tree.clone().expect("tree");
+            let root = tree.root();
+            let listed = app
+                .file_entries()
+                .into_iter()
+                .map(|index| root.children().at(index).name().to_string())
+                .collect::<Vec<_>>();
+            let (rows, _) = app.siblings(&[]);
+            let menu = rows
+                .iter()
+                .map(|row| (row.name.clone(), row.value))
+                .collect::<Vec<_>>();
+            (listed, menu)
+        })
+    };
+    let selected_name = |view: &Entity<Disktree>, cx: &mut Window| {
+        read(view, cx, |app| {
+            let crumbs = app.selected.clone().expect("a selection");
+            app.node_at(&crumbs).expect("node").name().to_string()
+        })
+    };
+    let on_disk = ["copy", "plain", "small"].map(String::from).to_vec();
+    let alone = ["plain", "small", "copy"].map(String::from).to_vec();
+
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::Private, cx));
+    focus_file_list(&view, cx);
+    let (listed, menu) = names(&view, cx);
+    let expected = if offered { &alone } else { &on_disk };
+    assert_eq!(&listed, expected);
+    let menu_names: Vec<String> =
+        menu.iter().map(|(name, _)| name.clone()).collect();
+    assert_eq!(&menu_names, expected, "the menu ranks as the list does");
+    let copy_value = menu
+        .iter()
+        .find(|(name, _)| name == "copy")
+        .map(|(_, value)| *value);
+    assert_eq!(copy_value, Some(if offered { 2 * MIB } else { 40 * MIB }));
+    // The list's keys walk that order: the first Down lands on the
+    // largest, the next on the one after it.
+    press(cx, "down");
+    assert_eq!(selected_name(&view, cx), expected[0]);
+    press(cx, "down");
+    assert_eq!(selected_name(&view, cx), expected[1]);
+    // The row says the figure it is ranked by, and what it takes on disk.
+    let copy_size = read(&view, cx, |app| {
+        let crumbs = vec![0];
+        let node = app.node_at(&crumbs).expect("copy");
+        assert_eq!(node.name(), "copy");
+        app.entry_size(&crumbs, node)
+    });
+    assert_eq!(
+        copy_size,
+        human_bytes(if offered { 2 * MIB } else { 40 * MIB })
+    );
+    if offered {
+        let split = read(&view, cx, |app| {
+            app.node_at(&[0]).and_then(crate::views::on_disk_split)
+        })
+        .expect("a clone split");
+        assert!(split.starts_with(&human_bytes(40 * MIB)), "{split}");
+    }
+    // Tab over the tiles walks the same rank.
+    update(&view, cx, |app, cx| {
+        app.file_list = false;
+        app.selected = None;
+        app.cycle_sibling(1, cx);
+    });
+    assert_eq!(selected_name(&view, cx), expected[0]);
+    update(&view, cx, |app, cx| app.cycle_sibling(1, cx));
+    assert_eq!(selected_name(&view, cx), expected[1]);
+    draw(cx);
+
+    // A filter keeps the rank: "t" passes data and both notes files.
+    focus_file_list(&view, cx);
+    press(cx, "/ t enter");
+    let (listed, _) = names(&view, cx);
+    assert!(read(&view, cx, |app| app.layout_filter().is_some()));
+    assert_eq!(&listed, expected, "filtered, still ranked");
+    press(cx, "escape");
+    // Another directory is ranked afresh, not read from the last one's.
+    update(&view, cx, |app, cx| {
+        let plain = vec![1];
+        assert_eq!(app.node_at(&plain).expect("plain").name(), "plain");
+        app.go_to(plain, cx);
+    });
+    let entries = read(&view, cx, Disktree::file_entries);
+    assert_eq!(entries, [0], "plain holds one file");
+
+    // On disk again: the tree's own order, and on-disk figures.
+    update(&view, cx, |app, cx| {
+        app.go_to(Vec::new(), cx);
+        app.set_sizes(Sizes::OnDisk, cx);
+    });
+    let (listed, menu) = names(&view, cx);
+    assert_eq!(listed, on_disk);
+    assert_eq!(menu[0], ("copy".to_string(), 40 * MIB));
+}
+
+/// The List view follows the selection to the page it ranks on when the
+/// Sizes choice reorders it: a large clone, first on disk, ranks last by
+/// what it holds alone, a page further on.
+#[gpui_kit::test]
+fn the_list_follows_the_selection_when_sizes_rerank_it(
+    cx: &mut TestAppContext,
+) {
+    use crate::file_list::PAGE_SIZE;
+    use crate::toolbar::Sizes;
+    use disktree_core::sharing::{Allocation, CloneInfo};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+    const MIB: u64 = 1024 * 1024;
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let mut root = Draft::directory("fixture");
+        let mut clone = Draft::entry("clone", NodeKind::File, 900 * MIB);
+        clone.allocation = Some(Box::new(Allocation {
+            bytes: 900 * MIB,
+            identity: None,
+            links: 1,
+            followed: false,
+            clone: Some(CloneInfo {
+                device: 1,
+                id: 9,
+                references: 2,
+                private_bytes: Some(0),
+                data_bytes: 900 * MIB,
+            }),
+        }));
+        root.children.push(clone);
+        for index in 0..PAGE_SIZE as u64 + 20 {
+            root.children.push(Draft::entry(
+                format!("file-{index:03}"),
+                NodeKind::File,
+                (index + 1) * MIB,
+            ));
+        }
+        let mut root = Tree::from(root);
+        aggregate(&mut root, Metric::Bytes);
+        app.tree = Some(std::sync::Arc::new(root));
+        app.crumbs = Vec::new();
+        app.options.apparent_size = false;
+        app.file_list = true;
+        let clone = app
+            .tree()
+            .and_then(|tree| {
+                tree.children().iter().position(|c| c.name() == "clone")
+            })
+            .expect("clone");
+        app.selected = Some(vec![clone]);
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.file_page), 0, "first on disk");
+    let offered = read(&view, cx, |app| app.sizes_offered(Sizes::Private));
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::Private, cx));
+    draw(cx);
+    assert_eq!(
+        read(&view, cx, |app| app.file_page),
+        usize::from(offered),
+        "holding nothing alone, it ranks last"
+    );
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::OnDisk, cx));
+    assert_eq!(read(&view, cx, |app| app.file_page), 0);
 }
 
 /// A Private choice made on a Mac does not claim to apply where it is not

@@ -93,6 +93,9 @@ struct Args {
     options: ScanOptions,
     depth: u32,
     power: Option<power::PowerEfficiency>,
+    /// A Sizes choice made on the command line, which wins over the saved
+    /// one for this launch without replacing it.
+    sizes: Option<toolbar::Sizes>,
 }
 
 const USAGE: &str = "\
@@ -126,6 +129,9 @@ selected tile, Enter opens it, c reviews the marked list, ? lists every key.
 
 options:
   -a, --apparent-size   measure apparent length instead of allocated blocks
+      --sizes SIZES     on-disk, private (what each holds alone, beside APFS
+                        clones) or apparent; defaults to the last On disk or
+                        Private chosen
   -l, --follow-links    follow symlinks (local scans only)
   -H, --no-hidden       skip dotfiles and dot-directories
   -D, --disk            scan the whole disk the home directory is on
@@ -235,6 +241,8 @@ fn run() -> Result<()> {
         _ => {}
     }
     let args = parse_args_with_power(std::env::args_os().skip(1), saved)?;
+    let private_sizes =
+        private_at_launch(&args, toolbar::sizes_settings_path().as_deref());
 
     if args.check {
         let host = args
@@ -401,6 +409,9 @@ fn run() -> Result<()> {
                                 )
                             };
                             app.power_choice = args.power;
+                            // Read where Private is offered, and kept for
+                            // a scan that offers it where it is not.
+                            app.layout_options.private = private_sizes;
                             app
                         })
                     },
@@ -482,6 +493,22 @@ fn extract_scanner() -> Result<bool> {
     Ok(true)
 }
 
+/// Whether this launch weighs sizes as private: the command line's Sizes
+/// choice, else the one saved at `saved`. Apparent sizes have no private
+/// figure, so `-a` turns a saved Private off for this launch, without
+/// replacing it.
+fn private_at_launch(args: &Args, saved: Option<&std::path::Path>) -> bool {
+    let sizes = args.sizes.unwrap_or_else(|| {
+        saved
+            .map_or(Ok(toolbar::Sizes::OnDisk), toolbar::load_sizes)
+            .unwrap_or_else(|error| {
+                eprintln!("Cannot load Sizes: {error}; using On disk");
+                toolbar::Sizes::OnDisk
+            })
+    });
+    sizes == toolbar::Sizes::Private && !args.options.apparent_size
+}
+
 /// Read the command line, program name already skipped.
 #[cfg(test)]
 fn parse_args(args: impl Iterator<Item = std::ffi::OsString>) -> Result<Args> {
@@ -498,6 +525,7 @@ fn parse_args_with_power(
         ..ScanOptions::default()
     };
     let mut power = Some(preset);
+    let mut sizes = None;
     let mut depth = 3_u32;
     let mut disk = false;
     // `std::env::args` panics on a name that is not Unicode, and a path is
@@ -525,7 +553,22 @@ fn parse_args_with_power(
                 println!("{USAGE}");
                 std::process::exit(0);
             }
-            "-a" | "--apparent-size" => options.apparent_size = true,
+            "-a" | "--apparent-size" => {
+                options.apparent_size = true;
+                sizes = Some(toolbar::Sizes::Apparent);
+            }
+            "--sizes" => {
+                let value = text(args.next(), "--sizes needs a choice")?;
+                let chosen =
+                    toolbar::Sizes::parse(&value).with_context(|| {
+                        format!(
+                            "unknown sizes {value}; try on-disk, private or \
+                         apparent"
+                        )
+                    })?;
+                options.apparent_size = chosen == toolbar::Sizes::Apparent;
+                sizes = Some(chosen);
+            }
             "-l" | "--follow-links" => options.follow_links = true,
             "-H" | "--no-hidden" => options.include_hidden = false,
             // Staying on one volume is the default; the flag is kept so
@@ -640,6 +683,7 @@ fn parse_args_with_power(
             check,
             choose_root,
             power,
+            sizes,
             options,
             depth,
         });
@@ -681,6 +725,7 @@ fn parse_args_with_power(
         options,
         depth: depth.clamp(1, 6),
         power,
+        sizes,
     })
 }
 
@@ -843,6 +888,57 @@ mod argument_tests {
         assert!(
             parse_args(arguments(&["--power-efficiency", "invalid"])).is_err()
         );
+    }
+
+    /// `--sizes` and `-a` choose for this launch; without either the saved
+    /// choice holds, and nothing on the command line replaces it. A saved
+    /// Private is off under apparent sizes, which have no private figure.
+    #[test]
+    fn sizes_come_from_the_command_line_else_the_saved_choice() {
+        use toolbar::Sizes;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sizes");
+        let launch = |flags: &[&str]| {
+            let args = parse_args(arguments(flags)).expect("parses");
+            (args.sizes, private_at_launch(&args, Some(&path)))
+        };
+        assert_eq!(launch(&[]), (None, false), "nothing saved: on disk");
+        toolbar::save_sizes(&path, Sizes::Private).expect("save");
+        assert_eq!(launch(&[]), (None, true));
+        assert_eq!(launch(&["-a"]), (Some(Sizes::Apparent), false));
+        assert_eq!(
+            launch(&["--sizes", "on-disk"]),
+            (Some(Sizes::OnDisk), false)
+        );
+        assert_eq!(toolbar::load_sizes(&path).expect("kept"), Sizes::Private);
+        toolbar::save_sizes(&path, Sizes::OnDisk).expect("save");
+        assert_eq!(
+            launch(&["--sizes", "private"]),
+            (Some(Sizes::Private), true)
+        );
+        // The last of -a and --sizes wins, as with any repeated option.
+        assert_eq!(
+            launch(&["--sizes", "private", "-a"]),
+            (Some(Sizes::Apparent), false)
+        );
+        let args =
+            parse_args(arguments(&["--sizes", "apparent"])).expect("parses");
+        assert!(args.options.apparent_size);
+        let args = parse_args(arguments(&["-a", "--sizes", "private"]))
+            .expect("parses");
+        assert!(
+            !args.options.apparent_size,
+            "--sizes private measures blocks"
+        );
+        assert!(parse_args(arguments(&["--sizes", "logical"])).is_err());
+        assert!(parse_args(arguments(&["--sizes"])).is_err());
+        // An unreadable choice is On disk, never a failed launch.
+        std::fs::write(&path, "sideways\n").expect("corrupt");
+        assert_eq!(launch(&[]), (None, false));
+        assert!(!private_at_launch(
+            &parse_args(arguments(&[])).expect("parses"),
+            None
+        ));
     }
 
     // APFS rejects these filename bytes; Linux filesystems permit them.

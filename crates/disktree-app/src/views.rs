@@ -1551,7 +1551,11 @@ fn sibling_menu(
                 .py(space::XS)
                 .text_size(text::CAPTION)
                 .text_color(theme.secondary.opacity(0.8))
-                .child(format!("Siblings in {parent_name}")),
+                .child(if app.private_weights() {
+                    format!("Siblings in {parent_name}, by private size")
+                } else {
+                    format!("Siblings in {parent_name}")
+                }),
         );
     for (row_index, row) in rows.into_iter().enumerate() {
         let current =
@@ -3723,8 +3727,7 @@ fn selection_section(
 
     // With private weights the card leads with the figure the tile is
     // sized by; the clone split under it still gives both.
-    let private = app.options.metric == Metric::Bytes
-        && app.sizes() == crate::toolbar::Sizes::Private;
+    let private = app.private_weights();
     let (mut number, mut unit) = match app.options.metric {
         Metric::Bytes if private => {
             let (number, unit) =
@@ -7640,6 +7643,20 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
 /// scans show nothing new. Tile weights stay the allocated bytes.
 pub fn clone_split(node: disktree_core::tree::Node<'_>) -> Option<String> {
     disktree_link::Clones::of(node)?.split()
+}
+
+/// [`clone_split`] where the private figure already leads: what the entry
+/// takes on disk and how much of that other clones may hold. `None`
+/// without clone blocks, where both figures are the same.
+pub fn on_disk_split(node: disktree_core::tree::Node<'_>) -> Option<String> {
+    let clones = disktree_link::Clones::of(node)?;
+    (clones.shared > 0).then(|| {
+        format!(
+            "{} on disk \u{00b7} {} shared with other APFS clones",
+            human_bytes(node.bytes),
+            human_bytes(clones.shared)
+        )
+    })
 }
 
 /// Both ends are scan-derived; the meter uses the lower bound only.

@@ -309,6 +309,29 @@ fn place_children(
     }
 }
 
+/// `node`'s children by index, largest private size first, or `None`
+/// when the tree's own order already is that rank.
+///
+/// Lists and menus rank by the weights the mosaic is drawn with, so under
+/// private weights the first entry is the largest tile. The tree is not
+/// reordered for it: crumbs, marks, history and a linked agent's view all
+/// read the tree's order, and moving between On disk and Private must not
+/// renumber them. Ties keep the tree's order, which is the on-disk rank,
+/// so equal private sizes still read largest on disk first. `None` lets
+/// a caller keep its index-is-position fast path, which is every
+/// directory without clones beneath it.
+pub fn private_rank(node: Node<'_>) -> Option<Vec<usize>> {
+    let weights: Vec<u64> =
+        node.children().iter().map(Node::private_bytes).collect();
+    if weights.is_sorted_by(|left, right| left >= right) {
+        return None;
+    }
+    let mut order: Vec<usize> = (0..weights.len()).collect();
+    // Stable, so ties keep the tree's order.
+    order.sort_by_key(|&index| std::cmp::Reverse(weights[index]));
+    Some(order)
+}
+
 /// The private part of `kept` of `node`'s bytes.
 ///
 /// A filter records only the bytes it kept, not which files, so they are
@@ -520,6 +543,42 @@ mod tests {
                     "{} drawn {drawn}, holds {share}",
                     node.name()
                 );
+            }
+        }
+
+        /// The private rank is a permutation of the children, largest
+        /// private size first, ties in the tree's order; and `None` only
+        /// where the tree's order already is exactly that. Checked at
+        /// every directory, against a sort of (private size, index)
+        /// pairs written out here as the oracle.
+        #[test]
+        fn the_private_rank_orders_by_what_each_holds_alone(
+            spec in crate::test_clones::dir(),
+        ) {
+            let tree = spec.tree();
+            let mut stack = vec![tree.root()];
+            while let Some(node) = stack.pop() {
+                let children = node.children();
+                let mut oracle: Vec<(std::cmp::Reverse<u64>, usize)> =
+                    children
+                        .iter()
+                        .enumerate()
+                        .map(|(index, child)| {
+                            (std::cmp::Reverse(child.private_bytes()), index)
+                        })
+                        .collect();
+                oracle.sort_unstable();
+                let expected: Vec<usize> =
+                    oracle.into_iter().map(|(_, index)| index).collect();
+                let identity: Vec<usize> = (0..children.len()).collect();
+                match private_rank(node) {
+                    None => proptest::prop_assert_eq!(&identity, &expected),
+                    Some(order) => {
+                        proptest::prop_assert_ne!(&identity, &expected);
+                        proptest::prop_assert_eq!(order, expected);
+                    }
+                }
+                stack.extend(children.iter().filter(|child| child.is_dir()));
             }
         }
 

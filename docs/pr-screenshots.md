@@ -122,7 +122,9 @@ The simulated clock still advances tooltip delays and other timed tasks.
 
 Setup hooks are `legend` with a `kind` (the core category name, such as
 `code`, `cache`, `media` or `documents`), `select` or `mark` with a relative
-POSIX fixture `path`, and `review`, `file_list` or `help` without arguments.
+POSIX fixture `path`, `crumb_menu` with the `path` of a directory to go into
+and open its crumb's sibling menu, and `review`, `file_list` or `help`
+without arguments.
 `legend` cycles that category as a click does. Marks obey the normal guards
 and capacity limit; a refused mark fails the scenario. Setup does not
 confirm removal. Never use clicks to approve removal, open the source
