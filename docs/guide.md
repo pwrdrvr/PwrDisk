@@ -299,8 +299,9 @@ scroll within long wrapped lines, while Up/Down selects lines for copying.
   - **Apparent** (what `ls -l` shows): file lengths. It is a scan of its
     own, so choosing it, or leaving it, rescans; it has no clone facts.
 
-  On disk or Private is remembered for the next launch, and carried
-  through Restart as Administrator. Apparent is not remembered: it
+  On disk or Private is remembered for the next launch where Private is
+  offered (choosing On disk on an SSH host keeps a remembered Private),
+  and carried through Restart as Administrator. Apparent is not remembered: it
   measures something else, so it is asked for each time, from the menu or
   with `--apparent-size`. `--sizes on-disk|private|apparent` chooses for
   one launch without changing what is remembered.

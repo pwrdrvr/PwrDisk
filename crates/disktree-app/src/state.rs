@@ -2391,11 +2391,15 @@ impl Disktree {
     /// private weights, or `None` for the tree's own order: no private
     /// weights, or a directory they do not reorder.
     pub fn private_list_rank(&self) -> Option<Rc<[usize]>> {
+        let mut cached = self.list_rank.borrow_mut();
         if !self.private_weights() {
+            // Let go of a large directory's order once it is not shown.
+            if cached.order.is_some() {
+                *cached = ListRank::default();
+            }
             return None;
         }
         let tree = self.tree.as_ref()?;
-        let mut cached = self.list_rank.borrow_mut();
         if cached.tree.as_ptr() != Arc::as_ptr(tree)
             || cached.crumbs != self.crumbs
         {
@@ -3008,12 +3012,20 @@ impl Disktree {
         let Some(node) = self.node_at(&parent) else {
             return Vec::new();
         };
-        let order = self
-            .private_weights()
-            .then(|| disktree_core::treemap::private_rank(node))
-            .flatten()
-            .unwrap_or_else(|| (0..node.children().len()).collect());
+        // The current directory's rank is the List view's, already kept.
+        let order: Option<Rc<[usize]>> = if parent == self.crumbs {
+            self.private_list_rank()
+        } else {
+            self.private_weights()
+                .then(|| disktree_core::treemap::private_rank(node))
+                .flatten()
+                .map(Rc::from)
+        };
         order
+            .map_or_else(
+                || (0..node.children().len()).collect(),
+                |order| order.to_vec(),
+            )
             .into_iter()
             .map(|index| {
                 let mut crumbs = parent.clone();

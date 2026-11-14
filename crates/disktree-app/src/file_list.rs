@@ -121,21 +121,20 @@ impl Disktree {
         };
         let children = node.children();
         let rank = self.private_list_rank();
-        let order = || -> Box<dyn Iterator<Item = usize> + '_> {
-            match rank.as_deref() {
-                Some(rank) => Box::new(rank.iter().copied()),
-                None => Box::new(0..children.len()),
-            }
+        let order: Box<dyn Iterator<Item = usize> + '_> = match rank.as_deref()
+        {
+            Some(rank) => Box::new(rank.iter().copied()),
+            None => Box::new(0..children.len()),
         };
         let Some(filter) = self.layout_filter() else {
-            return order().collect();
+            return order.collect();
         };
         // One buffer for every child: under a filter this runs per frame,
         // in directories that can hold millions of files.
         let mut crumbs = self.crumbs.clone();
         crumbs.push(0);
         let last = crumbs.len() - 1;
-        order()
+        order
             .filter(|index| {
                 crumbs[last] = *index;
                 filter.keep_at(&crumbs, children.at(*index)).is_some()
@@ -153,6 +152,27 @@ impl Disktree {
             Some(Rc::from(self.file_entries()))
         } else {
             self.private_list_rank()
+        }
+    }
+
+    /// Turn the list to the page that shows the selection, after its
+    /// order changed under it. A selection outside this directory, or
+    /// none, leaves the page as it is.
+    pub fn follow_selection_page(&mut self) {
+        let Some(&index) = self.selected.as_ref().and_then(|crumbs| {
+            (crumbs.len() == self.crumbs.len() + 1
+                && crumbs.starts_with(&self.crumbs))
+            .then(|| crumbs.last())
+            .flatten()
+        }) else {
+            return;
+        };
+        let position = self.listed_entries().map_or(Some(index), |entries| {
+            entries.iter().position(|&entry| entry == index)
+        });
+        if let Some(position) = position {
+            self.file_page = position / PAGE_SIZE;
+            self.file_scroll.scroll_to_item(position % PAGE_SIZE);
         }
     }
 
@@ -235,6 +255,7 @@ pub fn list(
             .child("No entries in this directory or filter"),
         );
     }
+    let private = app.private_weights();
     for position in start..end {
         let index = entries
             .as_ref()
@@ -255,7 +276,6 @@ pub fn list(
             .matches
             .as_ref()
             .is_some_and(|m| m.keep_at(&crumbs, node).is_none());
-        let private = app.private_weights();
         let mut size = app.entry_size(&crumbs, node);
         // Clone blocks are not what removing the entry frees; say so
         // where the size is read, and nowhere when there are none. Under

@@ -345,6 +345,9 @@ impl Disktree {
         // so the next frame lays the tree out again.
         self.layout_options.private = sizes == Sizes::Private;
         if apparent == self.options.apparent_size {
+            // The list ranks by these weights too: keep its page on the
+            // selection, wherever it now ranks.
+            self.follow_selection_page();
             cx.notify();
             return;
         }
@@ -355,7 +358,14 @@ impl Disktree {
     /// Save a Sizes choice for the next launch, as the Power Efficiency
     /// preset is. Said only when it could not be: the choice itself shows
     /// in the bar. No settings directory is a session-only setting.
+    ///
+    /// Only where Private is offered: elsewhere On disk is the only
+    /// weighing on screen, and choosing it says nothing about a Private
+    /// remembered for local scans on this Mac.
     fn remember_sizes(&mut self, sizes: Sizes, cx: &mut Context<'_, Self>) {
+        if !self.sizes_offered(Sizes::Private) {
+            return;
+        }
         let Some(path) = self.sizes_settings_path.as_deref() else {
             return;
         };

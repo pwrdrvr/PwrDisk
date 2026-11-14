@@ -60,25 +60,12 @@ pub enum Step {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum State {
-    SizeUnits {
-        units: String,
-    },
-    Legend {
-        kind: String,
-    },
-    Select {
-        path: String,
-    },
-    /// Go into the directory at `path` and open its crumb's sibling menu.
-    CrumbMenu {
-        path: String,
-    },
-    Mark {
-        path: String,
-    },
-    Removed {
-        path: String,
-    },
+    SizeUnits { units: String },
+    Legend { kind: String },
+    Select { path: String },
+    CrumbMenu { path: String },
+    Mark { path: String },
+    Removed { path: String },
     Review,
     PermanentReview,
     CleanupReview,
