@@ -6,8 +6,14 @@
 //!
 //! Also the Sizes menu, which says what a size counts: on disk, private or
 //! apparent. It sits with the scan options, since one of its three is one.
+//! On disk or Private is remembered between launches; Apparent is not
+//! (see [`save_sizes`]).
+
+use std::io;
+use std::path::{Path, PathBuf};
 
 use gpui_kit::Context;
+use gpui_omarchy::Status;
 
 use crate::state::Disktree;
 
@@ -136,6 +142,54 @@ impl Sizes {
             Self::Apparent => 2,
         }
     }
+
+    /// The choice as `--sizes` and the saved setting spell it.
+    pub const fn flag(self) -> &'static str {
+        match self {
+            Self::OnDisk => "on-disk",
+            Self::Private => "private",
+            Self::Apparent => "apparent",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|sizes| sizes.flag() == value)
+    }
+}
+
+/// Where the Sizes choice is kept, beside the Power Efficiency preset.
+pub fn sizes_settings_path() -> Option<PathBuf> {
+    crate::power::config_base().map(|base| base.join("pwrdisk/sizes"))
+}
+
+/// The remembered Sizes choice: On disk when none was saved.
+pub fn load_sizes(path: &Path) -> io::Result<Sizes> {
+    match std::fs::read_to_string(path) {
+        Ok(value) => match Sizes::parse(value.trim()) {
+            Some(Sizes::Apparent) | None => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unknown Sizes choice",
+            )),
+            Some(sizes) => Ok(sizes),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(Sizes::OnDisk)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Remember `sizes` for the next launch. Only On disk and Private are
+/// kept: they weigh one block scan two ways, while Apparent measures
+/// something else, file lengths without clone facts, and that is asked
+/// for each time (`--apparent-size`, or the menu) rather than carried
+/// into every later launch unseen. Choosing it keeps the saved weighing,
+/// which a launch without it comes back to.
+pub fn save_sizes(path: &Path, sizes: Sizes) -> io::Result<()> {
+    if sizes == Sizes::Apparent {
+        return Ok(());
+    }
+    crate::power::write_setting(path, sizes.flag())
 }
 
 /// One row of the ⋮ menu.
@@ -258,6 +312,14 @@ impl Disktree {
         }
     }
 
+    /// Whether sizes read as private now: Private is chosen and offered,
+    /// and sizes are bytes, the only measure with a private figure.
+    /// Everything ranked or shown by size follows this, as the tiles do.
+    pub fn private_weights(&self) -> bool {
+        self.options.metric == disktree_core::tree::Metric::Bytes
+            && self.sizes() == Sizes::Private
+    }
+
     /// Whether `sizes` can be chosen here. Private needs clone facts,
     /// which only a local scan on macOS with clone metadata gathers;
     /// anywhere else every private size equals its on-disk one.
@@ -277,6 +339,7 @@ impl Disktree {
             cx.notify();
             return;
         }
+        self.remember_sizes(sizes, cx);
         let apparent = sizes == Sizes::Apparent;
         // The layout is cached by its options, these weights among them,
         // so the next frame lays the tree out again.
@@ -287,6 +350,25 @@ impl Disktree {
         }
         self.options.apparent_size = apparent;
         self.start_scan(cx);
+    }
+
+    /// Save a Sizes choice for the next launch, as the Power Efficiency
+    /// preset is. Said only when it could not be: the choice itself shows
+    /// in the bar. No settings directory is a session-only setting.
+    fn remember_sizes(&mut self, sizes: Sizes, cx: &mut Context<'_, Self>) {
+        let Some(path) = self.sizes_settings_path.as_deref() else {
+            return;
+        };
+        if let Err(error) = save_sizes(path, sizes) {
+            self.say_until_closed(
+                format!(
+                    "{} for now, but it could not be saved: {error}",
+                    sizes.name()
+                ),
+                Status::Warning,
+                cx,
+            );
+        }
     }
 
     /// `d`: the next choice of the Sizes menu this scan can offer.
@@ -430,6 +512,35 @@ mod tests {
         assert_eq!(BarFit::Narrow.more_items().len(), 8);
         assert_eq!(BarFit::Tight.more_items()[0], MoreItem::Mode(0));
         assert_eq!(BarFit::Tight.more_items().len(), 11);
+    }
+
+    /// On disk and Private come back as saved; Apparent is never written,
+    /// so choosing it keeps the weighing saved before, and a file that
+    /// names it, or anything else, is reported rather than read.
+    #[test]
+    fn the_saved_sizes_are_a_weighing_never_apparent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config/sizes");
+        assert_eq!(load_sizes(&path).expect("missing"), Sizes::OnDisk);
+        save_sizes(&path, Sizes::Apparent).expect("nothing to write");
+        assert!(!path.exists(), "Apparent is not remembered");
+        for sizes in [Sizes::Private, Sizes::OnDisk, Sizes::Private] {
+            save_sizes(&path, sizes).expect("save");
+            assert_eq!(load_sizes(&path).expect("load"), sizes);
+        }
+        save_sizes(&path, Sizes::Apparent).expect("nothing to write");
+        assert_eq!(load_sizes(&path).expect("kept"), Sizes::Private);
+        for corrupt in ["apparent", "sizes-private", ""] {
+            std::fs::write(&path, corrupt).expect("corrupt");
+            assert_eq!(
+                load_sizes(&path).expect_err(corrupt).kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        assert!(save_sizes(dir.path(), Sizes::Private).is_err());
+        for sizes in Sizes::ALL {
+            assert_eq!(Sizes::parse(sizes.flag()), Some(sizes));
+        }
     }
 
     #[test]

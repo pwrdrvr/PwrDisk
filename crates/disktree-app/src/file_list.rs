@@ -4,6 +4,7 @@ use crate::semantics::AccessibleButton as _;
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::rc::Rc;
 
 use disktree_core::filter::Keep;
 use disktree_core::size::human_bytes;
@@ -49,11 +50,10 @@ fn entry_semantics(
 
 impl Disktree {
     pub fn file_turn_page(&mut self, step: isize, cx: &mut Context<'_, Self>) {
-        let entries =
-            self.layout_filter().is_some().then(|| self.file_entries());
+        let entries = self.listed_entries();
         let count = entries.as_ref().map_or_else(
             || self.current().map_or(0, |node| node.children().len()),
-            Vec::len,
+            |entries| entries.len(),
         );
         if count == 0 {
             return;
@@ -91,34 +91,51 @@ impl Disktree {
 
     /// An entry's size as its row says it. A partly shown folder says what
     /// passed and what it holds in all, as its tile does: "48 MiB of 196
-    /// MiB".
+    /// MiB". Under private weights both are private, as the tile's are.
     pub fn entry_size(
         &self,
         crumbs: &[usize],
         node: disktree_core::tree::Node<'_>,
     ) -> String {
+        let private = self.private_weights();
         match self.layout_filter().and_then(|m| m.keep(crumbs)) {
+            Some(Keep::Partial { bytes, .. }) if private => format!(
+                "{} of {}",
+                human_bytes(disktree_core::treemap::private_share(bytes, node)),
+                human_bytes(node.private_bytes())
+            ),
             Some(Keep::Partial { bytes, .. }) => {
                 format!("{} of {}", human_bytes(bytes), human_bytes(node.bytes))
             }
+            _ if private => human_bytes(node.private_bytes()),
             _ => human_bytes(node.bytes),
         }
     }
 
+    /// The current directory's entries, by child index, in the order the
+    /// list shows them: largest first by what sizes the tiles, and under a
+    /// filter only what it keeps.
     pub fn file_entries(&self) -> Vec<usize> {
         let Some(node) = self.current() else {
             return Vec::new();
         };
         let children = node.children();
+        let rank = self.private_list_rank();
+        let order = || -> Box<dyn Iterator<Item = usize> + '_> {
+            match rank.as_deref() {
+                Some(rank) => Box::new(rank.iter().copied()),
+                None => Box::new(0..children.len()),
+            }
+        };
         let Some(filter) = self.layout_filter() else {
-            return (0..children.len()).collect();
+            return order().collect();
         };
         // One buffer for every child: under a filter this runs per frame,
         // in directories that can hold millions of files.
         let mut crumbs = self.crumbs.clone();
         crumbs.push(0);
         let last = crumbs.len() - 1;
-        (0..children.len())
+        order()
             .filter(|index| {
                 crumbs[last] = *index;
                 filter.keep_at(&crumbs, children.at(*index)).is_some()
@@ -126,12 +143,24 @@ impl Disktree {
             .collect()
     }
 
+    /// [`Self::file_entries`] where the list needs a buffer, or `None` for
+    /// every child in the tree's order: unfiltered navigation then needs
+    /// only the visible page, even in a directory with millions of
+    /// zero-weight files that the mosaic cannot draw. Unfiltered under
+    /// private weights the ranking is shared, not copied.
+    pub fn listed_entries(&self) -> Option<Rc<[usize]>> {
+        if self.layout_filter().is_some() {
+            Some(Rc::from(self.file_entries()))
+        } else {
+            self.private_list_rank()
+        }
+    }
+
     pub fn file_step(&mut self, step: isize, cx: &mut Context<'_, Self>) {
-        let entries =
-            self.layout_filter().is_some().then(|| self.file_entries());
+        let entries = self.listed_entries();
         let count = entries.as_ref().map_or_else(
             || self.current().map_or(0, |node| node.children().len()),
-            Vec::len,
+            |entries| entries.len(),
         );
         if count == 0 {
             return;
@@ -172,12 +201,10 @@ pub fn list(
 ) -> Stateful<Div> {
     let compact = compact(window, app.rem);
     let theme = cx.omarchy();
-    // Unfiltered navigation needs only the visible page, even in a directory
-    // with millions of zero-weight files that the mosaic cannot draw.
-    let entries = app.layout_filter().is_some().then(|| app.file_entries());
+    let entries = app.listed_entries();
     let count = entries.as_ref().map_or_else(
         || app.current().map_or(0, |node| node.children().len()),
-        Vec::len,
+        |entries| entries.len(),
     );
     let page = app.file_page.min(count.saturating_sub(1) / PAGE_SIZE);
     let start = page * PAGE_SIZE;
@@ -228,10 +255,20 @@ pub fn list(
             .matches
             .as_ref()
             .is_some_and(|m| m.keep_at(&crumbs, node).is_none());
-        let size = app.entry_size(&crumbs, node);
+        let private = app.private_weights();
+        let mut size = app.entry_size(&crumbs, node);
         // Clone blocks are not what removing the entry frees; say so
-        // where the size is read, and nowhere when there are none.
-        let split = crate::views::clone_split(node);
+        // where the size is read, and nowhere when there are none. Under
+        // private weights the private figure leads, as on its tile, and
+        // the split says what it takes on disk instead.
+        let split = if private {
+            crate::views::on_disk_split(node)
+        } else {
+            crate::views::clone_split(node)
+        };
+        if private && split.is_some() {
+            size.push_str(" private");
+        }
         let clones = split
             .as_ref()
             .map_or_else(String::new, |split| format!(" · {split}"));
@@ -243,7 +280,11 @@ pub fn list(
             path.display(),
             if node.is_dir() { "directory" } else { "file" },
             size,
-            node.bytes,
+            if private {
+                node.private_bytes()
+            } else {
+                node.bytes
+            },
             spoken,
             node.category.label(),
             crate::widgets::ago(crate::state::now_seconds(), node.modified),

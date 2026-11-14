@@ -294,8 +294,16 @@ scroll within long wrapped lines, while Up/Down selects lines for copying.
     back. It is the same scan, weighted differently, so it needs no rescan.
     Where a tile's private size differs from its size on disk and there is
     room, the other figure is shown on a second line, either way round.
+    The List view, its arrow keys, Tab over the tiles and a crumb's sibling
+    menu rank by private size too, and the list and the menu show it.
   - **Apparent** (what `ls -l` shows): file lengths. It is a scan of its
     own, so choosing it, or leaving it, rescans; it has no clone facts.
+
+  On disk or Private is remembered for the next launch, and carried
+  through Restart as Administrator. Apparent is not remembered: it
+  measures something else, so it is asked for each time, from the menu or
+  with `--apparent-size`. `--sizes on-disk|private|apparent` chooses for
+  one launch without changing what is remembered.
 - **Hardlinks once.** Two names for one inode cost one file.
 - **Hidden entries included**, because `~/.cache` is often the biggest thing in
   a home directory. Symlinks are not followed.

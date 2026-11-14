@@ -2,9 +2,14 @@
 # Private sizes: three invented worktrees that are APFS clones of one
 # another, two with a little data of their own, beside the usual fixture.
 # Before and after of the explore screen, then the Sizes menu and private
-# weights, which only the after build has.
+# weights, which only the after build has. With a SCENARIO, before and
+# after of that one instead, over the same fixture: private-ranking.json
+# is the List view and the sibling menu with Private chosen.
 set -euo pipefail
-[[ $# == 1 ]] || { echo "usage: $0 OUTPUT_DIR" >&2; exit 1; }
+[[ $# == 1 || $# == 2 ]] || {
+    echo "usage: $0 OUTPUT_DIR [SCENARIO]" >&2
+    exit 1
+}
 scripts=$(cd "$(dirname "$0")" && pwd)
 if [[ -z ${PWRDISK_FIXTURE_ROOT:-} ]]; then
     exec "$scripts/fixtures.sh" bash "$0" "$@"
@@ -29,5 +34,9 @@ dd if=/dev/urandom of="$trees/feature-a/build.out" bs=1048576 count=12 \
 dd if=/dev/urandom of="$trees/feature-b/build.out" bs=1048576 count=3 \
     2>/dev/null
 find "$trees" -exec touch -t 202401011200 {} +
+if [[ $# == 2 ]]; then
+    "$scripts/pair.sh" "$2" "$1"
+    exit
+fi
 "$scripts/pair.sh" "$scripts/private-sizes.json" "$1"
 "$scripts/render.sh" "$scripts/private-sizes-menu.json" "$1/after"

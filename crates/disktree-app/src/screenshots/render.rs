@@ -415,6 +415,14 @@ fn setup(
                         app.select(Some(crumbs), cx);
                     }
                 }
+                State::CrumbMenu { path } => {
+                    let crumbs = app
+                        .crumbs_for_path(&app.root_path.join(path))
+                        .with_context(|| format!("no fixture path: {path}"))?;
+                    ensure!(!crumbs.is_empty(), "the root has no siblings");
+                    app.go_to(crumbs.clone(), cx);
+                    app.open_crumb_menu(&crumbs, cx);
+                }
                 State::Review => app.open_review(cx),
                 State::PermanentReview => {
                     // Reproduce the selected mode without confirming removal.

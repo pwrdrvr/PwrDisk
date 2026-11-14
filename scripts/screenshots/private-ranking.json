@@ -1,0 +1,12 @@
+{
+  "size": [1280, 760],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "click", "at": [1010, 20]},
+    {"op": "click", "at": [832, 110]},
+    {"op": "setup", "state": {"type": "file_list"}},
+    {"op": "capture", "name": "list.png"},
+    {"op": "setup", "state": {"type": "crumb_menu", "path": "Photos"}},
+    {"op": "capture", "name": "siblings.png"}
+  ]
+}

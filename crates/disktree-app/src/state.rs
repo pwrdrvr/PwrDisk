@@ -436,6 +436,17 @@ struct AccountingCache {
     estimates: Vec<(Vec<PathBuf>, disktree_core::sharing::Estimate)>,
 }
 
+/// The List view's order of one directory under private weights. Ranking
+/// sorts every child, too much to repeat on each frame of a directory of
+/// millions, so it is kept until the tree or the directory changes.
+#[derive(Default)]
+struct ListRank {
+    tree: Weak<Tree>,
+    crumbs: Vec<usize>,
+    /// `None`: the tree's own order already is the rank.
+    order: Option<Rc<[usize]>>,
+}
+
 /// What the scan made of each marked path, for Review's rows. Resolving a
 /// path indexes every directory it passes through, which is too much to
 /// repeat on every frame of a list of marks; this keeps the answer until
@@ -469,6 +480,9 @@ pub struct Disktree {
     pub options: ScanOptions,
     pub power_choice: Option<crate::power::PowerEfficiency>,
     pub power_settings_path: Option<PathBuf>,
+    /// Where the Sizes choice is remembered; `None` keeps it to this
+    /// session.
+    pub sizes_settings_path: Option<PathBuf>,
     pub removal_settings_dir: Option<PathBuf>,
     /// The Power Efficiency menu, when open: the row the arrow keys are on,
     /// as an index into [`crate::power::PowerEfficiency::ALL`].
@@ -550,6 +564,7 @@ pub struct Disktree {
     cache: Option<LayoutCache>,
     accounting: RefCell<AccountingCache>,
     kinds: RefCell<KindCache>,
+    list_rank: RefCell<ListRank>,
 
     /// Mouse position in treemap-local pixels, for hit-testing and the tooltip.
     pub pointer: Option<Point<Pixels>>,
@@ -854,6 +869,16 @@ impl Disktree {
             options,
             power_choice: None,
             power_settings_path: crate::power::settings_path(),
+            // Window tests and screenshot scenarios choose sizes freely,
+            // and none may write the developer's own setting; a test that
+            // checks saving sets a path of its own. Gated here rather than
+            // in the screenshot harness, which also renders baselines that
+            // have no such field.
+            sizes_settings_path: if cfg!(any(test, feature = "screenshots")) {
+                None
+            } else {
+                crate::toolbar::sizes_settings_path()
+            },
             removal_settings_dir: crate::updater::settings_dir(),
             power_menu: None,
             sizes_menu: None,
@@ -901,6 +926,7 @@ impl Disktree {
             cache: None,
             accounting: RefCell::new(AccountingCache::default()),
             kinds: RefCell::new(KindCache::default()),
+            list_rank: RefCell::new(ListRank::default()),
             pointer: None,
             treemap_origin: Rc::new(Cell::new(Point::new(px(0.), px(0.)))),
             treemap_size: Rc::new(Cell::new(size(px(0.), px(0.)))),
@@ -2332,6 +2358,7 @@ impl Disktree {
     /// many more there are beyond [`SIBLING_ROWS`].
     pub fn siblings(&self, parent: &[usize]) -> (Vec<Sibling>, usize) {
         let metric = self.options.metric;
+        let private = self.private_weights();
         let Some(node) = self.node_at(parent) else {
             return (Vec::new(), 0);
         };
@@ -2342,15 +2369,47 @@ impl Disktree {
             .map(|(index, child)| Sibling {
                 index,
                 name: child.name().to_string(),
-                value: child.value(metric),
+                // Ranked and shown by what sizes the tiles, so the menu's
+                // first row is the largest tile.
+                value: if private {
+                    child.private_bytes()
+                } else {
+                    child.value(metric)
+                },
                 category: child.category,
                 is_dir: child.is_dir(),
             })
             .collect();
+        // Stable: ties keep the tree's order, as `private_rank`'s do.
         rows.sort_by_key(|row| std::cmp::Reverse(row.value));
         let more = rows.len().saturating_sub(SIBLING_ROWS);
         rows.truncate(SIBLING_ROWS);
         (rows, more)
+    }
+
+    /// The current directory's children in the List view's order under
+    /// private weights, or `None` for the tree's own order: no private
+    /// weights, or a directory they do not reorder.
+    pub fn private_list_rank(&self) -> Option<Rc<[usize]>> {
+        if !self.private_weights() {
+            return None;
+        }
+        let tree = self.tree.as_ref()?;
+        let mut cached = self.list_rank.borrow_mut();
+        if cached.tree.as_ptr() != Arc::as_ptr(tree)
+            || cached.crumbs != self.crumbs
+        {
+            *cached = ListRank {
+                tree: Arc::downgrade(tree),
+                crumbs: self.crumbs.clone(),
+                order: tree
+                    .root()
+                    .resolve(&self.crumbs)
+                    .and_then(disktree_core::treemap::private_rank)
+                    .map(Rc::from),
+            };
+        }
+        cached.order.clone()
     }
 
     /// Open the sibling menu for the crumb at `crumbs` (not the root).
@@ -2907,7 +2966,8 @@ impl Disktree {
     }
 
     /// Select the next sibling by rank, which is next-largest by the active
-    /// metric. Scanning a directory for space is exactly this walk.
+    /// metric, or by private size under private weights. Scanning a
+    /// directory for space is exactly this walk.
     pub fn cycle_sibling(&mut self, step: isize, cx: &mut Context<'_, Self>) {
         if self.file_list {
             self.file_step(step, cx);
@@ -2948,7 +3008,13 @@ impl Disktree {
         let Some(node) = self.node_at(&parent) else {
             return Vec::new();
         };
-        (0..node.children().len())
+        let order = self
+            .private_weights()
+            .then(|| disktree_core::treemap::private_rank(node))
+            .flatten()
+            .unwrap_or_else(|| (0..node.children().len()).collect());
+        order
+            .into_iter()
             .map(|index| {
                 let mut crumbs = parent.clone();
                 crumbs.push(index);
@@ -5580,8 +5646,12 @@ impl Disktree {
         } else {
             &self.root_path
         };
-        let mut args =
-            restart_args(&self.options, self.layout_options.max_depth, root);
+        let mut args = restart_args(
+            &self.options,
+            self.layout_options.private,
+            self.layout_options.max_depth,
+            root,
+        );
         if let Some(preset) = self.power_choice {
             args.extend(["--power-efficiency".into(), preset.key().into()]);
         }
@@ -5609,16 +5679,30 @@ impl Disktree {
     }
 }
 
-/// The command line that reopens `root` with `options` and `depth`, in the
-/// flags `parse_args` reads.
+/// The command line that reopens `root` with `options`, the Sizes choice
+/// (`private` weights unless `options` measures apparent sizes) and
+/// `depth`, in the flags `parse_args` reads.
+///
+/// The Sizes choice is passed even though it is also remembered: the
+/// elevated process may read another account's settings, and a choice
+/// that could not be saved must still come back.
 pub fn restart_args(
     options: &ScanOptions,
+    private: bool,
     depth: u32,
     root: &Path,
 ) -> Vec<std::ffi::OsString> {
-    let mut args: Vec<std::ffi::OsString> = Vec::new();
+    use crate::toolbar::Sizes;
+    let sizes = if options.apparent_size {
+        Sizes::Apparent
+    } else if private {
+        Sizes::Private
+    } else {
+        Sizes::OnDisk
+    };
+    let mut args: Vec<std::ffi::OsString> =
+        vec!["--sizes".into(), sizes.flag().into()];
     for (on, flag) in [
-        (options.apparent_size, "--apparent-size"),
         (options.follow_links, "--follow-links"),
         (!options.include_hidden, "--no-hidden"),
         (!options.one_filesystem, "--cross-filesystems"),

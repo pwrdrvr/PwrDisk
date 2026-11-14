@@ -149,6 +149,12 @@ pub fn load(path: &Path) -> io::Result<PowerEfficiency> {
 }
 
 pub fn save(path: &Path, preset: PowerEfficiency) -> io::Result<()> {
+    write_setting(path, preset.key())
+}
+
+/// Write a one-line setting such as a preset's key to `path`, creating its
+/// directory.
+pub fn write_setting(path: &Path, value: &str) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "no settings directory")
     })?;
@@ -156,7 +162,7 @@ pub fn save(path: &Path, preset: PowerEfficiency) -> io::Result<()> {
     // Atomic replacement leaves the previous choice intact after a failed
     // write, and readers never see a half-written setting.
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    writeln!(file, "{}", preset.key())?;
+    writeln!(file, "{value}")?;
     file.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
