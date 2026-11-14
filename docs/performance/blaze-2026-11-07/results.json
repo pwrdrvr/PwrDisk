@@ -1,0 +1,334 @@
+{
+  "date_local": "2026-11-07 America/New_York",
+  "pwrdisk_commit": "3acc2da69f8b304945c0894ee883c52862eaf282",
+  "baseline_serial": [
+    {
+      "name": "cargo-core-restored",
+      "args": [
+        "cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "disktree-core"
+      ],
+      "exit": 0,
+      "wall_seconds": 0.565
+    },
+    {
+      "name": "cargo-core-warm-serial",
+      "args": [
+        "cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "disktree-core"
+      ],
+      "exit": 0,
+      "wall_seconds": 0.151
+    },
+    {
+      "name": "cargo-core-edit-serial",
+      "args": [
+        "cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "disktree-core"
+      ],
+      "exit": 0,
+      "wall_seconds": 2.017
+    },
+    {
+      "name": "cargo-core-restored-after-edit",
+      "args": [
+        "cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "disktree-core"
+      ],
+      "exit": 0,
+      "wall_seconds": 1.096
+    },
+    {
+      "name": "cargo-scan-first-serial",
+      "args": [
+        "cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "disktree-scan"
+      ],
+      "exit": 0,
+      "wall_seconds": 1.43
+    },
+    {
+      "name": "cargo-scan-warm-serial",
+      "args": [
+        "cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "disktree-scan"
+      ],
+      "exit": 0,
+      "wall_seconds": 0.203
+    },
+    {
+      "name": "cargo-scan-help",
+      "args": [
+        "${WORKSPACE}/target/blaze-evaluation/cargo-target/debug/disktree-scan",
+        "--help"
+      ],
+      "exit": 0,
+      "wall_seconds": 0.148
+    }
+  ],
+  "blaze_probes": [
+    {
+      "name": "stable-explicit-rustc",
+      "args": [
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "disktree-core"
+      ],
+      "exit": 1,
+      "wall_seconds": 0.048
+    },
+    {
+      "name": "stable-toolchain",
+      "args": [
+        "toolchain"
+      ],
+      "exit": 0,
+      "wall_seconds": 8.811
+    },
+    {
+      "name": "stable-core-short-socket",
+      "args": [
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "disktree-core"
+      ],
+      "exit": 0,
+      "wall_seconds": 25.794
+    },
+    {
+      "name": "stable-scan-first",
+      "args": [
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "disktree-scan"
+      ],
+      "exit": 101,
+      "wall_seconds": 5.641
+    },
+    {
+      "name": "canary-scan-first",
+      "args": [
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "disktree-scan"
+      ],
+      "exit": 101,
+      "wall_seconds": 2.827
+    },
+    {
+      "name": "canary-scan-online",
+      "args": [
+        "build",
+        "--locked",
+        "-p",
+        "disktree-scan"
+      ],
+      "exit": -15,
+      "wall_seconds": 101.728
+    },
+    {
+      "name": "canary-final-stop",
+      "args": [
+        "stop"
+      ],
+      "exit": 0,
+      "wall_seconds": 1.015
+    },
+    {
+      "name": "canary-final-status",
+      "args": [
+        "status"
+      ],
+      "exit": 0,
+      "wall_seconds": 1.005
+    }
+  ],
+  "artifact_snapshot": [
+    {
+      "path": "target/blaze-evaluation/stable-store",
+      "files": 33,
+      "symlinks": 0,
+      "logical_bytes": 213598415,
+      "allocated_bytes": 213659648
+    },
+    {
+      "path": "target/blaze-evaluation/canary-user-home",
+      "files": 175,
+      "symlinks": 1,
+      "logical_bytes": 1398644,
+      "allocated_bytes": 1970176
+    },
+    {
+      "path": "target/blaze-evaluation/blaze-target",
+      "files": 289,
+      "symlinks": 15,
+      "logical_bytes": 485527124,
+      "allocated_bytes": 486326272
+    },
+    {
+      "path": "target/blaze-evaluation/blaze-v0.20261105.4-aarch64-apple-darwin.tar.gz",
+      "files": 1,
+      "symlinks": 0,
+      "logical_bytes": 154151309,
+      "allocated_bytes": 154152960
+    },
+    {
+      "path": "target/blaze-evaluation/canary-bin",
+      "files": 6,
+      "symlinks": 0,
+      "logical_bytes": 488476299,
+      "allocated_bytes": 488488960
+    },
+    {
+      "path": "target/blaze-evaluation/run_probe.py",
+      "files": 1,
+      "symlinks": 0,
+      "logical_bytes": 2187,
+      "allocated_bytes": 4096
+    },
+    {
+      "path": "target/blaze-evaluation/OWNER.txt",
+      "files": 1,
+      "symlinks": 0,
+      "logical_bytes": 237,
+      "allocated_bytes": 4096
+    },
+    {
+      "path": "target/blaze-evaluation/env.json",
+      "files": 1,
+      "symlinks": 0,
+      "logical_bytes": 429,
+      "allocated_bytes": 4096
+    },
+    {
+      "path": "target/blaze-evaluation/stable-bin",
+      "files": 11,
+      "symlinks": 0,
+      "logical_bytes": 188733691,
+      "allocated_bytes": 188760064
+    },
+    {
+      "path": "target/blaze-evaluation/blaze-v0.20261027.0-aarch64-apple-darwin.tar.gz",
+      "files": 1,
+      "symlinks": 0,
+      "logical_bytes": 62622556,
+      "allocated_bytes": 62623744
+    },
+    {
+      "path": "target/blaze-evaluation/logs",
+      "files": 44,
+      "symlinks": 0,
+      "logical_bytes": 200380,
+      "allocated_bytes": 348160
+    },
+    {
+      "path": "target/blaze-evaluation/cargo-target",
+      "files": 6077,
+      "symlinks": 0,
+      "logical_bytes": 2022413875,
+      "allocated_bytes": 2040401920
+    },
+    {
+      "path": "target/blaze-evaluation/canary-target",
+      "files": 233,
+      "symlinks": 0,
+      "logical_bytes": 1980581606,
+      "allocated_bytes": 1981308928
+    },
+    {
+      "path": "target/blaze-evaluation/edit.patch",
+      "files": 1,
+      "symlinks": 0,
+      "logical_bytes": 64,
+      "allocated_bytes": 4096
+    },
+    {
+      "path": "target/blaze-evaluation/upstream",
+      "files": 52,
+      "symlinks": 0,
+      "logical_bytes": 10620926,
+      "allocated_bytes": 10739712
+    },
+    {
+      "path": "target/blaze-evaluation/baseline_serial.py",
+      "files": 1,
+      "symlinks": 0,
+      "logical_bytes": 1440,
+      "allocated_bytes": 4096
+    },
+    {
+      "path": "target/bh",
+      "files": 4029,
+      "symlinks": 0,
+      "logical_bytes": 660076022,
+      "allocated_bytes": 670085120
+    },
+    {
+      "path": "target/b2",
+      "files": 50094,
+      "symlinks": 2,
+      "logical_bytes": 4915503278,
+      "allocated_bytes": 5042864128
+    }
+  ],
+  "cleanup": {
+    "removed_owned_paths": [
+      "blaze-evaluation/cargo-target",
+      "blaze-evaluation/blaze-target",
+      "blaze-evaluation/canary-target",
+      "blaze-evaluation/stable-store",
+      "blaze-evaluation/stable-bin",
+      "blaze-evaluation/canary-bin",
+      "blaze-evaluation/canary-user-home",
+      "blaze-evaluation/blaze-v0.20261027.0-aarch64-apple-darwin.tar.gz",
+      "blaze-evaluation/blaze-v0.20261105.4-aarch64-apple-darwin.tar.gz",
+      "bh",
+      "b2"
+    ],
+    "available_before_bytes": 21135360000,
+    "available_after_bytes": 30474240000,
+    "retained_logical_bytes": 10828524,
+    "retained_allocated_bytes": 11112448
+  },
+  "notes": [
+    "No successful comparable Blaze executable. No speedup or disk-saving ratio calculated.",
+    "Stable library-only command emits no rlib.",
+    "Canary online build ended at free-space floor, not a diagnosed compiler failure.",
+    "st_blocks allocations do not resolve APFS shared or unique blocks.",
+    "Cargo cold wall 33.64 seconds; internal Finished time 33.57 seconds. time resource counters and wrapper status excluded because sysctl was denied.",
+    "Earlier helper sample blocked on this evaluation lint target and was discarded.",
+    "Readme records the final serial sample; only those core warm/edit values are used."
+  ]
+}

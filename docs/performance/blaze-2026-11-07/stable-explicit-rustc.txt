@@ -1,0 +1,5 @@
+error: `RUSTC` names rustc 1.97.1 (8bab26f4f 2026-07-14), and blaze builds with Rust nightly-2026-10-27, the release it compiles: without `RUSTC` it builds with nightly-2026-10-27 (`BLAZE_OTHER_TOOLCHAIN=1` builds with 1.97.1 (8bab26f4f 2026-07-14) anyway, laying its types out as nightly-2026-10-27 does)
+real 0.03
+user 0.01
+sys 0.00
+time: sysctl kern.clockrate: Operation not permitted

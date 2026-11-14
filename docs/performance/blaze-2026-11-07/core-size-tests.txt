@@ -1,0 +1,33 @@
+   Compiling rand_core v0.10.1
+   Compiling num-traits v0.2.19
+   Compiling getrandom v0.4.3
+   Compiling once_cell v1.21.4
+   Compiling fastrand v2.5.0
+   Compiling tempfile v3.27.0
+   Compiling wait-timeout v0.2.1
+   Compiling bit-vec v0.10.1
+   Compiling fnv v1.0.7
+   Compiling quick-error v1.2.3
+   Compiling rusty-fork v0.3.1
+   Compiling bit-set v0.11.1
+   Compiling rand v0.10.2
+   Compiling rand_xorshift v0.5.0
+   Compiling chacha20 v0.10.2
+   Compiling unarray v0.1.4
+   Compiling core_detect v1.0.0
+   Compiling regex-syntax v0.8.11
+   Compiling chrono v0.4.45
+   Compiling proptest v1.12.0
+   Compiling disktree-core v0.21.0 (${WORKSPACE}/crates/disktree-core)
+    Finished `test` profile [optimized + debuginfo] target(s) in 42.19s
+     Running unittests src/lib.rs (target/blaze-evaluation/cargo-target/debug/deps/disktree_core-3a1b374135729bfd)
+
+running 6 tests
+test size::tests::share_survives_a_zero_total ... ok
+test size::tests::share_bar_is_always_the_requested_width ... ok
+test size::tests::bytes_use_binary_units_with_one_decimal_below_ten ... ok
+test size::tests::short_form_drops_the_space ... ok
+test size::tests::a_value_that_rounds_up_to_the_next_unit_is_shown_in_it ... ok
+test size::tests::counts_switch_to_metric_suffixes ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 456 filtered out; finished in 0.00s
