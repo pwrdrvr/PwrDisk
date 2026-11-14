@@ -1,0 +1,40 @@
+import collections,json,pathlib,re
+E=pathlib.Path(__file__).resolve().parent
+
+def tests(path):
+ s=path.read_text()
+ pairs=collections.Counter(re.findall(r'test (.+?) \.\.\. (ok|ignored|FAILED)',s,re.M))
+ # Native oracle stderr may split libtest's prefix and status across lines.
+ lines=s.splitlines()
+ for i,line in enumerate(lines[:-1]):
+  for match in re.finditer(r'test ([A-Za-z0-9_:]+) \.\.\.',line):
+   rest=line[match.end():].lstrip()
+   status=lines[i+1].strip()
+   if not re.match(r'(ok|ignored|FAILED)\b',rest) and status in ('ok','ignored','FAILED'):
+    pairs[(match[1],status)]+=1
+ # Preserve suite outcomes and Python results, discarding elapsed time only.
+ summaries=re.findall(r'^test result: ([^.]+)\. (.+?) finished in [0-9.]+s',s,re.M)
+ python=re.findall(r'^Ran (\d+) tests? in [0-9.]+s\s+\n(OK(?: \(.*?\))?|FAILED[^\n]*)',s,re.M)
+ return pairs,summaries,python
+
+def compilation(path):
+ rows=re.findall(r'^\s*(Compiling|Checking) ([\w-]+) v(\S+)',path.read_text(),re.M)
+ return {kind.lower():dict(log_records=sum(r[0]==kind for r in rows),distinct_packages=len({(r[1],r[2]) for r in rows if r[0]==kind})) for kind in ('Compiling','Checking')}
+
+plain=tests(E/'logs/plain-test.log');out={}
+for mode in ('plain','populate','hit','warm','edit'):
+ f=E/'logs'/f'{mode}-results.json'
+ if not f.exists():continue
+ rows=json.loads(f.read_text());test=tests(E/'logs'/f'{mode}-test.log') if (E/'logs'/f'{mode}-test.log').exists() else None
+ perphase={r['name'].split('-',1)[1]:{'wall_seconds':r['wall_seconds'],'exit':r['exit'],**compilation(E/'logs'/f"{r['name']}.log")} for r in rows}
+ out[mode]={'phases':perphase,'workflow_seconds':round(sum(r['wall_seconds'] for r in rows),3)}
+ if test:
+  a,b,c=test
+  out[mode]['tests']={'individual_results':dict(collections.Counter({status:sum(n for (name,s),n in a.items() if s==status) for status in ('ok','ignored','FAILED')})),'suite_results':b,'python_suites':c,'individual_multiset_matches_plain':a==plain[0],'suites_match_plain':b==plain[1],'python_matches_plain':c==plain[2],'missing_vs_plain':list((plain[0]-a).items()),'extra_vs_plain':list((a-plain[0]).items())}
+(E/'analysis.json').write_text(json.dumps(out,indent=2)+'\n')
+print(json.dumps(out,indent=2))
+
+for mode, row in out.items():
+ assert all(p["exit"]==0 for p in row["phases"].values()), mode
+ for key in ("individual_multiset_matches_plain","suites_match_plain","python_matches_plain"):
+  assert row["tests"][key], (mode,key)

@@ -1,0 +1,5677 @@
+[
+  {
+    "test": "a_live_supervised_client_receives_a_complete_snapshot",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "access::tests::only_macos_has_an_answer_and_a_missing_database_is_not_a_refusal",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "agent_removal::tests::expired_or_different_intents_are_not_accepted",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "app_menu::tests::elsewhere_settings_is_in_file_and_about_ends_help",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "app_menu::tests::every_row_but_the_services_menu_has_an_action",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "app_menu::tests::help_is_in_the_standard_order_on_both_platforms",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "app_menu::tests::the_mac_app_menu_opens_with_about_and_updates",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "app_menu::tests::the_menu_bar_follows_the_family_order",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "app_menu::tests::view_lists_the_screens_and_zoom_and_edit_has_no_undo",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "appearance::tests::a_linux_desktop_is_followed_only_if_it_states_a_preference",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "argument_tests::adaptive_budget_and_fixed_override_are_explicit",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "argument_tests::invalid_worker_budgets_are_rejected",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "argument_tests::no_implicit_root_requires_selection_but_explicit_scans_do_not",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "argument_tests::saved_power_is_loaded_before_cli_overrides",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "argument_tests::ssh_keeps_worker_options_without_inspecting_the_remote_root",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "artifact::tests::diskhound_corpus_matches_across_case_and_separator_variants",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "artifact::tests::finding_roots_has_bounded_work_per_node",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "artifact::tests::git_metadata_cannot_inherit_a_cleanup_suggestion_even_without_subdirectories",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "artifact::tests::identity_evidence_and_cleanup_are_independent",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "artifact::tests::large_deep_trees_split_only_when_there_is_work_beside_the_chain",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "artifact::tests::mixed_project_output_does_not_promote_parents_or_settings",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "artifact::tests::narrow_git_scans_keep_enclosing_ownership_over_cache_names",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "artifact::tests::narrow_pnpm_scans_require_evidence_at_the_owning_store",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "artifact::tests::parallel_roots_preserve_ancestor_ownership_and_exclusions",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "artifact::tests::tool_home_exclusions_survive_deep_paths_and_worktree_caches_stay_separate",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "artifact::tests::vm_disks_checkpoints_and_memory_are_detected_only",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "artifact::tests::vm_ownership_protects_nested_cache_names_and_enclosing_candidates",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "build_info::tests::a_detached_build_with_changes_says_so_and_when_it_was_built",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "build_info::tests::a_release_report_names_its_tag_and_no_checkout",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "build_info::tests::nothing_known_still_reports_the_version",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "build_info::tests::only_a_clean_release_build_of_its_own_tag_is_a_release",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "build_info::tests::the_commit_is_cut_to_eight_and_marked_for_changes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "build_info::tests::the_current_build_has_a_version_and_a_profile",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "build_info::tests::the_header_names_the_date_the_source_and_the_channel",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "build_info::tests::the_report_names_the_checkout_branch_and_commit",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "bundle::tests::app_only_stops_before_notarizing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "bundle::tests::notarizing_needs_a_real_signature",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "bundle::tests::signing_is_ad_hoc_unless_an_identity_is_given",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "bundle::tests::the_dmg_layout_matches_its_background",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "bundle::tests::the_dmg_script_parses_and_wants_two_or_three_arguments",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "bundle::tests::the_icon_package_is_the_glyph_on_the_marks_background",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "bundle::tests::the_notices_the_app_carries_exist",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "bundle::tests::the_plist_template_names_the_executable_and_takes_the_version",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "bundle::tests::the_plist_template_takes_the_catalog_keys_from_the_bundle",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "bundle::tests::the_short_version_drops_a_prerelease",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cargo_outputs::tests::cargo_itself_is_the_identity_oracle_for_custom_outputs_and_profiles",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cargo_outputs::tests::cross_target_profiles_are_anchored_by_root_compiler_metadata",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cargo_outputs::tests::generic_wrapper_tags_do_not_promote_enclosing_source_bytes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cargo_outputs::tests::identity_requires_independent_content_evidence_for_every_name",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cargo_outputs::tests::links_cannot_substitute_for_identity_evidence",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cargo_outputs::tests::tracked_source_is_never_promoted_to_an_output_candidate",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "chrome::tests::a_client_side_frame_follows_the_desktops_button_layout",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "chrome::tests::a_linux_compositor_that_draws_the_frame_gets_no_controls",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "chrome::tests::buttons_for_what_the_compositor_will_not_do_are_left_out",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "chrome::tests::macos_leaves_room_for_the_stoplights_on_the_left",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "chrome::tests::windows_paints_its_caption_buttons_on_the_right",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::context_tests::a_narrow_tmp_scan_keeps_temporary_context_and_git_ownership",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::context_tests::descriptive_context_and_protected_ownership_survive_narrow_scans",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::context_tests::diagnostic_logs_are_described_without_a_cache_claim",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::context_tests::git_and_vm_ownership_enclose_macos_store_lookalikes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::context_tests::nearer_hints_inside_artifacts_agree_across_scan_roots",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::context_tests::temporary_inside_pip_keeps_its_hint_when_the_scan_narrows",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::context_tests::temporary_names_override_an_inherited_regenerable_hint",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::context_tests::the_first_protected_owner_wins_at_every_scan_root",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::context_tests::trash_keeps_its_label_when_git_clears_the_cleanup_hint",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::a_manifest_does_not_promote_a_whole_target_directory",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::a_steam_library_on_another_drive_is_media_not_its_temp_folder",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::a_whole_root_scan_keeps_categories_and_filters_local_to_evidence",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::caches_are_reclaimable_all_the_way_down",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::macos_developer_leftovers_are_reclaimable_and_its_risks_are_not",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::macos_stores_are_named_without_suggesting_raw_deletion",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::names_announce_their_kind_and_children_inherit_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::pnpm_installations_are_not_package_stores",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::snapshots_are_not_suggested_from_agent_scratch_ancestry",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::steam_libraries_and_emulation_are_media_not_disposable_caches",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::the_legend_lists_every_named_category_once",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::the_roots_children_take_only_their_own_evidence",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::unknown_aggregates_do_not_guess_from_descendants",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "classify::tests::windows_caches_and_sync_folders_are_recognized",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::a_cleanup_finds_the_trash_only_when_files_go_there",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::a_failed_owner_command_stays_local_and_deletion_runs_only_where_chosen",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::a_skipped_parent_protects_a_marked_child",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::active_owner_detection_recognizes_node_launchers_and_pip3",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::actual_scope_must_be_beneath_scan_and_must_not_be_the_scan_root",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::cancellation_stops_the_owner_process_group_without_raw_deletion",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::cancelled_before_start_and_unavailable_commands_do_not_execute",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::candidates::browser_environment_roots_do_not_bypass_raw_removal_inspection",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::candidates::configured_browser_root_membership_matches_components",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::candidates::inspection_only_candidates_never_probe_or_accept_owner_approval",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::candidates::pnpm_independent_roots_keep_owner_hints_without_forcing_cleanup",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::changed_configuration_and_capacity_failure_do_not_invoke_cleanup",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::changed_executable_and_active_owner_revoke_execution",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::configured_root_whitespace_cannot_redirect_cleanup_to_a_similar_path",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::custom_roots_are_queried_and_subtrees_expand_only_to_the_verified_scope",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::decisions_are_explicit_and_each_intent_has_its_own_confirmation",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::delete_files_names_the_caches_it_would_bypass",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::deleting_files_in_use_is_refused_on_the_worker",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::executable_resolution_uses_pip3_and_refuses_nonexecutable_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::external_cache_links_are_refused_while_internal_layout_links_are_allowed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::guarded_paths_offer_neither_command_nor_deletion",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::non_utf8_probe_output_is_refused_without_lossy_path_conversion",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::npm_installing_proxy_is_not_invoked_even_for_version_discovery",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::npm_package_and_npx_have_separate_commands_scopes_and_versions",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::observed_space_can_decrease_and_never_equals_scope_allocation_by_assumption",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::one_failure_is_one_proposal_and_the_other_paths_stay_offered",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::owner_failure_reports_error_without_deletion_and_success_does_not_mean_root_removed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::owner_worker_applies_confirmed_ceilings_only_to_the_named_volume",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::pip_and_cypress_pin_the_resolved_root_in_arguments_or_environment",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::playwright::playwright_lock_and_changed_configuration_revoke_approval",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::playwright::playwright_mock_execution_is_pinned_and_never_falls_back_to_deletion",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::playwright::playwright_non_js_launcher_is_refused_without_probing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::playwright::playwright_only_audited_versions_reach_configuration",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::playwright::playwright_refuses_ambiguous_locations_and_forged_newline_roots",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::playwright::playwright_root_round_trip_preserves_generated_paths",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::playwright::playwright_running_launcher_paths_identify_the_owner",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::playwright::playwright_scope_follows_queried_root_not_selected_name",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::playwright::playwright_unrelated_cli_paths_stay_distinct_from_resolved_executable",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::preparation_refuses_installing_shims_and_shimmed_env_interpreters",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::properties::a_running_owner_is_recognized_in_every_launcher_form",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::properties::a_wrapper_holding_a_cleanable_cache_is_named_in_review",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::properties::an_owner_command_acts_only_on_the_root_the_owner_printed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::properties::approval_keeps_every_decision_and_skip_means_nothing_happens",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::properties::only_a_cleanable_cache_holds_a_removal_back",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::properties::probing_never_runs_a_launcher_that_could_install",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::properties::raw_inspection_results_share_the_selection_bound",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::properties::raw_worker_visits_only_the_prefix_through_its_first_refusal",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::raw_inspection_accepts_descendants_beyond_path_max",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::raw_inspection_does_not_follow_deep_directory_links",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::raw_inspection_recognizes_relocated_caches_beyond_path_max",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::raw_removal_holds_back_only_cleanable_caches",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::raw_worker_refusal_does_not_inspect_later_marks",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::relocated_cache_ancestors_protect_subtrees_and_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::skip_means_nothing_happens_even_inside_a_chosen_scope",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::stop_cancels_the_running_command_and_reports_the_rest_not_reached",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::tagged_build_outputs_stay_ordinary_removals",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::unknown_unsupported_and_missing_owners_do_not_produce_a_write",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "cleanup::tests::version_bounds_and_prereleases_are_explicit",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "clone_cache::tests::clone_groups_bound_queries_as_both_groups_and_members_grow",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "clone_cache::tests::different_all_fork_allocation_requires_a_fresh_private_measurement",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "clone_cache::tests::only_a_sampled_group_is_known_to_share_all_its_blocks",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "clone_cache::tests::reference_budget_refreshes_and_hardlink_aliases_do_not_spend_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "clone_cache::tests::unknown_volumes_and_modified_members_are_measured_individually",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "clone_cache::tests::volume_scope_scan_lifetime_and_memory_caps_limit_reuse",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "confirmation_tests::only_interactive_user_confirmation_reaches_the_removal_request",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "crates/disktree-core/src/index.rs - index::Tree::build (line 1308) - compile fail",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "desktop_tests::a_mixed_release_relay_exposes_desktop_identity_schemas_and_skills",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "desktop_tests::a_relative_transport_path_base_is_refused_before_initialization",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "desktop_tests::a_stream_protocol_mismatch_fails_before_mcp_is_forwarded",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "desktop_tests::an_older_relay_without_a_path_base_rejects_relative_tool_paths",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "desktop_tests::discovery_updates_and_bidirectional_metadata_pass_without_translation",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "desktop_tests::modern_discovery_and_calls_report_desktop_authority_and_client_identity",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "diag_log::tests::a_line_is_one_line_with_time_level_and_target",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "diag_log::tests::a_rotation_by_another_process_is_followed_not_overwritten",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "diag_log::tests::pwrdisk_follows_its_level_velopack_logs_info_and_the_rest_warns",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "diag_log::tests::the_log_is_readable_by_its_owner_only",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "diag_log::tests::the_log_moves_aside_past_its_limit_and_keeps_one_old_file",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "diagnostics::tests::a_copy_not_installed_by_velopack_says_it_does_not_update",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "diagnostics::tests::counts_are_exact_with_separators",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "diagnostics::tests::nothing_scanned_is_ever_in_the_report",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "diagnostics::tests::the_os_is_read_from_the_system_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "diagnostics::tests::the_report_leads_with_the_build_then_each_section",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "diagnostics::tests::the_version_line_carries_the_short_commit",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "disconnect_stops_a_helper_even_when_its_output_is_blocked",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "doc_window::tests::long_lines_wrap_at_spaces_and_keep_their_indent",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "doc_window::tests::the_changelog_reads_as_versions_and_bullets",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "doc_window::tests::the_documents_are_compiled_in",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "doc_window::tests::the_shipped_changelog_reads_as_versions",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "doc_window::tests::unclosed_marks_stay_as_written",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "dock_icon::tests::both_dock_icons_are_512_pixel_pngs",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "dock_icon::tests::darwin_25_is_the_first_to_draw_liquid_glass",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "executable_discovers_roots_without_scanning_a_path",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "executable_returns_a_read_only_snapshot",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "export::tests::a_name_that_is_not_unicode_is_flagged_not_listed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "export::tests::a_name_with_a_newline_cannot_smuggle_in_a_path",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "export::tests::the_list_is_one_path_per_line",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "export::tests::the_prompt_lists_every_path_with_its_size_and_the_rules",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "file_list::tests::entry_role_selection_and_identity_follow_the_path",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "file_list::tests::native_path_ids_do_not_alias_lossy_display_names",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::a_hidden_kind_leaves_everything_else_whole",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::a_kind_keeps_its_files_and_sizes_the_folders_that_hold_them",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::a_match_is_found_where_it_is_in_the_name",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::a_needle_and_a_rule_keep_only_what_both_allow",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::a_nested_empty_directory_keeps_its_ancestors",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::a_search_below_the_root_leaves_the_rest_alone",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::ages_filter_by_when_each_file_was_written",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::an_empty_needle_filters_nothing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::an_empty_rule_is_the_plain_search",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::case_is_ignored_without_allocating",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::matches_are_kept_whole_and_their_ancestors_by_what_matched",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::reclaimable_narrows_the_kinds_instead_of_adding_to_them",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "filter::tests::shares_are_what_each_chip_would_show",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git::tests::a_cancelled_command_stops",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git::tests::a_checkout_cannot_make_git_run_its_programs",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git::tests::a_checkout_cannot_make_git_verify_a_signature_with_its_program",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git::tests::a_checkouts_own_filter_is_never_run",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git::tests::a_command_past_its_limit_is_killed_and_says_so",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git::tests::a_cut_stops_what_the_command_started",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git::tests::a_probe_on_its_own_thread_answers_on_the_channel",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git::tests::a_probe_that_runs_out_of_time_reports_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git::tests::output_held_open_after_exit_is_cut_at_the_limit",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git::tests::output_larger_than_a_pipe_is_read_while_it_runs",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git::tests::reads_a_real_checkout",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git::tests::summaries_say_what_would_be_lost",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git_store::tests::a_lapsed_wish_is_dropped_at_the_head_of_the_queue",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git_store::tests::a_selection_runs_before_a_hover",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git_store::tests::a_selection_runs_once_and_then_reads_the_answer",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git_store::tests::a_stale_answer_is_shown_and_refreshed_only_for_the_selection",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git_store::tests::a_time_out_is_remembered_and_not_retried_soon",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git_store::tests::a_wish_repeated_by_each_frame_does_not_lapse",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git_store::tests::arrowing_through_checkouts_runs_only_where_the_selection_stops",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git_store::tests::clearing_stops_what_runs_and_ignores_its_answer",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git_store::tests::dropping_the_store_stops_what_runs",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git_store::tests::hovers_spend_tokens_and_a_selection_does_not",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git_store::tests::no_more_than_the_limit_run_at_once",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "git_store::tests::the_figure_says_when_git_was_stopped",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "github_releases::tests::a_page_keeps_published_releases_with_this_platforms_feed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "github_releases::tests::a_release_downloads_from_its_own_tag",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "help::tests::links_point_at_the_repository",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::records::tests::a_clone_with_one_name_keeps_only_what_its_node_does_not_say",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::records::tests::an_allocation_record_stays_small",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::records::tests::files_of_a_group_share_one_record_until_the_tree_is_sealed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::records::tests::hardlinks_and_followed_links_keep_their_own_size_and_names",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::records::tests::what_a_small_record_cannot_say_is_kept_whole",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::a_built_tree_reads_back",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::a_copy_outlives_its_source",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::a_long_name_and_many_children_survive",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::a_node_can_hold_an_allocation_and_sharing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::a_node_stays_small",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::a_tree_built_on_every_worker_holds_every_node",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::a_tree_moves_to_another_thread",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::a_whole_tree_copied_into_a_build_keeps_every_allocation_table",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::a_whole_tree_copied_into_a_build_keeps_its_records",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::an_inode_on_a_clone_that_reads_its_size_is_caught - should panic",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::leaf_batches_rebase_names_and_every_allocation_table",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::permutations_keep_every_record_at_its_requested_destination",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::random_batches_read_as_individually_placed_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::sharing_is_rewritten_in_place",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::top_down_writes_every_node_once_from_its_parent",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "index::tests::writes_reach_the_tree_and_children_reorder_in_place",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "insights::tests::crumbs_address_the_finding_from_the_root",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "insights::tests::documents_are_never_suggested",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "insights::tests::ranks_findings_largest_first_and_skips_the_tiny",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "insights::tests::the_limit_keeps_the_largest",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "ledger::tests::a_new_scan_starts_a_new_ledger",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "ledger::tests::one_unknown_private_part_makes_the_total_unknown",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "ledger::tests::totals_add_estimates_and_measure_from_first_start_to_last_finish",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "legend::tests::a_chip_goes_only_then_hidden_then_back",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "legend::tests::only_matches_its_model_from_any_state",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "legend::tests::only_switches_a_set_to_one_chip_in_one_step",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "legend::tests::the_rule_and_the_words_say_the_same_thing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "log_view::tests::a_character_cut_by_a_read_arrives_whole",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "log_view::tests::a_line_parses_into_time_level_target_and_message",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "log_view::tests::counts_follow_the_lines_kept",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "log_view::tests::filter_keeps_matches_and_context_and_gaps_the_rest",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "log_view::tests::highlight_keeps_every_line_and_marks_the_matches",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "log_view::tests::just_after_a_rotation_the_old_file_is_read",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "log_view::tests::levels_and_words_filter_the_lines",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "log_view::tests::row_keys_survive_lines_dropped_from_the_front",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "log_view::tests::the_current_match_steps_around_and_stays_on_its_line",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "log_view::tests::the_mark_sits_after_the_newest_line_and_selects_what_came_after",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "log_view::tests::the_tail_follows_appends_partial_lines_and_rotation",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "log_view::tests::the_view_keeps_the_newest_lines",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "logs_fixture::tests::opens_only_an_existing_file_outside_the_app_logs",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "logs_fixture::tests::other_commands_are_not_the_fixture",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "logs_window::tests::a_wrapped_rows_styles_are_clipped_to_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "logs_window::tests::hits_are_found_ignoring_case_and_merged",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "logs_window::tests::hits_cut_the_token_styles_they_cross",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "logs_window::tests::the_view_is_remembered_but_never_debug",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::capacity::tests::native_volume_usage_matches_diskutil_before_and_after_writes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::clone_tests::a_confirmed_full_clone_needs_no_private_extent_walk",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::clone_tests::a_listing_without_flags_finds_what_one_with_them_finds",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::clone_tests::a_shortcut_requires_returned_facts_and_matching_identity",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::clone_tests::malformed_bulk_names_and_records_are_rejected",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::clone_tests::modified_clones_keep_private_bytes_and_hardlinks_are_not_clones",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::clone_tests::real_clone_hardlinks_and_followed_names_have_set_level_savings",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::clone_tests::real_clones_keep_listed_bytes_and_report_sharing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::clone_tests::resource_fork_allocation_remains_in_the_range_for_full_clones",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::clone_tests::staged_clone_metadata_matches_the_private_size_oracle",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::clone_tests::ten_apfs_worktrees_with_a_surviving_clone_only_credit_private_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::clone_tests::unreadable_private_metadata_is_unknown_not_full_allocation",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::clone_tests::worktrees_scan_the_same_with_flags_in_every_listing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::resolve_tests::a_listing_without_flags_resolves_every_file_as_one_with_them",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::tests::a_directory_larger_than_the_buffer_is_listed_whole",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::tests::a_listing_has_names_kinds_lengths_and_no_dot_entries",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::tests::a_missing_directory_is_an_error",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::tests::default_walk_budget_keeps_performance_cores_and_explicit_pools",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::tests::every_leaf_reads_as_lstat_reads_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::tests::listed_directory_identity_and_eviction_match_stat",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos::tests::names_are_text_and_open",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos_services::tests::private_stores_belong_to_the_data_volume_and_external_volumes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos_services::tests::readable_empty_store_is_measured_but_filtered_contents_are_unknown",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "macos_services::tests::unavailable_is_not_zero_and_descendant_failures_are_incomplete",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "mark_guard::tests::a_gate_lists_each_disk_past_the_limit_and_raises_only_those",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "mark_guard::tests::a_share_is_over_exactly_where_the_worker_refuses",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::a_missing_mark_stays_at_zero_until_its_path_returns",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::absorption_invalidates_cached_crumbs_and_keeps_missing_paths_indexed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::below_sums_only_descendants_and_discount_leaves_the_rest",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::cached_crumbs_follow_every_invalidation_boundary",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::display_path_shortens_the_home_prefix",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::find_matches_whole_components_only",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::marking_the_same_path_twice_keeps_one_entry",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::marks_compare_the_exact_path",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::ordered_marks_keep_exact_non_utf8_paths",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::ordered_marks_preserve_components_case_and_outermost_ancestor",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::posix_crumb_cache_compares_root_text_in_the_host_namespace",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::posix_index_absorbs_only_whole_host_components",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::posix_refresh_and_crumb_cache_keep_ambiguous_windows_names_distinct",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::refresh_dimension_budget",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::refresh_keeps_missing_marks_without_claiming_their_bytes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::refresh_re_reads_sizes_from_a_new_tree",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::refresh_resolution_budget",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::remote_paths_display_and_resolve_by_posix_rules",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::resolver_preserves_lossy_non_utf8_components",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::resolver_preserves_scan_name_semantics",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "marks::tests::toggling_marks_and_unmarks",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "mcp_stream::tests::protected_stream_is_duplex_and_a_live_endpoint_is_not_stolen",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "outputs::tests::age_size_order_and_pagination_agree_with_a_selection_model",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "outputs::tests::heterogeneous_overlaps_preserve_types_and_measure_the_union",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "outputs::tests::the_entire_type_catalog_agrees_with_schema_and_filter_model",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "palette::tests::age_buckets_cover_every_age_in_order",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "palette::tests::audit_contrast_composites_alpha_before_linearizing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "palette::tests::audit_contrast_report",
+    "outcome": "ignored",
+    "count": 1
+  },
+  {
+    "test": "palette::tests::colourful_categories_share_one_level",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "palette::tests::deeper_tiles_lift_away_from_the_background",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "palette::tests::every_legend_category_has_its_own_hue",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "palette::tests::mix_clamps_its_parameter",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "palette::tests::mixing_toward_a_grey_keeps_the_hue",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "palette::tests::the_highlight_is_not_a_category_colour",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "path_style::tests::native_follows_this_machine",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "path_style::tests::posix_absolute_means_slash_rooted",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "path_style::tests::posix_equality_keeps_foreign_separators_literal",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "path_style::tests::posix_names_keep_backslashes_and_colons",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "path_style::tests::posix_parents_end_at_the_root",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "path_style::tests::posix_paths_join_with_a_slash_on_every_client",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "path_style::tests::posix_relative_names_respect_name_boundaries",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "payload::tests::dynamic_or_wrong_arch_helpers_are_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "payload::tests::oversized_footer_is_refused_before_allocation",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "payload::tests::trailer_roundtrips_replaces_and_detects_corruption",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "placement::tests::a_display_no_longer_connected_is_skipped",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "placement::tests::a_screen_holds_its_top_and_left_edges_only",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "placement::tests::the_focused_window_wins_then_the_pointer",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "planning::tests::bounded_peers_evaluate_the_returned_union_instead_of_summing_rows",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "planning::tests::clone_ids_on_separate_volumes_do_not_complete_each_other",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "planning::tests::external_references_have_no_invented_owner_paths",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "planning::tests::hardlink_aliases_are_not_extra_clone_members_or_reclaim",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "planning::tests::internal_duplicates_overlap_and_refusals_do_not_inflate_union",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "planning::tests::missing_metadata_and_unavailable_collection_are_not_exact_measurements",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "planning::tests::modified_clones_keep_uncertain_bounds_and_interval_deltas",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "planning::tests::peer_scope_can_find_a_known_holder_outside_the_default_parent",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "planning::tests::peer_walk_is_bounded_and_prunes_large_ordinary_subtrees",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "planning::tests::three_of_four_worktrees_find_the_last_holder_and_possible_savings",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "pointer_card::tests::a_card_near_the_corner_flips_above_and_left",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "pointer_card::tests::a_card_that_fits_stays_inside_and_off_the_pointer",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "pointer_card::tests::an_oversized_card_keeps_its_corner_in_the_area",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "pointer_card::tests::the_card_sits_below_and_right_of_the_pointer_when_it_fits",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "power::tests::a_disktree_setting_is_read_until_pwrdisk_saves_its_own",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "power::tests::presets_are_fixed_and_show_the_effective_cpu_limit",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "power::tests::presets_that_add_no_workers_are_not_offered",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "power::tests::saved_choice_survives_replacement_and_bad_data_is_reported",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "query::outputs::tests::filtered_temporary_locations_follow_the_directory_query_oracle",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "query::outputs::tests::nested_output_discovery_agrees_with_a_declared_tree_oracle",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "query::outputs::tests::unreadable_locations_do_not_cover_readable_scratch_children",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "query::tests::files_over_a_size_and_names_and_ages_filter",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "query::tests::reclaimable_matches_are_topmost_and_largest_first",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "raw_inspection::tests::pending_raw_inspection_survives_its_result_lifetime",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "raw_inspection::tests::raw_inspection_freshness_follows_completion_model",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "raw_inspection::tests::slow_raw_inspection_is_fresh_when_it_finishes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "release::tests::a_prefix_is_not_a_match",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "release::tests::finds_a_changelog_section",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "release::tests::reads_only_the_workspace_version",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "release::tests::this_version_has_a_changelog_section",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::an_impossibly_long_remote_name_is_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::banner_and_truncated_output_are_reported_without_a_hang",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::desktop_dedup_accepts_more_than_the_old_pending_link_limit",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::desktop_dedup_counts_links_once_without_requiring_external_names",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::diagnostics_are_bounded_and_controls_are_stripped",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::discovery_is_not_a_legacy_scan_request",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::discovery_never_resolves_a_scan_path_and_rejects_unknown_versions",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::invalid_discovery_records_are_not_accepted_as_roots",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::live_counters_are_available_before_the_tree_finishes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::live_ssh_scan_uses_the_production_transport",
+    "outcome": "ignored",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::missing_helper_diagnostics_name_the_server",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::protocol_roundtrip_and_truncation",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::real_ssh_transport_bootstraps_and_checks_cached_payloads",
+    "outcome": "ignored",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::real_ssh_transport_discovers_roots_without_a_scan",
+    "outcome": "ignored",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::real_ssh_transport_reports_auth_and_install_errors",
+    "outcome": "ignored",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::real_ssh_transport_returns_a_snapshot",
+    "outcome": "ignored",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::rejects_ssh_options_and_shell_syntax",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::ssh_authentication_diagnostics_reach_the_caller",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::unix_backslashes_in_names_roundtrip_without_becoming_separators",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::unix_names_with_backslashes_and_colons_reach_every_client",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote::tests::windows_hosts_and_non_posix_roots_are_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote_walk::tests::a_deep_directory_does_not_abort_the_entire_stream",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote_walk::tests::hidden_and_depth_filters_do_not_change_postorder_counts",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote_walk::tests::mounted_children_are_omitted_even_on_the_same_device",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote_walk::tests::streaming_accounts_for_hardlinks_symlinks_and_allocated_bytes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "remote_walk::tests::unsafe_traversal_options_fail_before_walking",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::approval::tests::a_dangling_link_can_be_bound_without_approving_its_destination",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::approval::tests::approval_binds_the_link_not_its_destination",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::approval::tests::dispatch_matches_the_ordered_selection_model",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::approval::tests::dispatch_refuses_a_target_at_another_approved_ordinal",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::approval::tests::replacement_never_inherits_approval",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::approval::tests::the_worker_refuses_the_whole_batch_if_a_target_was_replaced",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::path_oracle::a_home_under_var_keeps_its_system_exemption_under_its_real_name",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::path_oracle::a_real_mount_below_a_target_is_refused_under_every_root_spelling",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::path_oracle::an_alias_on_another_volume_does_not_make_a_child_a_mount",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::path_oracle::removal_verdict_matches_identity_under_every_root_spelling",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::path_oracle::system_and_profile_entries_keep_their_verdict_through_a_root_alias",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::path_oracle::var_folders_is_protected_even_when_the_root_is_a_link",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_backup_share_does_not_establish_a_volume_root",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_directory_holding_a_system_tree_is_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_directory_holding_the_home_directory_is_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_failing_trash_tool_reports_its_stderr",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_link_put_on_the_way_down_after_planning_stops_the_worker",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_linked_scan_root_does_not_make_etc_removable",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_missing_target_reports_not_found",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_mount_below_a_target_is_caught_again_at_removal_time",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_name_that_is_not_utf8_is_refused_before_the_trash_sees_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_plan_keeps_only_the_outermost_targets",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_refused_attempt_never_announces_target_dispatch",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_removal_run_reports_every_item_and_a_total",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_single_path_is_judged_as_a_plan_would",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_target_reached_through_a_link_is_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_target_with_a_mount_inside_is_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_trash_info_path_is_restorable",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_trash_tool_is_called_with_the_path_after_a_separator",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_volume_is_judged_by_its_mount_where_the_kernel_names_one",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_whole_disk_plan_accepts_a_real_entry_in_private_tmp",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_whole_disk_scan_may_remove_what_is_in_private_tmp",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::a_worker_that_cannot_start_ends_the_run_as_failed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::applications_folder_is_protected_and_individual_apps_are_removable",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::applications_protection_follows_directory_identity",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::container_aliases_match_the_filesystem_identity",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::every_existing_profile_is_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::home_is_found_by_its_real_path_too",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::junctioned_profiles_are_protected_after_parent_resolution",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::limited_worker_refuses_the_entire_batch_before_removing_anything",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::limited_worker_removes_descendants_beyond_path_max",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::macos_always_uses_the_system_trash",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::macos_guard_keys_fold_the_data_volume_and_case",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::macos_guards_see_through_other_spellings",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::macos_home_folders_are_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::macos_scratch_space_is_removable_but_not_the_folders_themselves",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::macos_service_stores_and_their_contents_are_never_raw_deleted",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::macos_system_trees_are_refused_but_apps_are_not",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::mount_points_are_recognized",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::mounts_inside_a_linked_scan_root_keep_their_guards",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::names_win32_would_misread_are_recognized",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::nesting_keeps_component_boundaries_duplicates_and_output_order",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::nesting_uses_guard_case_order_even_when_the_child_sorts_first",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::normalize_resolves_dots_without_the_filesystem",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::nothing_is_mounted_below_a_temp_dir",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::only_the_scanned_volumes_marks_are_projected",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::paths_outside_the_root_are_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::percent_encoding_escapes_what_the_spec_requires",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::permanent_removal_does_not_follow_a_link_put_on_the_way_down",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::permanent_removal_follows_links_above_the_root",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::permanent_removal_takes_directories_and_leaves_siblings",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::permanent_removal_takes_nested_trees_and_hidden_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::permanent_removal_unlinks_a_symlink_instead_of_following_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::permanent_removal_unlinks_nested_symlinks_without_following_them",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::profile_aliases_preserve_directory_identity",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::protecting_containers_does_not_protect_every_child",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::read_only_files_are_removed_too",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::recursive_guards_follow_directory_identity",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::removal_nesting_budget",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::sibling_prefixes_are_not_treated_as_containment",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::system_containers_cannot_be_marked",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::system_trees_are_refused_in_a_whole_disk_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::the_directories_above_home_are_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::the_macos_trash_takes_a_file_and_leaves_a_linked_target",
+    "outcome": "ignored",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::the_mount_table_is_read_off_the_calling_thread_and_then_kept",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::the_root_and_home_are_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::the_xdg_trash_moves_a_file_and_records_where_it_came_from",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::this_macs_mount_table_is_read_without_proc",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::trash_names_avoid_collisions",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::tests::volume_metadata_requires_a_drive_prefix",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::walk::tests::bulk_inspection_matches_a_nofollow_oracle",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::walk::tests::bulk_inspection_matches_the_filesystem_without_per_file_stats",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal::walk::tests::bulk_inspection_refuses_a_real_nested_mount_before_visiting_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::a_confirmed_share_raises_only_its_own_volume",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::apfs::clones_and_hardlinks_have_distinct_capacity_accounting",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::apfs::individual_file_rechecks_preserve_filesystem_aliases",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::apfs::real_apfs_scan_and_recheck_agree",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::apfs::sibling_aliases_share_one_identity_lookup_pass",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::boundary_is_inclusive_and_sums_targets_per_volume",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::dangling_links_use_the_containing_volume",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::deep_scan_and_recheck_preserve_accounting_parameters",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::fresh_limit_matches_review_and_filesystem_snapshots",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::leaf_listings_are_fresh_for_each_selection",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::leaf_selection_work_is_linear_in_parent_entries",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::preflight_counts_hardlinks_and_link_allocations_without_following",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::preflight_includes_hidden_entries_and_growth_since_marking",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::preflight_matches_the_identity_union",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::preflight_measures_descendants_beyond_path_max",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::preflight_refuses_unreadable_deep_directories",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::raising_never_lowers_a_volume_below_the_base",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::recheck_retains_the_scan_size_and_hardlink_parameters",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::regular_file_capacity_uses_its_containing_volume",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::selected_siblings_enumerate_their_parent_once",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::unchanged_hardlinked_artifacts_pass_the_same_budget_as_review",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "removal_limit::tests::usage_groups_by_volume_as_the_check_does",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "report::tests::a_listing_is_largest_first_with_the_tail_summed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "report::tests::ages_pick_one_unit",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "report::tests::clone_rows_split_private_from_shared_and_say_what_goes_alone",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "report::tests::paths_under_home_are_shortened",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "report::tests::removed_entries_say_so_first",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "report::tests::rows_without_clones_read_as_they_always_have",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "report::tests::the_header_says_how_much_is_counted_again",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "report::tests::vm_state_reports_detection_and_its_owner_workflow",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "retention::tests::captured_tmutil_disk_header_accepts_empty_and_populated_listings",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "retention::tests::snapshot_presence_absence_and_unavailable_stay_distinct",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::a_short_path_is_left_alone",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::a_windows_path_splits_on_its_own_separator",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::an_absolute_path_keeps_its_first_directory",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::an_item_says_why_it_is_listed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::an_unknown_temporary_descendant_is_not_a_cache",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::claude_under_private_tmp_is_temporary_even_with_git_contents",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::descriptive_labels_leave_supported_owner_cleanup_routing_intact",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::nothing_to_drop_returns_the_path",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::one_unknown_private_part_makes_the_total_unknown",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::reports_settle_their_items_in_order",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::review_badges_describe_logs_trash_and_temporary_contents",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::temporary_ancestry_never_labels_unknown_contents_as_cache",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "run_list::tests::the_middle_goes_first_and_whole_names_at_a_time",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "safety::tests::defaults_persist_and_invalid_configuration_refuses_removal",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "safety::tests::off_lifts_the_windows_limit_but_never_an_agents",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "safety::tests::the_share_rounds_up_and_the_phrase_says_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::path_tests::a_nested_disk_image_is_a_boundary_under_every_root_spelling",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::a_directory_reports_its_own_bytes_separately",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::a_file_root_is_rejected",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::a_second_data_mount_keeps_data_only_files_without_its_user_aliases",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::a_spawned_scan_reports_progress_and_a_result",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::a_wider_scan_reuses_the_subtree_it_already_knows",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::an_unknown_firmlink_map_reports_incomplete_instead_of_empty_data",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::an_unreadable_directory_is_recorded_not_fatal",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::cached_data_usr_cannot_restore_an_excluded_descendant",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::cached_firmlink_widening_matches_the_cold_scan_oracle",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::cancelled_queued_jobs_release_parent_completion_tokens",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::children_are_ranked_largest_first",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::data_only_files_match_the_allocation_oracle",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::default_scan_and_recheck_have_identical_parameters",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::disk_usage_is_whole_allocation_units",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::file_count_metric_ranks_by_entries",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::fixed_scan_finishes_while_the_global_pool_is_busy",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::fixed_worker_pools_change_size_without_reinitializing_rayon",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::fixed_worker_pools_preserve_a_wide_deep_tree",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::followed_symlink_loops_do_not_hang_the_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::hardlinks_are_charged_once_by_default",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::hidden_entries_are_included_by_default_and_excluded_on_request",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::max_depth_stops_descending_but_keeps_direct_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::optional_service_failures_remain_errors_without_requesting_access",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::recheck_preserves_all_accounting_and_worker_parameters",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::scan_options_accept_requests_without_optional_clone_metadata",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::subdirectories_list_sharing_flags_unless_clones_outnumber_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::symlinks_are_not_followed_by_default",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::totals_are_summed_bottom_up",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan::tests::whole_disk_smoke",
+    "outcome": "ignored",
+    "count": 1
+  },
+  {
+    "test": "scan_preview::tests::bounded_buckets_preserve_all_weight_and_arrival_order",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan_threads::tests::controller_retires_recovers_after_search_and_cancels",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan_threads::tests::governor_waits_for_retirement_and_recovers_without_exceeding_target",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan_threads::tests::inconclusive_windows_cannot_accept_a_reduction",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan_threads::tests::increased_limit_is_not_supplied_until_jobs_are_dispatched",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan_threads::tests::long_directory_never_becomes_a_fully_supplied_window",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan_threads::tests::real_pool_retires_at_job_boundaries_and_drains_queued_descendants",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "scan_threads::tests::search_refines_one_reference_without_compounding_loss",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "screenshots::render::tests::pointer_clips_at_the_image_edge",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "screenshots::render::tests::polygon_fill_agrees_with_rectangle_intervals",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "screenshots::scenario::tests::capture_names_are_single_portable_filenames",
+    "outcome": "ok",
+    "count": 2
+  },
+  {
+    "test": "screenshots::scenario::tests::coordinates_obey_window_bounds",
+    "outcome": "ok",
+    "count": 2
+  },
+  {
+    "test": "screenshots::scenario::tests::parses_all_steps_and_rejects_mistyped_fields",
+    "outcome": "ok",
+    "count": 2
+  },
+  {
+    "test": "screenshots::scenario::tests::pointer_capture_tracks_moves",
+    "outcome": "ok",
+    "count": 2
+  },
+  {
+    "test": "screenshots::scenario::tests::refuses_duplicates_and_unknown_or_unbounded_steps",
+    "outcome": "ok",
+    "count": 2
+  },
+  {
+    "test": "screenshots::scenario::tests::relative_setup_paths_never_escape",
+    "outcome": "ok",
+    "count": 2
+  },
+  {
+    "test": "screenshots::scenario::tests::usage_history_compares_only_when_asked",
+    "outcome": "ok",
+    "count": 2
+  },
+  {
+    "test": "semantics::tests::current_status_and_text_have_stable_named_roles",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "semantics::tests::status_review_current_updates_supply_an_announced_value",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "semantics::tests::status_review_mark_updates_supply_an_announced_value",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "server::tests::bad_skill_requests_are_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "server::tests::find_category_schema_and_requests_agree_with_core_kinds",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "server::tests::only_explicit_client_acceptance_of_the_empty_form_confirms_removal",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "server::tests::output_inventory_advertises_generic_types_and_age_ordering",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "server::tests::removal_is_a_destructive_non_idempotent_write_and_listing_is_read_only",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "server::tests::skills_are_readable_directly_from_tool_discovery",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "server::tests::skills_list_get_and_resources_agree",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "server::tests::the_server_declares_the_skills_extension",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::ranking_tests::complete_clone_group_with_private_files_keeps_its_rank",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::ranking_tests::measured_private_allocation_stays_rankable_with_uncertain_extents",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::a_clone_outside_the_scan_keeps_every_shared_block",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::a_desktop_session_cannot_fall_back_to_a_local_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::a_mark_missing_from_the_windows_tree_is_kept_and_explained",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::a_scan_reports_totals_the_top_level_and_findings",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::a_scan_that_does_not_cover_earlier_marks_keeps_them_here",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::a_test_socket_fits_sun_path_from_any_checkout",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::a_window_on_an_ssh_host_is_not_driven",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::apfs_allocation_is_reported_even_above_volume_usage",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::cache_proposals_cannot_be_confirmed_until_every_path_is_decided",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::cargo_empty_results_preserve_scan_limits_and_protected_owners",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::cargo_inference_stays_inside_each_completed_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::cargo_inventory_has_the_same_identity_on_the_link_without_any_writes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::cargo_inventory_matches_filesystem_evidence_not_target_names",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::client_names_read_like_products",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::clone_rows_split_shared_bytes_and_a_complete_group_has_partial_bounds",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::covered_marks_use_the_windows_root_for_handover",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::desktop_paths_use_the_callers_base_for_every_path_tool",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::every_core_category_survives_json_and_query_filtering",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::explicit_standalone_never_adopts_a_running_desktop",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::find_accepts_temporary_category_and_excludes_other_kinds",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::find_counts_nested_scans_once",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::find_filters_by_kind_size_name_and_reclaim",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::generic_output_inventory_agrees_with_the_link_and_keeps_both_carts",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::generic_output_queries_match_the_family_and_subtype_oracle",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::hypothetical_selection_preserves_the_offline_cart_and_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::hypothetical_selection_reads_the_window_without_greeting_or_handover",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::hypothetical_selection_refuses_remote_or_old_peers_without_local_fallback",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::incompatible_state_is_refused_before_adopting_marks_or_handing_over",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::linked_plan_uses_window_union_even_with_a_conflicting_local_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::linking_never_moves_the_window_to_cover_earlier_marks",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::listings_say_what_the_window_removed_since_its_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::ls_needs_a_scan_and_then_lists_largest_first",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::ls_with_show_keeps_the_listing_when_the_window_cannot_follow",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::marking_a_worktree_trio_keeps_shared_blocks_out_of_the_lower_bound",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::marks_a_window_refuses_are_kept_and_explained",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::marks_are_planned_with_the_guards_and_without_a_window",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::marks_made_before_the_window_opened_are_handed_over",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::narrowing_an_output_query_preserves_nearer_hints_and_subtypes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::output_inventory_refuses_peers_that_cannot_express_output_boundaries",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::overlapping_output_scans_match_their_single_snapshot_oracles",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::private_tmp_is_a_candidate_but_guards_refuse_it_locally_and_linked",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::ranking_is_read_only_and_apparent_measurements_are_unavailable",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::ranking_prefers_private_data_to_large_clones_and_keeps_unknown_last",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::real_apfs_clones_read_as_shared_and_free_nothing_alone",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::relative_paths_require_a_known_session_base",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::review_launches_one_window_covering_every_offline_scan_root",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::stand_in_history_uses_the_retained_scan_clock",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::standalone_plan_projects_the_selected_union_and_reports_unknown_marks",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::standalone_union_completes_groups_across_separate_scan_roots",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::status_reuses_window_measurement_context_without_scanning",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::unmark_after_a_partial_handover_clears_both_copies",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::with_a_window_open_its_tree_is_what_the_agent_reads",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "session::tests::with_a_window_open_marks_live_there_and_review_opens_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::addition_tests::bounded_peer_unions_scale_with_metadata_not_pairs_of_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::apfs_tests::apfs_deletion_frees_at_least_the_estimated_lower_bound",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::apfs_tests::truncated_external_clone_retains_half_a_selected_clone_group",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::observation_tests::live_hardlink_observations_match_the_partial_model",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::observation_tests::two_observations_of_a_changing_link_count_stay_partial",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::tests::a_third_name_cannot_hide_conflicting_clone_observations",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::tests::bounded_grouping_drops_shared_credit_without_losing_private_bytes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::tests::changing_link_counts_are_partial_before_all_names_are_seen",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::tests::clone_reference_counts_use_the_largest_observation_and_volume",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::tests::followed_links_cannot_credit_the_target_or_complete_a_clone_group",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::tests::hardlinks_are_one_clone_reference_even_across_marked_directories",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::tests::inconsistent_hardlinks_are_partial_without_completing_the_file",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::tests::missing_identity_and_private_metadata_never_prove_a_complete_group",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::tests::modified_groups_and_unknown_sharing_supply_bounds_not_exact_savings",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::tests::selected_aliases_free_nothing_until_the_last_real_name_is_selected",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::tests::selected_set_work_scales_with_members_even_when_groups_and_marks_grow",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::reclaim::tests::ten_worktrees_with_external_clones_free_only_their_private_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::changing_hardlinks_read_the_same_flat_nested_and_on_any_workers",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::clone_groups_merge_across_directories_and_refresh_after_removal",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::deduplicated_hardlinks_do_not_inflate_sharing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::deep_and_parallel_levels_merge_like_one_directory",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::every_figure_is_the_same_however_its_allocation_is_kept",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::group_limit_marks_the_summary_partial_without_losing_private_bytes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::groups_are_volume_scoped_and_only_data_forks_are_duplicated",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::modified_clones_repeat_only_what_they_still_share",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::random_trees_read_as_their_files_would_side_by_side",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::random_trees_read_the_same_however_their_allocations_are_kept",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::random_trees_read_the_same_on_one_worker_and_on_many",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::refresh_work_grows_with_files_and_makes_no_map_per_file",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::selecting_a_complete_clone_group_only_possibly_reclaims_its_data",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "sharing::tests::unknown_and_oversized_private_values_stay_conservative",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size::tests::a_value_that_rounds_up_to_the_next_unit_is_shown_in_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size::tests::application_preference_routes_every_formatter",
+    "outcome": "ok",
+    "count": 2
+  },
+  {
+    "test": "size::tests::bytes_use_binary_units_with_one_decimal_below_ten",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size::tests::compact_and_range_formats_preserve_the_same_units",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size::tests::counts_switch_to_metric_suffixes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size::tests::decimal_and_binary_boundaries_use_truthful_labels",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size::tests::displayed_numbers_round_the_original_bytes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size::tests::platform_only_changes_the_default",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size::tests::share_bar_is_always_the_requested_width",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size::tests::share_survives_a_zero_total",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size::tests::short_form_drops_the_space",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size::tests::unit_definitions_determine_numbers_and_labels",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size_preferences::tests::invalid_preferences_are_reported_without_rewriting_them",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "size_preferences::tests::saved_choices_follow_the_last_successful_write",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "skills::tests::a_prompt_carries_this_systems_reference",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "skills::tests::every_skill_address_in_a_skill_resolves",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "skills::tests::every_skill_has_frontmatter_that_names_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "skills::tests::manifests_list_every_file_with_its_digest",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "skills::tests::only_listed_files_are_read",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "skills_host_tests::a_modern_host_discovers_and_loads_every_skill",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "skills_host_tests::an_initializing_host_discovers_and_loads_every_skill",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::a_bind_mount_inside_the_scan_is_left_out",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::a_home_scan_has_no_foreign_mounts_here",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::a_missing_path_reports_the_io_error",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::a_real_volume_reports_plausible_numbers",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::a_root_booted_from_a_snapshot_keeps_its_subvolumes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::a_table_that_does_not_place_a_path_claims_nothing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::a_volume_includes_its_subvolumes_and_nothing_else",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::a_volume_keeps_its_subvolumes_and_loses_everything_else",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::btrfs_subvolume_devices_can_differ",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::discovery_candidates_do_not_probe_unavailable_mounts",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::discovery_filters_types_and_whole_kernel_path_components",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::disk_meter_partitions_capacity_without_crediting_reclaimable_space",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::excluded_views_cannot_replace_visible_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::firmlink_exclusions_preserve_each_destination",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::hidden_original_and_nested_mounts_are_preserved",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::invalid_native_counters_fall_back_to_raw_measurements",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::kernel_pseudo_filesystems_are_excluded_from_volume_candidates",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::macos_mount_points_keep_spaces_and_brackets",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::macos_restricts_data_aliases_but_direct_data_scans_are_unrestricted",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::mount_sources_decode_tabs_newlines_and_literal_escape_text_once",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::mountinfo_escapes_are_decoded_once",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::mounts_escapes_are_decoded_once",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::native_display_and_projection_match_the_capacity_model",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::native_group_usage_excludes_other_container_volumes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::projecting_removal_cannot_exceed_the_volume",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::scan_estimates_require_a_whole_volume_and_known_used_space",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::separate_home_disk_is_its_own_volume",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::strict_scan_boundaries_include_same_device_and_bind_mounts",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::subvolumes_are_not_repeats_but_a_second_mount_of_a_disk_is",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::the_device_is_the_longest_matching_mount",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::the_home_disk_on_macos_is_the_root_and_has_a_device",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::the_top_of_a_btrfs_disk_beside_its_subvolumes_is_counted_once",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::the_whole_disk_is_the_top_of_the_home_volume",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::unrelated_tmpfs_mounts_are_not_duplicates",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::unusable_firmlink_maps_cannot_turn_into_empty_exclusions",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::used_fraction_handles_an_empty_volume_report",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::volume_candidates_are_real_disks_not_pseudo_filesystems",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::volumes_with_least_space_come_first_and_unknowns_last",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "space::tests::without_a_table_the_same_place_is_one_volume",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::removal_tests::enclosing_removal_keeps_the_bytes_of_an_earlier_inner_removal",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::removal_tests::nested_removals_discount_insights_from_the_scanned_size",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::removal_tests::removals_and_marks_follow_the_scanned_file_model",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::removal_tests::temporary_siblings_remain_insights_after_removing_the_cache",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::tests::a_smaller_tile_takes_longer_to_fill_the_window",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::tests::a_transition_grows_a_tile_that_is_being_entered",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::tests::a_transition_starts_exactly_on_the_tile_it_grows_out_of",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::tests::a_transition_starts_where_the_region_was_and_ends_where_it_is",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::tests::clamping_never_leaves_a_margin",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::tests::directions_only_see_gaps_on_their_own_side",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::tests::projecting_and_unprojecting_are_inverses",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::tests::the_level_left_moves_with_the_level_entered",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "state::tests::zooming_keeps_the_point_under_the_cursor_still",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::a_failed_command_that_detached_the_image_is_successful_cleanup",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::an_already_ejected_image_after_one_checkpoint_is_successful_cleanup",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::an_already_ejected_image_after_two_checkpoints_is_successful_cleanup",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::an_already_ejected_image_is_successful_cleanup",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::an_open_reader_does_not_prevent_private_image_cleanup",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::an_unformatted_attachment_can_be_released_without_formatting",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::an_unmounted_volume_still_detaches_its_backing_image",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::cleanup_waits_for_pending_container_retirement",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::command::a_hung_command_has_a_deadline",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::command::a_timeout_stops_followup_commands",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::command::an_exited_launcher_does_not_wait_for_inherited_output",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::command::command_deadlines_cover_descendants",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::container_cleanup_releases_a_busy_physical_store",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::container_cleanup_releases_a_busy_store_after_one_checkpoint",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::default_mount_uses_system_scratch_without_moving_the_backing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::external_detachment_handles_a_busy_physical_device",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::external_detachment_preserves_stale_bookkeeping",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::failed_image_cleanup_does_not_panic_or_remove_its_backing_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::free_space_checkpoint_does_not_need_to_eject_the_image",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::free_space_checkpoints_preserve_the_backing_attachment",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::image_cleanup_accepts_an_already_detached_backing_image",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::image_cleanup_follows_the_unmount_result",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::image_cleanup_releases_a_busy_parent_after_checkpoints",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::interrupted_setup_keeps_every_attachment_owned",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::operations::model::a_disappeared_image_cannot_measure_the_mountpoints_host_volume",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::operations::model::a_failed_unmount_can_release_its_device_number",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::operations::model::checkpoint_refuses_a_reused_cached_volume",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::operations::model::forced_detachment_uses_the_new_owned_device_number",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::operations::model::forced_eject_rechecks_after_unmount_removes_the_attachment",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::operations::model::forced_unmount_can_retire_the_container_before_detachment",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::operations::model::native_substeps_follow_current_image_ownership",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::retirement_can_finish_after_the_first_eject_attempt",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "test_paths::disk_image::successful_eject_status_does_not_remove_an_attached_image",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_background_window_leaves_a_stale_answer_until_it_is_active",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_cache_named_folder_is_an_ordinary_mark",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_cargo_build_is_an_ordinary_removal",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_check_asked_for_answers_in_a_toast",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_click_on_a_file_at_the_top_selects_it_and_opens_nothing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_click_outside_the_chooser_keeps_it_open",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_client_side_frame_keeps_a_resize_ring_until_it_is_tiled",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_crumb_lists_its_siblings_and_jumps_sideways",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_directory_error_can_be_corrected_without_reconnecting",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_double_click_on_a_nested_tile_opens_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_double_click_on_the_selection_opens_once",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_drag_pans_a_zoomed_view",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_failed_check_says_why",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_failed_remote_scan_stops_showing_the_reading_screen",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_full_clone_is_all_shared_and_frees_nothing_alone",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_large_directory_keeps_zero_weight_files_reachable_in_bounded_pages",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_legend_chip_shows_only_then_hides_its_kind",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_legend_filter_that_keeps_nothing_says_so",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_member_outside_the_scan_keeps_the_group_from_being_credited",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_menu_check_shows_its_download_percent",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_modified_clone_counts_its_private_bytes_only",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_parents_name_gets_its_own_band_above_its_children",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_permanent_deletion_asks_in_an_alert_dialog_then_removes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_press_on_the_strip_arms_a_move_and_a_click_disarms_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_progress_tick_does_not_rebuild_settings",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_push_names_what_it_opens_and_a_pause_clears_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_push_starts_over_on_another_directory",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_ready_download_stays_until_later",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_removal_keeps_the_ready_card_down",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_removal_leaves_what_went_in_the_tree_as_removed_and_counts_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_set_chip_survives_drilling_into_a_folder_without_its_kind",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_short_panel_folds_the_selection_figures",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_sweep_over_checkouts_asks_nothing_and_a_rest_asks_once",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_timed_out_checkout_is_drawn_and_not_asked_again",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_toast_hides_the_treemap_under_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_toast_never_covers_the_review_footer",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_view_without_flags_or_marks_still_draws",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::a_window_on_an_ssh_host_refuses_the_agent",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::accessible_file_navigation_uses_absolute_paths_and_filter",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::accessible_file_pages_reach_every_entry_and_share_safe_marks",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::accessible_list_review_noop_navigation_preserves_page",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::accessible_list_review_previous_uses_filtered_page",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::accessible_list_review_previous_uses_shrunken_marks_page",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::accessible_list_review_rescan_preserves_keyboard_focus",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::accessible_list_review_sibling_navigation_tracks_page",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::after_descending_every_tile_is_inside_the_directory_drawn",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::an_agent_confirms_cache_decisions_by_path_with_both_intents_named",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::an_agent_listing_says_what_was_removed_since_the_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::an_agent_marks_shows_and_reviews_over_the_link",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::an_agent_removal_stays_at_the_agent_limit_with_the_windows_off",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::an_agent_scan_leaves_the_chooser",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::an_answer_leaves_on_its_own",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::an_opening_click_shows_the_tile_that_was_clicked",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::apfs_clones_use_private_bytes_in_review_and_refresh",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::artifact_assessments_render_and_vm_data_stays_out_of_cleanup_filters",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::artifact_guidance_scrolls_above_the_pinned_free_space_meter",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::audit_confirmation_contains_shortcuts_and_cancel_restores_review",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::audit_help_contains_navigation_and_restores_keyboard_operation",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::audit_source_picker_contains_shortcuts_and_restores_focus",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::aux_review_document_tab_leaves_the_title_strip",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::aux_review_first_log_step_selects_an_end",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::aux_review_log_toggles_are_tab_stops",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::aux_review_picked_channel_is_a_tab_stop",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::back_and_forward_retrace_where_you_have_been",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::blocked_review_status_budget",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::both_appearances_draw",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::cache_cleanup_decides_each_path_and_deleting_files_needs_its_own_tick",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::cache_cleanup_decisions_follow_a_model_of_them",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::cache_exports_keep_marks_and_refuse_raw_scripts",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::cache_review_requires_owner_preview_and_never_falls_back_to_raw_removal",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::chooser_fits_a_small_window_at_large_interface_zoom",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::closing_a_window_frees_its_tree_off_the_main_thread",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::command_chords_are_not_read_as_plain_letters",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::control_tooltips_never_leave_the_content",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::copy_diagnostics_info_names_no_scanned_path",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::covered_review_status_budget",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::custom_menu_arrows_and_escape_leave_files_untouched",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::custom_menu_enter_activates_the_named_safe_action",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::delayed_space_queries_obey_the_source_epoch_model",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::desktop_mcp_reconnect_keeps_the_tree_and_marks",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::disk_accounting_explanation_renders_for_local_sources",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::documents_reach_the_end_and_copy_by_keyboard",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::documents_reflow_at_minimum_size_and_double_scale",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::double_scale_wraps_controls_and_keeps_pointer_targets",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::dragging_the_panel_edge_resizes_it_within_its_limits",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::editing_a_host_never_retargets_an_existing_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::empty_panel_lists_are_one_line",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::enclosing_removal_preserves_scanned_bytes_in_marks_and_agent_reports",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::enter_before_the_search_lands_applies_it_when_it_does",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::enter_in_the_focused_volume_picker_scans_the_selected_root",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::enter_opens_the_selected_directory_at_any_depth",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::entering_a_directory_scans_only_that_explicit_root",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::entries_without_clones_carry_nothing_and_old_payloads_decode",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::escape_cancels_the_first_scan_and_r_starts_it_again",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::escape_cancels_widening_and_keeps_the_tree_on_screen",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::escape_in_the_delete_dialog_cancels",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::every_legend_chip_is_on_the_row_or_in_its_menu",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::file_list_keeps_a_complete_entry_visible_at_double_scale",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::find_field_never_draws_over_the_legend",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::focus_review_application_menu_is_a_forward_and_reverse_tab_stop",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::focus_review_delete_cancel_enter_preserves_the_fixture",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::focus_review_escape_cancels_removal_before_background_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::focus_review_escape_leaves_review_and_done_with_refresh_intact",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::focus_review_settings_panes_are_forward_and_reverse_tab_stops",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::focus_review_source_cancel_enter_does_not_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::folder_queue_construction_budget",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::help_documents_draw_and_copy",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::help_focus_returns_to_the_originating_control",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::help_reflows_and_scrolls_at_minimum_size_and_double_scale",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::hovering_reports_the_tile_under_the_pointer",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::indexing_keeps_free_space_visible_in_short_zoomed_windows",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::interface_zoom_scales_the_rem_and_the_header_band",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::invalid_ssh_input_does_not_start_a_scan_or_change_the_source",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::keys_walk_the_tree_and_mark_what_is_selected",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::legend_chips_carry_sizes_and_empty_kinds_wait_in_the_menu",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::listings_keep_vm_detection_separate_from_cleanup_suggestions",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::loading_values_and_paths_do_not_move_the_sidebar",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::logs_follow_the_file_and_filter",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::logs_overlays_hide_the_lines_under_them",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::logs_read_and_copy_offscreen_lines_by_keyboard",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::logs_survive_a_rotation_to_an_empty_file",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::logs_wrap_at_minimum_size_and_double_scale",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::main_integration_help_dismisses_the_export_menu",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::marked_interaction_timings",
+    "outcome": "ignored",
+    "count": 1
+  },
+  {
+    "test": "tests::marked_tiles_follow_metric_rescan_and_mark_changes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::marked_window_resolution_budget",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::marking_a_directory_marks_everything_inside_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::marking_a_partly_shown_folder_says_it_takes_all_of_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::marking_a_worktree_trio_projects_only_its_private_allocation",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::missing_clone_facts_are_partial",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::more_holds_the_folded_controls_and_takes_the_keys",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::more_steps_depth_in_place_when_the_stepper_folds",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::mouse_side_buttons_go_back_and_forward",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::narrow_indexing_keeps_a_preview_and_compact_progress_in_bounds",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::native_space_is_optional_and_preserves_raw_protocol_counters",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::notices_are_toasts_that_run_out",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::one_swipe_opens_one_level",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::one_swipe_out_goes_up_one_level",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::overlays_fit_a_short_window",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::page_scrolls_inside_an_oversized_log_line",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::panel_headers_stay_in_sight_while_their_list_scrolls",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::parent_absorption_budget",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::past_the_limit_marking_needs_mark_anyway_and_review_the_phrase",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::past_the_limit_review_names_each_disk_and_holds_each_to_its_own_share",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::power_efficiency_menu_saves_without_discarding_the_tree",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::private_service_stores_draw_unavailable_and_partial_figures",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::queue_construction_budget",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::quitting_from_review_leaves_the_tree_to_the_system",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::raw_inspection_prepares_off_thread_and_execution_rechecks",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::readable_progress_is_throttled_but_errors_and_completion_are_immediate",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::reduced_motion_cancels_active_transition_and_can_be_disabled",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::reduced_motion_lands_navigation_history_and_zoom",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::remote_history_keeps_literal_and_nested_names_separate",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::remote_indexing_draws_live_activity_and_the_sampled_directory",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::remote_paths_keep_the_hosts_separators_on_every_client",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::remote_review_copies_host_guarded_script_and_prompt",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::remote_review_never_deletes_even_through_direct_actions",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::remote_root_acceptance_never_stats_the_path_locally",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::removal_capacity_limit_blocks_the_entire_ui_selection",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::removal_plan_captures_the_scan_accounting_options",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::removed_status_round_trips_and_is_absent_when_nothing_went",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::removing_a_directory_after_part_of_it_counts_only_the_rest",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::removing_shows_stop_and_done_sits_on_the_right",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::repointing_an_ssh_alias_never_reuses_old_machine_marks",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::requests_round_trip_through_json_lines",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::restart_arguments_parse_back_to_the_same_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::restart_to_update_waits_for_a_removal",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::restarting_waits_and_a_failure_is_offered_again",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::review_cautions_on_marked_vm_data_only",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::review_inspection_agrees_with_worker_for_relocated_layouts",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::review_inspection_discards_replaced_selection_and_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::review_routes_relocated_cache_before_confirmation_and_removes_unrelated_mark",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::review_rows_shorten_deep_paths_and_say_why",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::review_scrolls_at_minimum_size_and_double_scale",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::right_click_selects_the_tile_and_reveals_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::routing_review_help_dismisses_menus_and_contains_navigation",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::routing_review_menu_escape_preserves_the_widening_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::routing_review_search_escape_preserves_the_widening_scan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::safety_settings_relax_the_window_but_never_an_agent",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::scan_percentage_is_bounded_and_rejects_incompatible_totals",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::screenshot_navigation_always_matches_the_destination_layout",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::selecting_a_checkout_asks_once_and_then_reads_the_answer",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::settings_panes_scroll_at_minimum_size_and_double_scale",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::settings_safety_reads_the_limit_once_and_shows_a_saved_pick",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::settings_updates_picks_a_channel_and_keeps_the_keys",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::shift_u_opens_settings_updates",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::showing_a_tile_that_is_gone_says_so_instead",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::size_units_settings_apply_and_save_every_choice",
+    "outcome": "ok",
+    "count": 2
+  },
+  {
+    "test": "tests::source_tab_traversal_stays_in_the_modal_and_escape_restores_origin",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::stale_local_discovery_cannot_overwrite_a_new_source_error",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::startup_chooser_never_scans_before_explicit_acceptance",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::status_review_cancelled_widening_does_not_hide_the_active_screen",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::status_review_removal_completion_survives_its_background_rescan",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::status_review_widening_announces_each_in_flight_root_immediately",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::switching_from_remote_to_local_clears_machine_specific_marks",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::switching_the_metric_keeps_the_directory_and_the_selection",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::switching_the_metric_recomputes_the_legend",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::tab_reaches_file_navigation_without_changing_selection",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_age_filter_keeps_the_scan_clock_and_lists_partial_shares",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_agent_line_opens_settings_agents",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_app_menu_hides_the_treemap_under_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_bar_folds_into_more_as_the_window_narrows",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_chooser_switches_source_and_scans_the_selected_row",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_empty_filter_note_hides_the_treemap_under_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_export_menu_hides_the_list_under_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_first_scan_shows_what_it_is_doing_then_the_treemap",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_follow_pill_hides_the_row_under_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_help_overlay_opens_and_closes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_hover_card_never_leaves_the_window",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_legend_filter_follows_into_folders_and_into_a_search",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_level_left_is_drawn_while_the_clicked_tile_grows",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_level_left_never_takes_the_new_levels_names",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_mark_key_follows_the_pointer_until_the_keyboard_moves",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_marked_total_is_pinned_above_the_disk_with_the_review",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_menu_opens_settings_agents",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_only_pill_switches_kinds_and_the_tooltip_stays_clear",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_panel_checks_for_a_checkout_once_per_selection",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_power_menu_offers_only_what_the_cpus_can_tell_apart",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_ready_card_comes_back_after_an_answer",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_removal_list_follows_the_item_in_hand_like_the_live_log",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_removal_list_stays_on_screen_from_start_to_done",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_review_footer_puts_the_commit_with_back_on_the_right",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_review_screen_copies_the_list_as_an_agent_prompt",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_review_screen_switches_removal_mode",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_review_summary_fits_a_short_window",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_socket_is_the_override_else_a_per_user_place",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_strip_menu_lists_the_menus_off_macos",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_title_strip_draws_on_every_window_frame",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_tooltip_follows_the_pointer_inside_a_client_side_frame",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_tooltip_hides_under_an_overlay",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_trash_is_the_default_when_there_is_one",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_treemap_zooms_with_the_wheel_and_resets",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_view_switch_and_the_view_menu_show_the_file_list",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_volume_picker_is_centred_and_ignores_clicks_outside",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_volume_picker_opens_moves_and_closes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_wheel_goes_into_the_directory_it_zoomed_into",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_wheel_never_magnifies_what_cannot_open",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_window_draws_a_treemap_with_tiles",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::the_wordmark_gives_way_in_a_narrow_window",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::title_brand_opens_source_picker",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::toggling_the_metric_reorders_without_copying_the_tree",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::typing_filters_live_and_enter_shows_only_the_matches",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::unmark_all_can_be_undone",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::unmark_all_offers_undo_on_its_toast",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::unreadable_service_stores_stay_quiet_without_hiding_other_privacy_errors",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::usage_history_compares_a_nested_root_and_refuses_another",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::usage_history_compares_two_saved_reports",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::usage_history_without_reports_says_how_to_make_one",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::what_was_removed_stays_removed_across_a_metric_change",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tests::widening_reuses_the_tree_it_has_and_reads_only_the_rest",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "toasts::tests::a_key_replaces_its_toast_and_the_oldest_gives_way",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "toasts::tests::a_menu_check_follows_its_progress_then_settles",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "toasts::tests::a_menu_check_waits_for_the_check_already_running",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "toasts::tests::a_toast_runs_out_unless_the_pointer_rests_on_it",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "toasts::tests::answers_say_what_a_check_found",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "toasts::tests::later_puts_away_one_release_and_asking_brings_it_back",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "toasts::tests::only_a_menu_check_raises_a_card_until_a_release_is_ready",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "toasts::tests::the_ready_card_says_restarting_and_why_a_restart_failed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "toolbar::tests::the_bar_folds_least_used_first",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "toolbar::tests::the_switch_keeps_its_words_down_to_64_rem",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "transport_tests::a_live_socket_is_not_stolen",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "transport_tests::a_request_reaches_the_queue_and_its_reply_reaches_the_client",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "transport_tests::an_oversized_unterminated_request_is_dropped",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "transport_tests::dropping_a_reply_closes_only_that_client",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "transport_tests::garbage_gets_an_error_line_not_a_hang",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "transport_tests::hanging_up_is_reported_and_the_listener_can_be_rebound",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "transport_tests::two_clients_keep_their_replies_and_connection_ids",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tree::tests::aggregate_can_rank_by_file_count",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tree::tests::aggregate_derives_totals_and_orders_children",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tree::tests::depth_counts_edges",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tree::tests::find_reports_crumbs_and_is_case_insensitive",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tree::tests::identities_that_differ_only_in_their_top_bits_are_two_files",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tree::tests::largest_child_is_the_first_child_because_children_are_sorted",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tree::tests::path_of_joins_names_beneath_the_root",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tree::tests::reorder_matches_aggregate_without_touching_totals",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tree::tests::resolve_walks_child_indices",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "tree::tests::seen_charges_an_identity_once_in_either_store",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::a_filtered_layout_shows_only_the_matches_at_their_size",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::a_leaf_never_claims_a_header",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::a_rule_lays_out_the_passing_files_of_a_partial_folder",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::a_subdivided_directory_keeps_a_header_for_its_own_name",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::a_tile_without_room_for_a_header_stays_whole",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::hit_returns_the_deepest_tile",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::layout_depth_one_stops_at_direct_children",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::layout_merges_the_child_tail_into_one_tile",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::layout_nests_children_inside_their_parent",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::squarify_fills_the_area",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::squarify_keeps_aspect_ratios_reasonable",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::squarify_survives_degenerate_input",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap::tests::tile_crumbs_address_the_scanned_tree_not_the_drawn_node",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap_view::tests::a_descender_stays_inside_a_slim_band",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap_view::tests::a_find_underline_stays_inside_its_label",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap_view::tests::a_label_glyph_box_stays_inside_its_band",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap_view::tests::a_long_name_stops_short_of_the_right_edge",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap_view::tests::a_short_band_pins_the_glyph_top_to_its_own",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap_view::tests::actual_tile_states_keep_text_and_boundaries_readable",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "treemap_view::tests::named_categories_use_their_own_paint_colors",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "unix::tests::hanging_up_is_reported_and_a_stale_socket_is_replaced",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "update_channel::tests::a_mis_promoted_suffix_does_not_take_stable_latest",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "update_channel::tests::a_pick_is_kept_and_an_inferred_slot_follows_the_build",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "update_channel::tests::a_promoted_line_retires_its_betas",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "update_channel::tests::a_staged_final_waits_for_promotion_on_stable_latest",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "update_channel::tests::each_train_takes_its_own_builds",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "update_channel::tests::nothing_published_leaves_a_slot_empty_and_bad_tags_are_skipped",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "update_channel::tests::the_build_implies_its_slot",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "update_channel::tests::the_settings_read_and_write_back_as_the_siblings_store_them",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::a_check_downloads_a_newer_release_for_the_slot",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::a_dev_build_has_no_installation_and_nothing_to_restart_into",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::a_dev_build_reports_it_is_not_installed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::a_finished_check_clears_its_download_and_counts",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::a_quit_hands_the_update_off_once",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::a_restart_runs_once_until_it_fails",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::only_a_velopack_install_checks_on_a_timer",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::only_check_now_switches_back_to_an_older_release",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::outcomes_read_as_log_lines",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::progress_moves_once_per_whole_percent",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::quit_installs_only_a_newer_download_for_the_slot_in_force",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::quitting_with_a_download_hands_it_to_the_updater",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::quitting_with_nothing_downloaded_applies_nothing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::startup_never_applies_a_downloaded_update",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::the_held_download_is_recorded_beside_the_settings",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "updater::tests::the_same_version_or_an_empty_slot_downloads_nothing",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "usage_report::library::tests::a_saved_report_lists_newest_first_and_reads_back",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "usage_report::library::tests::names_sort_by_capture_time_and_say_the_root",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "usage_report::tests::a_comparison_places_every_byte_and_bounds_what_it_cannot_see",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "usage_report::tests::a_folder_missing_beside_an_unreadable_one_has_unknown_size",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "usage_report::tests::a_report_cut_short_or_reordered_is_refused",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "usage_report::tests::a_report_keeps_exactly_the_folders_at_the_threshold",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "usage_report::tests::a_report_of_a_real_scan_uses_its_allocation",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "usage_report::tests::a_size_written_in_bytes_reads_back",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "usage_report::tests::growth_is_placed_in_the_deepest_folder_both_reports_keep",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "usage_report::tests::no_file_name_reaches_a_report",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "usage_report::tests::reports_measured_differently_are_flagged_and_roots_narrowed",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "usage_report::tests::sizes_read_in_the_units_written",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "views::tests::review_status_keeps_non_utf8_paths_distinct",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "views::tests::review_status_preserves_exact_paths_and_first_blocked_reason",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "wheel::tests::a_new_touch_or_a_pause_starts_a_new_gesture",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "wheel::tests::a_push_past_the_limit_crosses_after_half_a_doubling",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "wheel::tests::momentum_zooms_but_never_pushes",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "wheel::tests::one_gesture_crosses_at_most_one_level",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "wheel::tests::reversing_or_pausing_empties_the_bar",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "wheel::tests::the_zoom_stays_inside_its_room",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "wheel::tests::units_match_the_promised_travel",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "wheel::tests::zoom_follows_travel_not_event_count",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "widgets::tests::ages_read_in_the_unit_a_person_would_use",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "widgets::tests::sizes_split_into_number_and_unit",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "window_frame::tests::a_frame_saved_on_a_scaled_laptop_grows_to_the_minimum",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "window_frame::tests::a_one_pixel_frame_fills_a_two_pixel_display",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "window_frame::tests::a_one_pixel_saved_frame_grows_to_the_minimum",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "window_frame::tests::a_saved_frame_returns_to_its_display_or_the_working_one",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "window_frame::tests::a_window_from_a_larger_display_is_cut_to_this_one",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "window_frame::tests::a_window_left_off_the_top_left_comes_back",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "window_frame::tests::a_window_that_fits_stays_where_it_was",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "window_frame::tests::displays_to_the_left_keep_their_negative_coordinates",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "window_frame::tests::fitted_frames_meet_the_display_capped_minimum",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "window_frame::tests::the_frame_survives_a_round_trip_and_bad_files_are_ignored",
+    "outcome": "ok",
+    "count": 1
+  },
+  {
+    "test": "window_frame::tests::the_old_default_no_longer_hangs_off_a_laptop",
+    "outcome": "ok",
+    "count": 1
+  }
+]

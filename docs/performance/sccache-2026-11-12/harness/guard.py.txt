@@ -1,0 +1,91 @@
+"""Owned serial full-workflow evaluation; no global cache/config writes."""
+import ctypes,json,os,pathlib,signal,stat,subprocess,sys,time
+ROOT=pathlib.Path(__file__).resolve().parent
+WORKSPACE=ROOT.parent.parent
+assert (ROOT/'OWNER.txt').read_text()=='PwrDisk local sccache study mwdmi3wl 2026-11-12\n'
+common={k:os.environ[k] for k in ('HOME','PATH','USER','LOGNAME','LANG','LC_ALL','SDKROOT','DEVELOPER_DIR','MACOSX_DEPLOYMENT_TARGET','RUSTUP_HOME','TMPDIR') if k in os.environ}
+common.update(CARGO_HOME=str(ROOT/'cargo-home'),CARGO_BUILD_JOBS='4',CARGO_NET_OFFLINE='true', CLANG_MODULE_CACHE_PATH=str(ROOT/'clang-cache'))
+mode=sys.argv[1]
+def allocation():
+ seen=set();logical=allocated=files=0
+ for area in (ROOT,WORKSPACE/'a',WORKSPACE/'b',WORKSPACE/'c'):
+  for base,dirs,names in os.walk(area,followlinks=False):
+   for name in names:
+    try:s=(pathlib.Path(base)/name).lstat()
+    except FileNotFoundError:continue
+    if not stat.S_ISREG(s.st_mode):continue
+    key=(s.st_dev,s.st_ino)
+    if key in seen:continue
+    seen.add(key);logical+=s.st_size;allocated+=s.st_blocks*512;files+=1
+ return {'logical_bytes':logical,'allocated_bytes':allocated,'files':files}
+
+libproc=ctypes.CDLL('/usr/lib/libproc.dylib',use_errno=True)
+libproc.proc_pid_rusage.argtypes=[ctypes.c_int,ctypes.c_int,ctypes.c_void_p]
+libproc.proc_pid_rusage.restype=ctypes.c_int
+def physical(pid):
+ buffer=ctypes.create_string_buffer(96)
+ if libproc.proc_pid_rusage(pid,0,buffer)!=0:
+  err=ctypes.get_errno()
+  if err not in (2,3):raise OSError(err, 'physical footprint monitor failed', pid)
+  return 0
+ # Darwin rusage_info_v0: UUID[16], then seven uint64_t fields.
+ return int.from_bytes(buffer.raw[72:80],sys.byteorder)
+assert physical(os.getpid())>0
+
+def rss_tree(roots):
+ out=subprocess.check_output(['ps','-axo','pid=,ppid=,rss='],text=True)
+ rows=[list(map(int,line.split())) for line in out.splitlines() if line.strip()]
+ owned=set(roots)
+ while True:
+  old=len(owned);owned.update(pid for pid,parent,rss in rows if parent in owned)
+  if len(owned)==old:break
+ return sum(rss for pid,parent,rss in rows if pid in owned)*1024,sum(physical(pid) for pid in owned)
+
+results=[]
+workflow_start=time.monotonic()
+overall_start=json.loads((ROOT/'setup.json').read_text())['epoch']
+def run(name,command,env,cwd,limit=1200,extra_pids=()):
+ start=time.monotonic();reason=None;next_sample=0;peak_allocated=peak_rss=peak_physical=0;next_memory=0;rss=footprint=0
+ with (ROOT/'logs'/f'{name}.log').open('w') as log:
+  proc=subprocess.Popen(command,env=env,cwd=cwd,stdout=log,stderr=log,start_new_session=True)
+  while proc.poll() is None:
+   elapsed=time.monotonic()-start;s=os.statvfs(ROOT);free=s.f_bavail*s.f_frsize
+   if elapsed>=limit:reason=f'{limit} second phase limit'
+   if time.time()-overall_start>=5400:reason='90 minute overall limit'
+   if free<48*1024**3:reason='48 GiB available-space floor'
+   if elapsed>=next_memory:
+
+    try:rss,footprint=rss_tree((proc.pid,*extra_pids))
+    except BaseException:
+     os.killpg(proc.pid,signal.SIGKILL)
+     for pid in extra_pids:
+      try:os.killpg(pid,signal.SIGKILL)
+      except ProcessLookupError:pass
+     proc.wait();raise
+    peak_rss=max(peak_rss,rss);peak_physical=max(peak_physical,footprint);next_memory=elapsed+2
+    if footprint>20*1024**3:reason='20 GiB sampled aggregate physical-footprint limit'
+   if elapsed>=next_sample:
+    a=allocation();peak_allocated=max(peak_allocated,a['allocated_bytes']);next_sample=elapsed+20
+    with (ROOT/'logs/monitor.jsonl').open('a') as f:f.write(json.dumps({'phase':name,'wall_seconds':elapsed,'available_bytes':free,'owned_rss_bytes':rss,'owned_physical_bytes':footprint,**a})+'\n')
+    if a['allocated_bytes']>40*1024**3:reason='40 GiB summed allocated-byte allowance'
+    if rss>20*1024**3:reason='20 GiB sampled aggregate RSS limit'
+   if reason:
+    try:os.killpg(proc.pid,signal.SIGTERM)
+    except ProcessLookupError:pass
+    try:proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:os.killpg(proc.pid,signal.SIGKILL);proc.wait()
+    break
+   time.sleep(.25)
+ row={'name':name,'command':command,'cwd':str(cwd),'exit':proc.returncode,'wall_seconds':round(time.monotonic()-start,3),'stopped_by':reason,'load_average':os.getloadavg(),'peak_sampled_allocated_bytes':peak_allocated,'peak_sampled_rss_bytes':peak_rss,'peak_sampled_physical_bytes':peak_physical,'final_inventory':allocation()}
+ results.append(row);(ROOT/'logs'/f'{mode}-results.json').write_text(json.dumps(results,indent=2)+'\n');print({k:row[k] for k in ('name','exit','wall_seconds','stopped_by')},flush=True)
+ if reason or proc.returncode:raise RuntimeError(reason or f"command exit {proc.returncode}")
+ return row
+
+
+BIN=ROOT/'sccache-v0.19.0-aarch64-apple-darwin/sccache'
+def cache_env():
+ e=common.copy()
+ e.update(RUSTC_WRAPPER=str(BIN),SCCACHE_ALLOW_INCREMENTAL='1',SCCACHE_DIR=str(ROOT/'cache'),SCCACHE_CACHE_SIZE='8G',SCCACHE_CONF=str(ROOT/'config.toml'),SCCACHE_CACHED_CONF=str(ROOT/'cached-config'),SCCACHE_SERVER_UDS=str(ROOT/'s.sock'),SCCACHE_IDLE_TIMEOUT='0')
+ return e
+def stats(args):
+ return subprocess.check_output([str(BIN),*args],env=cache_env(),text=True)

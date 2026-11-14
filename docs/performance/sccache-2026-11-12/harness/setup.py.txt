@@ -1,0 +1,25 @@
+import pathlib,subprocess,json,hashlib,time,os
+R=pathlib.Path(__file__).resolve().parent
+W=R.parent.parent
+start=time.monotonic()
+r=json.loads((R/'upstream/release.json').read_text());tag=r['tag_name']
+def get(url,out):
+ subprocess.run(['curl','-fsSL',url,'-o',str(R/'upstream'/out)],check=True)
+for f in ['README.md','Cargo.toml','LICENSE','docs/Rust.md','docs/Local.md','docs/Configuration.md','src/compiler/rust.rs','src/server.rs','src/cache/disk.rs','src/config.rs']:
+ get('https://raw.githubusercontent.com/mozilla/sccache/'+tag+'/'+f,f.replace('/','-'))
+for f in ['README.md','BENCHMARK.md']:
+ get('https://raw.githubusercontent.com/pwrdrvr/PwrGit/d2e3a806aa4ba384d6e1c30756853a529b6f7036/tools/pwrgit-share/'+f,'pwrgit-'+f)
+a=next(a for a in r['assets'] if a['name']==f'sccache-{tag}-aarch64-apple-darwin.tar.gz')
+get(a['browser_download_url'],a['name']);archive=R/'upstream'/a['name'];digest=hashlib.sha256(archive.read_bytes()).hexdigest();assert 'sha256:'+digest==a['digest']
+subprocess.run(['tar','xzf',str(archive),'-C',str(R)],check=True)
+for label in ['a','b','c']:
+ subprocess.run(['git','clone','--shared','--no-checkout',str(W),str(W/label)],check=True)
+ subprocess.run(['git','-C',str(W/label),'checkout','--detach','1673f3ea95264a8b8c5077340148852443ff226a'],check=True)
+h=R/'cargo-home';h.mkdir(exist_ok=True)
+for part in ['registry','git']:
+ subprocess.run(['cp','-cR',str(pathlib.Path.home()/'.cargo'/part),str(h/part)],check=True)
+(R/'logs').mkdir(exist_ok=True)
+(R/'config.toml').write_text('[cache.disk]\ndir = "'+str(R/'cache')+'"\nsize = 8589934592\n')
+(R/'OWNER.txt').write_text('PwrDisk local sccache study mwdmi3wl 2026-11-12\n')
+(R/'setup.json').write_text(json.dumps({'wall_seconds':time.monotonic()-start,'base':'1673f3ea95264a8b8c5077340148852443ff226a','sccache':tag,'sha256':digest,'source_downloads':'sccache release/docs only; Cargo registry/git APFS-cloned','epoch':time.time()},indent=2))
+print((R/'setup.json').read_text())
