@@ -72,8 +72,8 @@ pub struct Facts {
     /// `(device, inode)` for files, used to de-duplicate hardlinks. No file
     /// has inode zero, which lets `None` cost nothing.
     pub inode: Option<(u64, NonZeroU64)>,
-    /// Some entries here or below could not be read; totals are incomplete.
-    pub read_error: bool,
+    /// What could not be read here or below; see [`Facts::read_error`].
+    pub unread: Unread,
     /// Newest write time at or beneath this node, in Unix seconds; `0` when
     /// unknown. Derived for directories by [`crate::tree::aggregate`].
     pub modified: i64,
@@ -93,7 +93,7 @@ impl Facts {
             files: 0,
             dirs: 1,
             inode: None,
-            read_error: false,
+            unread: Unread::None,
             modified: 0,
             category: Category::Other,
             reclaim: None,
@@ -111,12 +111,42 @@ impl Facts {
         }
     }
 
+    /// Some entries here or below could not be read; totals are
+    /// incomplete.
+    pub const fn read_error(&self) -> bool {
+        !matches!(self.unread, Unread::None)
+    }
+
     /// The value a treemap should weight this node by.
     pub const fn value(&self, metric: Metric) -> u64 {
         match metric {
             Metric::Bytes => self.bytes,
             Metric::Files => self.files,
         }
+    }
+}
+
+/// Where reading failed for a node, if anywhere.
+///
+/// One byte, not two flags: [`Facts`] has no padding left, and a node's
+/// own failure is what a reader cannot tell from its children's. A usage
+/// report needs it to know whether a path missing beneath a folder was
+/// hidden by that folder's own listing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Unread {
+    #[default]
+    None,
+    /// Something beneath failed; this node's own reading did not.
+    Below,
+    /// This node's own reading failed: its listing, or an entry in it,
+    /// and perhaps something beneath too.
+    Own,
+}
+
+impl Unread {
+    /// [`Self::Own`] when `failed`.
+    pub const fn own(failed: bool) -> Self {
+        if failed { Self::Own } else { Self::None }
     }
 }
 
@@ -1587,7 +1617,7 @@ mod tests {
         let mut root = tree.root_mut();
         root.facts_mut().bytes = 12;
         root.for_each_child_mut(|mut child| {
-            child.facts_mut().read_error = true;
+            child.facts_mut().unread = Unread::Own;
         });
         root.sort_children_by(|left, right| left.name.cmp(right.name));
         root.child_mut(0).expect("a child").facts_mut().modified = 9;
@@ -1595,7 +1625,7 @@ mod tests {
         assert_eq!(root.bytes, 12);
         assert_eq!(names(root), ["", "child", "direct"]);
         assert_eq!(root.children().at(0).modified, 9);
-        assert!(root.children().iter().all(|child| child.read_error));
+        assert!(root.children().iter().all(|child| child.read_error()));
         assert_eq!(root.children().at(1).children().at(0).name(), "deep");
     }
 

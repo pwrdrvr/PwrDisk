@@ -436,7 +436,7 @@ mod tests {
                     + size(&link);
                 let scan = crate::scan::scan(&tree.selected, options.clone())
                     .expect("deep scan");
-                assert!(!scan.root().read_error);
+                assert!(!scan.root().read_error());
                 assert_eq!(scan.root().bytes, expected, "scan oracle");
                 let recheck = Measurement::new(&options, &targets);
                 assert_eq!(

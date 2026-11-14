@@ -520,7 +520,7 @@ impl Entry {
             reclaim: node.reclaim.map(|reclaim| reclaim.label().to_string()),
             artifact: None,
             modified: node.modified,
-            read_error: node.read_error,
+            read_error: node.read_error(),
             clones: Clones::of(node),
             removed: false,
             removed_bytes: 0,

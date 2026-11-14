@@ -410,7 +410,9 @@ fn private_service_stores_draw_unavailable_and_partial_figures(
     cx: &mut TestAppContext,
 ) {
     use disktree_core::macos_services::{Usage, usage};
-    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+    use disktree_core::tree::{
+        Draft, Metric, NodeKind, Tree, Unread, aggregate,
+    };
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
@@ -419,12 +421,12 @@ fn private_service_stores_draw_unavailable_and_partial_figures(
     update(&view, cx, |app, cx| {
         // Replace the fixture's tree without starting a real system scan.
         let mut history = Draft::directory(".fseventsd");
-        history.read_error = true;
+        history.unread = Unread::Own;
         let mut index = Draft::directory(".Spotlight-V100");
         index
             .children
             .push(Draft::entry("store", NodeKind::File, 8192));
-        index.read_error = true;
+        index.unread = Unread::Own;
         let mut data = Draft::directory("Data");
         data.children = vec![history, index];
         let mut volumes = Draft::directory("Volumes");
@@ -496,13 +498,13 @@ fn private_service_stores_draw_unavailable_and_partial_figures(
 fn unreadable_service_stores_stay_quiet_without_hiding_other_privacy_errors(
     cx: &mut TestAppContext,
 ) {
-    use disktree_core::tree::{Draft, Tree};
+    use disktree_core::tree::{Draft, Tree, Unread};
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
         let mut tree = Draft::directory(".fseventsd");
-        tree.read_error = true;
+        tree.unread = Unread::Own;
         app.tree = Some(std::sync::Arc::new(Tree::from(tree)));
         app.root_path = PathBuf::from("/System/Volumes/Data/.fseventsd");
         app.selected = None;

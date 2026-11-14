@@ -24,7 +24,7 @@ fn digest(node: Node<'_>, hasher: &mut DefaultHasher) {
         node.files,
         node.dirs,
         node.modified,
-        node.read_error,
+        node.read_error(),
     )
         .hash(hasher);
     format!("{:?}{:?}", node.category, node.reclaim).hash(hasher);
@@ -41,7 +41,7 @@ fn digest(node: Node<'_>, hasher: &mut DefaultHasher) {
             node.files,
             node.dirs,
             node.modified,
-            node.read_error,
+            node.read_error(),
             node.category,
             node.reclaim,
             sharing.files,

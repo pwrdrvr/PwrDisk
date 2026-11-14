@@ -62,7 +62,7 @@ impl Metric {
 
 pub use crate::index::{
     Block, Builder, Built, Children, Facts, Iter, MAX_NAME_BYTES, Node,
-    NodeMut, Sibling, StorageBytes, Tree,
+    NodeMut, Sibling, StorageBytes, Tree, Unread,
 };
 
 /// A node and everything beneath it, owned and on the heap.
@@ -322,9 +322,9 @@ fn aggregate_tree(tree: &mut Tree, metric: Metric, seen: Option<&Seen>) {
             let mut files = 0;
             let mut dirs: u32 = 1;
             let mut modified = 0;
-            let mut read_error = facts.read_error;
+            let mut below = false;
             for child in block.iter() {
-                read_error |= child.read_error;
+                below |= child.read_error();
                 modified = modified.max(child.modified);
                 // Saturating: a corrupt volume's file table can claim any
                 // size.
@@ -332,7 +332,10 @@ fn aggregate_tree(tree: &mut Tree, metric: Metric, seen: Option<&Seen>) {
                 files += child.files;
                 dirs += child.dirs;
             }
-            facts.read_error = read_error;
+            // A node's own failure is kept whatever its children met.
+            if facts.unread != Unread::Own {
+                facts.unread = if below { Unread::Below } else { Unread::None };
+            }
             facts.bytes = bytes;
             facts.files = files;
             facts.dirs = dirs;

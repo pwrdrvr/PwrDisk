@@ -132,7 +132,9 @@ pub fn usage(
     if !node.is_dir() {
         return Usage::Unavailable;
     }
-    if node.read_error || !options.include_hidden || options.max_depth.is_some()
+    if node.read_error()
+        || !options.include_hidden
+        || options.max_depth.is_some()
     {
         return if node.bytes == 0 {
             Usage::Unavailable
@@ -147,7 +149,7 @@ pub fn usage(
 mod tests {
     use super::*;
     use crate::tree::{Draft, Tree};
-    use crate::tree::{Metric, NodeKind, aggregate};
+    use crate::tree::{Metric, NodeKind, Unread, aggregate};
 
     #[test]
     fn unavailable_is_not_zero_and_descendant_failures_are_incomplete() {
@@ -164,7 +166,7 @@ mod tests {
             Usage::Unavailable
         );
         let mut store = Draft::directory(".Spotlight-V100");
-        store.read_error = true;
+        store.unread = Unread::Own;
         volume.children.push(store);
         let mut tree = Tree::from(&volume);
         aggregate(&mut tree, Metric::Bytes);
@@ -177,8 +179,8 @@ mod tests {
             .children
             .push(Draft::entry("index", NodeKind::File, 4096));
         let mut locked = Draft::directory("locked");
-        locked.read_error = true;
-        store.read_error = false;
+        locked.unread = Unread::Own;
+        store.unread = Unread::None;
         store.children.push(locked);
         let mut tree = Tree::from(&volume);
         aggregate(&mut tree, Metric::Bytes);

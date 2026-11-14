@@ -3938,7 +3938,7 @@ fn selection_section(
             cx,
         ));
     }
-    if node.read_error {
+    if node.read_error() {
         chips.push(widgets::chip("Partly unreadable", theme.warning, cx));
     }
     let badges = (!chips.is_empty()).then(|| {

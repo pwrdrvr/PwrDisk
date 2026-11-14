@@ -93,7 +93,7 @@ Shown wrapped here; each record is one line in the file.
 | `direct_bytes`, `direct_files` | Files, links and other entries directly in the folder |
 | `exclusive_bytes` | `bytes` less every kept subfolder's: direct entries and subfolders under the threshold. These never overlap and add up to the root's `bytes` |
 | `unreadable` | Something at or below could not be read; `bytes` is a floor |
-| `residual_unreadable` | Something *not* kept as its own folder may be unreadable here, so a path missing below it may have been hidden rather than small |
+| `residual_unreadable` | Something *not* kept as its own folder may be unreadable here: the folder's own listing, an entry in it, or a subfolder under the threshold. A path missing below it may have been hidden rather than small |
 | `modified` | Newest write time at or below, Unix seconds |
 | `sharing` | APFS clone figures, only where clone metadata was found below: `bytes` in clone files, `private_bytes`, `duplicate_bytes`, `unknown_files`, the removal estimate `reclaim_lower`/`reclaim_upper` and whether it is `partial` |
 
@@ -159,8 +159,4 @@ have had 10 GB written and 9 GB removed.
 
 ## Known limits
 
-* The tree merges a folder's own read errors with its children's. An entry
-  a folder itself failed to read is caught in `residual_unreadable` unless
-  a kept subfolder of it also had errors; then only `unreadable` and the
-  header's count say so.
 * Reports scan this computer only; SSH hosts are not supported yet.

@@ -29,7 +29,7 @@ use crate::identity::HostIdentity;
 use crate::path_style::PathStyle;
 use crate::scan::ScanOptions;
 use crate::space::SpaceInfo;
-use crate::tree::{Node, Tree};
+use crate::tree::{Node, Tree, Unread};
 
 pub mod diff;
 pub mod library;
@@ -245,10 +245,7 @@ pub struct Folder {
     /// Something not kept as its own folder may be unreadable here: the
     /// folder itself, a direct entry, or a subfolder under the threshold.
     /// A path missing below this folder may then have been hidden rather
-    /// than small. The tree merges a folder's own errors with its
-    /// children's, so an entry this folder failed to read is missed here
-    /// when a kept subfolder also had errors; `unreadable` still says so,
-    /// and the header counts every error.
+    /// than small.
     #[serde(default, skip_serializing_if = "is_false")]
     pub residual_unreadable: bool,
     /// Newest write time at or below, in Unix seconds; `0` when unknown.
@@ -308,8 +305,7 @@ pub fn build(tree: &Tree, capture: &Capture, threshold: u64) -> Report {
         let kept =
             |child: &Node<'_>| child.is_dir() && child.bytes >= threshold;
         let mut kept_bytes = 0_u64;
-        let mut kept_errors = false;
-        let mut residual_errors = false;
+        let mut residual_errors = node.unread == Unread::Own;
         let mut direct_bytes = 0_u64;
         let mut direct_files = 0_u64;
         let mut below = Vec::new();
@@ -317,19 +313,14 @@ pub fn build(tree: &Tree, capture: &Capture, threshold: u64) -> Report {
             if !child.is_dir() {
                 direct_bytes = direct_bytes.saturating_add(child.bytes);
                 direct_files += child.files;
-                residual_errors |= child.read_error;
+                residual_errors |= child.read_error();
             } else if kept(&child) {
                 kept_bytes = kept_bytes.saturating_add(child.bytes);
-                kept_errors |= child.read_error;
                 below.push(child);
             } else {
-                residual_errors |= child.read_error;
+                residual_errors |= child.read_error();
             }
         }
-        // An error no child can account for is this folder's own. One it
-        // met beside a kept subfolder's is merged into the same flag by
-        // `aggregate` and cannot be seen here; see the field.
-        residual_errors |= node.read_error && !kept_errors;
         folders.push(Folder {
             path: path.clone(),
             depth,
@@ -339,7 +330,7 @@ pub fn build(tree: &Tree, capture: &Capture, threshold: u64) -> Report {
             direct_bytes,
             direct_files,
             exclusive_bytes: node.bytes.saturating_sub(kept_bytes),
-            unreadable: node.read_error,
+            unreadable: node.read_error(),
             residual_unreadable: residual_errors,
             modified: node.modified,
             sharing: node.stored_sharing().copied().map(FolderSharing::from),
@@ -351,7 +342,7 @@ pub fn build(tree: &Tree, capture: &Capture, threshold: u64) -> Report {
         }
     }
     let root = tree.root();
-    let unreadable = capture.unreadable > 0 || root.read_error;
+    let unreadable = capture.unreadable > 0 || root.read_error();
     let header = Header {
         format: FORMAT.to_owned(),
         version: VERSION,
@@ -376,7 +367,7 @@ pub fn build(tree: &Tree, capture: &Capture, threshold: u64) -> Report {
                 && !capture.cancelled
                 && capture.options.max_depth.is_none(),
             cancelled: capture.cancelled,
-            unreadable: capture.unreadable.max(u64::from(root.read_error)),
+            unreadable: capture.unreadable.max(u64::from(root.read_error())),
             unreadable_detail: capture.unreadable_detail.clone(),
             excluded: capture.excluded.clone(),
         },

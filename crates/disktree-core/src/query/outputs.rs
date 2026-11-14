@@ -90,7 +90,7 @@ impl<'tree> Walker<'_, 'tree> {
         }
         // A fresh or unreadable location cannot cover its eligible older,
         // named or readable children. Known artifact boundaries remain visible.
-        covered |= active && matched && !node.read_error;
+        covered |= active && matched && !node.read_error();
         let next = Location {
             parent: Some(node.category),
             active,
@@ -164,7 +164,7 @@ mod tests {
     fn unreadable_locations_do_not_cover_readable_scratch_children() {
         let path = Path::new("/invented/tmp");
         let mut root = Draft::directory("tmp");
-        root.read_error = true;
+        root.unread = crate::tree::Unread::Own;
         let mut child = Draft::directory("kept");
         child
             .children
@@ -178,7 +178,7 @@ mod tests {
             found
                 .matches
                 .iter()
-                .any(|(p, n)| p == &path.join("kept") && !n.read_error)
+                .any(|(p, n)| p == &path.join("kept") && !n.read_error())
         );
     }
 
