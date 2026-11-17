@@ -681,16 +681,20 @@ PwrDisk; the app does not request elevation or install a privileged helper.
 
 What is different from Linux:
 
-- **Free space** is space this user can write now. Used is the rest of
-  the same capacity, so Used + Free equals Total before rounding. On APFS
+- **Available space** is the macOS headline: its native estimate includes
+  purgeable storage. The footnote separates **free now** from **purgeable**;
+  those purgeable bytes are still occupied until macOS releases them.
+  If the native estimate is unavailable, the headline falls back to **free**.
+  The bar partitions physical capacity: Used + Free equals Total before
+  rounding. On APFS
   this includes every volume sharing the container, plus filesystem
   metadata. The startup meter separately breaks down System + Data and
   other used space (Preboot, Recovery, VM and other container allocation).
-  macOS's important-usage estimate is shown separately as **including
-  reclaimable space**: those bytes are still occupied until macOS releases
-  them. It can differ from Finder's Available figure and change without a
-  deletion. Removal guards, measured recovery and the free-space projection
-  use raw free-block samples; reclaimable capacity is never added to them.
+  The important-usage estimate can change without a deletion; an already
+  open Finder Info window can retain an older estimate. Removal guards and
+  measured recovery use raw free-block samples. Availability projections
+  count no additional capacity until projected raw free space exceeds the
+  native estimate, avoiding double-counting already purgeable data.
   A scan of `/` includes readable System and Data files, including Data-only
   contents under `/System/Volumes/Data`; firmlink aliases there are excluded
   using macOS's `/usr/share/firmlinks` table. Nested mounts remain excluded.

@@ -4995,9 +4995,10 @@ fn disk_section(
             || "Free measures blocks available to this user now.".to_string(),
             |purgeable| {
                 format!(
-                    "Free measures blocks available now. The separate macOS \
-                     estimate includes {} of reclaimable space, which is \
-                     still occupied until macOS releases it.",
+                    "Available includes macOS's estimate of {} purgeable \
+                     space, still occupied until macOS releases it. Free now \
+                     measures blocks available without purging. The bar \
+                     partitions physical used and free space.",
                     human_bytes(purgeable)
                 )
             },
@@ -5028,8 +5029,8 @@ fn disk_section(
          rounding. Scanned size sums \
          readable file allocation; clones can count shared blocks more than \
          once. It excludes unreadable contents, snapshots and filesystem \
-         metadata. Removal projections use raw free space; reclaimable \
-         capacity is not added to those projections."
+         metadata. Removal measurements and guards use raw free space. \
+         Availability projections do not add purgeable capacity twice."
     );
     // Short panels reserve their height for selection and marks. Keep
     // secondary capacity scopes reachable in the tooltip at every height.
@@ -5106,8 +5107,9 @@ fn disk_section(
     };
     let after = space_info.after_removing(reclaiming);
     let highlight = palette::highlight(theme);
-    let (number, unit) =
-        widgets::split_size(&human_bytes(space_info.display_available()));
+    let (available, scope) = widgets::capacity_figure(space_info);
+    let (after_available, _) = widgets::capacity_figure(after);
+    let (number, unit) = widgets::split_size(&human_bytes(available));
     let total = space_info.total.max(1) as f32;
     let used_now = (space_info
         .total
@@ -5127,7 +5129,7 @@ fn disk_section(
             .child(widgets::measure(
                 number,
                 text::FIGURE,
-                format!("{unit} free"),
+                format!("{unit} {scope}"),
                 text::BODY,
                 cx,
             ))
@@ -5143,8 +5145,8 @@ fn disk_section(
                         ))
                         .text_color(highlight)
                         .child(format!(
-                            "→ ≈ {} free",
-                            human_bytes(after.display_available())
+                            "→ ≈ {} {scope}",
+                            human_bytes(after_available)
                         )),
                 )
             }),
