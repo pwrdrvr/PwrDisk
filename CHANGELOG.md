@@ -7,6 +7,21 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.26.0
+
+- Save scan reports - Add a remembered Save a usage report option to the
+  local scan chooser, enabled by default. A completed chooser scan saves
+  one report and refreshes an open Usage History window. Use File > Save
+  Usage Report to save other completed local scans; rescan first if files
+  have been removed. Stopped, failed and SSH scans save no report.
+- Scan chooser - Double-click a listed root to start scanning it. A single
+  click still selects it, and the Directory text field keeps its behavior.
+- macOS capacity - Headline the OS Available estimate when valid, with
+  Free now and Purgeable beneath it, across Explore, Review and Done.
+  Fall back to Free when the estimate is missing or invalid. The physical
+  bar, removal guards and measured recovery still use raw free space;
+  projections avoid counting already purgeable bytes twice.
+
 ## v0.25.0
 
 - Private sizes - Choose On disk, Private or Apparent from the Sizes menu.
