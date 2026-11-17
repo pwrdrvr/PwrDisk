@@ -127,6 +127,7 @@ pub fn report(
         &root,
         options,
         &started,
+        &crate::scan_report::Ended::now(&root, &started),
         handle.progress.snapshot(),
     );
     let report = usage_report::build(&tree, &capture, threshold);

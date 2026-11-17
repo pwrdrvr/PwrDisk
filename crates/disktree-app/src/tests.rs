@@ -13855,10 +13855,12 @@ fn save_usage_report_writes_one_report_per_untouched_scan(
         Choose,
         Rescan,
         Widen,
+        /// A widening that is stopped: the old tree stays on screen.
+        WidenStopped,
         Remove,
         Tick,
     }
-    use Step::{Choose, Remove, Rescan, Save, Tick, Widen};
+    use Step::{Choose, Remove, Rescan, Save, Tick, Widen, WidenStopped};
 
     cx.update(init);
     let temp = fixture();
@@ -13874,8 +13876,30 @@ fn save_usage_report_writes_one_report_per_untouched_scan(
     // and whether anything was removed since.
     let (mut scanned, mut saved, mut removed) = (false, false, false);
     for (at, step) in [
-        Save, Choose, Save, Rescan, Save, Save, Widen, Save, Rescan, Remove,
-        Save, Rescan, Save, Tick, Choose, Save, Save, Remove, Save,
+        Save,
+        Choose,
+        WidenStopped,
+        Save,
+        Rescan,
+        Save,
+        WidenStopped,
+        Save,
+        Widen,
+        Save,
+        Rescan,
+        WidenStopped,
+        Save,
+        Rescan,
+        Remove,
+        Save,
+        Rescan,
+        Save,
+        Tick,
+        Choose,
+        Save,
+        Save,
+        Remove,
+        Save,
     ]
     .into_iter()
     .enumerate()
@@ -13917,6 +13941,14 @@ fn save_usage_report_writes_one_report_per_untouched_scan(
                 update(&view, cx, move |app, cx| app.widen_to(above, cx));
                 saved = false;
             }
+            WidenStopped => {
+                scans = false;
+                let above = above.clone();
+                update(&view, cx, move |app, cx| {
+                    app.widen_to(above, cx);
+                    app.cancel_scan(cx);
+                });
+            }
             Remove => {
                 scans = false;
                 let path = read(&view, cx, |app| app.root_path.join("deeper"));
@@ -13952,7 +13984,7 @@ fn save_usage_report_writes_one_report_per_untouched_scan(
             "after step {at}, {step:?}"
         );
     }
-    assert_eq!(expected, 5, "the steps reach every kind of scan");
+    assert_eq!(expected, 6, "the steps reach every kind of scan");
 }
 
 /// The menu row reaches the main window, for a scan no chooser started.
@@ -13968,10 +14000,19 @@ fn the_menu_saves_a_report_of_a_scan_no_chooser_started(
     let dir = reports.path().join("usage-reports");
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, _| app.reports_dir = Some(dir.clone()));
+    // The report is of the scan as it ended, however late it is asked for.
+    let ended = update(&view, cx, |app, _| {
+        let landed = app.report_landed.as_mut().expect("a landed scan");
+        landed.ended.at -= 3_600;
+        landed.ended.elapsed_ms = Some(1_234);
+        landed.ended.at
+    });
     cx.dispatch_action(crate::app_menu::SaveUsageReport);
     cx.run_until_parked();
     let (saved, _) = library::list(&dir);
     assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].header.captured_at, ended);
+    assert_eq!(saved[0].header.scan_elapsed_ms, Some(1_234));
     assert_eq!(Path::new(&saved[0].header.root), temp.path());
     assert_eq!(
         saved[0].header.totals.bytes,

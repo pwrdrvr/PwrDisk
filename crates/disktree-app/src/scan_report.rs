@@ -78,29 +78,61 @@ impl Started {
     }
 }
 
-/// What a finished local scan of `root` says about itself. Samples the
-/// volume's space again and reads the mount table, so not for the UI
-/// thread.
+/// What a report says of a scan that only its end knows. Taken as the
+/// scan lands, not as the report is written, which can be hours later:
+/// free space then would be set beside a tree measured before it.
+#[derive(Clone, Debug)]
+pub struct Ended {
+    pub space_after: Option<SpaceInfo>,
+    /// Unix seconds.
+    pub at: i64,
+    pub elapsed_ms: Option<u64>,
+}
+
+impl Ended {
+    /// Samples the volume's space; call it as the walk ends.
+    pub fn now(root: &Path, started: &Started) -> Self {
+        Self {
+            space_after: space::display_space_info(root).ok(),
+            at: chrono::Utc::now().timestamp(),
+            elapsed_ms: u64::try_from(started.clock.elapsed().as_millis()).ok(),
+        }
+    }
+}
+
+/// The finished scan whose tree is on screen, as a report needs it.
+#[derive(Clone, Debug)]
+pub struct Landed {
+    pub started: Started,
+    pub ended: Ended,
+    /// The walk's own count of what it could not read.
+    pub progress: ScanSnapshot,
+    /// Its report is saved or being written: one scan leaves one.
+    pub written: bool,
+}
+
+/// What a finished local scan of `root` says about itself. Reads the
+/// mount table, so not for the UI thread.
 pub fn capture(
     root: &Path,
     options: ScanOptions,
     started: &Started,
+    ended: &Ended,
     progress: ScanSnapshot,
 ) -> Capture {
     Capture {
         root: root.to_string_lossy().into_owned(),
         style: PathStyle::Native,
-        captured_at: chrono::Utc::now().timestamp(),
+        captured_at: ended.at,
         scan_started_at: Some(started.at),
-        scan_elapsed_ms: u64::try_from(started.clock.elapsed().as_millis())
-            .ok(),
+        scan_elapsed_ms: ended.elapsed_ms,
         host: HostIdentity::current(),
         volume: Volume {
             device: space::device_for(root),
             mount: space::volume_root_for(root)
                 .map(|mount| mount.to_string_lossy().into_owned()),
             space_before: started.space_before,
-            space_after: space::display_space_info(root).ok(),
+            space_after: ended.space_after,
         },
         cancelled: progress.cancelled,
         unreadable: progress.errors,
@@ -173,8 +205,20 @@ impl Disktree {
         .then_some(self.scan_epoch);
     }
 
-    /// A local scan landed its tree: write the report the chooser armed
-    /// for it, if it did and the scan can still give one.
+    /// A local scan put its tree on screen: keep what its end knows.
+    /// Until the next tree lands this is the scan a report is of, even
+    /// if a widening is tried and fails in between.
+    pub(crate) fn report_landed(&mut self) {
+        self.report_landed = self.report_started.take().map(|started| Landed {
+            ended: Ended::now(&self.root_path, &started),
+            started,
+            progress: self.progress.clone(),
+            written: false,
+        });
+    }
+
+    /// A local scan ended: write the report the chooser armed for it, if
+    /// it did and the scan can give one.
     pub(crate) fn save_pending_report(&mut self, cx: &Context<'_, Self>) {
         if self.report_wanted.take() == Some(self.scan_epoch)
             && self.report_refusal().is_none()
@@ -195,22 +239,30 @@ impl Disktree {
             Some("Usage reports cover this computer only, not SSH hosts.")
         } else if self.is_indexing() {
             Some("The scan is still running. Save its report when it ends.")
-        } else if self.tree.is_none() {
-            Some("Nothing has been scanned yet, so there is no report.")
-        } else if self.progress.cancelled {
+        } else if self.tree.is_none() && self.progress.cancelled {
             Some("This scan was stopped early. Rescan, then save its report.")
+        } else if self.run.is_some() {
+            Some(
+                "A removal is running. Rescan when it ends, then save \
+                 the report.",
+            )
         } else if !self.removed.is_empty() {
             Some(
                 "Files were removed since this scan. Rescan, then save \
                  its report.",
             )
-        } else if self.report_written == Some(self.scan_epoch) {
-            Some(
-                "This scan\u{2019}s report is already saved. File \u{203a} \
-                 Usage History lists it.",
-            )
         } else {
-            None
+            match &self.report_landed {
+                Some(landed) if self.tree.is_some() => {
+                    landed.written.then_some(
+                        "This scan\u{2019}s report is already saved. File \
+                         \u{203a} Usage History lists it.",
+                    )
+                }
+                _ => {
+                    Some("Nothing has been scanned yet, so there is no report.")
+                }
+            }
         }
     }
 
@@ -227,21 +279,27 @@ impl Disktree {
     /// thread: a whole disk is tens of millions of nodes to total again.
     /// Callers have asked [`Self::report_refusal`].
     fn write_report(&mut self, cx: &Context<'_, Self>) {
-        let (Some(tree), Some(dir), Some(started)) = (
+        let (Some(tree), Some(dir), Some(landed)) = (
             self.tree.clone(),
             self.reports_dir.clone(),
-            self.report_started.clone(),
+            self.report_landed.as_mut(),
         ) else {
             return;
         };
-        let epoch = self.scan_epoch;
         // Claimed now, so a second ask while this one writes is refused.
-        self.report_written = Some(epoch);
+        landed.written = true;
+        let landed = landed.clone();
+        let epoch = self.scan_epoch;
         let root = self.root_path.clone();
         let options = self.options.clone();
-        let progress = self.progress.clone();
         let written = cx.background_executor().spawn(async move {
-            let capture = capture(&root, options, &started, progress);
+            let capture = capture(
+                &root,
+                options,
+                &landed.started,
+                &landed.ended,
+                landed.progress,
+            );
             let report =
                 usage_report::build(&tree, &capture, DEFAULT_THRESHOLD);
             drop(tree);
@@ -261,8 +319,10 @@ impl Disktree {
                 }
                 Err(error) => {
                     // Nothing was kept, so the scan may be asked again.
-                    if this.report_written == Some(epoch) {
-                        this.report_written = None;
+                    if this.scan_epoch == epoch
+                        && let Some(landed) = this.report_landed.as_mut()
+                    {
+                        landed.written = false;
                     }
                     this.say_until_closed(
                         format!("The usage report could not be saved: {error}"),

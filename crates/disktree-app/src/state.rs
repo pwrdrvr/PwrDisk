@@ -492,12 +492,11 @@ pub struct Disktree {
     /// The scan the chooser started, by epoch, when it is to leave a
     /// report as it lands.
     pub(crate) report_wanted: Option<u64>,
-    /// What only the start of the local scan on screen, or in flight,
-    /// knows: a report sets it beside what the end knows.
+    /// What only the start of the local scan in flight knows.
     pub(crate) report_started: Option<crate::scan_report::Started>,
-    /// The scan, by epoch, whose report is saved or being written: one
-    /// scan leaves one report.
-    pub(crate) report_written: Option<u64>,
+    /// The finished local scan whose tree is on screen, as a report
+    /// needs it, and whether it has left one.
+    pub(crate) report_landed: Option<crate::scan_report::Landed>,
     pub removal_settings_dir: Option<PathBuf>,
     /// The Power Efficiency menu, when open: the row the arrow keys are on,
     /// as an index into [`crate::power::PowerEfficiency::ALL`].
@@ -919,7 +918,7 @@ impl Disktree {
             },
             report_wanted: None,
             report_started: None,
-            report_written: None,
+            report_landed: None,
             removal_settings_dir: crate::updater::settings_dir(),
             power_menu: None,
             sizes_menu: None,
@@ -1141,6 +1140,7 @@ impl Disktree {
             app.path_style(),
         );
         app.tree = Some(Arc::new(tree));
+        app.report_landed();
         app.cache = None;
         app.refresh_insights();
         app.refresh_shares(cx);
@@ -1974,6 +1974,8 @@ impl Disktree {
         // Only the chooser arms a report, after this returns.
         self.report_wanted = None;
         self.report_started = None;
+        // The tree it was of is discarded below.
+        self.report_landed = None;
         self.progress = ScanSnapshot::default();
         self.scan_error = None;
         self.remote_progress =
@@ -2171,6 +2173,7 @@ impl Disktree {
                     self.path_style(),
                 );
                 discard(self.tree.replace(Arc::new(node)));
+                self.report_landed();
                 self.scans_done += 1;
                 self.removed.clear();
                 self.cache = None;
@@ -2196,6 +2199,7 @@ impl Disktree {
             }
             Err(error) => {
                 self.report_wanted = None;
+                self.report_started = None;
                 self.scan_error = Some(error.to_string());
             }
         }
