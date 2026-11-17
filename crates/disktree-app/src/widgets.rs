@@ -212,6 +212,8 @@ pub fn space_meter(space: SpaceInfo, reclaiming: u64, cx: &App) -> Div {
     let theme = cx.omarchy();
     let total = space.total.max(1);
     let projected = space.after_removing(reclaiming);
+    let (available, scope) = capacity_figure(space);
+    let (after_available, _) = capacity_figure(projected);
     let used_now = space.total.saturating_sub(space.display_available()) as f32
         / total as f32;
     let gained = (projected
@@ -225,15 +227,15 @@ pub fn space_meter(space: SpaceInfo, reclaiming: u64, cx: &App) -> Div {
 
     let label = if reclaiming > 0 {
         format!(
-            "{} free · ≈ {} after removing {}",
-            human_bytes(space.display_available()),
-            human_bytes(projected.display_available()),
+            "{} {scope} · ≈ {} after removing {}",
+            human_bytes(available),
+            human_bytes(after_available),
             human_bytes(reclaiming)
         )
     } else {
         format!(
-            "{} free of {}",
-            human_bytes(space.display_available()),
+            "{} {scope} of {}",
+            human_bytes(available),
             human_bytes(space.total)
         )
     };
@@ -298,13 +300,36 @@ pub fn space_meter(space: SpaceInfo, reclaiming: u64, cx: &App) -> Div {
         )
 }
 
-/// Keep macOS's reclaimable-capacity estimate apart from actual free space.
+/// The headline's capacity and its scope label.
+pub const fn capacity_figure(space: SpaceInfo) -> (u64, &'static str) {
+    // Finder's Available includes purgeable storage. Keep that presentation
+    // separate from the raw samples used by guards and removal accounting.
+    if cfg!(target_os = "macos")
+        && let Some(available) = space.reclaimable_available()
+    {
+        return (available, "available");
+    }
+    (space.display_available(), "free")
+}
+
+/// Explain the headline without counting the OS's purgeable estimate twice.
 pub fn reclaimable_capacity_note(space: SpaceInfo) -> Option<String> {
     space
         .reclaimable_available()
         .filter(|available| *available > space.available)
         .map(|available| {
-            format!("≈ {} including reclaimable space", human_bytes(available))
+            if cfg!(target_os = "macos") {
+                format!(
+                    "{} free now · ≈ {} purgeable",
+                    human_bytes(space.available),
+                    human_bytes(available - space.available)
+                )
+            } else {
+                format!(
+                    "≈ {} including reclaimable space",
+                    human_bytes(available)
+                )
+            }
         })
 }
 
@@ -628,6 +653,101 @@ const DESCENT: f32 = 0.2;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_purgeable_byte_is_available_on_macos_but_not_raw_free() {
+        let space = SpaceInfo {
+            total: 1,
+            free: 0,
+            available: 0,
+            native: Some(disktree_core::space::NativeSpace {
+                used: None,
+                available: Some(1),
+            }),
+        };
+        let expected = if cfg!(target_os = "macos") {
+            (1, "available")
+        } else {
+            (0, "free")
+        };
+        assert_eq!(capacity_figure(space), expected);
+        assert_eq!(space.available, 0);
+    }
+
+    #[test]
+    fn unavailable_or_invalid_native_capacity_keeps_the_free_headline() {
+        let mut space = SpaceInfo {
+            total: 100,
+            free: 10,
+            available: 10,
+            native: None,
+        };
+        for native in [None, Some(0), Some(9), Some(101), Some(u64::MAX)] {
+            space.native =
+                native.map(|available| disktree_core::space::NativeSpace {
+                    used: None,
+                    available: Some(available),
+                });
+            assert_eq!(capacity_figure(space), (10, "free"));
+            assert_eq!(reclaimable_capacity_note(space), None);
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+
+        #[test]
+        fn capacity_headline_matches_the_platform_without_changing_raw_samples(
+            raw in 0_u64..1_000_000,
+            purgeable in 1_u64..1_000_000,
+            occupied in 0_u64..1_000_000,
+            removed in 0_u64..3_000_000,
+        ) {
+            let total = raw + purgeable + occupied;
+            let os_available = raw + purgeable;
+            let space = SpaceInfo {
+                total,
+                free: raw,
+                available: raw,
+                native: Some(disktree_core::space::NativeSpace {
+                    used: None,
+                    available: Some(os_available),
+                }),
+            };
+            for (sample, expected_raw) in [
+                (space, raw),
+                (space.after_removing(removed), (raw + removed).min(total)),
+            ] {
+                let expected = if cfg!(target_os = "macos") {
+                    (os_available.max(expected_raw), "available")
+                } else {
+                    (expected_raw, "free")
+                };
+                proptest::prop_assert_eq!(capacity_figure(sample), expected);
+                proptest::prop_assert_eq!(sample.available, expected_raw);
+                proptest::prop_assert_eq!(sample.free, expected_raw);
+                proptest::prop_assert_eq!(
+                    sample.display_used() + sample.display_available(), total
+                );
+                if cfg!(target_os = "macos")
+                    && os_available > expected_raw
+                {
+                    let note = reclaimable_capacity_note(sample).unwrap();
+                    proptest::prop_assert!(note.contains("free now"));
+                    proptest::prop_assert!(note.contains("purgeable"));
+                    proptest::prop_assert!(
+                        note.contains(&human_bytes(expected_raw))
+                    );
+                    proptest::prop_assert!(note.contains(&human_bytes(
+                        os_available - expected_raw
+                    )));
+                }
+            }
+        }
+    }
 
     #[test]
     fn ages_read_in_the_unit_a_person_would_use() {
