@@ -341,6 +341,50 @@ fn modal_action(
         ))
 }
 
+/// The chooser's "Save a usage report", with what it keeps and where it
+/// can be read: a report holds real folder names, so the box says so
+/// before the scan rather than after.
+fn save_report_tick(app: &Disktree, cx: &Context<'_, Disktree>) -> Div {
+    let theme = cx.omarchy();
+    let entity = cx.entity().downgrade();
+    div()
+        .flex()
+        .flex_col()
+        .gap(space::XS)
+        .child(
+            checkbox(
+                crate::scan_report::TICK_ID,
+                "Save a usage report of this scan",
+                if app.save_report {
+                    CheckboxState::Checked
+                } else {
+                    CheckboxState::Unchecked
+                },
+                cx,
+            )
+            .debug_selector(|| crate::scan_report::TICK_ID.into())
+            .tab_stop(true)
+            .aria_description(
+                "Keeps each folder of 100 MB or more, by path and size, in \
+                 PwrDisk's own folder on this computer. Usage History in \
+                 the File menu compares two reports.",
+            )
+            .on_change(move |_, _, _, cx| {
+                let _ = entity.update(cx, Disktree::toggle_save_report);
+            }),
+        )
+        .child(
+            div()
+                .text_size(text::CAPTION)
+                .text_color(theme.secondary)
+                .child(
+                    "Folders of 100 MB or more, by path and size, kept on \
+                     this computer. File \u{203a} Usage History compares \
+                     two scans to show where space went.",
+                ),
+        )
+}
+
 /// Discovery is lightweight; a separate, explicit action starts the walk.
 fn volumes_dialog(
     app: &Disktree,
@@ -363,7 +407,7 @@ fn volumes_dialog(
         .track_focus(&app.source_roots_focus).tab_index(0).tab_stop(true)
         .border_2().border_color(theme.background.opacity(0.))
         .focus_visible(|style| style.border_color(theme.accent))
-        .aria_description("Up and Down select a root. Enter explicitly accepts the selected root and starts its scan.")
+        .aria_description("Up and Down select a root. Enter or a double click explicitly accepts the selected root and starts its scan.")
         .aria_label(
             "Available roots in the selected machine; listing is not a scan",
         )
@@ -436,9 +480,15 @@ fn volumes_dialog(
         );
         let id = ElementId::Name(crate::file_list::path_id(&volume.point));
         rows = rows.child(row(id, index, label.clone()).child(label).on_click(
-            cx.listener(move |this, _, window, cx| {
+            cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.volume_highlight = index;
                 window.focus(&this.confirm_focus, cx);
+                // A double click is Scan on the row it lands on, as in a
+                // file dialog; its first click already selected the row.
+                if event.click_count() >= 2 {
+                    this.choose_volume(cx);
+                    this.apply_focus(window, cx);
+                }
                 cx.notify();
             }),
         ));
@@ -623,13 +673,15 @@ fn volumes_dialog(
                 .child(source)
         }))
         .child(rows)
+        .children(app.report_offered().then(|| save_report_tick(app, cx)))
         .child(dialog_description(
             if app.picker_ssh {
                 "Read-only over SSH. Nested mounts and symlinks are not \
-                 followed. Nothing is read until you press Scan."
+                 followed. Nothing is read until you press Scan or double-\
+                 click a row."
             } else {
                 "Nested mounts and symlinks are not followed. Nothing is \
-                 read until you press Scan."
+                 read until you press Scan or double-click a row."
             },
             cx,
         ))

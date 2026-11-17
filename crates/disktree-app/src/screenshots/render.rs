@@ -527,6 +527,25 @@ fn setup(
                 }
                 State::FileList => app.file_list = true,
                 State::Help => app.open_help(cx),
+                State::Chooser => {
+                    ensure!(
+                        root.starts_with("/Volumes/Fixtures"),
+                        "chooser pictures require the contrived Fixtures image"
+                    );
+                    // The fixture stands in for this Mac's mounts, which
+                    // are never listed: no discovery runs.
+                    app.volumes = [root.parent().unwrap_or(root), root]
+                        .into_iter()
+                        .map(|point| disktree_core::space::Volume {
+                            point: point.into(),
+                            device: None,
+                            space: None,
+                        })
+                        .collect();
+                    app.volumes_loading = false;
+                    app.volume_highlight = 1;
+                    app.volumes_open = true;
+                }
             }
             cx.notify();
             Ok(())

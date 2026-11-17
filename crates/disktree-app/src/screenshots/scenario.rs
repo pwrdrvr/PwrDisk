@@ -75,6 +75,7 @@ pub enum State {
     RemovalRefused,
     FileList,
     Help,
+    Chooser,
 }
 
 impl Scenario {
@@ -176,7 +177,8 @@ impl Scenario {
                     | State::RemovalCheck
                     | State::RemovalRefused
                     | State::FileList
-                    | State::Help => {}
+                    | State::Help
+                    | State::Chooser => {}
                 },
             }
         }
@@ -246,6 +248,7 @@ mod tests {
             {"op": "setup", "state": {"type": "permanent_review"}},
             {"op": "setup", "state": {"type": "file_list"}},
             {"op": "setup", "state": {"type": "help"}},
+            {"op": "setup", "state": {"type": "chooser"}},
             {"op": "setup", "state": {"type": "system_folders"}},
             {"op": "setup", "state": {"type": "disk_capacity"}},
             {"op": "setup", "state": {"type": "removal_check"}},

@@ -483,6 +483,14 @@ pub struct Disktree {
     /// Where the Sizes choice is remembered; `None` keeps it to this
     /// session.
     pub sizes_settings_path: Option<PathBuf>,
+    /// The chooser's "Save a usage report": on unless turned off.
+    pub save_report: bool,
+    /// Where that choice is remembered; `None` keeps it to this session.
+    pub report_settings_path: Option<PathBuf>,
+    /// Where reports are saved; `None` hides the checkbox and saves none.
+    pub reports_dir: Option<PathBuf>,
+    /// The chooser's scan in flight, when it is to leave a report.
+    pub(crate) report_pending: Option<crate::scan_report::Pending>,
     pub removal_settings_dir: Option<PathBuf>,
     /// The Power Efficiency menu, when open: the row the arrow keys are on,
     /// as an index into [`crate::power::PowerEfficiency::ALL`].
@@ -854,6 +862,13 @@ impl Disktree {
             None
         };
         let trash_backend = detect_trash_backend();
+        // As with Sizes below: no test or screenshot run may read or
+        // write the developer's own choice.
+        let report_settings_path = if cfg!(any(test, feature = "screenshots")) {
+            None
+        } else {
+            crate::scan_report::settings_path()
+        };
         let mut tree = Self {
             root_path,
             remote,
@@ -879,6 +894,23 @@ impl Disktree {
             } else {
                 crate::toolbar::sizes_settings_path()
             },
+            save_report: report_settings_path.as_deref().is_none_or(|path| {
+                crate::scan_report::load(path).unwrap_or(true)
+            }),
+            report_settings_path,
+            // A test names its own folder. A screenshot run draws the
+            // chooser's checkbox, so it gets the folder its invented
+            // reports already use, on the image built for the pictures;
+            // its harness cannot set one, since it also renders
+            // baselines that have no such field.
+            reports_dir: if cfg!(test) {
+                None
+            } else if cfg!(feature = "screenshots") {
+                Some(PathBuf::from("/Volumes/Fixtures/usage-reports"))
+            } else {
+                crate::usage_history::reports_dir()
+            },
+            report_pending: None,
             removal_settings_dir: crate::updater::settings_dir(),
             power_menu: None,
             sizes_menu: None,
@@ -1501,7 +1533,16 @@ impl Disktree {
         }
         self.awaiting_root = false;
         self.close_volumes(cx);
+        // Free space before the walk, which a report sets beside the
+        // space after it. One `statvfs`; SSH scans leave no report.
+        let started = (self.save_report
+            && self.remote.is_none()
+            && self.reports_dir.is_some())
+        .then(|| crate::scan_report::Started::now(&path));
         self.set_root(path, cx);
+        if let Some(started) = started {
+            self.arm_report(started);
+        }
     }
 
     /// Closing cancels discovery, not the scan already on screen.
@@ -1928,6 +1969,8 @@ impl Disktree {
         }
         self.scan_epoch += 1;
         let epoch = self.scan_epoch;
+        // Only the chooser arms a report, after this returns.
+        self.report_pending = None;
         self.progress = ScanSnapshot::default();
         self.scan_error = None;
         self.remote_progress =
@@ -2143,8 +2186,12 @@ impl Disktree {
                 self.prune_history();
                 self.select_largest(cx);
                 self.finish_pending_show(cx);
+                self.save_pending_report(cx);
             }
-            Err(error) => self.scan_error = Some(error.to_string()),
+            Err(error) => {
+                self.report_pending = None;
+                self.scan_error = Some(error.to_string());
+            }
         }
         self.log_scan_outcome("local");
         self.scan = None;
