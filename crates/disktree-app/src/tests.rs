@@ -13838,3 +13838,151 @@ fn an_open_usage_history_lists_a_report_as_it_is_saved(
         1
     );
 }
+
+/// File › Save Usage Report writes a report of the scan on screen exactly
+/// when that scan is finished, has lost nothing to a removal, and has no
+/// report yet, whoever started it. The model is those two facts and a
+/// count; every refusal says why in a notice and writes nothing.
+#[gpui_kit::test]
+fn save_usage_report_writes_one_report_per_untouched_scan(
+    cx: &mut TestAppContext,
+) {
+    use disktree_core::usage_report::library;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        Save,
+        Choose,
+        Rescan,
+        Widen,
+        Remove,
+        Tick,
+    }
+    use Step::{Choose, Remove, Rescan, Save, Tick, Widen};
+
+    cx.update(init);
+    let temp = fixture();
+    let reports = tempfile::tempdir().expect("tempdir");
+    let dir = reports.path().join("usage-reports");
+    let root = dunce::canonicalize(temp.path().join("junk")).unwrap();
+    let above = dunce::canonicalize(temp.path()).unwrap();
+    let (view, cx) = chooser_over(&root, &dir, cx);
+
+    let mut expected = 0;
+    let mut ticked = true;
+    // The model: whether a scan is on screen, whether it has a report,
+    // and whether anything was removed since.
+    let (mut scanned, mut saved, mut removed) = (false, false, false);
+    for (at, step) in [
+        Save, Choose, Save, Rescan, Save, Save, Widen, Save, Rescan, Remove,
+        Save, Rescan, Save, Tick, Choose, Save, Save, Remove, Save,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut scans = true;
+        match step {
+            Save => {
+                scans = false;
+                update(&view, cx, Disktree::clear_notice);
+                update(&view, cx, Disktree::save_report_now);
+                let writes = scanned && !saved && !removed;
+                expected += usize::from(writes);
+                saved |= writes;
+                assert_eq!(
+                    read(&view, cx, Disktree::notice).is_some(),
+                    !writes,
+                    "step {at}: a refusal says why at once"
+                );
+            }
+            Choose => {
+                if !read(&view, cx, |app| app.volumes_open) {
+                    update(&view, cx, Disktree::open_volumes);
+                    cx.run_until_parked();
+                }
+                let point = root.clone();
+                update(&view, cx, move |app, cx| {
+                    list_one_root(app, point);
+                    app.choose_volume(cx);
+                });
+                expected += usize::from(ticked);
+                saved = ticked;
+            }
+            Rescan => {
+                update(&view, cx, Disktree::start_scan);
+                saved = false;
+            }
+            Widen => {
+                let above = above.clone();
+                update(&view, cx, move |app, cx| app.widen_to(above, cx));
+                saved = false;
+            }
+            Remove => {
+                scans = false;
+                let path = read(&view, cx, |app| app.root_path.join("deeper"));
+                update(&view, cx, move |app, _| {
+                    app.note_removed(vec![disktree_core::removal::Target {
+                        path,
+                        bytes: 100_000,
+                        is_dir: true,
+                        hidden: false,
+                    }]);
+                });
+                removed = true;
+            }
+            Tick => {
+                scans = false;
+                update(&view, cx, Disktree::toggle_save_report);
+                ticked = !ticked;
+            }
+        }
+        if scans {
+            finish_scan(&view, cx);
+            scanned = true;
+            removed = false;
+        }
+        // The report is built and written off the UI thread.
+        cx.run_until_parked();
+        let (reports, unreadable) = library::list(&dir);
+        assert!(unreadable.is_empty(), "{unreadable:?}");
+        assert_eq!(reports.len(), expected, "after step {at}, {step:?}");
+        assert_eq!(
+            read(&view, cx, |app| app.report_refusal().is_none()),
+            scanned && !saved && !removed,
+            "after step {at}, {step:?}"
+        );
+    }
+    assert_eq!(expected, 5, "the steps reach every kind of scan");
+}
+
+/// The menu row reaches the main window, for a scan no chooser started.
+#[gpui_kit::test]
+fn the_menu_saves_a_report_of_a_scan_no_chooser_started(
+    cx: &mut TestAppContext,
+) {
+    use disktree_core::usage_report::library;
+
+    cx.update(init);
+    let temp = fixture();
+    let reports = tempfile::tempdir().expect("tempdir");
+    let dir = reports.path().join("usage-reports");
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, _| app.reports_dir = Some(dir.clone()));
+    cx.dispatch_action(crate::app_menu::SaveUsageReport);
+    cx.run_until_parked();
+    let (saved, _) = library::list(&dir);
+    assert_eq!(saved.len(), 1);
+    assert_eq!(Path::new(&saved[0].header.root), temp.path());
+    assert_eq!(
+        saved[0].header.totals.bytes,
+        read(&view, cx, |app| app.tree().expect("a tree").bytes)
+    );
+    // The same scan again says it is saved, and writes nothing.
+    cx.dispatch_action(crate::app_menu::SaveUsageReport);
+    cx.run_until_parked();
+    assert_eq!(library::list(&dir).0.len(), 1);
+    assert!(
+        read(&view, cx, Disktree::notice)
+            .is_some_and(|(said, _)| said.contains("already saved"))
+    );
+}

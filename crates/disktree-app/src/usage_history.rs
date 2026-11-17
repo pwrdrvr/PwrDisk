@@ -678,9 +678,12 @@ fn empty_note(dir: Option<&Path>) -> String {
         },
         |dir| {
             format!(
-                "No reports yet in {}. Choose what to scan in the main \
-                 window with \u{201c}Save a usage report of this scan\u{201d} \
-                 ticked, or run {save}; a comparison needs two.",
+                "No reports yet in {}. In the main window, File \u{203a} \
+                 Save Usage Report saves one of the scan on screen, and \
+                 Choose what to scan saves one of each scan it starts \
+                 while \u{201c}Save a usage report of this scan\u{201d} is \
+                 ticked. From a terminal, run {save}. A comparison needs \
+                 two.",
                 dir.display()
             )
         },

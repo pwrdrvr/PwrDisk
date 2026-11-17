@@ -11,10 +11,17 @@ finishes, the report is written to PwrDisk's reports folder (below) at
 the default threshold, and a notice says so. It covers that scan only:
 
 * a rescan, going up a level, a scan named on the command line and a
-  scan an agent asked for save nothing, so the folder holds one report
-  per scan you chose;
+  scan an agent asked for save nothing on their own, so the folder holds
+  one report per scan you chose;
 * a scan that was stopped, or that failed, saves nothing;
 * SSH hosts are not offered the box.
+
+**File › Save Usage Report** saves a report of the scan on screen,
+however it was started: after a rescan, say, to have an After for a
+cleanup. One scan leaves one report, so the row answers with a notice
+instead when the scan already has its report, is still running, was
+stopped, is of an SSH host, or has had files removed since. The tree is
+not measured again after a removal, so rescan first.
 
 ## From the command line
 

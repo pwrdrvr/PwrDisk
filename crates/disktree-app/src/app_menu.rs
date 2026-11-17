@@ -42,6 +42,8 @@ mod menu_actions {
             Zoom,
             /// Scan the current root again.
             Rescan,
+            /// Save a usage report of the scan on screen.
+            SaveUsageReport,
             /// Choose a directory to scan.
             OpenFolder,
             /// The local and SSH source chooser.
@@ -205,8 +207,9 @@ pub fn install(cx: &mut App) {
 /// Actions the main window answers. Chosen while another PwrDisk window is
 /// in front, each brings the main window forward and dispatches there, so
 /// File › Rescan from the Logs window still rescans.
-const MAIN_WINDOW_ACTIONS: [fn(&mut App); 12] = [
+const MAIN_WINDOW_ACTIONS: [fn(&mut App); 13] = [
     |cx| forward_to_main::<Rescan>(cx),
+    |cx| forward_to_main::<SaveUsageReport>(cx),
     |cx| forward_to_main::<OpenFolder>(cx),
     |cx| forward_to_main::<ChooseSource>(cx),
     |cx| forward_to_main::<ShowInFinder>(cx),
@@ -353,6 +356,8 @@ pub fn menus(platform: Platform) -> Vec<Menu> {
         MenuItem::action(platform.file_manager(), ShowInFinder),
         MenuItem::action("Rescan", Rescan),
         MenuItem::separator(),
+        // The report first, then the window that compares reports.
+        MenuItem::action("Save Usage Report", SaveUsageReport),
         MenuItem::action(
             "Usage History\u{2026}",
             crate::usage_history::OpenUsageHistory,
@@ -519,6 +524,7 @@ mod tests {
                 "Show in Finder",
                 "Rescan",
                 "---",
+                "Save Usage Report",
                 "Usage History…",
                 "---",
                 "Close Window"

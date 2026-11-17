@@ -4,10 +4,11 @@
 //! The chooser's "Save a usage report" is on unless it was turned off,
 //! and the choice is remembered. It covers the scan the chooser starts
 //! and nothing else: a rescan, a widening, a scan an agent asked for or
-//! one named on the command line saves nothing, so the folder holds one
-//! report per scan the person chose rather than one per keypress. The
-//! report is built from the finished tree off the UI thread and is the
-//! same file `pwrdisk report --save` writes.
+//! one named on the command line saves nothing on its own, so the folder
+//! holds one report per scan the person chose rather than one per
+//! keypress. File › Save Usage Report saves one of any other finished
+//! local scan, once. The report is built from the finished tree off the
+//! UI thread and is the same file `pwrdisk report --save` writes.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -75,14 +76,6 @@ impl Started {
             clock: Instant::now(),
         }
     }
-}
-
-/// The chooser's scan, waiting for its tree.
-#[derive(Clone, Debug)]
-pub struct Pending {
-    /// The scan it was armed for; any later one forfeits it.
-    pub epoch: u64,
-    pub started: Started,
 }
 
 /// What a finished local scan of `root` says about itself. Samples the
@@ -171,39 +164,84 @@ impl Disktree {
         cx.notify();
     }
 
-    /// The chooser just started a scan: keep what only its start knows,
-    /// if a report was asked for. `started` was sampled before the walk.
-    pub(crate) fn arm_report(&mut self, started: Started) {
-        self.report_pending = (self.save_report
+    /// The chooser just started a scan: its tree is to leave a report,
+    /// if one was asked for.
+    pub(crate) fn arm_report(&mut self) {
+        self.report_wanted = (self.save_report
             && self.remote.is_none()
             && self.reports_dir.is_some())
-        .then_some(Pending {
-            epoch: self.scan_epoch,
-            started,
-        });
+        .then_some(self.scan_epoch);
     }
 
-    /// A local scan landed its tree: write the report it was armed for.
-    /// A stopped walk writes none, since half a tree would read in Usage
-    /// History as folders that shrank.
+    /// A local scan landed its tree: write the report the chooser armed
+    /// for it, if it did and the scan can still give one.
     pub(crate) fn save_pending_report(&mut self, cx: &Context<'_, Self>) {
-        let Some(pending) = self.report_pending.take() else {
-            return;
-        };
-        if pending.epoch != self.scan_epoch || self.progress.cancelled {
-            return;
+        if self.report_wanted.take() == Some(self.scan_epoch)
+            && self.report_refusal().is_none()
+        {
+            self.write_report(cx);
         }
-        let (Some(tree), Some(dir)) =
-            (self.tree.clone(), self.reports_dir.clone())
-        else {
+    }
+
+    /// Why the scan on screen cannot leave a report now, in words for a
+    /// notice; `None` when it can. A report is one finished local scan as
+    /// it was measured, once: half a tree would read in Usage History as
+    /// folders that shrank, and the tree is not redrawn after a removal,
+    /// so a report of it would list what is already gone.
+    pub fn report_refusal(&self) -> Option<&'static str> {
+        if self.reports_dir.is_none() {
+            Some("This system has no folder to keep usage reports in.")
+        } else if self.remote.is_some() {
+            Some("Usage reports cover this computer only, not SSH hosts.")
+        } else if self.is_indexing() {
+            Some("The scan is still running. Save its report when it ends.")
+        } else if self.tree.is_none() {
+            Some("Nothing has been scanned yet, so there is no report.")
+        } else if self.progress.cancelled {
+            Some("This scan was stopped early. Rescan, then save its report.")
+        } else if !self.removed.is_empty() {
+            Some(
+                "Files were removed since this scan. Rescan, then save \
+                 its report.",
+            )
+        } else if self.report_written == Some(self.scan_epoch) {
+            Some(
+                "This scan\u{2019}s report is already saved. File \u{203a} \
+                 Usage History lists it.",
+            )
+        } else {
+            None
+        }
+    }
+
+    /// File \u{203a} Save Usage Report: a report of the scan on screen,
+    /// however it was started, or a notice saying why there is none.
+    pub fn save_report_now(&mut self, cx: &mut Context<'_, Self>) {
+        match self.report_refusal() {
+            Some(why) => self.say(why, Status::Warning, cx),
+            None => self.write_report(cx),
+        }
+    }
+
+    /// Builds the report of the tree on screen and writes it, off the UI
+    /// thread: a whole disk is tens of millions of nodes to total again.
+    /// Callers have asked [`Self::report_refusal`].
+    fn write_report(&mut self, cx: &Context<'_, Self>) {
+        let (Some(tree), Some(dir), Some(started)) = (
+            self.tree.clone(),
+            self.reports_dir.clone(),
+            self.report_started.clone(),
+        ) else {
             return;
         };
+        let epoch = self.scan_epoch;
+        // Claimed now, so a second ask while this one writes is refused.
+        self.report_written = Some(epoch);
         let root = self.root_path.clone();
         let options = self.options.clone();
         let progress = self.progress.clone();
-        // A whole disk is tens of millions of nodes to total again.
         let written = cx.background_executor().spawn(async move {
-            let capture = capture(&root, options, &pending.started, progress);
+            let capture = capture(&root, options, &started, progress);
             let report =
                 usage_report::build(&tree, &capture, DEFAULT_THRESHOLD);
             drop(tree);
@@ -221,11 +259,17 @@ impl Disktree {
                     );
                     crate::usage_history::reload_open(cx);
                 }
-                Err(error) => this.say_until_closed(
-                    format!("The usage report could not be saved: {error}"),
-                    Status::Warning,
-                    cx,
-                ),
+                Err(error) => {
+                    // Nothing was kept, so the scan may be asked again.
+                    if this.report_written == Some(epoch) {
+                        this.report_written = None;
+                    }
+                    this.say_until_closed(
+                        format!("The usage report could not be saved: {error}"),
+                        Status::Warning,
+                        cx,
+                    );
+                }
             });
         })
         .detach();

@@ -180,6 +180,15 @@ pub fn root(
             }
         }))
         .on_action(cx.listener(
+            |this, _: &crate::app_menu::SaveUsageReport, _, cx| {
+                // It only reads the tree, so it answers on any screen;
+                // a dialog keeps the keys and the notice slot it is over.
+                if !this.has_modal() {
+                    this.save_report_now(cx);
+                }
+            },
+        ))
+        .on_action(cx.listener(
             |this, _: &crate::app_menu::OpenFolder, _, cx| {
                 if this.can_start_over() {
                     this.open_folder(cx);
