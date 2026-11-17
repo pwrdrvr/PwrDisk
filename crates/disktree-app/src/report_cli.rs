@@ -11,14 +11,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
-use disktree_core::identity::HostIdentity;
-use disktree_core::path_style::PathStyle;
 use disktree_core::scan::ScanHandle;
 use disktree_core::size::{human_bytes, human_count};
-use disktree_core::space;
-use disktree_core::usage_report::{
-    self, Capture, DEFAULT_THRESHOLD, Report, Volume, diff,
-};
+use disktree_core::usage_report::{self, DEFAULT_THRESHOLD, Report, diff};
 
 pub const USAGE: &str = "\
 usage: pwrdisk report [SCAN OPTIONS] [--threshold SIZE] [-o FILE | --save]
@@ -100,9 +95,8 @@ pub fn report(
     let root = parsed.root;
     let options = parsed.options;
 
-    let space_before = space::display_space_info(&root).ok();
-    let started_at = chrono::Utc::now().timestamp();
-    let clock = Instant::now();
+    let started = crate::scan_report::Started::now(&root);
+    let clock = started.clock;
     eprintln!(
         "Scanning {} read-only. A whole volume can take minutes.",
         root.display()
@@ -129,27 +123,13 @@ pub fn report(
         }
     };
     let elapsed = clock.elapsed();
-    let progress = handle.progress.snapshot();
-    let capture = Capture {
-        root: root.to_string_lossy().into_owned(),
-        style: PathStyle::Native,
-        captured_at: chrono::Utc::now().timestamp(),
-        scan_started_at: Some(started_at),
-        scan_elapsed_ms: u64::try_from(elapsed.as_millis()).ok(),
-        host: HostIdentity::current(),
-        volume: Volume {
-            device: space::device_for(&root),
-            mount: space::volume_root_for(&root)
-                .map(|mount| mount.to_string_lossy().into_owned()),
-            space_before,
-            space_after: space::display_space_info(&root).ok(),
-        },
-        cancelled: progress.cancelled,
-        unreadable: progress.errors,
-        unreadable_detail: progress.messages,
-        excluded: not_entered(&root, options.one_filesystem),
+    let capture = crate::scan_report::capture(
+        &root,
         options,
-    };
+        &started,
+        &crate::scan_report::Ended::now(&root, &started),
+        handle.progress.snapshot(),
+    );
     let report = usage_report::build(&tree, &capture, threshold);
     drop(tree);
 
@@ -185,32 +165,6 @@ pub fn report(
         eprintln!("Wrote {} ({size} bytes).", path.display());
     }
     Ok(())
-}
-
-/// Mounts below `root` the walk does not enter, and automount points it
-/// never touches. Aliases of folders it reaches by another path (macOS
-/// firmlinks, repeated bind mounts) are not listed: their files are
-/// counted once, where the walk found them.
-fn not_entered(root: &Path, one_filesystem: bool) -> Vec<String> {
-    let canonical = root.canonicalize().unwrap_or_else(|_| root.into());
-    let data = space::data_volume_below(root, &canonical);
-    let mut paths = space::never_scanned(root, &canonical);
-    if one_filesystem
-        && let Some(mounts) = space::mount_boundaries_for(&canonical)
-    {
-        // The walk enters the Data volume below `/` on purpose.
-        paths.extend(
-            mounts
-                .into_iter()
-                .filter(|path| Some(path) != data.as_ref()),
-        );
-    }
-    paths.sort();
-    paths.dedup();
-    paths
-        .into_iter()
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect()
 }
 
 /// Runs `pwrdisk report-diff …`; `args` follow the word `report-diff`.

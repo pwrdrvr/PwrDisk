@@ -86,6 +86,17 @@ pub fn open(cx: &mut App) {
     open_window(reports_dir(), cx);
 }
 
+/// A report was just saved: an open window lists it without being
+/// closed and opened again.
+pub fn reload_open(cx: &mut App) {
+    if let Some(window) = aux_window::find::<UsageHistory>(cx, |_| true) {
+        let _ = window.update(cx, |view, _, cx| {
+            view.reload();
+            cx.notify();
+        });
+    }
+}
+
 /// A new window over the reports in `dir`.
 pub fn open_window(
     dir: Option<PathBuf>,
@@ -667,8 +678,12 @@ fn empty_note(dir: Option<&Path>) -> String {
         },
         |dir| {
             format!(
-                "No reports yet in {}. Write one with {save}, then come \
-                 back; a comparison needs two.",
+                "No reports yet in {}. In the main window, File \u{203a} \
+                 Save Usage Report saves one of the scan on screen, and \
+                 Choose what to scan saves one of each scan it starts \
+                 while \u{201c}Save a usage report of this scan\u{201d} is \
+                 ticked. From a terminal, run {save}. A comparison needs \
+                 two.",
                 dir.display()
             )
         },

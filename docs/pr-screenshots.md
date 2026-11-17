@@ -123,13 +123,18 @@ The simulated clock still advances tooltip delays and other timed tasks.
 Setup hooks are `legend` with a `kind` (the core category name, such as
 `code`, `cache`, `media` or `documents`), `select` or `mark` with a relative
 POSIX fixture `path`, `crumb_menu` with the `path` of a directory to go into
-and open its crumb's sibling menu, and `review`, `file_list` or `help`
-without arguments.
+and open its crumb's sibling menu, and `review`, `file_list`, `help` or
+`chooser` without arguments.
 `legend` cycles that category as a click does. Marks obey the normal guards
 and capacity limit; a refused mark fails the scenario. Setup does not
 confirm removal. Never use clicks to approve removal, open the source
 chooser, launch external apps or run owner commands. Scenarios are trusted
 developer input, not a sandbox for arbitrary app interactions.
+
+`chooser` opens the source chooser over two invented rows, the Fixtures
+image and the fixture root, with no discovery: this Mac's mounts and SSH
+hosts are never listed. It requires the owned Fixtures image.
+`scripts/screenshots/chooser.json` captures it.
 
 `permanent_review` opens Review with Permanent selected without confirming
 removal, for pictures of that mode independent of the host's Trash backend.
@@ -231,8 +236,11 @@ bytes, window size, theme and fonts in both jobs.
 Lab VMs have clipboard sharing off. Inputs arrive through committed source,
 outputs through collected artifacts; never ask the operator to copy or
 paste anything in the guest. The source chooser lists real mounts and SSH
-hosts on either system. Do not capture it with this offscreen workflow or
-attach a guest chooser capture. Say why in the PR and ask the operator.
+hosts on either system. Offscreen, capture it only through the `chooser`
+setup hook, which lists invented rows and runs no discovery; never open
+it with a click or a key, and never attach a guest chooser capture. For a
+chooser state the hook cannot show, say why in the PR and ask the
+operator.
 
 For any image that is not 100% contrived, **show it to the operator and
 wait for approval before attaching it**. Crop or redact user names, host

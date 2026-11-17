@@ -1,8 +1,31 @@
 # Usage reports
 
 A usage report is a small record of where a volume's space is, kept so
-that a later one can say where it went. It is written from a scan with no
-window:
+that a later one can say where it went.
+
+## From the window
+
+Choose what to scan has **Save a usage report of this scan**, ticked
+until you untick it; the choice is remembered. When the scan it starts
+finishes, the report is written to PwrDisk's reports folder (below) at
+the default threshold, and a notice says so. It covers that scan only:
+
+* a rescan, going up a level, a scan named on the command line and a
+  scan an agent asked for save nothing on their own, so the folder holds
+  one report per scan you chose;
+* a scan that was stopped, or that failed, saves nothing;
+* SSH hosts are not offered the box.
+
+**File › Save Usage Report** saves a report of the scan on screen,
+however it was started: after a rescan, say, to have an After for a
+cleanup. One scan leaves one report, so the row answers with a notice
+instead when the scan already has its report, is still running, was
+stopped, is of an SSH host, or has had files removed since. The tree is
+not measured again after a removal, so rescan first.
+
+## From the command line
+
+The same report is written from a scan with no window:
 
 ```sh
 pwrdisk report -D -o ~/reports/$(date -u +%Y%m%dT%H%M%SZ).jsonl

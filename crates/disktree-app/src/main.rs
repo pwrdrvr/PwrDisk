@@ -50,6 +50,7 @@ mod report_cli;
 mod run_list;
 mod run_view;
 mod safety;
+mod scan_report;
 #[cfg(any(test, feature = "screenshots"))]
 mod screenshots;
 mod semantics;

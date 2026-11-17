@@ -13611,3 +13611,419 @@ fn sizes_read_on_disk_where_private_is_not_offered(cx: &mut TestAppContext) {
     assert!(!read(&view, cx, |app| app.sizes_offered(Sizes::Private)));
     assert_eq!(read(&view, cx, Disktree::sizes), Sizes::OnDisk);
 }
+
+/// The startup chooser over one listed root, `root`, with usage reports
+/// kept in `dir`.
+fn chooser_over<'a>(
+    root: &Path,
+    dir: &Path,
+    cx: &'a mut TestAppContext,
+) -> (Entity<Disktree>, &'a mut Window) {
+    let (view, cx) =
+        cx.add_window_view(|_, cx| Disktree::choose(options(), 3, None, cx));
+    cx.run_until_parked();
+    let point = root.to_path_buf();
+    let dir = dir.to_path_buf();
+    update(&view, cx, move |app, _| {
+        app.reports_dir = Some(dir);
+        list_one_root(app, point);
+    });
+    draw(cx);
+    (view, cx)
+}
+
+/// Stands `point` in for this computer's mounts, which a test must not
+/// list on screen or scan.
+fn list_one_root(app: &mut Disktree, point: PathBuf) {
+    app.volumes = vec![Volume {
+        point,
+        device: None,
+        space: None,
+    }];
+    app.volumes_loading = false;
+    app.volume_highlight = 0;
+}
+
+/// Press and release at `at` as the `count`th click of a gesture.
+fn click_at(cx: &mut Window, at: Point<Pixels>, count: usize) {
+    cx.simulate_event(gpui_kit::MouseDownEvent {
+        button: gpui_kit::MouseButton::Left,
+        position: at,
+        modifiers: gpui_kit::Modifiers::none(),
+        click_count: count,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui_kit::MouseUpEvent {
+        button: gpui_kit::MouseButton::Left,
+        position: at,
+        modifiers: gpui_kit::Modifiers::none(),
+        click_count: count,
+    });
+    draw(cx);
+}
+
+/// A click on a listed root only selects it, however often; the second
+/// press of a double click scans it, as Scan would.
+#[gpui_kit::test]
+fn a_double_click_on_a_listed_root_scans_it(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let reports = tempfile::tempdir().expect("tempdir");
+    let (view, cx) = chooser_over(temp.path(), reports.path(), cx);
+    let row = cx
+        .debug_bounds("volume-0")
+        .expect("the listed root")
+        .center();
+    for _ in 0..3 {
+        click_at(cx, row, 1);
+        read(&view, cx, |app| {
+            assert!(app.volumes_open && app.awaiting_root);
+            assert!(app.scan.is_none(), "a single click never scans");
+            assert_eq!(app.volume_highlight, 0);
+        });
+    }
+    click_at(cx, row, 2);
+    assert!(!read(&view, cx, |app| app.volumes_open || app.awaiting_root));
+    assert_eq!(
+        read(&view, cx, |app| app.root_path.clone()),
+        dunce::canonicalize(temp.path()).unwrap()
+    );
+    finish_scan(&view, cx);
+}
+
+/// The chooser's checkbox is ticked until it is clicked, and SSH hosts,
+/// which reports do not cover, are not offered it.
+#[gpui_kit::test]
+fn the_chooser_offers_a_usage_report_for_this_computer_only(
+    cx: &mut TestAppContext,
+) {
+    use crate::scan_report::TICK_ID;
+
+    cx.update(init);
+    let temp = fixture();
+    let reports = tempfile::tempdir().expect("tempdir");
+    let choice = reports.path().join("settings/save-usage-report");
+    let (view, cx) = chooser_over(temp.path(), reports.path(), cx);
+    update(&view, cx, |app, _| {
+        app.report_settings_path = Some(choice.clone());
+    });
+    assert!(read(&view, cx, |app| app.save_report), "on by default");
+    click_on(cx, TICK_ID);
+    assert!(!read(&view, cx, |app| app.save_report));
+    assert!(!crate::scan_report::load(&choice).expect("remembered"));
+    click_on(cx, TICK_ID);
+    assert!(read(&view, cx, |app| app.save_report));
+    assert!(crate::scan_report::load(&choice).expect("remembered"));
+    assert!(read(&view, cx, |app| app.awaiting_root && app.scan.is_none()));
+
+    choose_ssh(cx);
+    assert!(cx.debug_bounds(TICK_ID).is_none(), "not for SSH hosts");
+}
+
+/// A report is saved for exactly the scans the chooser starts while its
+/// box is ticked: the model is a count that only such a scan raises. A
+/// rescan and a widening raise nothing, with the box ticked or not, and
+/// each report is of the root that was chosen, with the tree's own total.
+#[gpui_kit::test]
+fn a_usage_report_is_saved_only_for_a_ticked_chooser_scan(
+    cx: &mut TestAppContext,
+) {
+    use disktree_core::usage_report::library;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        Choose,
+        Rescan,
+        Widen,
+        Tick,
+    }
+    use Step::{Choose, Rescan, Tick, Widen};
+
+    cx.update(init);
+    let temp = fixture();
+    let reports = tempfile::tempdir().expect("tempdir");
+    let dir = reports.path().join("usage-reports");
+    let root = dunce::canonicalize(temp.path().join("junk")).unwrap();
+    let above = dunce::canonicalize(temp.path()).unwrap();
+    let (view, cx) = chooser_over(&root, &dir, cx);
+
+    let mut expected = 0;
+    let mut ticked = true;
+    for (at, step) in [
+        Choose, Rescan, Choose, Widen, Rescan, Tick, Choose, Rescan, Widen,
+        Tick, Choose,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        match step {
+            Choose => {
+                if !read(&view, cx, |app| app.volumes_open) {
+                    update(&view, cx, Disktree::open_volumes);
+                    cx.run_until_parked();
+                }
+                let point = root.clone();
+                update(&view, cx, move |app, cx| {
+                    list_one_root(app, point);
+                    app.choose_volume(cx);
+                });
+                expected += usize::from(ticked);
+            }
+            Rescan => update(&view, cx, Disktree::start_scan),
+            Widen => {
+                let above = above.clone();
+                update(&view, cx, move |app, cx| app.widen_to(above, cx));
+            }
+            Tick => {
+                update(&view, cx, Disktree::toggle_save_report);
+                ticked = !ticked;
+            }
+        }
+        if !matches!(step, Tick) {
+            finish_scan(&view, cx);
+            // The report is built and written off the UI thread.
+            cx.run_until_parked();
+        }
+        let (saved, unreadable) = library::list(&dir);
+        assert!(unreadable.is_empty(), "{unreadable:?}");
+        assert_eq!(saved.len(), expected, "after step {at}, {step:?}");
+        if matches!(step, Choose) && ticked {
+            let newest = library::read(&saved[0].path).expect("the report");
+            assert_eq!(Path::new(&newest.header.root), root);
+            let total =
+                read(&view, cx, |app| app.tree().expect("a tree").bytes);
+            assert_eq!(newest.header.totals.bytes, total);
+            assert!(!newest.header.completeness.cancelled);
+            assert!(newest.header.volume.space_before.is_some());
+            assert_eq!(
+                read(&view, cx, Disktree::notice).map(|(said, _)| said),
+                Some(
+                    "Usage report saved. File \u{203a} Usage History \
+                     compares it with earlier ones."
+                        .to_owned()
+                )
+            );
+        }
+    }
+    assert_eq!(expected, 3, "the steps cover ticked and unticked scans");
+}
+
+/// Usage History, already open, lists a report the moment a scan saves
+/// it.
+#[gpui_kit::test]
+fn an_open_usage_history_lists_a_report_as_it_is_saved(
+    cx: &mut TestAppContext,
+) {
+    use crate::usage_history::UsageHistory;
+
+    cx.update(init);
+    let temp = fixture();
+    let reports = tempfile::tempdir().expect("tempdir");
+    let dir = reports.path().join("usage-reports");
+    let history =
+        cx.add_window(|_, cx| UsageHistory::new(Some(dir.clone()), cx));
+    let (view, cx) = chooser_over(temp.path(), &dir, cx);
+    assert!(
+        history
+            .read_with(cx, |view, _| view.reports().is_empty())
+            .expect("open")
+    );
+    update(&view, cx, Disktree::choose_volume);
+    finish_scan(&view, cx);
+    cx.run_until_parked();
+    assert_eq!(
+        history
+            .read_with(cx, |view, _| view.reports().len())
+            .expect("open"),
+        1
+    );
+}
+
+/// File › Save Usage Report writes a report of the scan on screen exactly
+/// when that scan is finished, has lost nothing to a removal, and has no
+/// report yet, whoever started it. The model is those two facts and a
+/// count; every refusal says why in a notice and writes nothing.
+#[gpui_kit::test]
+fn save_usage_report_writes_one_report_per_untouched_scan(
+    cx: &mut TestAppContext,
+) {
+    use disktree_core::usage_report::library;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        Save,
+        Choose,
+        Rescan,
+        Widen,
+        /// A widening that is stopped: the old tree stays on screen.
+        WidenStopped,
+        Remove,
+        Tick,
+    }
+    use Step::{Choose, Remove, Rescan, Save, Tick, Widen, WidenStopped};
+
+    cx.update(init);
+    let temp = fixture();
+    let reports = tempfile::tempdir().expect("tempdir");
+    let dir = reports.path().join("usage-reports");
+    let root = dunce::canonicalize(temp.path().join("junk")).unwrap();
+    let above = dunce::canonicalize(temp.path()).unwrap();
+    let (view, cx) = chooser_over(&root, &dir, cx);
+
+    let mut expected = 0;
+    let mut ticked = true;
+    // The model: whether a scan is on screen, whether it has a report,
+    // and whether anything was removed since.
+    let (mut scanned, mut saved, mut removed) = (false, false, false);
+    for (at, step) in [
+        Save,
+        Choose,
+        WidenStopped,
+        Save,
+        Rescan,
+        Save,
+        WidenStopped,
+        Save,
+        Widen,
+        Save,
+        Rescan,
+        WidenStopped,
+        Save,
+        Rescan,
+        Remove,
+        Save,
+        Rescan,
+        Save,
+        Tick,
+        Choose,
+        Save,
+        Save,
+        Remove,
+        Save,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut scans = true;
+        match step {
+            Save => {
+                scans = false;
+                update(&view, cx, Disktree::clear_notice);
+                update(&view, cx, Disktree::save_report_now);
+                let writes = scanned && !saved && !removed;
+                expected += usize::from(writes);
+                saved |= writes;
+                assert_eq!(
+                    read(&view, cx, Disktree::notice).is_some(),
+                    !writes,
+                    "step {at}: a refusal says why at once"
+                );
+            }
+            Choose => {
+                if !read(&view, cx, |app| app.volumes_open) {
+                    update(&view, cx, Disktree::open_volumes);
+                    cx.run_until_parked();
+                }
+                let point = root.clone();
+                update(&view, cx, move |app, cx| {
+                    list_one_root(app, point);
+                    app.choose_volume(cx);
+                });
+                expected += usize::from(ticked);
+                saved = ticked;
+            }
+            Rescan => {
+                update(&view, cx, Disktree::start_scan);
+                saved = false;
+            }
+            Widen => {
+                let above = above.clone();
+                update(&view, cx, move |app, cx| app.widen_to(above, cx));
+                saved = false;
+            }
+            WidenStopped => {
+                scans = false;
+                let above = above.clone();
+                update(&view, cx, move |app, cx| {
+                    app.widen_to(above, cx);
+                    app.cancel_scan(cx);
+                });
+            }
+            Remove => {
+                scans = false;
+                let path = read(&view, cx, |app| app.root_path.join("deeper"));
+                update(&view, cx, move |app, _| {
+                    app.note_removed(vec![disktree_core::removal::Target {
+                        path,
+                        bytes: 100_000,
+                        is_dir: true,
+                        hidden: false,
+                    }]);
+                });
+                removed = true;
+            }
+            Tick => {
+                scans = false;
+                update(&view, cx, Disktree::toggle_save_report);
+                ticked = !ticked;
+            }
+        }
+        if scans {
+            finish_scan(&view, cx);
+            scanned = true;
+            removed = false;
+        }
+        // The report is built and written off the UI thread.
+        cx.run_until_parked();
+        let (reports, unreadable) = library::list(&dir);
+        assert!(unreadable.is_empty(), "{unreadable:?}");
+        assert_eq!(reports.len(), expected, "after step {at}, {step:?}");
+        assert_eq!(
+            read(&view, cx, |app| app.report_refusal().is_none()),
+            scanned && !saved && !removed,
+            "after step {at}, {step:?}"
+        );
+    }
+    assert_eq!(expected, 6, "the steps reach every kind of scan");
+}
+
+/// The menu row reaches the main window, for a scan no chooser started.
+#[gpui_kit::test]
+fn the_menu_saves_a_report_of_a_scan_no_chooser_started(
+    cx: &mut TestAppContext,
+) {
+    use disktree_core::usage_report::library;
+
+    cx.update(init);
+    let temp = fixture();
+    let reports = tempfile::tempdir().expect("tempdir");
+    let dir = reports.path().join("usage-reports");
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, _| app.reports_dir = Some(dir.clone()));
+    // The report is of the scan as it ended, however late it is asked for.
+    let ended = update(&view, cx, |app, _| {
+        let landed = app.report_landed.as_mut().expect("a landed scan");
+        landed.ended.at -= 3_600;
+        landed.ended.elapsed_ms = Some(1_234);
+        landed.ended.at
+    });
+    cx.dispatch_action(crate::app_menu::SaveUsageReport);
+    cx.run_until_parked();
+    let (saved, _) = library::list(&dir);
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].header.captured_at, ended);
+    assert_eq!(saved[0].header.scan_elapsed_ms, Some(1_234));
+    assert_eq!(Path::new(&saved[0].header.root), temp.path());
+    assert_eq!(
+        saved[0].header.totals.bytes,
+        read(&view, cx, |app| app.tree().expect("a tree").bytes)
+    );
+    // The same scan again says it is saved, and writes nothing.
+    cx.dispatch_action(crate::app_menu::SaveUsageReport);
+    cx.run_until_parked();
+    assert_eq!(library::list(&dir).0.len(), 1);
+    assert!(
+        read(&view, cx, Disktree::notice)
+            .is_some_and(|(said, _)| said.contains("already saved"))
+    );
+}
