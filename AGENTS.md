@@ -238,8 +238,9 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
 15. **A tree owns a handful of buffers, by index.** Nodes live in one
     vector, each directory's children a contiguous run of it; a record is
     never changed in place, a subtree moves to another tree only as a copy,
-    and a finished tree keeps every subtree one contiguous run. Before changing `index.rs`, its records, how a tree is
-    built or read, or a parallel pass, read
+    and a finished tree keeps every subtree one contiguous run. Before
+    changing `index.rs`, its records, how a tree is built or read, or a
+    parallel pass, read
     [docs/agents/invariant-details.md](docs/agents/invariant-details.md#15-a-trees-buffers).
 
 16. **A bug fix states the rule it broke as a property, model or oracle
