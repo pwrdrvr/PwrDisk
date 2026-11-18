@@ -38,46 +38,18 @@ make install PREFIX=/usr/local  # system-wide (needs root)
 make uninstall
 make bundle                     # macOS: target/bundle/PwrDisk.app, zip and DMG
 make dock-icons                 # macOS 26: redraw the Dock icon of an unbundled run
-make lint                       # rustfmt --check, then clippy --all-targets -D warnings
+make lint                       # AGENTS.md size, rustfmt --check, clippy -D warnings
 make test                       # core and window-harness tests
 make ci                         # lint, then test
 make fmt                        # format in place
 cargo xtask licenses            # rewrite THIRD_PARTY_LICENSES after a dependency change
 ```
 
-`make install` is the supported way to put this on a machine: it installs the
-release binary, `packaging/pwrdisk.desktop.in` (rendered with the real install
-prefix and the crate version) and `assets/disktree.svg`. Keep the desktop
-entry's `Categories` to a single main category plus additional ones, or
-`desktop-file-validate` complains.
-
-On macOS `make install` installs `target/bundle/PwrDisk.app` into
-`~/Applications` instead, built by `cargo xtask bundle` from
-`packaging/macos/` (the `Info.plist` template and the icon's SVG). The bundle
-identifier there keys every macOS permission grant; do not change it lightly.
-
-The macOS icon has two sources in `packaging/macos/`, and each macOS reads
-the one made for it. `AppIcon.svg` is the mark on Apple's legacy 824-in-1024
-tile; the bundle draws `AppIcon.icns` from it, which macOS 15 and earlier
-draw literally. `AppIcon.icon` with `AppGlyph.svg` is the Icon Composer
-package: when Xcode 26's actool is at hand `cargo xtask bundle` compiles it
-into `Assets.car` and names it with `CFBundleIconName`, and macOS 26 draws
-that with its own shape, glass edge and Dark, Clear and Tinted looks. Handed
-only the `.icns`, macOS 26 normalizes it instead, and 26.6.2 has drawn such a
-padded icns on a light plate, so a bundle without the catalog says so. A run
-outside the bundle (`make run`, `cargo run`) has no icon for macOS to draw,
-so `dock_icon.rs` paints one: `DockIcon.png`, or on macOS 26
-`DockIcon-glass.png`, the shipped icon as that macOS itself draws it, since
-Liquid Glass is never applied to an image set at run time. `make dock-icons`
-redraws both on a macOS 26 with Xcode 26; run it after either SVG changes.
-
-Releases are cut by `release.yml` from a `vX.Y.Z` tag that matches the
-workspace version and a `## vX.Y.Z` section of `CHANGELOG.md` (`cargo xtask
-release-check`); `docs/releasing.md` is the procedure and
-`.github/workflows/README.md` the design. macOS ships a DMG and Windows a
-Velopack Setup.exe, MSI and portable zip, both of which update themselves
-from GitHub Releases. The `velopack` crate pin and `VPK_VERSION` in
-`scripts/release/install-vpk.sh` move together.
+Do not change the macOS bundle identifier lightly: it keys every macOS
+permission grant. Before changing installation, the desktop entry, the macOS
+bundle or icon (`packaging/`, `dock_icon.rs`), release packaging
+(`scripts/release/`, the `velopack` pin) or how a release is cut, read
+[docs/agents/packaging.md](docs/agents/packaging.md).
 
 `cargo xtask lint` is the gate. It must be green before anything is called
 done, and it must not fix anything: a red local run is the same signal CI gives.
@@ -155,16 +127,11 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
 
 1. **Sizes come from `st_blocks * 512` unless apparent size was asked for.**
    APFS clones can share those blocks; private-byte estimates are reported
-   separately without changing tile weights. On macOS the directory listing
-   reports every fork's allocation and the data fork's length in bulk; see
-   `macos.rs`. On Windows it is the allocation the directory listing reports;
-   see `windows.rs`. An
-   elevated scan of a whole NTFS drive reads it from the master file table
-   instead, keeping the walk's rules for hidden entries, links, cloud
-   folders and depth; see `mft.rs`. That path counts every stream's
-   allocation, alternate data streams included since they go when the file
-   goes, so for a file with alternate streams it can exceed the walk's
-   number.
+   separately without changing tile weights. Each platform's listing
+   measures differently (macOS bulk listing, Windows, an elevated
+   whole-NTFS-drive scan from the MFT); before changing how one measures,
+   read
+   [docs/agents/invariant-details.md](docs/agents/invariant-details.md#1-how-each-platform-measures).
 2. **Totals are derived, never tracked.** A leaf's `bytes` is the only
    input: `tree::aggregate` computes every directory's `bytes`, `files` and
    `dirs` from its children, and `own_bytes()`/`own_files()` read the direct
@@ -235,15 +202,14 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
     worker as at the preview: nothing the person confirms in Review
     raises an agent's removal. `mark_guard.rs` holds the rule.
     Trash never falls back to permanent deletion. No headless or SSH removal.
-    Cache cleanup is for caches PwrDisk positively recognizes *and* can
-    clean better than by deleting them: an owner with a command here.
-    Nothing is held back for only looking like a cache (a name, a
-    `CACHEDIR.TAG`, a hatch, an owner without a command); that is an
-    ordinary removal. `cleanup/recognize.rs` holds the rule.
-    A cache cleanup is decided per marked path (Skip by default, the
-    owner's exact command, or Delete files); owner approval never approves
-    deleting files, which has its own consent, and a failed owner command
-    never falls back to it. See `docs/owner-cleanup.md`.
+    Cache cleanup runs only for a cache PwrDisk positively recognizes and
+    whose owner has a command here; what only looks like a cache is an
+    ordinary removal. It is decided per marked path, Skip by default; owner
+    approval never approves deleting files, and a failed owner command never
+    falls back to it. Before changing what is recognized or how cleanup is
+    decided, read
+    [docs/agents/invariant-details.md](docs/agents/invariant-details.md#12-cache-cleanup)
+    and `docs/owner-cleanup.md`.
     A linked window's tree and marks remain the source of truth; `ls` and
     `find` read it without navigating. Only an explicit `show` request moves
     the view, and guidance requires the user to request that behavior.
@@ -265,31 +231,17 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
     instruction, and never to delete by other means. A change to what
     the guards refuse, what removal does, or what a system hides from a
     scan updates the matching `references/<system>.md` in the same PR.
-    They follow the MCP Skills extension (`io.modelcontextprotocol/skills`,
-    [spec](https://modelcontextprotocol.io/extensions/skills/overview)):
-    declare it with `resources` in the capabilities, answer `skills/list`
-    and `skills/get` with each skill's frontmatter and every file's
-    `sha256:` digest and byte size, add `resultType`, `ttlMs` and
-    `cacheScope` to both (rmcp passes custom results through as they
-    are), and serve the bytes through `resources/read`. Plain resources
-    and `pwrdisk_read_skill` remain for clients without the extension;
-    `skills_host_tests.rs` walks the host's sequence.
+    They follow the MCP Skills extension; before changing how skills are
+    declared or served, read
+    [docs/agents/invariant-details.md](docs/agents/invariant-details.md#14-serving-skills-through-the-mcp-skills-extension).
 
 15. **A tree owns a handful of buffers, by index.** Nodes live in one
-    vector, each directory's children a contiguous run of it, names in one
-    string and clone records in side tables, so dropping a tree frees eight
-    buffers instead of tens of millions of allocations. An allocation record
-    keeps only what its node does not say (`index/records.rs`): a clone with
-    one name reads its size from the node, so a placed leaf's `bytes` and
-    `inode` change only by hardlink de-duplication. A record is never
-    changed in place, which is what lets the files of a clone group share
-    one; a change that writes to a record must stop that. A node is read
-    through a `Node<'_>` cursor from its tree and written through `NodeMut`
-    or a whole-tree pass. Build with `Tree::build` (a `Draft` for tests and
-    small trees); a subtree moves to another tree only as a copy. A
-    finished tree keeps every subtree one contiguous run, which is what
-    lets `par_bottom_up` split it across workers without `unsafe`: only
-    the order *within* a block may change after it is built.
+    vector, each directory's children a contiguous run of it; a record is
+    never changed in place, a subtree moves to another tree only as a copy,
+    and a finished tree keeps every subtree one contiguous run. Before
+    changing `index.rs`, its records, how a tree is built or read, or a
+    parallel pass, read
+    [docs/agents/invariant-details.md](docs/agents/invariant-details.md#15-a-trees-buffers).
 
 16. **A bug fix states the rule it broke as a property, model or oracle
     test, and confirms that test fails on the pre-fix code.** Do the same
@@ -302,54 +254,10 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
 
 ## Where changes belong
 
-| change | where |
-| --- | --- |
-| bounded Unix SSH traversal | `crates/disktree-core/src/remote_walk.rs` |
-| SSH protocol, discovery and transport | `crates/disktree-core/src/remote.rs` |
-| joining, splitting or comparing a scanned path | `crates/disktree-core/src/path_style.rs` |
-| measurement, filtering, parallelism | `crates/disktree-core/src/scan.rs` |
-| what a node is, or a derived total | `crates/disktree-core/src/tree.rs` |
-| how a tree is held in memory, its buffers and parallel passes | `crates/disktree-core/src/index.rs` |
-| tile geometry, nesting, the merged tail | `crates/disktree-core/src/treemap.rs` |
-| anything that deletes, or refuses to | `crates/disktree-core/src/removal.rs` |
-| free space and projections | `crates/disktree-core/src/space.rs` |
-| the folder-level usage report and comparing two | `crates/disktree-core/src/usage_report.rs`, `usage_report/diff.rs`; the CLI in `crates/disktree-app/src/report_cli.rs`; the window's saved report (the chooser's box, File › Save Usage Report, and when a scan may leave one) in `crates/disktree-app/src/scan_report.rs`; the Usage History window in `crates/disktree-app/src/usage_history.rs`; format in `docs/usage-reports.md` |
-| what macOS lists and measures in bulk | `crates/disktree-core/src/macos.rs` — `unsafe` for `getattrlistbulk` |
-| what Windows lists, measures and compares differently | `crates/disktree-core/src/windows.rs` — `unsafe` for Win32 |
-| reading a whole NTFS drive from its file table | `crates/disktree-core/src/mft.rs` |
-| APFS clone hints and private-size system calls | `crates/disktree-core/src/macos.rs` — isolated `unsafe` |
-| clone sharing totals and conservative savings | `crates/disktree-core/src/sharing.rs` |
-| what git is asked about a checkout, when, and how many at once | `crates/disktree-app/src/git.rs` (the probe and its time limit), `crates/disktree-app/src/git_store.rs` (the queue, the bucket, the cache) |
-| a key, a screen transition, a mark | `crates/disktree-app/src/state.rs` |
-| what may be marked, Mark anyway, Review's over-limit confirmation | `crates/disktree-app/src/mark_guard.rs`, the settings in `safety.rs` |
-| cache cleanup: owners, proposals, decisions, per-path results | `crates/disktree-core/src/cleanup.rs` (model, allowlist), `crates/disktree-app/src/cleanup.rs` (window state), `cleanup_view.rs` (Review's proposals) |
-| Removing and Done: the run's list, its rows, following and running figures; the row anatomy Review shares | `crates/disktree-app/src/run_view.rs`, the model in `run_list.rs`, Review's `mark_row` in `views.rs` |
-| what the explore bar folds into ⋮ at each width, and ⋮'s keys | `crates/disktree-app/src/toolbar.rs` |
-| the legend as a filter: its chips and what they keep | `crates/disktree-app/src/legend.rs`, the rule in `crates/disktree-core/src/filter.rs` |
-| spacing, type and size | `crates/disktree-app/src/ui.rs` — tokens only, no `px` in layout |
-| the mosaic's painting or labels | `crates/disktree-app/src/treemap_view.rs` |
-| layout of a screen | `crates/disktree-app/src/views.rs` |
-| colours derived from the theme | `crates/disktree-app/src/palette.rs` |
-| the title strip, window controls, the client-side frame | `crates/disktree-app/src/chrome.rs` |
-| where the main window opens, and remembering it | `crates/disktree-app/src/window_frame.rs` |
-| which display a new window opens on | `crates/disktree-app/src/placement.rs` |
-| the menu bar, its shortcuts, the strip's menu off macOS | `crates/disktree-app/src/app_menu.rs`, the dropdown in `views.rs` |
-| Help's rows, Copy Diagnostics Info | `crates/disktree-app/src/help.rs`, the report in `diagnostics.rs` |
-| Settings (General, Updates, Safety, Agents (MCP), Diagnostics, About) | `crates/disktree-app/src/settings.rs` |
-| Changelog, License, Third-Party Notices, Logs windows | `doc_window.rs`, `logs_window.rs`, framed by `aux_window.rs` |
-| what goes in `main.log`, and where it lives | `crates/disktree-app/src/diag_log.rs` — never a scanned path |
-| `THIRD_PARTY_LICENSES` | `cargo xtask licenses` (cargo-about), then commit it; non-crate parts in `licenses/bundled.txt` |
-| the macOS icon, in any of its looks | `packaging/macos/` — the SVGs and `AppIcon.icon`, then `make dock-icons` |
-| checking, downloading and applying updates | `crates/disktree-app/src/updater.rs` |
-| what the window says about updates, and its notices: the toasts, the strip's ready chip | `crates/disktree-app/src/toasts.rs`, the chip in `views.rs` |
-| the MCP connect commands and the connected agent's status line | `crates/disktree-app/src/agent.rs` |
-| which release a release channel picks | `crates/disktree-app/src/update_channel.rs` |
-| release packaging, the DMG, `vpk` | `scripts/release/`, `xtask/src/bundle.rs`, `.github/workflows/release.yml` |
-| what an agent can ask of the window, and the answer | `crates/disktree-link/src/lib.rs` (messages), `crates/disktree-app/src/agent.rs` (handling) |
-| a tool, its parameters or its wording | `crates/disktree-mcp/src/server.rs` (the MCP surface), `crates/disktree-mcp/src/session.rs` (what it does) |
-| desktop MCP hosting and the opaque stdio relay | `crates/disktree-mcp/src/desktop.rs`; `crates/disktree-link/src/mcp_stream.rs` and `windows.rs` own the protected stream |
-| how a listing or a plan reads to an agent | `crates/disktree-mcp/src/report.rs` |
-| what an agent is told to do, and to avoid | `skills/` (each system's cautions in `skills/pwrdisk-free-space/references/`), listed in `crates/disktree-mcp/src/skills.rs` |
+A table maps each kind of change (core, scan, SSH, removal, platforms,
+screens, settings, MCP, packaging and release) to the file that owns it.
+Before adding code, or when unsure which file owns a behavior, read
+[docs/agents/where-changes-belong.md](docs/agents/where-changes-belong.md).
 
 ## Verification expectations
 
@@ -395,10 +303,10 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
   operator and wait for approval before attaching it.
 * **Titles are Conventional Commits:** `type(scope): what changed`, in the
   imperative, as the Pwr family's other repositories do. Scopes follow the
-  table above: `core`, `scan`, `ssh`, `removal`, `macos`, `windows`, `app`,
-  `ci`, `release`, `docs`. A port of an upstream PR says so in the title,
-  `(port of tobi/disktree#N)`, and keeps the upstream commits and their
-  authorship.
+  [table of owners](docs/agents/where-changes-belong.md): `core`, `scan`,
+  `ssh`, `removal`, `macos`, `windows`, `app`, `ci`, `release`, `docs`. A
+  port of an upstream PR says so in the title, `(port of tobi/disktree#N)`,
+  and keeps the upstream commits and their authorship.
 * **Don't edit `CHANGELOG.md` in feature or fix PRs.** Every open PR that
   adds a line conflicts with every other one. Put the user-facing summary in
   the PR body; one release commit (`chore(release): vX.Y.Z`) writes the
@@ -434,3 +342,8 @@ in the smallest scope that needs it. Long procedures go in `docs/` with a
 one-line pointer here that says when to read them. Every `AGENTS.md` has a
 sibling `CLAUDE.md` symlink (`ln -s AGENTS.md CLAUDE.md`), so Codex and
 Claude read one file.
+
+Keep this file under 24 KiB: `cargo xtask lint` checks it, as does
+`node scripts/ci/check-agent-instructions-size.cjs` in CI's classifier.
+Codex silently drops AGENTS.md text past 32 KiB. Put detail in a linked
+document under `docs/agents/` and leave a line here saying when to read it.

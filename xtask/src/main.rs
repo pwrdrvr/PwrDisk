@@ -6,6 +6,7 @@
 //! anything: it reports the diff and fails, so a red local run is the same
 //! signal CI gives.
 
+mod agents_size;
 mod bundle;
 mod licenses;
 mod portable;
@@ -17,7 +18,8 @@ const USAGE: &str = "\
 usage: cargo xtask <task>
 
 tasks:
-  lint      fmt --check, then clippy over the workspace with -D warnings
+  lint      the root AGENTS.md's size, fmt --check, then clippy over the
+            workspace with -D warnings
   fmt       rustfmt --check over the workspace
   fmt-fix   rustfmt in place
   clippy    clippy --workspace --all-targets -- -D warnings
@@ -43,12 +45,12 @@ fn main() -> ExitCode {
     let task = args.first().map_or("lint", String::as_str);
 
     let outcome = match task {
-        "lint" => fmt(false).and_then(|()| clippy()),
+        "lint" => lint(),
         "fmt" => fmt(false),
         "fmt-fix" => fmt(true),
         "clippy" => clippy(),
         "test" => test(),
-        "ci" => fmt(false).and_then(|()| clippy()).and_then(|()| test()),
+        "ci" => lint().and_then(|()| test()),
         "bundle" => bundle::bundle(&args[1..]),
         "release-check" => release::check(&args[1..]),
         "portable" => portable::build(),
@@ -70,6 +72,12 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn lint() -> Result<(), String> {
+    // First, as it is instant and needs no build.
+    agents_size::check_root()?;
+    fmt(false).and_then(|()| clippy())
 }
 
 fn fmt(fix: bool) -> Result<(), String> {

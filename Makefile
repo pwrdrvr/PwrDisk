@@ -60,7 +60,7 @@ help:
 	@echo "  make bundle      macOS: build target/bundle/PwrDisk.app, zip and DMG"
 	@echo "  make dock-icons  macOS 26: redraw the Dock icon of an unbundled run"
 	@echo "  make uninstall   remove what install put there"
-	@echo "  make lint        rustfmt --check and clippy -D warnings"
+	@echo "  make lint        AGENTS.md size, rustfmt --check, clippy -D warnings"
 	@echo "  make test        core and window-harness tests"
 	@echo "  make test-ssh    real localhost SSH tests (Linux: bun, openssh)"
 	@echo "  make ci          lint, then test"
