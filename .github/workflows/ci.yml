@@ -245,6 +245,18 @@ jobs:
       - name: Test deadline model
         run: node --test scripts/ci/test-budgets.test.cjs
 
+      # Docs-only PRs skip the lint jobs, so the root AGENTS.md size guard
+      # runs here, where every PR and push passes through. Last, so it
+      # cannot hide the tests above. Failing it fails this job, and a
+      # failed classifier runs every lint job (see their `if:`), where
+      # `cargo xtask lint` fails on its own copy of the check: a skipped
+      # job would count as a passed required check, a failed one cannot.
+      - name: Test the AGENTS.md size check
+        run: node --test scripts/ci/check-agent-instructions-size.test.cjs
+
+      - name: Check root AGENTS.md size
+        run: node scripts/ci/check-agent-instructions-size.cjs
+
   licenses:
     name: Check third-party licenses
     runs-on: ubuntu-24.04
