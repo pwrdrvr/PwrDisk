@@ -302,9 +302,9 @@ Before adding code, or when unsure which file owns a behavior, read
 * **Titles are Conventional Commits:** `type(scope): what changed`, in the
   imperative, as the Pwr family's other repositories do. Scopes follow the
   [table of owners](docs/agents/where-changes-belong.md): `core`, `scan`,
-  `ssh`, `removal`, `macos`, `windows`, `app`, `ci`, `release`, `docs`. A port of an upstream PR says so in the title,
-  `(port of tobi/disktree#N)`, and keeps the upstream commits and their
-  authorship.
+  `ssh`, `removal`, `macos`, `windows`, `app`, `ci`, `release`, `docs`. A
+  port of an upstream PR says so in the title, `(port of tobi/disktree#N)`,
+  and keeps the upstream commits and their authorship.
 * **Don't edit `CHANGELOG.md` in feature or fix PRs.** Every open PR that
   adds a line conflicts with every other one. Put the user-facing summary in
   the PR body; one release commit (`chore(release): vX.Y.Z`) writes the
