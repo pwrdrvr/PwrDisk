@@ -34,7 +34,10 @@ test('the default limit is 24 KiB, both sides of it', () => {
 // one place only would let the local gate and CI disagree.
 test("xtask's copy of the limit is the same", () => {
   const rust = readFileSync(join(__dirname, '../../xtask/src/agents_size.rs'), 'utf8');
-  const declared = rust.match(/pub const ROOT_AGENTS_MD_MAX_BYTES: u64 = (\d+) \* (\d+);/);
+  // A product of integer literals, such as `24 * 1024` or `24_576`.
+  const declared = rust.match(/pub const ROOT_AGENTS_MD_MAX_BYTES: u64 =\s*([\d_]+(?:\s*\*\s*[\d_]+)*);/);
   assert.ok(declared, 'xtask/src/agents_size.rs: missing ROOT_AGENTS_MD_MAX_BYTES');
-  assert.equal(Number(declared[1]) * Number(declared[2]), ROOT_AGENTS_MD_MAX_BYTES);
+  const value = declared[1].split('*')
+    .reduce((product, factor) => product * Number(factor.replace(/[_\s]/g, '')), 1);
+  assert.equal(value, ROOT_AGENTS_MD_MAX_BYTES);
 });

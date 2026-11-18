@@ -38,7 +38,7 @@ make install PREFIX=/usr/local  # system-wide (needs root)
 make uninstall
 make bundle                     # macOS: target/bundle/PwrDisk.app, zip and DMG
 make dock-icons                 # macOS 26: redraw the Dock icon of an unbundled run
-make lint                       # rustfmt --check, then clippy --all-targets -D warnings
+make lint                       # AGENTS.md size, rustfmt --check, clippy -D warnings
 make test                       # core and window-harness tests
 make ci                         # lint, then test
 make fmt                        # format in place
@@ -203,9 +203,10 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
     raises an agent's removal. `mark_guard.rs` holds the rule.
     Trash never falls back to permanent deletion. No headless or SSH removal.
     Cache cleanup runs only for a cache PwrDisk positively recognizes and
-    whose owner has a command here, decided per marked path; owner approval
-    never approves deleting files, and a failed owner command never falls
-    back to it. Before changing what is recognized or how cleanup is
+    whose owner has a command here; what only looks like a cache is an
+    ordinary removal. It is decided per marked path, Skip by default; owner
+    approval never approves deleting files, and a failed owner command never
+    falls back to it. Before changing what is recognized or how cleanup is
     decided, read
     [docs/agents/invariant-details.md](docs/agents/invariant-details.md#12-cache-cleanup)
     and `docs/owner-cleanup.md`.
@@ -236,8 +237,8 @@ or `cargo run` to look at a change. The window-harness tests (`make test`,
 
 15. **A tree owns a handful of buffers, by index.** Nodes live in one
     vector, each directory's children a contiguous run of it; a record is
-    never changed in place, and a finished tree keeps every subtree one
-    contiguous run. Before changing `index.rs`, its records, how a tree is
+    never changed in place, a subtree moves to another tree only as a copy,
+    and a finished tree keeps every subtree one contiguous run. Before changing `index.rs`, its records, how a tree is
     built or read, or a parallel pass, read
     [docs/agents/invariant-details.md](docs/agents/invariant-details.md#15-a-trees-buffers).
 
