@@ -1,0 +1,55 @@
+import concurrent.futures,hashlib,json,os,pathlib,subprocess,time
+ROOT=pathlib.Path(__file__).resolve().parent
+WORKSPACE=ROOT.parent.parent
+CARGO_ENV={k:os.environ[k] for k in ('HOME','PATH','USER','LOGNAME','LANG','LC_ALL','SDKROOT','DEVELOPER_DIR','MACOSX_DEPLOYMENT_TARGET','RUSTUP_HOME','CARGO_HOME') if k in os.environ}
+CARGO_ENV.update(TMPDIR=str(ROOT/'tmp'),CARGO_BUILD_JOBS='2')
+BLAZE_ENV=json.loads((ROOT/'logs/canary-helper.json').read_text())['environment']
+BLAZE_ENV['BLAZE_STATS']='1'
+BLAZE=next((ROOT/'canary-bin').glob('*/blaze')).resolve()
+ROWS=[]
+if (ROOT/'logs/bench.json').exists():ROWS=json.loads((ROOT/'logs/bench.json').read_text())
+
+def run(name,tool,workspace=WORKSPACE,lane=1):
+    env=(CARGO_ENV if tool=='cargo' else BLAZE_ENV).copy()
+    target=ROOT/f'{tool}-target-{lane}' if tool=='cargo' or lane==2 else ROOT/'canary-target'
+    env['CARGO_TARGET_DIR']=str(target)
+    cmd=[('cargo' if tool=='cargo' else str(BLAZE)),'build','--offline','--locked','-p','disktree-scan']
+    s=os.statvfs(ROOT)
+    assert s.f_bavail*s.f_frsize>=90*1024**3,'free-space floor'
+    start=time.monotonic()
+    with (ROOT/'logs'/f'{name}.log').open('w') as log:
+        p=subprocess.run(cmd,env=env,cwd=workspace,stdout=log,stderr=log,timeout=300)
+    elapsed=time.monotonic()-start
+    binary=target/'debug/disktree-scan'
+    help_result=subprocess.run([str(binary),'--help'],capture_output=True,text=True,timeout=20) if p.returncode==0 and binary.exists() else None
+    row={'name':name,'tool':tool,'lane':lane,'exit':p.returncode,'wall_seconds':round(elapsed,3),'binary_exists':binary.exists(),'help_exit':help_result.returncode if help_result else None,'help_stdout':help_result.stdout if help_result else None,'binary_bytes':binary.stat().st_size if binary.exists() else None,'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest() if binary.exists() else None}
+    ROWS[:] = [old for old in ROWS if old['name'] != name]
+    ROWS.append(row)
+    # Concurrent callers append distinct rows under the GIL; only save after pair.
+    print({k:row[k] for k in ('name','exit','wall_seconds','help_exit','binary_bytes')},flush=True)
+    if p.returncode or help_result is None or help_result.returncode:raise RuntimeError(row)
+    return row
+
+def save(): (ROOT/'logs/bench.json').write_text(json.dumps(ROWS,indent=2)+'\n')
+
+if __name__=='__main__':
+    source=WORKSPACE/'crates/disktree-scan/src/main.rs'
+    original=source.read_bytes()
+    old=b'disktree-scan \xe2\x80\x94 read-only SSH scan helper\\n'
+    new=b'disktree-scan \xe2\x80\x94 read-only SSH scan helper (benchmark edit)\\n'
+    assert original.count(old)==1
+    cold=next((row for row in ROWS if row['name']=='cargo-helper-cold'),None)
+    expected=(cold if cold is not None else run('cargo-helper-cold','cargo'))['help_stdout'];save()
+    for i in range(3):
+        assert run(f'cargo-helper-warm-{i+1}','cargo')['help_stdout']==expected;save()
+        assert run(f'canary-helper-warm-{i+1}','blaze')['help_stdout']==expected;save()
+    try:
+        source.write_bytes(original.replace(old,new))
+        for tool in ('cargo','blaze'):
+            result=run(f'{tool}-helper-edit',tool);save()
+            assert result['help_stdout']==expected.replace('scan helper\n','scan helper (benchmark edit)\n')
+    finally:
+        source.write_bytes(original)
+    for tool in ('cargo','blaze'):
+        assert run(f'{tool}-helper-restore',tool)['help_stdout']==expected;save()
+    (ROOT/'logs/benchmark-environments.json').write_text(json.dumps({'cargo':CARGO_ENV,'blaze':BLAZE_ENV},indent=2)+'\n')

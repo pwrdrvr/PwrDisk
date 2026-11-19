@@ -1,0 +1,923 @@
+{
+  "date_local": "2026-11-08 America/New_York",
+  "metadata_checked_at_utc": "2026-11-09T03:02:51.965986Z",
+  "host": {
+    "os": "macOS 27.2",
+    "build": "26B123",
+    "arch": "arm64"
+  },
+  "inputs": {
+    "pwrdisk_commit": "bed9b0c6f5a07a0e5586106f26758b04e18ec84d",
+    "available_bytes_at_start": 140083200000,
+    "source_sha256": {
+      "Cargo.toml": "a962b9ad28dcb1b9b18d0dee8a4d3860d14d3795f2d2d6226c5f3881d32dd309",
+      "Cargo.lock": "c479f469ba5757cfdaa3e6ffcad435ab5b12c607d78faa5aee98eca3d781d8a5",
+      "rust-toolchain.toml": "d884a4c3415015cf198ef59946c315a9781679f1f9c2926a7c668f4d27cb6126",
+      ".cargo/config.toml": "783fdc447abb5b8f8b5652157aa9ede64da640813fa89679c29c5251c8e0cbe6",
+      "crates/disktree-scan/src/main.rs": "8f1b92f1beb772d6cb17a2133d36e54512d8a78484e8b40361bb201a80c1eae5"
+    },
+    "inherited_build_controls": {}
+  },
+  "probes": [
+    {
+      "name": "stable-toolchain",
+      "command": [
+        "${WORKSPACE}/target/blaze-recheck/stable-bin/blaze-v0.20261027.0-aarch64-apple-darwin/blaze",
+        "toolchain"
+      ],
+      "exit": 0,
+      "wall_seconds": 6.097,
+      "stopped_by": null,
+      "peak_sampled_allocated_bytes": 0,
+      "environment": {
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TMPDIR": "${WORKSPACE}/target/blaze-recheck/tmp",
+        "CARGO_BUILD_JOBS": "2",
+        "BLAZE_HOME": "${WORKSPACE}/target/bs",
+        "BLAZE_CACHE": "${WORKSPACE}/target/blaze-recheck/stable-store",
+        "BLAZE_CACHE_MAX": "512M",
+        "BLAZE_REMOTE": "",
+        "BLAZE_IDLE_SECS": "60",
+        "BLAZE_MEMORY_MAX": "4G",
+        "BLAZE_SPARE": "0",
+        "CARGO_TARGET_DIR": "${WORKSPACE}/target/blaze-recheck/stable-target"
+      }
+    },
+    {
+      "name": "canary-helper",
+      "command": [
+        "${WORKSPACE}/target/blaze-recheck/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+        "build",
+        "--locked",
+        "-p",
+        "disktree-scan"
+      ],
+      "exit": 0,
+      "wall_seconds": 142.914,
+      "stopped_by": null,
+      "peak_sampled_allocated_bytes": 9163055104,
+      "environment": {
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TMPDIR": "${WORKSPACE}/target/blaze-recheck/tmp",
+        "CARGO_BUILD_JOBS": "2",
+        "XDG_CACHE_HOME": "${WORKSPACE}/target/blaze-recheck/user-home/cache",
+        "BLAZE_HOME": "${WORKSPACE}/target/bv",
+        "BLAZE_DAEMON_MEMORY_GB": "4",
+        "BLAZE_CORES": "2",
+        "CARGO_TARGET_DIR": "${WORKSPACE}/target/blaze-recheck/canary-target"
+      }
+    },
+    {
+      "name": "canary-status",
+      "command": [
+        "${WORKSPACE}/target/blaze-recheck/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+        "status"
+      ],
+      "exit": 0,
+      "wall_seconds": 0.507,
+      "stopped_by": null,
+      "peak_sampled_allocated_bytes": 0,
+      "environment": {
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TMPDIR": "${WORKSPACE}/target/blaze-recheck/tmp",
+        "CARGO_BUILD_JOBS": "2",
+        "XDG_CACHE_HOME": "${WORKSPACE}/target/blaze-recheck/user-home/cache",
+        "BLAZE_HOME": "${WORKSPACE}/target/bv",
+        "BLAZE_DAEMON_MEMORY_GB": "4",
+        "BLAZE_CORES": "2",
+        "CARGO_TARGET_DIR": "${WORKSPACE}/target/blaze-recheck/canary-target"
+      }
+    },
+    {
+      "name": "canary-stop",
+      "command": [
+        "${WORKSPACE}/target/blaze-recheck/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+        "stop"
+      ],
+      "exit": 0,
+      "wall_seconds": 2.039,
+      "stopped_by": null,
+      "peak_sampled_allocated_bytes": 0,
+      "environment": {
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TMPDIR": "${WORKSPACE}/target/blaze-recheck/tmp",
+        "CARGO_BUILD_JOBS": "2",
+        "XDG_CACHE_HOME": "${WORKSPACE}/target/blaze-recheck/user-home/cache",
+        "BLAZE_HOME": "${WORKSPACE}/target/bv",
+        "BLAZE_DAEMON_MEMORY_GB": "4",
+        "BLAZE_CORES": "2",
+        "CARGO_TARGET_DIR": "${WORKSPACE}/target/blaze-recheck/canary-target"
+      }
+    },
+    {
+      "name": "canary-stopped-status",
+      "command": [
+        "${WORKSPACE}/target/blaze-recheck/canary-bin/blaze-v0.20261105.4-aarch64-apple-darwin/blaze",
+        "status"
+      ],
+      "exit": 0,
+      "wall_seconds": 0.512,
+      "stopped_by": null,
+      "peak_sampled_allocated_bytes": 0,
+      "environment": {
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TMPDIR": "${WORKSPACE}/target/blaze-recheck/tmp",
+        "CARGO_BUILD_JOBS": "2",
+        "XDG_CACHE_HOME": "${WORKSPACE}/target/blaze-recheck/user-home/cache",
+        "BLAZE_HOME": "${WORKSPACE}/target/bv",
+        "BLAZE_DAEMON_MEMORY_GB": "4",
+        "BLAZE_CORES": "2",
+        "CARGO_TARGET_DIR": "${WORKSPACE}/target/blaze-recheck/canary-target"
+      }
+    }
+  ],
+  "benchmarks": [
+    {
+      "name": "cargo-helper-cold",
+      "tool": "cargo",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 41.029,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 1056192,
+      "binary_sha256": "b4fa48a3bacdeea56bfde5a101b8001169170f18720a7551987e3ea25940ae36"
+    },
+    {
+      "name": "cargo-helper-warm-1",
+      "tool": "cargo",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 0.203,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 1056192,
+      "binary_sha256": "b4fa48a3bacdeea56bfde5a101b8001169170f18720a7551987e3ea25940ae36"
+    },
+    {
+      "name": "canary-helper-warm-1",
+      "tool": "blaze",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 45.718,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 172048432,
+      "binary_sha256": "89040b0cb301e6c59dd8ef67f6e3fb00427cda557352b1a1e50b7793efbb7cd6"
+    },
+    {
+      "name": "cargo-helper-warm-2",
+      "tool": "cargo",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 0.481,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 1056192,
+      "binary_sha256": "b4fa48a3bacdeea56bfde5a101b8001169170f18720a7551987e3ea25940ae36"
+    },
+    {
+      "name": "canary-helper-warm-2",
+      "tool": "blaze",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 2.528,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 172048432,
+      "binary_sha256": "89040b0cb301e6c59dd8ef67f6e3fb00427cda557352b1a1e50b7793efbb7cd6"
+    },
+    {
+      "name": "cargo-helper-warm-3",
+      "tool": "cargo",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 0.313,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 1056192,
+      "binary_sha256": "b4fa48a3bacdeea56bfde5a101b8001169170f18720a7551987e3ea25940ae36"
+    },
+    {
+      "name": "canary-helper-warm-3",
+      "tool": "blaze",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 2.515,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 172048432,
+      "binary_sha256": "89040b0cb301e6c59dd8ef67f6e3fb00427cda557352b1a1e50b7793efbb7cd6"
+    },
+    {
+      "name": "cargo-helper-edit",
+      "tool": "cargo",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 1.845,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper (benchmark edit)\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 1056192,
+      "binary_sha256": "a678c77cf816892b4985c4497d9a81766f994db4c94ef78571a775fb0cd1711b"
+    },
+    {
+      "name": "blaze-helper-edit",
+      "tool": "blaze",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 7.981,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper (benchmark edit)\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 172048448,
+      "binary_sha256": "59afa822ec9ef0292a4988f30c3dc87b32f4e95c7cdd8dc9b7abc19ab2edd9e4"
+    },
+    {
+      "name": "cargo-helper-restore",
+      "tool": "cargo",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 0.604,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 1056192,
+      "binary_sha256": "a792718e7f7ccc4c0b833ff7f29e03b9ffdbd8e12ffa240f8492cd4a42d46e6b"
+    },
+    {
+      "name": "blaze-helper-restore",
+      "tool": "blaze",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 3.931,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 172048432,
+      "binary_sha256": "89040b0cb301e6c59dd8ef67f6e3fb00427cda557352b1a1e50b7793efbb7cd6"
+    },
+    {
+      "name": "blaze-worktree2-first",
+      "tool": "blaze",
+      "lane": 2,
+      "exit": 0,
+      "wall_seconds": 92.448,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 172114480,
+      "binary_sha256": "5e9a4d1de292bca6328ca914185e39199a5f859ae9a7e560165f70c48425e4fa"
+    },
+    {
+      "name": "cargo-worktree2-first",
+      "tool": "cargo",
+      "lane": 2,
+      "exit": 0,
+      "wall_seconds": 36.24,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 1058640,
+      "binary_sha256": "6f68680fef44e27d97f9c7e395cfd3d42e247cc837eb95ee61ca9165b9496033"
+    },
+    {
+      "name": "cargo-concurrent-lane-2",
+      "tool": "cargo",
+      "lane": 2,
+      "exit": 0,
+      "wall_seconds": 0.681,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper (lane 2)\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 1058640,
+      "binary_sha256": "12aca28404abdbe92ca56ed953e0c53d0058ba53f64745463e7008ad824e5c0f"
+    },
+    {
+      "name": "cargo-concurrent-lane-1",
+      "tool": "cargo",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 0.783,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper (lane 1)\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 1056192,
+      "binary_sha256": "68cf4b6210a379fc70929a532231d72ab823f7871e0e74f04e261eb348b8fb51"
+    },
+    {
+      "name": "blaze-concurrent-lane-2",
+      "tool": "blaze",
+      "lane": 2,
+      "exit": 0,
+      "wall_seconds": 80.87,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper (lane 2)\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 172114496,
+      "binary_sha256": "f3a2e9dc5aba64eadaa4b617aa680c7f2eb2b38d31a882d550349bf3d1e191ed"
+    },
+    {
+      "name": "blaze-concurrent-lane-1",
+      "tool": "blaze",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 80.765,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper (lane 1)\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 172048432,
+      "binary_sha256": "6523d2b2754cdfeeeb363acd1ce9fc5c0656b3283767cb2938d55c36e72e8ba3"
+    },
+    {
+      "name": "cargo-final-restore-lane-1",
+      "tool": "cargo",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 1.498,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 1056192,
+      "binary_sha256": "1bc86b96f1dedc6272447f9cb3a9ea3085712022aee1edfe0848883663a4f872"
+    },
+    {
+      "name": "blaze-final-restore-lane-1",
+      "tool": "blaze",
+      "lane": 1,
+      "exit": 0,
+      "wall_seconds": 7.986,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 172048432,
+      "binary_sha256": "89040b0cb301e6c59dd8ef67f6e3fb00427cda557352b1a1e50b7793efbb7cd6"
+    },
+    {
+      "name": "cargo-final-restore-lane-2",
+      "tool": "cargo",
+      "lane": 2,
+      "exit": 0,
+      "wall_seconds": 1.447,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 1058640,
+      "binary_sha256": "4061ed883210f4d7fd1c1db1ec80efa99f08ad7e7da8d2a1b4309a2259d1489c"
+    },
+    {
+      "name": "blaze-final-restore-lane-2",
+      "tool": "blaze",
+      "lane": 2,
+      "exit": 0,
+      "wall_seconds": 40.64,
+      "binary_exists": true,
+      "help_exit": 0,
+      "help_stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+      "binary_bytes": 172114480,
+      "binary_sha256": "5e9a4d1de292bca6328ca914185e39199a5f859ae9a7e560165f70c48425e4fa"
+    }
+  ],
+  "canary_help": {
+    "exit": 0,
+    "wall_seconds": 1.251,
+    "stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+    "stderr": "",
+    "bytes": 172048432,
+    "sha256": "89040b0cb301e6c59dd8ef67f6e3fb00427cda557352b1a1e50b7793efbb7cd6"
+  },
+  "canary_protocol": {
+    "exit": 0,
+    "wall_seconds": 0.148,
+    "stderr": "",
+    "line_count": 4,
+    "fixture_records": [
+      [
+        "data",
+        1,
+        5,
+        1,
+        1794193852,
+        false,
+        0
+      ],
+      [
+        "root",
+        0,
+        0,
+        0,
+        0,
+        false,
+        1
+      ]
+    ],
+    "expected_data_record_present": true,
+    "input_unchanged": true
+  },
+  "checks": [
+    {
+      "name": "helper-stdio-tests",
+      "exit": 0,
+      "wall_seconds": 2.163
+    },
+    {
+      "name": "lint",
+      "exit": 0,
+      "wall_seconds": 258.656
+    }
+  ],
+  "snapshots": {
+    "before-worktree2": {
+      "areas": [
+        {
+          "path": "blaze-recheck",
+          "logical_bytes": 3656290688,
+          "allocated_bytes": 3660820480,
+          "files": 1664,
+          "symlinks_not_followed": 0
+        },
+        {
+          "path": "bs",
+          "logical_bytes": 660071972,
+          "allocated_bytes": 670064640,
+          "files": 4020,
+          "symlinks_not_followed": 0
+        },
+        {
+          "path": "bv",
+          "logical_bytes": 6522146773,
+          "allocated_bytes": 6660669440,
+          "files": 50295,
+          "symlinks_not_followed": 2
+        }
+      ],
+      "logical_bytes": 10838509433,
+      "allocated_bytes": 10991554560,
+      "available_bytes": 127795200000
+    },
+    "worktree2-source-only": {
+      "areas": [
+        {
+          "path": "blaze-recheck",
+          "logical_bytes": 3664180552,
+          "allocated_bytes": 3669385216,
+          "files": 1958,
+          "symlinks_not_followed": 1
+        },
+        {
+          "path": "bs",
+          "logical_bytes": 660071972,
+          "allocated_bytes": 670064640,
+          "files": 4020,
+          "symlinks_not_followed": 0
+        },
+        {
+          "path": "bv",
+          "logical_bytes": 6522624682,
+          "allocated_bytes": 6661214208,
+          "files": 50333,
+          "symlinks_not_followed": 2
+        }
+      ],
+      "logical_bytes": 10846877206,
+      "allocated_bytes": 11000664064,
+      "available_bytes": 128113561600
+    },
+    "after-blaze-worktree2": {
+      "areas": [
+        {
+          "path": "blaze-recheck",
+          "logical_bytes": 6129454478,
+          "allocated_bytes": 6138535936,
+          "files": 2222,
+          "symlinks_not_followed": 1
+        },
+        {
+          "path": "bs",
+          "logical_bytes": 660071972,
+          "allocated_bytes": 670064640,
+          "files": 4020,
+          "symlinks_not_followed": 0
+        },
+        {
+          "path": "bv",
+          "logical_bytes": 9290635869,
+          "allocated_bytes": 9419292672,
+          "files": 50406,
+          "symlinks_not_followed": 2
+        }
+      ],
+      "logical_bytes": 16080162319,
+      "allocated_bytes": 16227893248,
+      "available_bytes": 125329154048
+    },
+    "after-cargo-worktree2": {
+      "areas": [
+        {
+          "path": "blaze-recheck",
+          "logical_bytes": 6425708063,
+          "allocated_bytes": 6437834752,
+          "files": 3388,
+          "symlinks_not_followed": 1
+        },
+        {
+          "path": "bs",
+          "logical_bytes": 660071972,
+          "allocated_bytes": 670064640,
+          "files": 4020,
+          "symlinks_not_followed": 0
+        },
+        {
+          "path": "bv",
+          "logical_bytes": 9290694103,
+          "allocated_bytes": 9419296768,
+          "files": 50378,
+          "symlinks_not_followed": 2
+        }
+      ],
+      "logical_bytes": 16376474138,
+      "allocated_bytes": 16527196160,
+      "available_bytes": 125027082240
+    },
+    "after-concurrency": {
+      "areas": [
+        {
+          "path": "blaze-recheck",
+          "logical_bytes": 6424252039,
+          "allocated_bytes": 6433288192,
+          "files": 3394,
+          "symlinks_not_followed": 1
+        },
+        {
+          "path": "bs",
+          "logical_bytes": 660071972,
+          "allocated_bytes": 670064640,
+          "files": 4020,
+          "symlinks_not_followed": 0
+        },
+        {
+          "path": "bv",
+          "logical_bytes": 9392208983,
+          "allocated_bytes": 9532801024,
+          "files": 50492,
+          "symlinks_not_followed": 2
+        }
+      ],
+      "logical_bytes": 16476532994,
+      "allocated_bytes": 16636153856,
+      "available_bytes": 122669559808
+    },
+    "final-before-cleanup": {
+      "areas": [
+        {
+          "path": "blaze-recheck",
+          "logical_bytes": 7759915342,
+          "allocated_bytes": 7785254912,
+          "files": 7675,
+          "symlinks_not_followed": 1
+        },
+        {
+          "path": "bs",
+          "logical_bytes": 660071972,
+          "allocated_bytes": 670064640,
+          "files": 4020,
+          "symlinks_not_followed": 0
+        },
+        {
+          "path": "bv",
+          "logical_bytes": 8835031918,
+          "allocated_bytes": 8963280896,
+          "files": 50538,
+          "symlinks_not_followed": 2
+        }
+      ],
+      "logical_bytes": 17255019232,
+      "allocated_bytes": 17418600448,
+      "available_bytes": 121651200000
+    }
+  },
+  "final_components": {
+    "areas": [
+      {
+        "path": "blaze-recheck/OWNER.txt",
+        "logical_bytes": 109,
+        "allocated_bytes": 4096,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/__pycache__",
+        "logical_bytes": 14729,
+        "allocated_bytes": 16384,
+        "files": 2
+      },
+      {
+        "path": "blaze-recheck/apfs-probe",
+        "logical_bytes": 33720,
+        "allocated_bytes": 36864,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/apfs-probe.c",
+        "logical_bytes": 1792,
+        "allocated_bytes": 4096,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/bench.py",
+        "logical_bytes": 3569,
+        "allocated_bytes": 4096,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/blaze-target-2",
+        "logical_bytes": 2458674943,
+        "allocated_bytes": 2459451392,
+        "files": 247
+      },
+      {
+        "path": "blaze-recheck/blaze-v0.20261027.0-aarch64-apple-darwin.tar.gz",
+        "logical_bytes": 62622556,
+        "allocated_bytes": 62623744,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/blaze-v0.20261105.4-aarch64-apple-darwin.tar.gz",
+        "logical_bytes": 154151309,
+        "allocated_bytes": 154152960,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/canary-bin",
+        "logical_bytes": 488476299,
+        "allocated_bytes": 488488960,
+        "files": 6
+      },
+      {
+        "path": "blaze-recheck/canary-target",
+        "logical_bytes": 2458427870,
+        "allocated_bytes": 2459217920,
+        "files": 247
+      },
+      {
+        "path": "blaze-recheck/cargo-target-1",
+        "logical_bytes": 1636650030,
+        "allocated_bytes": 1655918592,
+        "files": 5441
+      },
+      {
+        "path": "blaze-recheck/cargo-target-2",
+        "logical_bytes": 301117772,
+        "allocated_bytes": 304119808,
+        "files": 1172
+      },
+      {
+        "path": "blaze-recheck/check_protocol.py",
+        "logical_bytes": 1482,
+        "allocated_bytes": 4096,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/clone-oracle-copy",
+        "logical_bytes": 65536,
+        "allocated_bytes": 65536,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/clone-oracle-original",
+        "logical_bytes": 65536,
+        "allocated_bytes": 65536,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/fixture",
+        "logical_bytes": 5,
+        "allocated_bytes": 4096,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/inputs.json",
+        "logical_bytes": 639,
+        "allocated_bytes": 4096,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/logs",
+        "logical_bytes": 103025,
+        "allocated_bytes": 253952,
+        "files": 49
+      },
+      {
+        "path": "blaze-recheck/previous-report.md",
+        "logical_bytes": 20699,
+        "allocated_bytes": 24576,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/probe.py",
+        "logical_bytes": 4441,
+        "allocated_bytes": 8192,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/snapshot.py",
+        "logical_bytes": 1121,
+        "allocated_bytes": 4096,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/stable-bin",
+        "logical_bytes": 188733691,
+        "allocated_bytes": 188760064,
+        "files": 11
+      },
+      {
+        "path": "blaze-recheck/tmp",
+        "logical_bytes": 3093,
+        "allocated_bytes": 4096,
+        "files": 1
+      },
+      {
+        "path": "blaze-recheck/upstream",
+        "logical_bytes": 1302645,
+        "allocated_bytes": 1339392,
+        "files": 19
+      },
+      {
+        "path": "blaze-recheck/user-home",
+        "logical_bytes": 1557387,
+        "allocated_bytes": 2129920,
+        "files": 175
+      },
+      {
+        "path": "blaze-recheck/worktree2",
+        "logical_bytes": 7880052,
+        "allocated_bytes": 8548352,
+        "files": 291
+      },
+      {
+        "path": "blaze-recheck/worktrees.py",
+        "logical_bytes": 1900,
+        "allocated_bytes": 4096,
+        "files": 1
+      },
+      {
+        "path": "bs",
+        "logical_bytes": 660071972,
+        "allocated_bytes": 670064640,
+        "files": 4020
+      },
+      {
+        "path": "bv",
+        "logical_bytes": 8835031918,
+        "allocated_bytes": 8963280896,
+        "files": 50538
+      }
+    ],
+    "new_worktree_git_metadata": {
+      "logical_bytes": 32454,
+      "allocated_bytes": 53248
+    },
+    "source_hashes_restored": {
+      "Cargo.toml": true,
+      "Cargo.lock": true,
+      "rust-toolchain.toml": true,
+      ".cargo/config.toml": true,
+      "crates/disktree-scan/src/main.rs": true
+    }
+  },
+  "apfs_samples": [
+    {
+      "name": "oracle-original",
+      "query_exit": 0,
+      "logical_bytes": 65536,
+      "stat_allocated_bytes": 65536,
+      "query": {
+        "inode": 462538507,
+        "data_allocation": 65536,
+        "private_bytes": 0,
+        "real_device": 16777230,
+        "clone_id": 462538507
+      }
+    },
+    {
+      "name": "oracle-clone",
+      "query_exit": 0,
+      "logical_bytes": 65536,
+      "stat_allocated_bytes": 65536,
+      "query": {
+        "inode": 462538508,
+        "data_allocation": 65536,
+        "private_bytes": 0,
+        "real_device": 16777230,
+        "clone_id": 462538507
+      }
+    },
+    {
+      "name": "blaze-worktree1",
+      "query_exit": 0,
+      "logical_bytes": 172048432,
+      "stat_allocated_bytes": 172052480,
+      "query": {
+        "inode": 462533931,
+        "data_allocation": 172052480,
+        "private_bytes": 0,
+        "real_device": 16777230,
+        "clone_id": 462533922
+      }
+    },
+    {
+      "name": "blaze-worktree2",
+      "query_exit": 0,
+      "logical_bytes": 172114480,
+      "stat_allocated_bytes": 172118016,
+      "query": {
+        "inode": 462534883,
+        "data_allocation": 172118016,
+        "private_bytes": 0,
+        "real_device": 16777230,
+        "clone_id": 462534865
+      }
+    },
+    {
+      "name": "cargo-worktree1",
+      "query_exit": 0,
+      "logical_bytes": 1056192,
+      "stat_allocated_bytes": 1056768,
+      "query": {
+        "inode": 462535225,
+        "data_allocation": 1056768,
+        "private_bytes": 0,
+        "real_device": 16777230,
+        "clone_id": 462533699
+      }
+    }
+  ],
+  "apfs_store_matches": [
+    {
+      "output": "blaze-worktree1",
+      "stored_path": "v2/store/placed/e7b151eb8916aeb92e03bc3bc7a8c34addc94a788e292c7a707fcfa7f05767f3",
+      "clone_id": 462533922,
+      "private_bytes": 0,
+      "same_sha256": true
+    },
+    {
+      "output": "blaze-worktree2",
+      "stored_path": "v2/store/placed/fb0da874f208d85268b5b3d6a18aa70b72f8f8411aab6167efd6e56bfe2da8c6",
+      "clone_id": 462534865,
+      "private_bytes": 0,
+      "same_sha256": true
+    }
+  ],
+  "cleanup": {
+    "removed_owned_paths": [
+      "blaze-recheck/cargo-target-1",
+      "blaze-recheck/cargo-target-2",
+      "blaze-recheck/canary-target",
+      "blaze-recheck/blaze-target-2",
+      "blaze-recheck/stable-store",
+      "blaze-recheck/stable-target",
+      "blaze-recheck/stable-bin",
+      "blaze-recheck/canary-bin",
+      "blaze-recheck/user-home",
+      "blaze-recheck/tmp",
+      "blaze-recheck/clone-oracle-original",
+      "blaze-recheck/clone-oracle-copy",
+      "blaze-recheck/apfs-probe",
+      "blaze-recheck/blaze-v0.20261027.0-aarch64-apple-darwin.tar.gz",
+      "blaze-recheck/blaze-v0.20261105.4-aarch64-apple-darwin.tar.gz",
+      "bs",
+      "bv"
+    ],
+    "available_before_bytes": 121651200000,
+    "available_after_bytes": 133939200000,
+    "retained_logical_bytes": 1460509,
+    "retained_allocated_bytes": 1683456
+  },
+  "limitations": [
+    "Toolchains/backends differ; no equivalent compiler speedup claimed.",
+    "First cold Blaze build includes downloads and std compilation; Cargo used pre-existing sources offline.",
+    "First unchanged Blaze request changed offline/stats settings; all samples retained.",
+    "Timeline stage durations are not disjoint wall-time partitions.",
+    "No trustworthy aggregate cache-hit/miss count was exposed.",
+    "APFS per-file private samples do not determine total unique/shared extent storage.",
+    "One concurrency pair passed; not exhaustive race coverage.",
+    "No GUI, MCP, release or non-macOS platform matrix was run through Blaze."
+  ],
+  "daemon_os_memory_sample": {
+    "rss_kib": 2764624,
+    "vsz_kib": 4975659904,
+    "single_sample_not_peak": true
+  }
+}

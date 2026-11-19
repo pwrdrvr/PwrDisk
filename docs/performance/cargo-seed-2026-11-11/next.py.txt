@@ -1,0 +1,31 @@
+"""Run only after the full scratch-donor control succeeds."""
+import json,pathlib,subprocess,os,time,sys
+E=pathlib.Path(__file__).resolve().parent;W=E.parent.parent
+assert (E/'OWNER.txt').read_text()=='Owned PwrDisk pwrgit-share evaluation 2026-11-11 mw8odhs6\n'
+plain=json.loads((E/'logs/plain-results.json').read_text())
+assert len(plain)==4 and all(r['exit']==0 and not r['stopped_by'] for r in plain)
+env={k:os.environ[k] for k in ('HOME','PATH','USER','LOGNAME','LANG','LC_ALL','SDKROOT','DEVELOPER_DIR','MACOSX_DEPLOYMENT_TARGET','RUSTUP_HOME','TMPDIR') if k in os.environ}
+env.update(CARGO_HOME=str(E/'cargo-home'),CARGO_BUILD_JOBS='4',CARGO_NET_OFFLINE='true')
+git='/Applications/PwrGit.app/Contents/Resources/git/bin/git'
+subprocess.run([sys.executable,str(E/'inventory.py'),'plain-complete-inventory.json'],check=True,stdout=subprocess.DEVNULL)
+for mode,lane in [('bounded','b'),('strict','s')]:
+ dst=W/lane;assert not dst.exists()
+ start=time.monotonic()
+ with (E/'logs'/f'{mode}-checkout.log').open('w') as f:
+  cp=subprocess.run([git,'-c','checkout.reflink=true','-C',str(W/'d'),'worktree','add','--detach',str(dst),'6a7bad7e5fc53fd54bdbb271fc5b68f789b2d597'],stdout=f,stderr=f,env=env,timeout=120)
+ assert cp.returncode==0
+ checkout=time.monotonic()-start
+ assert not (dst/'target').exists()
+ command=[str(E/'tool-target/release/pwrgit-share'),'cargo','seed','--from',str(W/'d/target'),'--to',str(dst/'target'),'--json']
+ if mode=='strict':command.append('--strict')
+ start=time.monotonic()
+ with (E/'logs'/f'{mode}-seed.json').open('w') as out,(E/'logs'/f'{mode}-seed.stderr').open('w') as err:
+  cp=subprocess.run(command,cwd=dst,env=env,stdout=out,stderr=err,timeout=300)
+ setup={'checkout_seconds':checkout,'seed_seconds':time.monotonic()-start,'seed_exit':cp.returncode,'command':command}
+ (E/'logs'/f'{mode}-setup.json').write_text(json.dumps(setup,indent=2)+'\n')
+ print(mode,setup,flush=True)
+ assert cp.returncode==0
+ print((E/'logs'/f'{mode}-seed.json').read_text(),flush=True)
+ subprocess.run([sys.executable,str(E/'inventory.py'),f'{mode}-seeded-inventory.json'],check=True,stdout=subprocess.DEVNULL)
+ subprocess.run([sys.executable,str(E/'flow.py'),mode],check=True,env=env)
+ subprocess.run([sys.executable,str(E/'inventory.py'),f'{mode}-complete-inventory.json'],check=True,stdout=subprocess.DEVNULL)
