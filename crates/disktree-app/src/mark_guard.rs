@@ -348,9 +348,6 @@ impl Disktree {
     /// Safety reads in `policy`. An agent's selection is held to the agent
     /// limit, so with the window's Off Review still asks the person for it.
     fn review_limit(&self, policy: Policy) -> Option<Limit> {
-        if self.remote.is_some() {
-            return None;
-        }
         if self.agent_proposed() {
             return Some(policy.agent_limit());
         }
@@ -443,6 +440,9 @@ impl Disktree {
     /// `None` with the limit off for the person's own marks, over SSH, or
     /// when a disk cannot be read, where the worker's own check stands.
     pub fn removal_gate(&self, plan: &Plan) -> Option<Gate> {
+        if self.remote.is_some() {
+            return None;
+        }
         let limit = self.review_limit(self.policy())?;
         let (usage, names) = self.usage(plan, false).ok()?;
         Gate::new(usage, &names, limit)
@@ -483,7 +483,9 @@ impl Disktree {
         // held to the agent limit wherever the person confirmed nothing.
         let base = review.map_or_else(|| Limit::new(100), Ok)?;
         let (usage, names) = self.usage(plan, true)?;
-        let gate = review.and_then(|limit| Gate::new(usage, &names, limit));
+        let gate = review
+            .filter(|_| self.remote.is_none())
+            .and_then(|limit| Gate::new(usage, &names, limit));
         let ceilings = match gate {
             Some(gate) if !self.gate_met(&gate, cx) => {
                 return Err(match self.gate_confirm() {
