@@ -2198,6 +2198,11 @@ fn menu_rescan_starts_once_from_the_unfocused_main_and_auxiliary_windows(
         {
             failures.push(source);
         } else {
+            draw(cx);
+            assert!(
+                cx.debug_bounds("indexing-progress").is_some(),
+                "Rescan from {source} shows indexing progress"
+            );
             finish_scan(&view, cx);
         }
     }
