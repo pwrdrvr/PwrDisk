@@ -18,6 +18,7 @@ const PREPARING: &str = "Cache inspection is preparing; wait for it to finish be
 pub struct RawInspection {
     root: std::path::PathBuf,
     marks: Vec<Target>,
+    targets: Vec<Target>,
     tree: Weak<Tree>,
     /// Identifies the request; a pending walk never expires for age alone.
     created: Instant,
@@ -36,6 +37,13 @@ impl RawInspection {
         self.result = Some((now, result));
     }
 
+    fn index_of(&self, target: &Target) -> Option<usize> {
+        self.targets
+            .binary_search_by(|entry| entry.path.cmp(&target.path))
+            .ok()
+            .filter(|&index| self.targets[index] == *target)
+    }
+
     fn matches(&self, app: &Disktree) -> bool {
         self.root == app.root_path
             && self.marks == app.marks.items()
@@ -50,6 +58,14 @@ impl RawInspection {
 
 impl Disktree {
     pub(crate) fn prepare_raw_inspection(&mut self, cx: &Context<'_, Self>) {
+        self.prepare_raw_inspection_for(&self.raw_review_targets(), cx);
+    }
+
+    pub(crate) fn prepare_raw_inspection_for(
+        &mut self,
+        targets: &[Target],
+        cx: &Context<'_, Self>,
+    ) {
         if self.remote.is_some()
             || self.scan.is_some()
             || self.screen == Screen::Running
@@ -61,25 +77,28 @@ impl Disktree {
         let Some(tree) = &self.tree else {
             return;
         };
-        if self
-            .raw_inspection
-            .as_ref()
-            .is_some_and(|check| check.matches(self))
+        if targets.is_empty()
+            || self.raw_inspection.as_ref().is_some_and(|check| {
+                check.matches(self)
+                    && targets
+                        .iter()
+                        .all(|target| check.index_of(target).is_some())
+            })
         {
             return;
         }
-        let plan =
-            disktree_core::removal::plan(self.marks.items(), &self.root_path);
+        let targets = targets.to_vec();
         let created = Instant::now();
         self.raw_inspection = Some(RawInspection {
             root: self.root_path.clone(),
             marks: self.marks.items().to_vec(),
+            targets: targets.clone(),
             tree: Arc::downgrade(tree),
             created,
             result: None,
         });
         let task = cx.background_executor().spawn(async move {
-            let result = disktree_core::cleanup::inspect_raw(&plan.targets);
+            let result = disktree_core::cleanup::inspect_raw(&targets);
             (result, Instant::now())
         });
         cx.spawn(async move |this, cx| {
@@ -97,19 +116,28 @@ impl Disktree {
         .detach();
     }
 
-    pub(crate) fn raw_inspection_ready(&self) -> Result<(), String> {
+    pub(crate) fn raw_inspection_ready(
+        &self,
+        targets: &[Target],
+    ) -> Result<(), String> {
+        if targets.is_empty() {
+            return Ok(());
+        }
         let check = self
             .raw_inspection
             .as_ref()
             .filter(|check| check.matches(self))
             .ok_or(PREPARING)?;
         let (_, results) = check.result.as_ref().ok_or(PREPARING)?;
-        results.iter().cloned().collect()
+        for target in targets {
+            let index = check.index_of(target).ok_or(PREPARING)?;
+            results[index].as_ref().map_err(Clone::clone)?;
+        }
+        Ok(())
     }
 
-    /// A pending check is visible too, so disabled confirmation explains why.
     pub(crate) fn raw_inspection_hint(&self) -> Option<String> {
-        self.raw_inspection_ready().err()
+        self.raw_inspection_ready(&self.raw_review_targets()).err()
     }
 
     pub(crate) fn route_inspected_caches(
@@ -117,26 +145,33 @@ impl Disktree {
         cx: &mut Context<'_, Self>,
     ) {
         if self.screen == Screen::Review
-            && self.raw_inspection.as_ref().is_some_and(|check| {
-                check.matches(self)
-                    && check.result.as_ref().is_some_and(|(_, results)| {
-                        results.iter().any(Result::is_err)
-                    })
-            })
+            && self
+                .raw_inspection_ready(&self.raw_review_targets())
+                .is_err_and(|reason| reason != PREPARING)
         {
             self.removal_mode = RemovalMode::OwnerCleanup;
             self.confirm_open = false;
+            self.confirm_plan = None;
             cx.notify();
         }
+    }
+
+    fn raw_review_targets(&self) -> Vec<Target> {
+        disktree_core::removal::plan_for_review(
+            self.marks.items(),
+            &self.root_path,
+        )
+        .targets
     }
 
     /// Both confirmation and the native removal entry point must wait.
     pub(crate) fn raw_removal_reviewed(
         &mut self,
+        targets: &[Target],
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        self.prepare_raw_inspection(cx);
-        match self.raw_inspection_ready() {
+        self.prepare_raw_inspection_for(targets, cx);
+        match self.raw_inspection_ready(targets) {
             Ok(()) => true,
             Err(reason) => {
                 self.route_inspected_caches(cx);
@@ -158,6 +193,7 @@ mod tests {
         RawInspection {
             root: std::path::PathBuf::new(),
             marks: Vec::new(),
+            targets: Vec::new(),
             tree: Weak::new(),
             created,
             result: None,

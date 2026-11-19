@@ -15,6 +15,7 @@
 //!   built-in XDG implementation. The backend is detected once and named in
 //!   the UI so the user knows what actually happens.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -132,6 +133,55 @@ impl Plan {
             .map_or(Ok(()), |scope| scope.check(self))
     }
 
+    /// Keep absent marks visible in Review without charging them to a disk
+    /// or promoting any covered marks into the action list.
+    fn omit_missing(&mut self) {
+        let mut attribution = self.attribution.iter().copied();
+        let mut kept = Vec::with_capacity(self.targets.len());
+        let mut gone = BTreeSet::new();
+        self.targets.retain(|target| {
+            let volume = attribution
+                .next()
+                .unwrap_or(crate::space::Attribution::Unknown);
+            if !is_missing(&target.path) {
+                kept.push(volume);
+                return true;
+            }
+            match volume {
+                crate::space::Attribution::Scanned => {
+                    self.reclaim -= target.bytes;
+                }
+                crate::space::Attribution::Other => {
+                    self.foreign -= target.bytes;
+                }
+                crate::space::Attribution::Unknown => {}
+            }
+            gone.insert(guard_key(&target.path));
+            self.blocked.push(Blocked {
+                path: target.path.clone(),
+                reason: "Already gone".into(),
+            });
+            false
+        });
+        self.attribution = kept;
+        if !gone.is_empty() {
+            self.covered.retain(|target| {
+                if guard_key(&target.path)
+                    .ancestors()
+                    .any(|parent| gone.contains(parent))
+                {
+                    self.blocked.push(Blocked {
+                        path: target.path.clone(),
+                        reason: "Parent already gone".into(),
+                    });
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+    }
+
     pub fn bytes(&self) -> u64 {
         self.targets.iter().map(|target| target.bytes).sum()
     }
@@ -222,12 +272,24 @@ impl Plan {
     }
 }
 
+fn is_missing(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+}
+
 /// Build the plan for `targets`, which must all live under `root`.
 ///
 /// Paths outside `root` are blocked rather than removed: the tree the user was
 /// looking at is the only thing they consented to act on.
 pub fn plan(targets: &[Target], root: &Path) -> Plan {
     plan_against(targets, root, &mount_points())
+}
+
+/// Review keeps the mark for an absent path, but excludes it from the batch.
+pub fn plan_for_review(targets: &[Target], root: &Path) -> Plan {
+    let mut reviewed = plan(targets, root);
+    reviewed.omit_missing();
+    reviewed
 }
 
 /// [`plan`] against a given read of the mount table, for testing.
@@ -1580,6 +1642,7 @@ fn start(
             // capacity ceiling refuses the whole run.
             let scope = plan.check_approval();
             let scope_failed = scope.is_err();
+            let mut missing = BTreeSet::new();
             let checked = scope.and_then(|()| {
                 if mode == RemovalMode::OwnerCleanup {
                     cleanup
@@ -1594,7 +1657,8 @@ fn start(
                             approved.admit(limit.as_ref().unwrap_or(&default))
                         })
                 } else {
-                    crate::cleanup::check_raw(&plan.targets).map(|()| vec![])
+                    missing = preflight_raw(&plan, limit.as_ref())?;
+                    Ok(Vec::new())
                 }
             });
             let refusals = match checked {
@@ -1619,20 +1683,6 @@ fn start(
                     return;
                 }
             };
-            if let Some(limit) =
-                limit.filter(|_| mode != RemovalMode::OwnerCleanup)
-            {
-                let fresh = self::plan(&plan.targets, &plan.root);
-                let checked = if fresh.blocked.is_empty() {
-                    limit.check_fresh(&plan.targets, &plan.scan_options)
-                } else {
-                    Err("Removal guards changed before preflight; nothing was removed".into())
-                };
-                if let Err(reason) = checked {
-                    fail_all(&plan.targets, &reason, &sender);
-                    return;
-                }
-            }
             run(
                 &plan,
                 mode,
@@ -1640,6 +1690,7 @@ fn start(
                 cleanup
                     .as_ref()
                     .map(|approved| (approved, refusals.as_slice())),
+                &missing,
                 &worker_cancel,
                 &sender,
             );
@@ -1656,6 +1707,48 @@ fn start(
     }
 
     RemovalHandle { events, cancel }
+}
+
+/// Measure the same surviving selection that will be dispatched. Once
+/// absent, an entry stays out of this run even if its path is recreated.
+fn preflight_raw(
+    plan: &Plan,
+    limit: Option<&crate::removal_limit::Ceilings>,
+) -> Result<BTreeSet<usize>, String> {
+    let mut missing = BTreeSet::new();
+    let find_missing = |missing: &mut BTreeSet<usize>| {
+        let before = missing.len();
+        if plan.approval_scope.is_none() {
+            missing.extend(plan.targets.iter().enumerate().filter_map(
+                |(index, target)| is_missing(&target.path).then_some(index),
+            ));
+        }
+        missing.len() != before
+    };
+    find_missing(&mut missing);
+    loop {
+        let targets: Vec<_> = plan
+            .targets
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !missing.contains(index))
+            .map(|(_, target)| target.clone())
+            .collect();
+        let result = crate::cleanup::check_raw(&targets).and_then(|()| {
+            if let Some(limit) = limit {
+                let fresh = self::plan(&targets, &plan.root);
+                if !fresh.blocked.is_empty() {
+                    return Err("Removal guards changed before preflight; nothing was removed".into());
+                }
+                limit.check_fresh(&targets, &plan.scan_options)?;
+            }
+            Ok(())
+        });
+        // Retry only when a newly absent mark shrinks the selection.
+        if result.is_ok() || !find_missing(&mut missing) {
+            return result.map(|()| missing);
+        }
+    }
 }
 
 /// A whole run that removed nothing: every target failed for `reason`,
@@ -1687,6 +1780,7 @@ fn run(
         &crate::cleanup::Approved,
         &[Option<crate::cleanup::Issue>],
     )>,
+    missing: &BTreeSet<usize>,
     cancel: &AtomicBool,
     sender: &mpsc::Sender<RemovalEvent>,
 ) {
@@ -1718,6 +1812,15 @@ fn run(
                 }
             }
             break;
+        }
+        if missing.contains(&index) {
+            failed += 1;
+            let _ = sender.send(RemovalEvent::Item {
+                path: target.path.clone(),
+                bytes: 0,
+                outcome: Err("Already gone".into()),
+            });
+            continue;
         }
         // The /run/media exception must still hold when removal starts;
         // a disk may have been unmounted since the review was displayed.
@@ -2050,10 +2153,7 @@ fn remove_contents(
     top: &Volume,
     path: &Path,
 ) -> io::Result<()> {
-    use rustix::fs::{AtFlags, Dir, FileType, unlinkat};
-    use rustix::io::Errno;
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt as _;
+    use rustix::fs::Dir;
 
     // Names first, then removal: unlinking while a directory stream is open
     // on the same directory may skip entries.
@@ -2066,9 +2166,24 @@ fn remove_contents(
         }
     }
 
+    remove_listed_children(dir, top, path, entries)
+}
+
+#[cfg(unix)]
+fn remove_listed_children(
+    dir: &std::os::fd::OwnedFd,
+    top: &Volume,
+    path: &Path,
+    entries: Vec<(std::ffi::CString, rustix::fs::FileType)>,
+) -> io::Result<()> {
+    use rustix::fs::{AtFlags, FileType};
+    use rustix::io::Errno;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+
     for (name, kind) in entries {
         if !matches!(kind, FileType::Directory | FileType::Unknown) {
-            unlinkat(dir, &name, AtFlags::empty())?;
+            unlink_child(dir, &name, AtFlags::empty())?;
             continue;
         }
         let child = match open_dir(dir, &name) {
@@ -2076,9 +2191,10 @@ fn remove_contents(
             // Not a directory after all: a symlink, or a file on a
             // filesystem that does not report types.
             Err(Errno::NOTDIR | Errno::LOOP) => {
-                unlinkat(dir, &name, AtFlags::empty())?;
+                unlink_child(dir, &name, AtFlags::empty())?;
                 continue;
             }
+            Err(Errno::NOENT) => continue,
             Err(error) => return Err(error.into()),
         };
         // Only directories need their path, for the message below.
@@ -2092,9 +2208,22 @@ fn remove_contents(
         }
         remove_contents(&child, top, &child_path)?;
         drop(child);
-        unlinkat(dir, &name, AtFlags::REMOVEDIR)?;
+        unlink_child(dir, &name, AtFlags::REMOVEDIR)?;
     }
     Ok(())
+}
+
+/// A concurrent cleanup can unlink a listed child first.
+#[cfg(unix)]
+fn unlink_child(
+    dir: &std::os::fd::OwnedFd,
+    name: &std::ffi::CStr,
+    flags: rustix::fs::AtFlags,
+) -> io::Result<()> {
+    match rustix::fs::unlinkat(dir, name, flags) {
+        Ok(()) | Err(rustix::io::Errno::NOENT) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(windows)]
@@ -4285,6 +4414,35 @@ mod tests {
         assert!(planned.targets.is_empty());
     }
 
+    /// Feed the remover the listing it captured before a concurrent
+    /// cleanup, then compare the directory to the empty-tree oracle.
+    #[cfg(unix)]
+    #[test]
+    fn listed_children_can_vanish_before_they_are_unlinked() {
+        use rustix::fs::FileType;
+
+        let temp = removable_tempdir();
+        for kind in [
+            FileType::RegularFile,
+            FileType::Directory,
+            FileType::Unknown,
+        ] {
+            let path = temp.path().join("target");
+            fs::create_dir(&path).expect("target");
+            fs::write(path.join("still-here"), b"present").expect("child");
+            let dir = open_root(&path).expect("directory handle");
+            let top = Volume::of(&dir).expect("fixture volume");
+            let entries = vec![
+                (c"already-gone".to_owned(), kind),
+                (c"still-here".to_owned(), FileType::RegularFile),
+            ];
+            remove_listed_children(&dir, &top, &path, entries)
+                .expect("missing child has already been removed");
+            assert!(fs::read_dir(&path).expect("target").next().is_none());
+            fs::remove_dir(path).expect("remove the empty fixture");
+        }
+    }
+
     #[test]
     fn limited_worker_refuses_the_entire_batch_before_removing_anything() {
         let temp = tree();
@@ -4327,6 +4485,49 @@ mod tests {
             cases: 32, failure_persistence: None,
             ..proptest::test_runner::Config::default()
         })]
+
+        // Relative to the filesystem at dispatch, absent marks cannot
+        // add to the limit or authorize touching a replacement.
+        #[test]
+        fn absent_marks_do_not_block_present_siblings(
+            gone in 0_usize..3, over_limit in proptest::bool::ANY,
+        ) {
+            let temp = removable_tempdir();
+            let paths = ["a", "b", "c"].map(|name| temp.path().join(name));
+            let targets: Vec<_> = paths.iter().enumerate().map(|(index, path)| {
+                fs::create_dir(path).expect("fixture");
+                target(path, if over_limit || index == gone { u64::MAX / 4 } else { 0 })
+            }).collect();
+            let keep = temp.path().join("unmarked");
+            fs::write(&keep, b"keep").expect("unmarked file");
+            let mut targets = targets;
+            let covered = paths[gone].join("nested");
+            fs::create_dir(&covered).expect("covered directory");
+            targets.push(target(&covered, 0));
+            let planned = plan(&targets, temp.path());
+            fs::remove_dir_all(&paths[gone]).expect("external removal");
+
+            let reviewed = plan_for_review(&targets, temp.path());
+            proptest::prop_assert_eq!(reviewed.targets.len(), 2);
+            proptest::prop_assert!(reviewed.covered.is_empty());
+            proptest::prop_assert_eq!(reviewed.blocked.len(), 2);
+
+            let handle = start(planned, RemovalMode::Permanent,
+                Some(crate::removal_limit::Ceilings::default()), None, |work| {
+                    work();
+                    Ok(())
+                });
+            let events: Vec<_> = std::iter::from_fn(|| handle.poll()).collect();
+            proptest::prop_assert!(matches!(
+                events.last(),
+                Some(RemovalEvent::Done { removed, .. })
+                    if *removed == if over_limit { 0 } else { 2 }
+            ), "{:?}", events);
+            for (index, path) in paths.iter().enumerate() {
+                proptest::prop_assert_eq!(path.exists(), over_limit && index != gone);
+            }
+            proptest::prop_assert_eq!(fs::read(keep).expect("unmarked"), b"keep");
+        }
 
         // The lifecycle may reach dispatch only after batch admission.
         // Either refusal path must end with one failure per target, no

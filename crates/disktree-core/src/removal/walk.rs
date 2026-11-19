@@ -38,11 +38,7 @@ pub fn inspect(
     mut visit: impl FnMut(&Path, Option<BorrowedFd<'_>>) -> Result<(), String>,
 ) -> Result<(), String> {
     let failure = |error| format!("Cannot inspect {}: {error}", path.display());
-    let stat = match entry_stat(CWD, path) {
-        Ok(stat) => stat,
-        Err(rustix::io::Errno::NOENT) => return Ok(()),
-        Err(error) => return Err(failure(error)),
-    };
+    let stat = entry_stat(CWD, path).map_err(failure)?;
     if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
         return visit(path, None);
     }
@@ -208,6 +204,33 @@ mod tests {
             std::fs::read(&foreign).expect("untouched"),
             b"outside the root volume"
         );
+    }
+
+    #[test]
+    fn bulk_inspection_refuses_a_directory_renamed_after_listing() {
+        let temp = tempfile::tempdir_in("/tmp").expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        for name in ["a", "b"] {
+            let dir = root.join(name);
+            std::fs::create_dir(&dir).expect("directory");
+            std::fs::write(dir.join("payload"), b"still selected")
+                .expect("file");
+        }
+        let mut renamed = false;
+        let error = inspect(&root, |path, dir| {
+            if !renamed && path != root && dir.is_some() {
+                // Both entries fit the bulk buffer. Move whichever listed
+                // name the inspector has yet to open.
+                let other = if path.ends_with("a") { "b" } else { "a" };
+                std::fs::rename(root.join(other), root.join("new"))
+                    .expect("rename listed sibling");
+                renamed = true;
+            }
+            Ok(())
+        })
+        .expect_err("inspection missed the renamed directory");
+        assert!(error.contains("Cannot open"), "{error}");
+        assert!(root.join("new/payload").is_file());
     }
 
     fn oracle(

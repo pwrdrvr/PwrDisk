@@ -17,7 +17,7 @@ use disktree_core::insights::{Candidate, worth_a_look};
 use disktree_core::path_style::PathStyle;
 use disktree_core::removal::{
     Plan, RemovalEvent, RemovalHandle, RemovalMode, Target, TrashBackend,
-    detect_trash_backend, plan,
+    detect_trash_backend, plan, plan_for_review,
 };
 use disktree_core::scan::{Known, ScanHandle, ScanOptions, ScanSnapshot};
 use disktree_core::space::{
@@ -611,6 +611,8 @@ pub struct Disktree {
     /// The permanent-deletion alert dialog is open. Trash needs no dialog: it
     /// is reversible, so it commits directly.
     pub confirm_open: bool,
+    pub(crate) confirm_plan: Option<Plan>,
+    pub(crate) review_paths: Option<Vec<PathBuf>>,
     /// Focus owner for the alert dialog while it is open.
     pub confirm_focus: FocusHandle,
     pub overlay_return: Option<FocusHandle>,
@@ -989,6 +991,8 @@ impl Disktree {
             cleanup_actions: vec![],
             cleanup_path: None,
             confirm_open: false,
+            confirm_plan: None,
+            review_paths: None,
             confirm_focus: cx.focus_handle(),
             overlay_return: None,
             app_menu_index: 0,
@@ -1859,6 +1863,7 @@ impl Disktree {
         } else {
             self.reread_disks();
             self.screen = Screen::Review;
+            self.review_paths = None;
             self.prepare_raw_inspection(cx);
             self.route_inspected_caches(cx);
             self.focus_request = Some(FocusTarget::Root);
@@ -3322,11 +3327,15 @@ impl Disktree {
         {
             return approved.plan.clone();
         }
-        self.selection_plan()
+        self.plan_selection(self.removal_mode != RemovalMode::OwnerCleanup)
     }
 
     /// Only marked paths: owner execution scopes must never widen exports.
     pub(crate) fn selection_plan(&self) -> Plan {
+        self.plan_selection(false)
+    }
+
+    fn plan_selection(&self, omit_missing: bool) -> Plan {
         #[cfg(test)]
         crate::marks::work::PLANS.set(crate::marks::work::PLANS.get() + 1);
         if self.remote.is_some() {
@@ -3347,7 +3356,8 @@ impl Disktree {
             // this computer's mounts or project an unmeasured saving.
             return selection;
         }
-        let mut plan = plan(self.marks.items(), &self.root_path);
+        let build = if omit_missing { plan_for_review } else { plan };
+        let mut plan = build(self.marks.items(), &self.root_path);
         plan.scan_options = self.options.clone();
         if let Some(tree) = &self.tree {
             let mut cached = self.accounting.borrow_mut();
@@ -4003,12 +4013,6 @@ impl Disktree {
     /// a permanent deletion, which cannot be undone. `rescan` is Remove &
     /// rescan; without it the tree drops what went and stays.
     pub fn commit(&mut self, rescan: bool, cx: &mut Context<'_, Self>) {
-        if self.removal_mode != RemovalMode::OwnerCleanup
-            && self.remote.is_none()
-            && !self.raw_removal_reviewed(cx)
-        {
-            return;
-        }
         // A cleanup is checked, then decided, before anything else: until
         // then there is nothing to confirm.
         if self.removal_mode == RemovalMode::OwnerCleanup
@@ -4028,6 +4032,12 @@ impl Disktree {
         if self.remote.is_some() || plan.is_empty() {
             return;
         }
+        if self.removal_mode != RemovalMode::OwnerCleanup
+            && (!self.raw_removal_reviewed(&plan.targets, cx)
+                || !self.review_scope_allows(&plan, cx))
+        {
+            return;
+        }
         // Past the limit the second confirmation comes first, before the
         // permanent dialog asks about recoverability; `begin_removal`
         // checks it again on the way to the worker.
@@ -4039,6 +4049,9 @@ impl Disktree {
         match self.removal_mode {
             RemovalMode::Trash => self.begin_removal(cx),
             RemovalMode::Permanent | RemovalMode::OwnerCleanup => {
+                self.confirm_plan = (self.removal_mode
+                    == RemovalMode::Permanent)
+                    .then_some(plan);
                 self.confirm_open = true;
                 self.focus_request = Some(FocusTarget::Dialog);
                 cx.notify();
@@ -4052,13 +4065,47 @@ impl Disktree {
         self.confirm_open = false;
         self.focus_request = Some(FocusTarget::Root);
         self.begin_removal(cx);
+        self.confirm_plan = None;
     }
 
     /// The alert dialog's `Cancel`, or Escape.
     pub fn cancel_delete(&mut self, cx: &mut Context<'_, Self>) {
+        self.confirm_plan = None;
         self.confirm_open = false;
         self.focus_request = Some(FocusTarget::Root);
         cx.notify();
+    }
+
+    /// A redraw can expose a new selection for another action, but a click
+    /// or keypress cannot silently add a path to what was presented.
+    fn review_scope_allows(
+        &mut self,
+        plan: &Plan,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let added = if let Some(confirmed) = &self.confirm_plan {
+            plan.targets.iter().any(|target| {
+                confirmed
+                    .targets
+                    .binary_search_by(|item| item.path.cmp(&target.path))
+                    .is_err()
+            })
+        } else {
+            self.screen == Screen::Review
+                && self.review_paths.as_ref().is_some_and(|shown| {
+                    plan.targets.iter().any(|target| {
+                        shown.binary_search(&target.path).is_err()
+                    })
+                })
+        };
+        if added {
+            self.warn(
+                "The removal selection changed. Review it and confirm again."
+                    .into(),
+                cx,
+            );
+        }
+        !added
     }
 
     /// Move focus if something asked for it. Called wherever a window is in
@@ -4187,9 +4234,13 @@ impl Disktree {
             cx.notify();
             return;
         }
-        let mut plan = cleanup
-            .as_ref()
-            .map_or_else(|| self.plan(), |approved| approved.plan.clone());
+        let mut plan = cleanup.as_ref().map_or_else(
+            || match by {
+                Remover::Person => self.plan(),
+                Remover::Agent => self.selection_plan(),
+            },
+            |approved| approved.plan.clone(),
+        );
         if let Some(scope) = scope {
             if let Err(reason) = plan.bind_approval(scope) {
                 self.say(reason, Status::Warning, cx);
@@ -4219,7 +4270,13 @@ impl Disktree {
         };
         if by == Remover::Person
             && cleanup.is_none()
-            && !self.raw_removal_reviewed(cx)
+            && !self.raw_removal_reviewed(&plan.targets, cx)
+        {
+            return;
+        }
+        if by == Remover::Person
+            && cleanup.is_none()
+            && !self.review_scope_allows(&plan, cx)
         {
             return;
         }

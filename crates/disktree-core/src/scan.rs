@@ -2945,6 +2945,53 @@ mod tests {
         assert_eq!(by_files.files, 5);
     }
 
+    #[test]
+    fn strict_scan_refuses_a_subtree_renamed_after_enumeration() {
+        let temp = TempDir::new().expect("fixture");
+        let root = temp.path();
+        write(root, "old/payload", 42);
+        let context = WalkContext {
+            known: None,
+            options: options().for_removal(),
+            progress: Arc::new(ScanProgress::default()),
+            root_device: Mutex::new(None),
+            foreign_mounts: OnceLock::new(),
+            never_scanned: OnceLock::new(),
+            data_volume: OnceLock::new(),
+            data_error: OnceLock::new(),
+            data_device: OnceLock::new(),
+            visited_dirs: Mutex::new(FxHashSet::default()),
+            accounted: Arc::new(Seen::new()),
+            require_complete: true,
+            leaves: None,
+            volume: OnceLock::new(),
+            #[cfg(target_os = "macos")]
+            clone_cache: crate::clone_cache::Cache::default(),
+        };
+        let tree = Tree::try_build(|builder| {
+            let sink = Sink {
+                builder,
+                root: Mutex::new(None),
+            };
+            let pending = Arc::new(PendingDir::new(
+                root.to_owned(),
+                "root".into(),
+                None,
+                0,
+            ));
+            let children = walk(&pending, &context, &sink);
+            assert_eq!(children.len(), 1);
+            fs::rename(root.join("old"), root.join("new")).expect("rename");
+            assert!(walk(&children[0], &context, &sink).is_empty());
+            Ok::<_, io::Error>(lock(&sink.root).take().expect("finished root"))
+        })
+        .expect("tree");
+        assert!(root.join("new/payload").is_file(), "still inside selection");
+        let error = finish_tree(tree, root, &context, &WALK_POOL)
+            .expect_err("the queued walk missed the renamed payload");
+        assert!(error.to_string().contains("Cannot enforce removal limit"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_unreadable_directory_is_recorded_not_fatal() {
