@@ -1072,6 +1072,7 @@ fn remote_root_acceptance_never_stats_the_path_locally(
                 }],
                 None,
             )),
+            &[],
             cx,
         );
     });
@@ -14824,6 +14825,127 @@ fn a_double_click_on_a_listed_root_scans_it(cx: &mut TestAppContext) {
         dunce::canonicalize(temp.path()).unwrap()
     );
     finish_scan(&view, cx);
+}
+
+/// Recent roots that are there now come first with a rule after them,
+/// and a root chosen in the chooser goes to the top and is remembered.
+#[gpui_kit::test]
+fn the_chooser_lists_recent_roots_first_and_remembers_the_chosen_one(
+    cx: &mut TestAppContext,
+) {
+    use crate::recent_roots::{Recent, load};
+
+    cx.update(init);
+    let temp = fixture();
+    let reports = tempfile::tempdir().expect("tempdir");
+    let recent = tempfile::tempdir().expect("tempdir");
+    let recent_path = dunce::canonicalize(recent.path()).unwrap();
+    let unplugged = recent_path.join("unplugged");
+    let saved = reports.path().join("settings/recent-roots");
+    let (view, cx) = chooser_over(temp.path(), reports.path(), cx);
+    let listed = temp.path().to_path_buf();
+    let (kept_recent, kept_saved) = (recent_path.clone(), saved.clone());
+    update(&view, cx, move |app, cx| {
+        app.recent_roots_path = Some(kept_saved);
+        app.recent_roots = vec![
+            Recent {
+                path: unplugged,
+                volume: None,
+                at: 2,
+            },
+            Recent {
+                path: kept_recent.clone(),
+                volume: None,
+                at: 1,
+            },
+        ];
+        app.finish_volume_listing(
+            Ok((
+                vec![Volume {
+                    point: listed,
+                    device: None,
+                    space: None,
+                }],
+                None,
+            )),
+            &[kept_recent],
+            cx,
+        );
+    });
+    draw(cx);
+    read(&view, cx, |app| {
+        let points: Vec<_> = app
+            .volumes
+            .iter()
+            .map(|volume| volume.point.clone())
+            .collect();
+        assert_eq!(points, [recent_path.clone(), temp.path().to_path_buf()]);
+        assert_eq!(app.volumes_recent, 1);
+        assert_eq!(app.volume_highlight, 0, "Enter rescans the last root");
+    });
+    assert!(cx.debug_bounds("source-recent-rule").is_some());
+    let row = cx.debug_bounds("volume-1").expect("listed root").center();
+    click_at(cx, row, 1);
+    click_at(cx, row, 2);
+    let chosen = dunce::canonicalize(temp.path()).unwrap();
+    let expected = [chosen, recent_path.join("unplugged"), recent_path];
+    read(&view, cx, |app| {
+        let points: Vec<_> =
+            app.recent_roots.iter().map(|r| r.path.clone()).collect();
+        assert_eq!(points, expected);
+    });
+    let remembered: Vec<_> =
+        load(&saved).into_iter().map(|recent| recent.path).collect();
+    assert_eq!(remembered, expected);
+    finish_scan(&view, cx);
+}
+
+/// When every listed root is recent the rule still comes before the
+/// Directory row.
+#[gpui_kit::test]
+fn the_rule_precedes_directory_when_every_root_is_recent(
+    cx: &mut TestAppContext,
+) {
+    use crate::recent_roots::Recent;
+
+    cx.update(init);
+    let temp = fixture();
+    let reports = tempfile::tempdir().expect("tempdir");
+    let (view, cx) = chooser_over(temp.path(), reports.path(), cx);
+    let listed = temp.path().to_path_buf();
+    update(&view, cx, move |app, cx| {
+        app.recent_roots = vec![Recent {
+            path: listed.clone(),
+            volume: None,
+            at: 0,
+        }];
+        app.finish_volume_listing(
+            Ok((
+                vec![Volume {
+                    point: listed.clone(),
+                    device: None,
+                    space: None,
+                }],
+                None,
+            )),
+            &[listed],
+            cx,
+        );
+    });
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.volumes_recent), 1);
+    assert!(cx.debug_bounds("source-recent-rule").is_some());
+}
+
+/// Without recent roots there is no rule.
+#[gpui_kit::test]
+fn the_chooser_draws_no_rule_before_any_scan(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let reports = tempfile::tempdir().expect("tempdir");
+    let (view, cx) = chooser_over(temp.path(), reports.path(), cx);
+    assert_eq!(read(&view, cx, |app| app.volumes_recent), 0);
+    assert!(cx.debug_bounds("source-recent-rule").is_none());
 }
 
 /// The chooser's checkbox is ticked until it is clicked, and SSH hosts,

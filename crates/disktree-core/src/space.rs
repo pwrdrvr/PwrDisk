@@ -764,14 +764,118 @@ pub fn repeated_mounts_for(
 /// between the first ` on ` and the last ` (`, so a name with spaces or
 /// brackets in it survives.
 pub fn parse_macos_mounts(output: &str) -> Vec<PathBuf> {
+    parse_macos_mount_table(output)
+        .into_iter()
+        .map(|mount| mount.point)
+        .collect()
+}
+
+/// Every line of what macOS's `mount` prints, with its flags.
+///
+/// `/dev/disk3s5 on /System/Volumes/Data (apfs, local, nobrowse)` gives
+/// source `/dev/disk3s5`, type `apfs` and options `local,nobrowse`. The
+/// point is read as [`parse_macos_mounts`] reads it.
+pub fn parse_macos_mount_table(output: &str) -> Vec<Mount> {
     output
         .lines()
         .filter_map(|line| {
-            let (_, rest) = line.split_once(" on ")?;
-            let (point, _) = rest.rsplit_once(" (")?;
-            Some(PathBuf::from(point))
+            let (source, rest) = line.split_once(" on ")?;
+            let (point, flags) = rest.rsplit_once(" (")?;
+            let flags = flags.strip_suffix(')').unwrap_or(flags);
+            let mut flags = flags.split(',').map(str::trim);
+            let fstype = flags.next().unwrap_or_default().to_owned();
+            Some(Mount {
+                source: source.to_owned(),
+                point: PathBuf::from(point),
+                fstype,
+                options: flags.collect::<Vec<_>>().join(","),
+            })
         })
         .collect()
+}
+
+/// Where Time Machine mounts the snapshots it browses and backs up from.
+const MACOS_TIME_MACHINE_SNAPSHOTS: &str = "/Volumes/.timemachine";
+
+/// The mount points of Time Machine backup disks, from what
+/// `tmutil destinationinfo` prints: a `Mount Point : /Volumes/…` line for
+/// each destination that is mounted now.
+pub fn parse_tmutil_destinations(output: &str) -> Vec<PathBuf> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            let value = value.trim();
+            // macOS output, read the same on any host: `is_absolute` would
+            // want a drive letter on Windows.
+            (key.trim() == "Mount Point" && value.starts_with('/'))
+                .then(|| PathBuf::from(value))
+        })
+        .collect()
+}
+
+/// Whether the chooser offers a macOS mount as a scan root: the disks
+/// Finder shows.
+///
+/// macOS flags a mount it keeps out of Finder `nobrowse`: `/dev`, every
+/// volume in `/System/Volumes` (the Data volume among them, which `/`
+/// already reaches through its firmlinks), Time Machine's snapshot mounts
+/// and Xcode's simulator and device mounts. Those, automounts, and Time
+/// Machine backup disks (`backup_disks`) are left out. `/` is always
+/// offered: it is the startup disk.
+pub fn macos_offers_root(mount: &Mount, backup_disks: &[PathBuf]) -> bool {
+    if mount.point == Path::new("/") {
+        return true;
+    }
+    let hidden = mount
+        .options
+        .split(',')
+        .any(|option| matches!(option.trim(), "nobrowse" | "automounted"));
+    !hidden
+        && !mount.point.as_os_str().is_empty()
+        && mount.point.as_os_str() != MACOS_DATA_VOLUME
+        && !matches!(mount.fstype.as_str(), "devfs" | "autofs")
+        && !mount.point.starts_with(MACOS_TIME_MACHINE_SNAPSHOTS)
+        && !backup_disks.contains(&mount.point)
+}
+
+/// The scan roots [`macos_offers_root`] keeps, in `mount`'s order, from
+/// what `mount` and `tmutil destinationinfo` print.
+pub fn macos_volume_roots_in(mounts: &str, destinations: &str) -> Vec<PathBuf> {
+    let backup_disks = parse_tmutil_destinations(destinations);
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for mount in parse_macos_mount_table(mounts) {
+        // An overmount lists its point twice; the chooser shows it once.
+        if macos_offers_root(&mount, &backup_disks)
+            && !seen.contains(&mount.point)
+        {
+            seen.push(mount.point);
+        }
+    }
+    seen
+}
+
+/// [`macos_volume_roots_in`] for this Mac. A `tmutil` that fails or is
+/// missing names no backup disk; the `nobrowse` rule still applies.
+#[cfg(target_os = "macos")]
+fn macos_volume_roots() -> io::Result<Vec<PathBuf>> {
+    use std::process::Command;
+
+    let output = Command::new("mount").output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("cannot list mounted volumes"));
+    }
+    let destinations = Command::new("/usr/bin/tmutil")
+        .arg("destinationinfo")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default();
+    Ok(macos_volume_roots_in(
+        &String::from_utf8_lossy(&output.stdout),
+        &destinations,
+    ))
 }
 
 /// Where the Data volume is mounted on macOS.
@@ -952,13 +1056,8 @@ pub fn volume_roots() -> io::Result<Vec<Volume>> {
     }
     #[cfg(target_os = "macos")]
     {
-        let output = std::process::Command::new("mount").output()?;
-        if !output.status.success() {
-            return Err(io::Error::other("cannot list mounted volumes"));
-        }
-        Ok(parse_macos_mounts(&String::from_utf8_lossy(&output.stdout))
+        Ok(macos_volume_roots()?
             .into_iter()
-            .filter(|point| point.as_os_str() != MACOS_DATA_VOLUME)
             .map(|point| Volume {
                 point,
                 device: None,
@@ -976,6 +1075,32 @@ pub fn volume_roots() -> io::Result<Vec<Volume>> {
                 space: None,
             })
             .collect())
+    }
+}
+
+/// Every mount point on this machine, hidden ones included, read from the
+/// mount table without probing any of them. The chooser asks whether a
+/// recent root's volume is still mounted with this.
+pub fn mount_points() -> io::Result<Vec<PathBuf>> {
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Ok(mount_table()
+            .ok_or_else(|| io::Error::other("cannot read mount table"))?
+            .into_iter()
+            .map(|mount| mount.point)
+            .collect())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("mount").output()?;
+        if !output.status.success() {
+            return Err(io::Error::other("cannot list mounted volumes"));
+        }
+        Ok(parse_macos_mounts(&String::from_utf8_lossy(&output.stdout)))
+    }
+    #[cfg(windows)]
+    {
+        Ok(crate::windows::mount_points())
     }
 }
 
@@ -1079,23 +1204,14 @@ fn is_volume_candidate(mount: &Mount) -> bool {
 
 /// Every volume worth offering as a scan root, fullest first.
 ///
-/// The Data volume's second mount is the same disk under another name, so it
-/// is left out; the firmlinks joined into `/` mean `/` already shows it.
+/// The roots [`macos_offers_root`] keeps: the Data volume's second mount is
+/// the same disk under another name, and `/` already shows it through the
+/// firmlinks joined into it.
 #[cfg(target_os = "macos")]
 pub fn volumes() -> Vec<Volume> {
-    use std::process::Command;
-
-    let output = Command::new("mount")
-        .output()
-        .ok()
-        .and_then(|output| String::from_utf8(output.stdout).ok());
-    let Some(output) = output else {
+    let Ok(points) = macos_volume_roots() else {
         return Vec::new();
     };
-    let mut points = parse_macos_mounts(&output);
-    points.retain(|point| {
-        point.as_os_str() != MACOS_DATA_VOLUME && !point.as_os_str().is_empty()
-    });
     let mut volumes: Vec<Volume> = points
         .iter()
         .map(|point| Volume {
@@ -1675,6 +1791,169 @@ map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
         .map(PathBuf::from)
         .collect();
         assert_eq!(parse_macos_mounts(output), points);
+    }
+
+    /// What a Mac with an external disk, a Time Machine disk and one
+    /// browsed backup prints; only the disks Finder shows are offered.
+    #[test]
+    fn macos_offers_the_disks_finder_shows() {
+        let mounts = "\
+/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)
+devfs on /dev (devfs, local, nobrowse)
+/dev/disk3s6 on /System/Volumes/VM (apfs, local, noexec, journaled, noatime, nobrowse)
+/dev/disk3s2 on /System/Volumes/Preboot (apfs, local, journaled, nobrowse)
+/dev/disk2s3 on /System/Volumes/Hardware (apfs, local, journaled, nobrowse)
+/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse, protect, root data)
+map auto_home on /System/Volumes/Data/home (autofs, automounted, nobrowse)
+/dev/disk5s1 on /Library/Developer/CoreSimulator/Volumes/iOS_21A342 (apfs, local, nodev, nosuid, read-only, journaled, noatime, nobrowse)
+/dev/disk7s1 on /Volumes/Archive (apfs, local, nodev, nosuid, journaled, noowners)
+/dev/disk8s2 on /Volumes/Backups (apfs, local, nodev, nosuid, journaled, noowners)
+/dev/disk8s3 on /Volumes/.timemachine/6F1C/2026-11-18-091500.backup (apfs, local, nodev, nosuid, read-only, journaled)
+/dev/disk9s1 on /Volumes/My Disk (2) (apfs, local, nodev, nosuid, journaled, noowners)
+//me@nas/share on /Volumes/share on nas (smbfs, nodev, nosuid, mounted by me)
+";
+        let destinations = "\
+====================================================
+Name          : Backups
+Kind          : Local
+Mount Point   : /Volumes/Backups
+ID            : 4E9BB43D-E969-4085-AA43-62D321BA9037
+";
+        let offered: Vec<PathBuf> = [
+            "/",
+            "/Volumes/Archive",
+            "/Volumes/My Disk (2)",
+            "/Volumes/share on nas",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        assert_eq!(macos_volume_roots_in(mounts, destinations), offered);
+        // Without tmutil's answer the backup disk is offered, but its
+        // snapshot mounts are still not.
+        assert!(
+            macos_volume_roots_in(mounts, "")
+                .contains(&PathBuf::from("/Volumes/Backups"))
+        );
+        assert!(
+            macos_volume_roots_in(mounts, "").iter().all(|point| {
+                !point.starts_with(MACOS_TIME_MACHINE_SNAPSHOTS)
+            })
+        );
+    }
+
+    #[test]
+    fn tmutil_names_only_mounted_destinations() {
+        let output = "\
+====================================================
+Name          : Seagate
+Kind          : Local
+ID            : 4E9BB43D
+====================================================
+Name          : Backups: Office
+Kind          : Local
+Mount Point   : /Volumes/Backups: Office
+";
+        assert_eq!(
+            parse_tmutil_destinations(output),
+            vec![PathBuf::from("/Volumes/Backups: Office")]
+        );
+    }
+
+    mod macos_roots {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        /// Points across what macOS mounts: the startup disk, devices,
+        /// system volumes, snapshots, automounts and ordinary disks.
+        fn point() -> impl Strategy<Value = String> {
+            prop::sample::select(vec![
+                "/",
+                "/dev",
+                MACOS_DATA_VOLUME,
+                "/System/Volumes/VM",
+                "/System/Volumes/Data/home",
+                "/Volumes/.timemachine/6F1C/1.backup",
+                "/Volumes/Archive",
+                "/Volumes/Backups",
+                "/Volumes/My Disk (2)",
+                "/Volumes/share on nas",
+            ])
+            .prop_map(str::to_owned)
+        }
+
+        fn line() -> impl Strategy<Value = (String, String, Vec<String>)> {
+            let fstype = prop::sample::select(vec![
+                "apfs", "hfs", "smbfs", "devfs", "autofs",
+            ]);
+            let options = prop::sample::subsequence(
+                vec!["local", "nobrowse", "automounted", "read-only"],
+                0..=4,
+            );
+            (point(), fstype, options).prop_map(|(point, fstype, options)| {
+                (
+                    point,
+                    fstype.to_owned(),
+                    options.into_iter().map(str::to_owned).collect(),
+                )
+            })
+        }
+
+        /// A mount line Finder would show, judged from the line alone.
+        fn browsable(
+            point: &str,
+            fstype: &str,
+            options: &[String],
+            backups: &[String],
+        ) -> bool {
+            point == "/"
+                || (!options.iter().any(|option| {
+                    option == "nobrowse" || option == "automounted"
+                }) && fstype != "devfs"
+                    && fstype != "autofs"
+                    && point != MACOS_DATA_VOLUME
+                    && !point.starts_with("/Volumes/.timemachine/")
+                    && !backups.iter().any(|backup| backup == point))
+        }
+
+        proptest! {
+            /// Every offered root has a line Finder would show, every
+            /// point with such a line is offered once, and they keep
+            /// `mount`'s order.
+            #[test]
+            fn offered_roots_are_exactly_the_browsable_mounts(
+                lines in prop::collection::vec(line(), 0..12),
+                backups in prop::collection::vec(point(), 0..3),
+            ) {
+                let table = lines
+                    .iter()
+                    .enumerate()
+                    .map(|(n, (point, fstype, options))| {
+                        let mut flags = vec![fstype.clone()];
+                        flags.extend(options.iter().cloned());
+                        format!("/dev/disk{n} on {point} ({})", flags.join(", "))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let destinations = backups
+                    .iter()
+                    .map(|point| format!("Mount Point   : {point}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let offered = macos_volume_roots_in(&table, &destinations);
+                let mut expected: Vec<PathBuf> = Vec::new();
+                for (point, fstype, options) in &lines {
+                    let point_path = PathBuf::from(point);
+                    if browsable(point, fstype, options, &backups)
+                        && !expected.contains(&point_path)
+                    {
+                        expected.push(point_path);
+                    }
+                }
+                prop_assert_eq!(offered, expected);
+            }
+        }
     }
 
     #[test]

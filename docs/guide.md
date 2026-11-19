@@ -45,6 +45,21 @@ Switch to **SSH host**, enter an SSH alias or `user@host` and press
 mount namespace, not file contents. It never starts a scan or probes
 mounted network filesystems just to fill the list.
 
+On a Mac the list offers the disks Finder shows. Mounts macOS keeps out of
+Finder (`/dev`, the volumes in `/System/Volumes`, automounts, Time
+Machine's backup snapshots, Xcode's simulator mounts) and Time Machine
+backup disks are left out; type one in the Directory row to scan it
+anyway.
+
+On this computer the five roots scanned most recently come first, newest at
+the top, each with when it was last scanned, then a rule and the other
+roots. A root counts when you choose it in the chooser or with **Open
+Folder**, and Enter right after opening the chooser rescans the last one. A
+recent root whose disk is not mounted now, such as an unplugged disk, is
+left out until it is back; the chooser tells from the mount table without
+reading the disk. The list keeps paths, their disks' mount points and times
+only, on this computer.
+
 The list ends with a **Directory** row: type an absolute path there, or
 choose **Choose…** for the system's folder picker on this computer. Select
 a mount or the Directory row and press **Scan**; Enter does the same, and

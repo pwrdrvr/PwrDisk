@@ -135,6 +135,9 @@ developer input, not a sandbox for arbitrary app interactions.
 image and the fixture root, with no discovery: this Mac's mounts and SSH
 hosts are never listed. It requires the owned Fixtures image.
 `scripts/screenshots/chooser.json` captures it.
+`chooser_recent` adds the fixture root and its `Projects` folder as the
+recent roots above the chooser's rule; `scripts/screenshots/chooser-recent.json`
+captures it.
 
 `permanent_review` opens Review with Permanent selected without confirming
 removal, for pictures of that mode independent of the host's Trash backend.

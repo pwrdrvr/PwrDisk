@@ -830,7 +830,14 @@ pub struct Disktree {
     roots_job: Option<disktree_core::remote::RemoteRoots>,
     volume_epoch: u64,
     pub volumes: Vec<disktree_core::space::Volume>,
+    /// How many of `volumes` are recent roots; the rule is drawn after
+    /// them.
+    pub volumes_recent: usize,
     pub volume_highlight: usize,
+    /// The roots this computer scanned last, newest first.
+    pub recent_roots: Vec<crate::recent_roots::Recent>,
+    /// Where they are remembered; `None` keeps them to this session.
+    pub recent_roots_path: Option<PathBuf>,
     /// The side panel's width, in rem; dragged from its left edge.
     pub panel_rems: f32,
     pub scan_started: Option<Instant>,
@@ -899,6 +906,12 @@ impl Disktree {
             None
         } else {
             crate::scan_report::settings_path()
+        };
+        // The same for the chooser's recent roots.
+        let recent_roots_path = if cfg!(any(test, feature = "screenshots")) {
+            None
+        } else {
+            crate::recent_roots::settings_path()
         };
         let mut tree = Self {
             root_path,
@@ -1111,7 +1124,13 @@ impl Disktree {
             roots_job: None,
             volume_epoch: 0,
             volumes: Vec::new(),
+            volumes_recent: 0,
             volume_highlight: 0,
+            recent_roots: recent_roots_path
+                .as_deref()
+                .map(crate::recent_roots::load)
+                .unwrap_or_default(),
+            recent_roots_path,
             panel_rems: PANEL_REMS,
             scan_started: None,
             scan_root: PathBuf::new(),
@@ -1283,6 +1302,7 @@ impl Disktree {
         self.roots_job = None;
         self.volumes_source.clone_from(&host);
         self.volumes.clear();
+        self.volumes_recent = 0;
         self.volume_highlight = 0;
         self.volumes_error = None;
         self.picker_error = None;
@@ -1308,18 +1328,30 @@ impl Disktree {
                     })
                     .detach();
                 }
-                Err(error) => self.finish_volume_listing(Err(error), cx),
+                Err(error) => {
+                    self.finish_volume_listing(Err(error), &[], cx);
+                }
             }
         } else {
-            let task = cx.background_executor().spawn(async {
-                disktree_core::space::volume_roots()
-                    .map(|volumes| (volumes, std::env::home_dir()))
+            let recents = self.recent_roots.clone();
+            let task = cx.background_executor().spawn(async move {
+                // An unplugged disk's recent root is left out by its
+                // volume's mount point, from the mount table: discovery
+                // probes no mount, recent or not.
+                let mounted = disktree_core::space::mount_points().ok();
+                let present =
+                    crate::recent_roots::present(&recents, mounted.as_deref());
+                (
+                    disktree_core::space::volume_roots()
+                        .map(|volumes| (volumes, std::env::home_dir())),
+                    present,
+                )
             });
             cx.spawn(async move |this, cx| {
-                let result = task.await;
+                let (result, present) = task.await;
                 let _ = this.update(cx, |this, cx| {
                     if this.volumes_open && this.volume_epoch == epoch {
-                        this.finish_volume_listing(result, cx);
+                        this.finish_volume_listing(result, &present, cx);
                     }
                 });
             })
@@ -1346,6 +1378,7 @@ impl Disktree {
         self.roots_job = None;
         self.finish_volume_listing(
             result.map(|roots| (roots.volumes, roots.home)),
+            &[],
             cx,
         );
         false
@@ -1357,6 +1390,7 @@ impl Disktree {
             Vec<disktree_core::space::Volume>,
             Option<PathBuf>,
         )>,
+        present: &[PathBuf],
         cx: &mut Context<'_, Self>,
     ) {
         self.volumes_loading = false;
@@ -1378,6 +1412,16 @@ impl Disktree {
                             space: None,
                         },
                     );
+                }
+                // Recent roots are this computer's alone.
+                if self.volumes_source.is_none() {
+                    (volumes, self.volumes_recent) =
+                        crate::recent_roots::arrange(
+                            &self.recent_roots,
+                            volumes,
+                            |path| present.iter().any(|known| known == path),
+                            chrono::Local::now().date_naive(),
+                        );
                 }
                 self.volumes = volumes;
                 if typed {
@@ -1582,8 +1626,36 @@ impl Disktree {
         }
         self.awaiting_root = false;
         self.close_volumes(cx);
+        if self.remote.is_none() {
+            self.remember_root(&path, cx);
+        }
         self.set_root(path, cx);
         self.arm_report();
+    }
+
+    /// Put a root the person chose at the top of the chooser's recent
+    /// roots. Said only when it could not be saved.
+    pub fn remember_root(&mut self, path: &Path, cx: &mut Context<'_, Self>) {
+        // Open Folder canonicalizes with std, which spells a Windows drive
+        // `\\?\C:\`; the chooser's rows and its Directory row use `C:\`.
+        let path = dunce::simplified(path).to_path_buf();
+        let volume = volume_root_for(&path);
+        crate::recent_roots::record(
+            &mut self.recent_roots,
+            path,
+            volume,
+            chrono::Utc::now().timestamp(),
+        );
+        if let Some(saved) = self.recent_roots_path.as_deref()
+            && let Err(error) =
+                crate::recent_roots::save(saved, &self.recent_roots)
+        {
+            self.say_until_closed(
+                format!("Recent roots could not be saved: {error}"),
+                Status::Warning,
+                cx,
+            );
+        }
     }
 
     /// Closing cancels discovery, not the scan already on screen.
@@ -4941,6 +5013,7 @@ impl Disktree {
             // removal may have started while it was open.
             let _ = this.update(cx, |this, cx| {
                 if this.can_start_over() {
+                    this.remember_root(&path, cx);
                     this.set_root(path, cx);
                 }
             });
