@@ -273,7 +273,8 @@ pub fn root(
             if !this.has_modal() && this.screen == Screen::Review && !this.editing_phrase(window, cx) && crate::ui::scroll_key(&event.keystroke.key, &this.review_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
             if this.show_help && crate::ui::scroll_key(&event.keystroke.key, &this.help_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
             // The Mark menu owns Escape and Tab while focus is inside it.
-            let in_mark_menu = this.mark_menu.is_some() && this.mark_menu_focus.contains_focused(window, cx);
+            let in_mark_menu = this.mark_menu.is_some()
+                && this.mark_menu_focus.contains_focused(window, cx);
             if in_mark_menu && event.keystroke.key == "escape" {
                 close_mark_menu(this, true, window, cx);
                 cx.stop_propagation();
@@ -3616,7 +3617,8 @@ fn panel_lists(
                 .collect();
             if *seen.borrow() != now {
                 *seen.borrow_mut() = now;
-                window.refresh();
+                // Not `refresh`, which GPUI ignores while a frame draws.
+                window.request_animation_frame();
             }
         })
         .id("panel-lists")
@@ -3686,7 +3688,7 @@ fn panel_lists(
                     .child(head),
             )
         }))
-        .children(crate::scroll_bar::bar(
+        .child(crate::scroll_bar::bar(
             "side-panel-scrollbar",
             &app.panel_scroll,
             crate::scroll_bar::in_gutter(gutter, app.rem),
@@ -4467,7 +4469,7 @@ fn sentence(reason: &str) -> String {
 /// It opens below the chevron and flips above it when the window has no
 /// room below: GPUI's anchored element flips about its anchor point, so the
 /// point is the chevron's top corner and the offset its height, both from
-/// the last frame (`mark_menu_anchor`).
+/// the last frame (`mark_menu_anchor`, the chevron's bounds).
 fn over_limit_mark(
     share: &Share,
     path: std::path::PathBuf,
@@ -4478,20 +4480,7 @@ fn over_limit_mark(
 ) -> Div {
     let open = menu.is_some();
     let anchor = app.mark_menu_anchor.clone();
-    let row = div()
-        .on_children_prepainted(move |bounds, window, _| {
-            let Some(now) = bounds.first().copied() else {
-                return;
-            };
-            // A move while the menu is open takes one more frame, so the
-            // menu follows; a closed menu only remembers.
-            if anchor.replace(Some(now)) != Some(now) && open {
-                window.refresh();
-            }
-        })
-        .flex()
-        .flex_row()
-        .flex_1();
+    let row = div().flex().flex_row().flex_1();
     let floating = menu.zip(app.mark_menu_anchor.get()).map(|(menu, at)| {
         // The gap between chevron and menu, on whichever side it opens.
         let gap = px(4.);
@@ -4506,6 +4495,18 @@ fn over_limit_mark(
     });
     row.child(
         div()
+            // The chevron, the row's second child, as last laid out. A move
+            // while the menu is open takes one more frame, so the menu
+            // follows; a closed menu only remembers. Not `refresh`, which
+            // GPUI ignores while a frame draws.
+            .on_children_prepainted(move |bounds, window, _| {
+                let Some(now) = bounds.get(1).copied() else {
+                    return;
+                };
+                if anchor.replace(Some(now)) != Some(now) && open {
+                    window.request_animation_frame();
+                }
+            })
             .flex()
             .flex_row()
             .flex_1()
@@ -4607,9 +4608,20 @@ fn mark_menu(
         .border_color(theme.border)
         .bg(theme.surface)
         .shadow_lg()
-        .on_mouse_down_out(cx.listener(|this, _, window, cx| {
-            close_mark_menu(this, false, window, cx);
-        }))
+        .on_mouse_down_out(cx.listener(
+            |this, event: &gpui_kit::MouseDownEvent, window, cx| {
+                // A press on the chevron is its own: its click closes the
+                // menu. Closing here too drew a frame before the release,
+                // so the click saw a closed menu and opened it again.
+                let on_chevron = this
+                    .mark_menu_anchor
+                    .get()
+                    .is_some_and(|chevron| chevron.contains(&event.position));
+                if !on_chevron {
+                    close_mark_menu(this, false, window, cx);
+                }
+            },
+        ))
         .child(
             button("mark-anyway", "Mark anyway", ButtonVariant::Outline, cx)
                 .debug_selector(|| "mark-anyway".into())
@@ -6370,7 +6382,7 @@ fn review(
                     )))
                 .children(toasts)
                 // In the screen's padding, beside the list and summary.
-                .children(crate::scroll_bar::bar(
+                .child(crate::scroll_bar::bar(
                     "review-scroll-bar",
                     &app.review_scroll,
                     crate::scroll_bar::in_padding(

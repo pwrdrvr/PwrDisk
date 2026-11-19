@@ -420,7 +420,7 @@ impl Render for DocWindow {
                                 .track_scroll(scroll)
                                 .size_full(),
                             )
-                            .children(crate::scroll_bar::bar(
+                            .child(crate::scroll_bar::bar(
                                 "doc-lines-bar",
                                 scroll,
                                 gpui_kit::px(0.),

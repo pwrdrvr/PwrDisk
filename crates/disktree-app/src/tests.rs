@@ -12120,6 +12120,199 @@ fn every_scroll_area_draws_its_bar_exactly_while_it_overflows(
     );
 }
 
+/// Frames the window has asked for since the last draw: what GPUI would
+/// draw next with no input. Tests have no display link, so a request only
+/// shows here.
+fn frames_asked(cx: &mut Window) -> usize {
+    cx.update(gpui_kit::Window::simulate_next_frame)
+}
+
+/// Draw until nothing asks for another frame: transitions, such as a
+/// button's fill, run on the test clock, which moves a frame at a time
+/// here. Bounded, as a transition is.
+fn settle(cx: &mut Window) {
+    for _ in 0..600 {
+        draw(cx);
+        if frames_asked(cx) == 0 {
+            return;
+        }
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+    }
+    panic!("the window kept asking for frames");
+}
+
+/// The help, which overflows on a short window, shows its bar by its
+/// second frame. That the first asks for the second, with nothing else
+/// moving, is `scroll_bar`'s own test.
+#[gpui_kit::test]
+fn a_bar_shows_on_the_frame_after_its_area_first_overflows(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1100.), px(420.)));
+    draw(cx);
+    draw(cx);
+    update(&view, cx, Disktree::open_help);
+    draw(cx);
+    let _ = frames_asked(cx);
+    draw(cx);
+    let help = read(&view, cx, |app| app.help_scroll.clone());
+    assert!(crate::scroll_bar::Extent::of(&help).scrolls, "it overflows");
+    assert!(cx.debug_bounds("help-scroll-bar").is_some(), "and shows it");
+}
+
+/// Property: the Mark menu stays beside its chevron when the chevron
+/// moves under it, here as the compact panel's details open above it, on
+/// the next frame with no input. The frame it asked for came from layout
+/// through `refresh`, which GPUI ignores while it draws, so the menu stayed
+/// where the chevron had been.
+#[gpui_kit::test]
+fn the_mark_menu_follows_its_chevron_on_the_next_frame(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = over_limit_view(temp.path(), cx);
+    // Short enough for the compact panel: a summary line whose details
+    // open above the chevron, while nothing else changes size.
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(700.)));
+    update(&view, cx, |app, _| app.selection_details = false);
+    draw(cx);
+    click_on(cx, "inspector-mark-more");
+    let beside = |cx: &mut Window| {
+        let chevron = cx.debug_bounds("inspector-mark-more").unwrap();
+        let menu = cx.debug_bounds("mark-menu").unwrap();
+        (menu.right() - chevron.right()).abs() < px(1.)
+            && ((menu.top() - chevron.bottom()).abs() < px(8.)
+                || (chevron.top() - menu.bottom()).abs() < px(8.))
+    };
+    assert!(beside(cx), "opened beside the chevron");
+    let before = cx.debug_bounds("inspector-mark-more").unwrap();
+    // Nothing else is moving, so a frame asked for now is the menu's.
+    settle(cx);
+    update(&view, cx, |app, cx| {
+        app.selection_details = true;
+        cx.notify();
+    });
+    draw(cx);
+    let after = cx.debug_bounds("inspector-mark-more").unwrap();
+    assert!(
+        after.top() > before.top() + px(10.),
+        "the chevron moved down"
+    );
+    assert!(read(&view, cx, |app| app.mark_menu.is_some()), "still open");
+    assert!(frames_asked(cx) > 0, "the move asks for another frame");
+    draw(cx);
+    assert!(beside(cx), "and the menu follows the chevron");
+}
+
+/// Model: the chevron toggles its menu. A press on it while the menu is
+/// open closes the menu and the release does not open it again, though a
+/// frame is drawn between them, as one is for a person's click. The menu's
+/// press-outside closed it first, so the click saw it closed and reopened.
+#[gpui_kit::test]
+fn the_chevron_closes_the_mark_menu_it_opened(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = over_limit_view(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    for round in 0..2 {
+        click_on(cx, "inspector-mark-more");
+        assert!(read(&view, cx, |app| app.mark_menu.is_some()), "{round}");
+        let chevron = cx.debug_bounds("inspector-mark-more").unwrap();
+        let none = gpui_kit::Modifiers::none();
+        cx.simulate_mouse_down(
+            chevron.center(),
+            gpui_kit::MouseButton::Left,
+            none,
+        );
+        draw(cx);
+        cx.simulate_mouse_up(
+            chevron.center(),
+            gpui_kit::MouseButton::Left,
+            none,
+        );
+        draw(cx);
+        assert!(
+            read(&view, cx, |app| app.mark_menu.is_none()),
+            "a second click closes it, round {round}"
+        );
+        assert!(cx.debug_bounds("mark-menu").is_none(), "{round}");
+    }
+}
+
+/// Model: taking a bar is scrolling by hand, as the wheel is. Logs stops
+/// following live lines and the removal's list stops following the item
+/// in hand, or the next line or report pulls the list back under the
+/// pointer.
+#[gpui_kit::test]
+fn taking_a_bar_stops_a_list_from_following(cx: &mut TestAppContext) {
+    use crate::run_list::{Item, RunList, Status};
+    let line = |number: usize| {
+        format!("2026-10-31T12:00:00.000-04:00 INFO  pwrdisk: line {number}\n")
+    };
+    let text: String = (1..=200).map(line).collect();
+    {
+        let (_dir, _path, view, cx) = logs_over(cx, &text);
+        assert!(view.read_with(cx, |logs, _| logs.live), "follows at first");
+        let bar = cx.debug_bounds("logs-bar").expect("200 lines overflow");
+        cx.simulate_mouse_down(
+            bar.center(),
+            gpui_kit::MouseButton::Left,
+            gpui_kit::Modifiers::none(),
+        );
+        draw(cx);
+        assert!(
+            !view.read_with(cx, |logs, _| logs.live),
+            "taking the bar pauses Live"
+        );
+    }
+    let mut cx = TestAppContext::single();
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), &mut cx);
+    let path = |index: usize| temp.path().join(format!("dir-{index:03}"));
+    update(&view, cx, |app, cx| {
+        app.run_list = RunList::new(
+            (0..80)
+                .map(|index| Item {
+                    target: disktree_core::removal::Target {
+                        path: path(index),
+                        bytes: 1_000,
+                        is_dir: true,
+                        hidden: false,
+                    },
+                    category: disktree_core::classify::Category::Other,
+                    reclaim: None,
+                    private: None,
+                    status: Status::Waiting,
+                })
+                .collect(),
+        );
+        app.screen = Screen::Running;
+        app.run_checked = true;
+        app.run_list.scrolled_by_hand = false;
+        cx.notify();
+    });
+    draw(cx);
+    draw(cx);
+    let bar = cx.debug_bounds("run-list-bar").expect("80 rows overflow");
+    cx.simulate_mouse_down(
+        bar.center(),
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    draw(cx);
+    assert!(
+        read(&view, cx, |app| app.run_list.scrolled_by_hand),
+        "taking the bar stops following"
+    );
+}
+
 /// Model: the side panel's lists show their extent exactly when they
 /// scroll. A bar, in the gutter beside the content rather than over its
 /// buttons, while the content is taller than the space; a fade and a

@@ -471,13 +471,21 @@ fn list_column(
             cx.notify();
         }))
         .child(rows)
-        .children(crate::scroll_bar::bar(
-            "run-list-bar",
-            &app.run_scroll,
-            px(0.),
-            app.rem,
-            theme.foreground,
-        ));
+        .child(
+            crate::scroll_bar::bar(
+                "run-list-bar",
+                &app.run_scroll,
+                px(0.),
+                app.rem,
+                theme.foreground,
+            )
+            // Taking the bar is scrolling by hand, as the wheel is: the
+            // list stops following the item in hand.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                this.run_list.scrolled_by_hand = true;
+                cx.notify();
+            })),
+        );
 
     let cohorts = app.ledger.cohorts();
     div()
