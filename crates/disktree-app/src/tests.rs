@@ -11804,6 +11804,150 @@ fn over_limit_view<'a>(
     (view, cx, junk)
 }
 
+/// Scroll the side panel by `distance` (positive moves its content up),
+/// with the wheel over its lists, as a person would.
+fn wheel_panel(cx: &mut Window, distance: gpui_kit::Pixels) {
+    let scroll = cx.debug_bounds("side-panel-scroll").expect("the lists");
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: scroll.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(Point::new(px(0.), -distance)),
+        modifiers: gpui_kit::Modifiers::none(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    draw(cx);
+}
+
+/// Property: wherever the chevron sits in the panel's scroll, the menu it
+/// opens is entirely in the window and on top: a click on Mark anyway's
+/// middle reaches Mark anyway. It once opened in the scroll's flow, below
+/// the part in sight, so on a short window the click landed on the marked
+/// total under it and the menu looked hidden behind that card.
+#[gpui_kit::test]
+fn the_mark_menu_opens_in_sight_wherever_the_chevron_is(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, junk) = over_limit_view(temp.path(), cx);
+    // Something small marked, so the marked total sits under the lists as
+    // it did in the report.
+    update(&view, cx, |app, cx| {
+        let keep = app
+            .tree()
+            .and_then(|tree| tree.find("keep").map(|(crumbs, _)| crumbs))
+            .expect("the keep directory");
+        app.toggle_mark(&keep, cx);
+    });
+    for height in [480., 540., 600., 720., 900.] {
+        for rem in [16., 20.] {
+            let case = format!("{height} px at {rem} px a rem");
+            cx.simulate_resize(gpui_kit::size(px(1200.), px(height)));
+            cx.update(|window, _| window.set_rem_size(px(rem)));
+            update(&view, cx, |app, cx| {
+                app.panel_scroll.set_offset(Point::default());
+                app.select(Some(junk.clone()), cx);
+            });
+            draw(cx);
+            draw(cx);
+            // The worst place for a menu that opens downward: the chevron
+            // scrolled to the bottom edge of the lists.
+            let scroll = cx.debug_bounds("side-panel-scroll").unwrap();
+            let chevron = cx.debug_bounds("inspector-mark-more").unwrap();
+            wheel_panel(cx, chevron.bottom() - scroll.bottom());
+            let scroll = cx.debug_bounds("side-panel-scroll").unwrap();
+            let chevron = cx.debug_bounds("inspector-mark-more").unwrap();
+            assert!(
+                chevron.top() >= scroll.top()
+                    && chevron.bottom() <= scroll.bottom() + px(1.),
+                "chevron in sight, {case}: {chevron:?} {scroll:?}"
+            );
+
+            click_on(cx, "inspector-mark-more");
+            let menu = cx.debug_bounds("mark-menu").expect("menu open");
+            assert!(
+                menu.top() >= px(0.) && menu.bottom() <= px(height),
+                "menu in the window, {case}: {menu:?}"
+            );
+            assert!(
+                menu.bottom() <= chevron.top()
+                    || menu.top() >= chevron.bottom(),
+                "menu beside the chevron, not over it, {case}: {menu:?}"
+            );
+            click_on(cx, "mark-anyway");
+            read(&view, cx, |app| {
+                assert_eq!(app.mark_menu, None, "{case}");
+                assert_eq!(app.marks.len(), 2, "Mark anyway reached, {case}");
+            });
+            update(&view, cx, |app, cx| app.toggle_mark(&junk, cx));
+            assert_eq!(read(&view, cx, |app| app.marks.len()), 1, "{case}");
+        }
+    }
+}
+
+/// Model: the side panel's lists show their extent exactly when they
+/// scroll. A bar, in the gutter beside the content rather than over its
+/// buttons, while the content is taller than the space; a fade and a
+/// hairline on each edge with more beyond it, and none on an edge with
+/// nothing beyond. Before, no scroll area in PwrDisk drew a bar at all, so
+/// a cut-off button looked covered by the card below it.
+#[gpui_kit::test]
+fn the_panel_scroll_shows_its_extent_only_while_it_scrolls(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = over_limit_view(temp.path(), cx);
+    let mut seen = (false, false);
+    let mut check = |cx: &mut Window, case: &str| {
+        let (offset, max) = read(&view, cx, |app| {
+            (app.panel_scroll.offset().y, app.panel_scroll.max_offset().y)
+        });
+        let scrolls = max > px(0.5);
+        if scrolls {
+            seen.0 = true;
+        } else {
+            seen.1 = true;
+        }
+        let bar = cx.debug_bounds("side-panel-scrollbar");
+        assert_eq!(bar.is_some(), scrolls, "bar, {case}: max {max:?}");
+        if let Some(bar) = bar {
+            let scroll = cx.debug_bounds("side-panel-scroll").unwrap();
+            let panel = cx.debug_bounds("side-panel").unwrap();
+            assert!(bar.left() >= scroll.right(), "in the gutter, {case}");
+            assert!(bar.right() <= panel.right(), "in the panel, {case}");
+        }
+        assert_eq!(
+            cx.debug_bounds("side-panel-more-above").is_some(),
+            scrolls && offset < px(-0.5),
+            "top edge, {case}: {offset:?}"
+        );
+        assert_eq!(
+            cx.debug_bounds("side-panel-more-below").is_some(),
+            scrolls && offset > -max + px(0.5),
+            "bottom edge, {case}: {offset:?} of {max:?}"
+        );
+    };
+    for height in [360., 480., 600., 900., 1400.] {
+        let case = format!("{height} px");
+        cx.simulate_resize(gpui_kit::size(px(1200.), px(height)));
+        update(&view, cx, |app, _| {
+            app.panel_scroll.set_offset(Point::default());
+        });
+        draw(cx);
+        draw(cx);
+        check(cx, &format!("{case}, at the top"));
+        wheel_panel(cx, px(40.));
+        check(cx, &format!("{case}, part way"));
+        wheel_panel(cx, px(10_000.));
+        check(cx, &format!("{case}, at the end"));
+    }
+    assert_eq!(
+        seen,
+        (true, true),
+        "both a panel that scrolls and one that fits"
+    );
+}
+
 /// Past the limit, Space marks nothing; only the chevron's Mark anyway
 /// does, and Review then wants the phrase before anything is removed.
 #[gpui_kit::test]

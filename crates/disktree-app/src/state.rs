@@ -790,6 +790,11 @@ pub struct Disktree {
     /// The path whose Mark ▾ menu is open, which holds Mark anyway. Kept
     /// by path so a menu never stays open over another selection.
     pub mark_menu: Option<PathBuf>,
+    /// Where the over-limit Mark and its chevron were last drawn, which
+    /// the menu floats from (`views::over_limit_mark`).
+    pub mark_menu_anchor: std::rc::Rc<
+        std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>,
+    >,
     /// Review's field for the over-limit phrase, made when first shown.
     pub over_phrase: Option<Entity<InputState>>,
     /// The shares and mode the over-limit box was ticked for: a tick says
@@ -1065,6 +1070,7 @@ impl Disktree {
             safety_policy: RefCell::new(None),
             refusal_cache: RefCell::new(None),
             mark_menu: None,
+            mark_menu_anchor: std::rc::Rc::default(),
             over_phrase: None,
             over_ticked: None,
             disk_probe: crate::mark_guard::disk_of,
@@ -5039,6 +5045,12 @@ impl Disktree {
             return;
         }
 
+        // The Mark menu closes before Escape does anything else.
+        if self.mark_menu.is_some() && key == "escape" {
+            self.mark_menu = None;
+            cx.notify();
+            return;
+        }
         // The legend's "+N" menu closes before Escape clears the legend.
         if self.legend_menu_open
             && key == "escape"

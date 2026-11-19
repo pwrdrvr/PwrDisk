@@ -3444,7 +3444,7 @@ fn side_panel(
     compact: bool,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
-) -> Div {
+) -> Stateful<Div> {
     // Once per frame: the marked list, the marked total and the disk all
     // read it, and building it reads the mount table.
     let plan = app.plan();
@@ -3467,6 +3467,8 @@ fn side_panel(
             }
         }));
     div()
+        .id("side-panel")
+        .debug_selector(|| "side-panel".into())
         .relative()
         .flex()
         .flex_col()
@@ -3567,6 +3569,13 @@ fn panel_lists(
         .id("panel-lists")
         .debug_selector(|| "side-panel-scroll".into())
         .track_scroll(&app.panel_scroll)
+        // A menu opened from the selection floats over the panel, so it
+        // would stay behind while its chevron scrolls away: it closes.
+        .on_scroll_wheel(cx.listener(|this, _, _, cx| {
+            if this.mark_menu.take().is_some() {
+                cx.notify();
+            }
+        }))
         .flex()
         .flex_col()
         .gap(if compact { space::MD } else { space::LG })
@@ -3578,6 +3587,7 @@ fn panel_lists(
         scroll = scroll.child(list);
         heads.push(head);
     }
+    let extent = ScrollExtent::of(&app.panel_scroll);
     div()
         .relative()
         .flex()
@@ -3585,6 +3595,16 @@ fn panel_lists(
         .flex_1()
         .min_h_0()
         .child(scroll)
+        .children(
+            extent.more_above.then(|| {
+                scroll_edge("side-panel-more-above", true, app, theme)
+            }),
+        )
+        .children(
+            extent.more_below.then(|| {
+                scroll_edge("side-panel-more-below", false, app, theme)
+            }),
+        )
         .children(pinned.and_then(|(index, top)| {
             let head = heads.get_mut(index)?.take()?;
             Some(
@@ -3609,6 +3629,124 @@ fn panel_lists(
                     .child(head),
             )
         }))
+        .children(extent.scrolls.then(|| {
+            gutter_scrollbar(
+                "side-panel-scrollbar",
+                &app.panel_scroll,
+                app,
+                theme,
+            )
+        }))
+}
+
+/// Where a scroll area stands against its content, from its last layout
+/// and current offset: whether it scrolls at all, and whether there is
+/// more out of sight above or below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScrollExtent {
+    scrolls: bool,
+    more_above: bool,
+    more_below: bool,
+}
+
+impl ScrollExtent {
+    fn of(scroll: &gpui_kit::ScrollHandle) -> Self {
+        // Half a pixel: layout rounds, and a sub-pixel remainder is not
+        // content anyone could scroll to.
+        let slack = px(0.5);
+        let max = scroll.max_offset().y;
+        let offset = scroll.offset().y;
+        let scrolls = max > slack;
+        Self {
+            scrolls,
+            more_above: scrolls && offset < -slack,
+            more_below: scrolls && offset > -max + slack,
+        }
+    }
+}
+
+/// An edge of a scroll area with more beyond it: the content fades into
+/// the panel and a hairline runs across the panel's full width, so what is
+/// cut off reads as scrolled out of sight, not as covered by the card
+/// below. It takes no clicks: the content under the fade stays live.
+fn scroll_edge(
+    id: &'static str,
+    top: bool,
+    app: &Disktree,
+    theme: &Theme,
+) -> Stateful<Div> {
+    // The panel's side padding: the hairline reaches its borders.
+    let bleed = px(-space::LG.0 * app.rem);
+    // From the edge inward: 180° runs top to bottom, 0° bottom to top.
+    let angle = if top { 180. } else { 0. };
+    let hairline = div()
+        .absolute()
+        .left(bleed)
+        .right(bleed)
+        .h(px(1.))
+        .bg(theme.border)
+        .map(|line| if top { line.top_0() } else { line.bottom_0() });
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .absolute()
+        .left_0()
+        .right_0()
+        .h(space::XL)
+        .map(|fade| if top { fade.top_0() } else { fade.bottom_0() })
+        .bg(gpui_kit::linear_gradient(
+            angle,
+            gpui_kit::linear_color_stop(theme.surface, 0.),
+            gpui_kit::linear_color_stop(theme.surface.opacity(0.), 1.),
+        ))
+        .child(hairline)
+}
+
+/// A scroll area's bar, always drawn while it scrolls and in the gutter
+/// to its right, so it never sits over the content's buttons. GPUI's
+/// overflow scrolling clips and scrolls but paints no bar; without one a
+/// scroll area's extent is invisible.
+fn gutter_scrollbar(
+    id: &'static str,
+    scroll: &gpui_kit::ScrollHandle,
+    app: &Disktree,
+    theme: &Theme,
+) -> Stateful<Div> {
+    use gpui_kit::base::{Scrollbar, ScrollbarAxis, ScrollbarMode};
+
+    let rem = app.rem;
+    let thumb = theme.foreground;
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .absolute()
+        .top_0()
+        .bottom_0()
+        // Centred in the panel's 1 rem side padding.
+        .right(px(-0.75 * rem))
+        .w(px(0.5 * rem))
+        .child(
+            Scrollbar::new(scroll)
+                .id(ElementId::Name(format!("{id}-bar").into()))
+                .axis(ScrollbarAxis::Vertical)
+                .mode(ScrollbarMode::Always)
+                .styles(move |style| {
+                    style
+                        .track(|track| {
+                            track
+                                .width(px(0.5 * rem))
+                                .bg(thumb.opacity(0.06))
+                        })
+                        .thumb(|bar| {
+                            bar.width(px(0.375 * rem))
+                                .inset(px(0.0625 * rem))
+                                .radius(px(0.))
+                                .bg(thumb.opacity(0.35))
+                        })
+                        .thumb_hover(|bar| bar.bg(thumb.opacity(0.55)))
+                        .thumb_active(|bar| bar.bg(thumb.opacity(0.7)))
+                }),
+        )
 }
 
 /// Which header to pin over the panel's lists, and how far up the next
@@ -4040,7 +4178,6 @@ fn selection_section(
             .map_or(MarkCheck::Allowed, |candidate| app.mark_check(&candidate))
     };
     let guard = mark_guard_note(app, &check, node.is_dir(), theme, cx);
-    let mut menu = None;
     if let MarkCheck::Protected(_) = &check {
         actions = actions.child(
             button("mark", "Can\u{2019}t remove", ButtonVariant::Outline, cx)
@@ -4052,14 +4189,15 @@ fn selection_section(
         );
     } else if let (MarkCheck::OverLimit(share), Some(path)) = (&check, &path) {
         let open = app.mark_menu.as_deref() == Some(path.as_path());
+        let menu = open.then(|| mark_menu(share, target.clone(), theme, cx));
         actions = actions.child(over_limit_mark(
             share,
             path.clone(),
-            open,
+            menu,
+            app,
             theme,
             cx,
         ));
-        menu = open.then(|| mark_menu(share, target.clone(), theme, cx));
     } else if !is_current_root && !removed {
         // Inside a marked directory there is nothing to mark on its own: it
         // goes with that directory, so the button offers to keep it by
@@ -4127,7 +4265,6 @@ fn selection_section(
         }))
         .children(guard)
         .child(actions)
-        .children(menu)
         .children(match node.category {
             Category::FilesystemEvents => Some(service_guidance(
                 disktree_core::macos_services::Service::Fsevents,
@@ -4375,31 +4512,70 @@ fn sentence(reason: &str) -> String {
 
 /// Mark past the limit: the main part says why it does nothing, and the
 /// chevron beside it, the one live part, opens the menu with Mark anyway.
+///
+/// The menu floats over the panel from the chevron, as every other menu
+/// here does. It once opened in the panel's flow, under the buttons; on a
+/// short window that was below the part of the scroll in sight, so a press
+/// seemed to do nothing and the menu looked hidden behind the marked total.
+/// It opens below the chevron and flips above it when the window has no
+/// room below: GPUI's anchored element flips about its anchor point, so the
+/// point is the chevron's top corner and the offset its height, both from
+/// the last frame (`mark_menu_anchor`).
 fn over_limit_mark(
     share: &Share,
     path: std::path::PathBuf,
-    open: bool,
+    menu: Option<Stateful<Div>>,
+    app: &Disktree,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
-    div()
+    let open = menu.is_some();
+    let anchor = app.mark_menu_anchor.clone();
+    let row = div()
+        .on_children_prepainted(move |bounds, window, _| {
+            let Some(now) = bounds.first().copied() else {
+                return;
+            };
+            // A move while the menu is open takes one more frame, so the
+            // menu follows; a closed menu only remembers.
+            if anchor.replace(Some(now)) != Some(now) && open {
+                window.refresh();
+            }
+        })
         .flex()
         .flex_row()
-        .flex_1()
-        .child(
-            button(
-                "mark",
-                format!("Over {}% limit", share.limit),
-                ButtonVariant::Outline,
-                cx,
-            )
-            .debug_selector(|| "inspector-mark".into())
-            .flex_1()
-            .justify_center()
-            .semantic_disabled(true),
+        .flex_1();
+    let floating = menu.zip(app.mark_menu_anchor.get()).map(|(menu, at)| {
+        // The gap between chevron and menu, on whichever side it opens.
+        let gap = px(4.);
+        deferred(
+            anchored()
+                .anchor(gpui_kit::Anchor::TopRight)
+                .position(gpui_kit::point(at.right(), at.top()))
+                .offset(gpui_kit::point(px(0.), at.size.height))
+                .child(div().py(gap).child(menu)),
         )
-        .child(
-            button("mark-more", "\u{25be}", ButtonVariant::Outline, cx)
+        .with_priority(2)
+    });
+    row.child(
+        div()
+            .flex()
+            .flex_row()
+            .flex_1()
+            .child(
+                button(
+                    "mark",
+                    format!("Over {}% limit", share.limit),
+                    ButtonVariant::Outline,
+                    cx,
+                )
+                .debug_selector(|| "inspector-mark".into())
+                .flex_1()
+                .justify_center()
+                .semantic_disabled(true),
+            )
+            .child(
+                button("mark-more", "\u{25be}", ButtonVariant::Outline, cx)
                 .debug_selector(|| "inspector-mark-more".into())
                 .aria_label("More ways to mark")
                 .tab_stop(true)
@@ -4413,13 +4589,14 @@ fn over_limit_mark(
                     window.focus(&this.focus, cx);
                     cx.notify();
                 })),
-        )
+            ),
+    )
+    .children(floating)
 }
 
 /// What the chevron holds: Mark anyway, which names its cost, and the
-/// way to the setting. Drawn in the panel's flow, below the actions, so
-/// the panel's scroll never clips it; its rows are buttons, so Tab and a
-/// screen reader reach them as they reach Mark.
+/// way to the setting. Its rows are buttons, so Tab and a screen reader
+/// reach them as they reach Mark; Escape or a click elsewhere closes it.
 fn mark_menu(
     share: &Share,
     crumbs: Vec<usize>,
@@ -4434,6 +4611,9 @@ fn mark_menu(
         .id("mark-menu")
         .debug_selector(|| "mark-menu".into())
         .occlude()
+        // The panel's width less its padding would crowd the treemap; this
+        // fits the cost on two lines.
+        .w(Rems(15.))
         .flex()
         .flex_col()
         .gap(space::SM)
