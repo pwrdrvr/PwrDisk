@@ -714,6 +714,9 @@ pub struct Disktree {
     pub(crate) shares_epoch: u64,
     /// The legend's "+N" menu: the chips the row has no room for.
     pub legend_menu_open: bool,
+    /// The "+N" menu's container. Its chips are tab stops, so Tab can
+    /// land in it, and [`Disktree::tab_scope`] then keeps Tab there.
+    pub legend_menu_focus: FocusHandle,
     /// The pointer is over the "+N" button, whose own press toggles the
     /// menu; a press anywhere else closes it.
     pub legend_more_hover: bool,
@@ -1060,6 +1063,7 @@ impl Disktree {
             legend_shares: None,
             shares_epoch: 0,
             legend_menu_open: false,
+            legend_menu_focus: cx.focus_handle(),
             legend_more_hover: false,
             legend_hover: None,
             find_epoch: 0,
@@ -4837,6 +4841,43 @@ impl Disktree {
 
     pub const fn has_modal(&self) -> bool {
         self.confirm_open || self.volumes_open || self.show_help
+    }
+
+    /// The popover Tab and Shift-Tab keep focus inside, if any.
+    ///
+    /// GPUI paints a popover (`deferred`) after the rest of the window,
+    /// so its stops come last in the window's tab order and Tab from its
+    /// last stop walks into the page under it. One rule covers every
+    /// popover: the top open one that is modal, or that holds focus.
+    /// A modal one pulls focus in from wherever it is; any other keeps
+    /// Tab only once focus is inside it, so an open menu does not trap a
+    /// keyboard that is working elsewhere.
+    ///
+    /// The list is derived from what is open, not a stack kept beside
+    /// it: popovers open and close from many places, and a stack would
+    /// go stale the first time one of them forgot it.
+    pub fn tab_scope(
+        &self,
+        window: &Window,
+        cx: &gpui_kit::App,
+    ) -> Option<FocusHandle> {
+        // Top first. The dialogs and the app menu share `confirm_focus`,
+        // and either one is drawn over the menus below it.
+        let popovers = [
+            (
+                self.has_modal() || self.app_menu_open,
+                true,
+                &self.confirm_focus,
+            ),
+            (self.mark_menu.is_some(), false, &self.mark_menu_focus),
+            (self.legend_menu_open, false, &self.legend_menu_focus),
+        ];
+        popovers
+            .into_iter()
+            .find(|(open, modal, focus)| {
+                *open && (*modal || focus.contains_focused(window, cx))
+            })
+            .map(|(_, _, focus)| focus.clone())
     }
 
     pub fn open_help(&mut self, cx: &mut Context<'_, Self>) {

@@ -271,7 +271,8 @@ pub fn root(
             if this.app_menu_open && app_menu_key(this, event, window, cx) { return; }
             if !this.has_modal() && this.screen == Screen::Review && !this.editing_phrase(window, cx) && crate::ui::scroll_key(&event.keystroke.key, &this.review_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
             if this.show_help && crate::ui::scroll_key(&event.keystroke.key, &this.help_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
-            // The Mark menu owns Escape and Tab while focus is inside it.
+            // The Mark menu owns Escape while focus is inside it, and
+            // returns it to the chevron; Tab is `tab_scope`'s.
             let in_mark_menu = this.mark_menu.is_some()
                 && this.mark_menu_focus.contains_focused(window, cx);
             if in_mark_menu && event.keystroke.key == "escape" {
@@ -281,11 +282,7 @@ pub fn root(
             }
             if event.keystroke.key == "tab" && !event.keystroke.modifiers.control && !event.keystroke.modifiers.platform {
                 if !this.has_modal() { this.find_open = false; }
-                let scope = if this.has_modal() || this.app_menu_open {
-                    Some(this.confirm_focus.clone())
-                } else {
-                    in_mark_menu.then(|| this.mark_menu_focus.clone())
-                };
+                let scope = this.tab_scope(window, cx);
                 crate::semantics::advance_focus(window, cx, event.keystroke.modifiers.shift, scope.as_ref());
                 cx.stop_propagation();
                 cx.notify();
@@ -3110,6 +3107,7 @@ fn legend_more(
                         div()
                             .id("legend-menu")
                             .debug_selector(|| "legend-menu".into())
+                            .track_focus(&app.legend_menu_focus)
                             .occlude()
                             .flex()
                             .flex_col()
