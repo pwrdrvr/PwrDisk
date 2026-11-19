@@ -544,7 +544,8 @@ impl Render for SettingsWindow {
             .flex_1()
             .min_h_0()
             .child(nav)
-            .child(
+            .child(crate::scroll_bar::framed(
+                div().flex().flex_col().flex_1().min_w_0().min_h_0(),
                 div()
                     .id("settings-scroll")
                     .debug_selector(|| "settings-scroll".into())
@@ -563,7 +564,14 @@ impl Render for SettingsWindow {
                             .max_w(size::SETTINGS_PANE)
                             .child(pane),
                     ),
-            );
+                crate::scroll_bar::bar(
+                    "settings-scroll-bar",
+                    &self.pane_scroll,
+                    gpui_kit::px(0.),
+                    window.rem_size().as_f32(),
+                    cx.omarchy().foreground,
+                ),
+            ));
         aux_window::frame(&["Settings"], div(), body, window, cx)
     }
 }

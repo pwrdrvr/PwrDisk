@@ -321,8 +321,11 @@ impl Render for DocWindow {
             .debug_selector(|| COPY_ID.into())
             .on_click(cx.listener(|this, _, _, cx| this.copy(cx)));
         let position = self.position;
+        let rem = window.rem_size().as_f32();
         let body = match &self.body {
-            Body::Changelog(blocks) => div()
+            Body::Changelog(blocks) => crate::scroll_bar::framed(
+                div().flex().flex_col().flex_1().min_h_0(),
+                div()
                 .id("doc-scroll")
                 .debug_selector(|| "doc-scroll".into())
                 .role(Role::Document)
@@ -357,8 +360,16 @@ impl Render for DocWindow {
                         .max_w(size::DOCUMENT)
                         .px(space::XXL)
                         .child(draw_block(block, &theme))
-                }))
-                .into_any_element(),
+                })),
+                crate::scroll_bar::bar(
+                    "doc-scroll-bar",
+                    &self.block_scroll,
+                    gpui_kit::px(0.),
+                    rem,
+                    theme.foreground,
+                ),
+            )
+            .into_any_element(),
             Body::Lines(lines, scroll) => {
                 let rows = lines.clone();
                 let ink = theme.foreground;
@@ -379,6 +390,7 @@ impl Render for DocWindow {
                     .child(
                         div()
                             .size_full()
+                            .relative()
                             .border_1()
                             .border_color(theme.divider())
                             .bg(theme.inset)
@@ -407,7 +419,14 @@ impl Render for DocWindow {
                                 )
                                 .track_scroll(scroll)
                                 .size_full(),
-                            ),
+                            )
+                            .children(crate::scroll_bar::bar(
+                                "doc-lines-bar",
+                                scroll,
+                                gpui_kit::px(0.),
+                                rem,
+                                ink,
+                            )),
                     )
                     .into_any_element()
             }

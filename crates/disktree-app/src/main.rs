@@ -53,6 +53,7 @@ mod safety;
 mod scan_report;
 #[cfg(any(test, feature = "screenshots"))]
 mod screenshots;
+mod scroll_bar;
 mod semantics;
 mod settings;
 mod state;

@@ -126,6 +126,9 @@ pub struct UsageHistory {
     problem: Option<String>,
     strip_drag: bool,
     pub focus: FocusHandle,
+    /// The list of reports and the comparison, each tracked for its bar.
+    list_scroll: gpui_kit::ScrollHandle,
+    compare_scroll: gpui_kit::ScrollHandle,
 }
 
 /// Two reports compared.
@@ -155,6 +158,8 @@ impl UsageHistory {
             problem: None,
             strip_drag: false,
             focus: cx.focus_handle().tab_stop(true),
+            list_scroll: gpui_kit::ScrollHandle::new(),
+            compare_scroll: gpui_kit::ScrollHandle::new(),
         };
         view.reload();
         view
@@ -372,7 +377,23 @@ impl Render for UsageHistory {
                 .accessibility_label("Back to the list of reports")
                 .debug_selector(|| BACK_ID.into())
                 .on_click(cx.listener(|this, _, _, cx| this.back(cx)));
-            let body = compare_body(comparison, &self.focus, &theme, cx);
+            let body = crate::scroll_bar::framed(
+                div().flex().flex_col().flex_1().min_h_0(),
+                compare_body(
+                    comparison,
+                    &self.focus,
+                    &self.compare_scroll,
+                    &theme,
+                    cx,
+                ),
+                crate::scroll_bar::bar(
+                    "history-compare-bar",
+                    &self.compare_scroll,
+                    gpui_kit::px(0.),
+                    window.rem_size().as_f32(),
+                    theme.foreground,
+                ),
+            );
             return aux_window::frame(
                 &["Usage History", "Compare"],
                 back,
@@ -389,13 +410,18 @@ impl Render for UsageHistory {
         )
         .debug_selector(|| OPEN_ID.into())
         .on_click(cx.listener(|_, _, _, cx| Self::browse(cx)));
-        let body = self.pick_body(&theme, cx);
+        let body = self.pick_body(&theme, window.rem_size().as_f32(), cx);
         aux_window::frame(&["Usage History"], open, body, window, cx)
     }
 }
 
 impl UsageHistory {
-    fn pick_body(&self, theme: &Theme, cx: &Context<'_, Self>) -> AnyElement {
+    fn pick_body(
+        &self,
+        theme: &Theme,
+        rem: f32,
+        cx: &Context<'_, Self>,
+    ) -> AnyElement {
         let mut list = div()
             .id("history-list")
             .role(Role::List)
@@ -483,12 +509,14 @@ impl UsageHistory {
                     .text_color(theme.warning)
                     .child(problem)
             }))
-            .child(
+            .child(crate::scroll_bar::framed(
+                div().flex().flex_col().flex_1().min_h_0(),
                 div()
                     .id("history-scroll")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.list_scroll)
                     .child(list)
                     .children(self.unreadable.iter().map(|file| {
                         div()
@@ -501,7 +529,14 @@ impl UsageHistory {
                                 file.reason
                             ))
                     })),
-            )
+                crate::scroll_bar::bar(
+                    "history-scroll-bar",
+                    &self.list_scroll,
+                    gpui_kit::px(0.),
+                    rem,
+                    theme.foreground,
+                ),
+            ))
             .child(
                 div()
                     .flex()
@@ -747,6 +782,7 @@ impl Summary {
 fn compare_body(
     comparison: &Comparison,
     focus: &FocusHandle,
+    scroll: &gpui_kit::ScrollHandle,
     theme: &Theme,
     cx: &App,
 ) -> AnyElement {
@@ -775,6 +811,7 @@ fn compare_body(
         .id("history-compare-scroll")
         .debug_selector(|| "history-compare-scroll".into())
         .track_focus(focus)
+        .track_scroll(scroll)
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
