@@ -12459,8 +12459,8 @@ impl Popover {
         }
         draw(cx);
         assert!(read(view, cx, |app| self.is_open(app)), "{self:?} opens");
-        // The "+N" menu leaves focus on its button, and its chips come
-        // last in the window's order: Tab walks the page to reach them.
+        // Each takes focus as it opens; Tab is only the way in for one
+        // that would not.
         for _ in 0..400 {
             if popover_holds_focus(self, view, cx) {
                 return;
@@ -12536,6 +12536,256 @@ fn tab_never_leaves_the_popover_that_holds_focus(cx: &mut TestAppContext) {
         cx.update(|window, cx| window.focus(&root, cx));
         press(cx, "escape");
         assert!(!read(&view, cx, |app| popover.is_open(app)), "{popover:?}");
+    }
+}
+
+/// Where focus is, as the legend's "+N" menu sees it, for the models
+/// below. `None` is focus on a handle no frame draws, which takes no keys.
+fn legend_focus(view: &Entity<Disktree>, cx: &mut Window) -> &'static str {
+    let (more, first, menu, root) = read(view, cx, |app| {
+        (
+            app.legend_more_focus.clone(),
+            app.legend_menu_first_focus.clone(),
+            app.legend_menu_focus.clone(),
+            app.focus.clone(),
+        )
+    });
+    let more_drawn = cx.debug_bounds("legend-more").is_some();
+    let menu_drawn = cx.debug_bounds("legend-menu").is_some();
+    cx.update(|window, cx| {
+        if more.is_focused(window) {
+            if more_drawn { "+N" } else { "+N, not drawn" }
+        } else if first.is_focused(window) {
+            if menu_drawn {
+                "first chip"
+            } else {
+                "first chip, not drawn"
+            }
+        } else if menu.is_focused(window) {
+            "menu"
+        } else if menu.contains_focused(window, cx) {
+            "another chip"
+        } else if root.is_focused(window) {
+            "treemap"
+        } else {
+            "elsewhere"
+        }
+    })
+}
+
+/// The chips drawn in the "+N" menu, top first, with their selectors.
+fn legend_menu_chips(
+    cx: &mut Window,
+) -> Vec<(crate::legend::ChipId, &'static str, Bounds<Pixels>)> {
+    use crate::legend::ChipId;
+    let ids = std::iter::once(ChipId::Reclaimable)
+        .chain(
+            (0..disktree_core::classify::Category::LEGEND.len())
+                .map(ChipId::Kind),
+        )
+        .chain((0..crate::palette::AGE_BUCKETS.len()).map(ChipId::Age));
+    let mut chips: Vec<_> = ids
+        .filter_map(|id| {
+            let key: &'static str = Box::leak(
+                format!(
+                    "legend-menu-{}",
+                    id.key().trim_start_matches("legend-")
+                )
+                .into_boxed_str(),
+            );
+            cx.debug_bounds(key).map(|bounds| (id, key, bounds))
+        })
+        .collect();
+    chips.sort_by(|a, b| a.2.top().as_f32().total_cmp(&b.2.top().as_f32()));
+    chips
+}
+
+fn legend_menu_is_open(view: &Entity<Disktree>, cx: &mut Window) -> bool {
+    let open = read(view, cx, |app| app.legend_menu_open);
+    assert_eq!(open, cx.debug_bounds("legend-menu").is_some(), "drawn");
+    open
+}
+
+/// A view whose legend has a "+N" menu: the fixture holds no code and
+/// other empty kinds, which wait there.
+fn legend_menu_view<'a>(
+    root: &Path,
+    cx: &'a mut TestAppContext,
+) -> (Entity<Disktree>, &'a mut Window) {
+    cx.update(init);
+    let (view, cx) = view_over(root, cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    draw(cx);
+    assert!(cx.debug_bounds("legend-more").is_some(), "+N is drawn");
+    (view, cx)
+}
+
+/// Model: the legend's "+N" menu holds the keyboard as the Mark menu
+/// does. Opening it, by click, Enter or Space, moves focus to its first
+/// chip; Escape from any chip closes it in one press and returns to
+/// "+N". Opening once left focus on "+N", with the chips last in the
+/// window's tab order, and Escape first sent focus to the page and only
+/// closed the menu on a second press.
+#[gpui_kit::test]
+fn the_legend_menu_takes_focus_and_escape_returns_to_its_button(
+    cx: &mut TestAppContext,
+) {
+    let temp = fixture();
+    let (view, cx) = legend_menu_view(temp.path(), cx);
+    for (open, close_from) in [
+        ("click", "first chip"),
+        ("enter", "first chip"),
+        ("space", "another chip"),
+        ("enter", "another chip"),
+    ] {
+        let case = format!("opened by {open}, Escape from {close_from}");
+        if open == "click" {
+            click_on(cx, "legend-more");
+        } else {
+            assert_eq!(legend_focus(&view, cx), "+N", "{case}");
+            activate(cx, open);
+        }
+        assert!(legend_menu_is_open(&view, cx), "{case}: opens");
+        assert_eq!(legend_focus(&view, cx), "first chip", "{case}");
+        if close_from == "another chip" {
+            press(cx, "tab");
+            assert_eq!(legend_focus(&view, cx), "another chip", "{case}");
+        }
+        press(cx, "escape");
+        assert!(!legend_menu_is_open(&view, cx), "{case}: one Escape");
+        assert_eq!(legend_focus(&view, cx), "+N", "{case}: back to +N");
+    }
+}
+
+/// Model: a chip chosen in the "+N" menu closes it and moves to the row,
+/// and focus never stays behind in the removed menu. Chosen by key, focus
+/// goes to "+N", ready for the next chip, or to the treemap once the menu
+/// has emptied and "+N" with it; chosen by the pointer, to the treemap,
+/// whose keys a pointer user expects. Each choice sets its chip once.
+#[gpui_kit::test]
+fn a_chip_chosen_in_the_legend_menu_leaves_focus_where_keys_work(
+    cx: &mut TestAppContext,
+) {
+    use crate::legend::Chip;
+
+    let temp = fixture();
+    let (view, cx) = legend_menu_view(temp.path(), cx);
+    // By the pointer: the menu's first chip.
+    click_on(cx, "legend-more");
+    let (first, key, _) = legend_menu_chips(cx)[0];
+    click_on(cx, key);
+    assert!(!legend_menu_is_open(&view, cx), "a click closes it");
+    assert_eq!(read(&view, cx, |app| app.legend.get(first)), Chip::Only);
+    assert_eq!(legend_focus(&view, cx), "treemap", "by the pointer");
+
+    // By key, each in turn, until the menu has no chips left, with each
+    // of the keys that choose: Enter, Space and `o`.
+    let mut chosen = 0;
+    let mut used_o = false;
+    for step in 0..40 {
+        if cx.debug_bounds("legend-more").is_none() {
+            break;
+        }
+        let case = format!("step {step}");
+        if legend_focus(&view, cx) != "+N" {
+            assert_eq!(legend_focus(&view, cx), "treemap", "{case}");
+            press(cx, "tab");
+            let more = read(&view, cx, |app| app.legend_more_focus.clone());
+            for _ in 0..200 {
+                if cx.update(|window, _| more.is_focused(window)) {
+                    break;
+                }
+                press(cx, "tab");
+            }
+        }
+        assert_eq!(legend_focus(&view, cx), "+N", "{case}");
+        activate(cx, "enter");
+        assert_eq!(legend_focus(&view, cx), "first chip", "{case}");
+        let (first, _, _) = legend_menu_chips(cx)[0];
+        let before = read(&view, cx, |app| app.legend.get(first));
+        assert_eq!(before, Chip::Shown, "{case}: menu chips are unset");
+        // `o` shows only this chip and returns the others to the menu,
+        // so it chooses once, first; the rest add to the set.
+        let solo =
+            step == 0 && read(&view, cx, |app| app.legend.offers_only(first));
+        let keys = if solo {
+            "o"
+        } else {
+            ["enter", "space"][step % 2]
+        };
+        activate(cx, keys);
+        let after = read(&view, cx, |app| app.legend.get(first));
+        assert_ne!(after, Chip::Shown, "{case}: {keys} sets {first:?}");
+        if solo {
+            used_o = true;
+        } else {
+            assert_eq!(after, Chip::Only, "{case}: {keys} cycles once");
+        }
+        assert!(!legend_menu_is_open(&view, cx), "{case}: {keys} closes");
+        let landed = legend_focus(&view, cx);
+        let more_drawn = cx.debug_bounds("legend-more").is_some();
+        assert_eq!(
+            landed,
+            if more_drawn { "+N" } else { "treemap" },
+            "{case}: after {keys}"
+        );
+        chosen += 1;
+    }
+    assert!(chosen > 1, "not vacuous: {chosen} chosen by key");
+    assert!(used_o, "`o` chose too");
+    assert!(cx.debug_bounds("legend-more").is_none(), "the menu emptied");
+}
+
+/// Model: a press on the "+N" menu's padding, between its chips, keeps
+/// the menu open with focus inside it, so its keys still work: Tab reaches
+/// a chip and one Escape closes it, back to "+N". Such a press once took
+/// focus from the page to the menu's container, where the treemap's keys
+/// went unheard and Escape had to be pressed twice.
+#[gpui_kit::test]
+fn a_press_on_the_legend_menu_padding_leaves_its_keys_working(
+    cx: &mut TestAppContext,
+) {
+    let temp = fixture();
+    let (view, cx) = legend_menu_view(temp.path(), cx);
+    for then in ["escape", "tab"] {
+        click_on(cx, "legend-more");
+        let menu = cx.debug_bounds("legend-menu").expect("menu");
+        let (_, _, chip) = legend_menu_chips(cx)[0];
+        // Inside the menu, above its first chip: its padding.
+        let at =
+            gpui_kit::point(chip.center().x, (menu.top() + chip.top()) / 2.);
+        assert!(menu.contains(&at) && !chip.contains(&at), "{at:?}");
+        cx.simulate_mouse_down(
+            at,
+            gpui_kit::MouseButton::Left,
+            gpui_kit::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            at,
+            gpui_kit::MouseButton::Left,
+            gpui_kit::Modifiers::none(),
+        );
+        draw(cx);
+        assert!(legend_menu_is_open(&view, cx), "{then}: still open");
+        let focus = legend_focus(&view, cx);
+        assert!(
+            matches!(focus, "menu" | "first chip" | "another chip"),
+            "{then}: focus inside the menu, not {focus}"
+        );
+        if then == "tab" {
+            press(cx, "tab");
+            let focus = legend_focus(&view, cx);
+            assert!(
+                matches!(focus, "first chip" | "another chip"),
+                "Tab reaches a chip, not {focus}"
+            );
+        }
+        press(cx, "escape");
+        assert!(!legend_menu_is_open(&view, cx), "{then}: one Escape");
+        assert_eq!(legend_focus(&view, cx), "+N", "{then}");
+        let root = read(&view, cx, |app| app.focus.clone());
+        cx.update(|window, cx| window.focus(&root, cx));
     }
 }
 

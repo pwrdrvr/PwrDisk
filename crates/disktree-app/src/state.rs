@@ -717,6 +717,13 @@ pub struct Disktree {
     /// The "+N" menu's container. Its chips are tab stops, so Tab can
     /// land in it, and [`Disktree::tab_scope`] then keeps Tab there.
     pub legend_menu_focus: FocusHandle,
+    /// The "+N" button, where Escape in its menu, or a chip chosen there
+    /// by key, returns focus, as a menu returns focus to its button.
+    pub legend_more_focus: FocusHandle,
+    /// The first chip in the "+N" menu, which takes focus as it opens:
+    /// drawn last, the menu's chips would otherwise come after the rest
+    /// of the window in its tab order.
+    pub legend_menu_first_focus: FocusHandle,
     /// The pointer is over the "+N" button, whose own press toggles the
     /// menu; a press anywhere else closes it.
     pub legend_more_hover: bool,
@@ -1064,6 +1071,8 @@ impl Disktree {
             shares_epoch: 0,
             legend_menu_open: false,
             legend_menu_focus: cx.focus_handle(),
+            legend_more_focus: cx.focus_handle().tab_stop(true),
+            legend_menu_first_focus: cx.focus_handle().tab_stop(true),
             legend_more_hover: false,
             legend_hover: None,
             find_epoch: 0,
