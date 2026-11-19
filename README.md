@@ -221,6 +221,34 @@ asks you to type what you are doing ("delete 20% of my disk") before it
 removes anything. Settings › Safety changes the limit, turns it off, or
 swaps the typing for a checkbox or nothing; agents are always held to it.
 
+## PwrDisk and disktree
+
+PwrDisk forked from disktree at
+[`9b18b27`](https://github.com/tobi/disktree/commit/9b18b27) and has
+merged about 90 pull requests since. Compared with disktree 0.11.0 and its
+`main`:
+
+| | disktree | PwrDisk |
+| --- | --- | --- |
+| **macOS download** | zip, ad hoc signed; Gatekeeper refuses it | Universal DMG, Developer ID signed and notarized |
+| **Windows download** | unsigned zip | signed Setup.exe, MSI and portable zip, x64 and ARM64 |
+| **Updates** | download the next release | in the app, in the background, with a stable or prerelease channel |
+| **AI agents** | — | `pwrdisk mcp`: an agent scans, explains and marks; the list opens in Review for you to decide |
+| **Protected folders** | your own home refused when you commit | `/Users`, `/home`, `C:\Users` and every account folder in them are never offered for marking |
+| **Size limit** | — | one removal may take 5% of a disk; past that, Mark anyway and a typed confirmation. Agents are always held to it |
+| **Removing** | finished items appear as bare names; Done drops the list | the whole list is on screen from the start and checks off item by item, with the space measured back as it goes; Done keeps it |
+| **APFS clones** | each clone counted at full size | shared and private bytes reported apart, so savings are never overstated |
+| **Quitting** | frees the whole tree on the main thread: about 1 s for a whole disk (34M files) when idle, up to 15 s under memory pressure | instant |
+| **Memory for a whole-disk scan** (34M files) | 4.85 GiB | 3.6 GiB, 25% less; 4.2–4.3 GiB with APFS clone accounting, the macOS default |
+| **Window** | system title bar | custom title strip, menus, Settings, Help, Changelog and Logs windows |
+| **Accessibility** | not audited | audited: keyboard focus, screen-reader labels, 200% text, reduced motion |
+
+Without clone accounting a whole-disk scan takes 2–4% longer than
+disktree's; with it, the macOS default, up to 1.35× as long (PwrDisk
+v0.18.0). The measurements, the program
+behind them and the caveats are in
+[docs/performance/vs-disktree](docs/performance/vs-disktree/README.md).
+
 ## Thanks, Tobi
 
 PwrDisk began as [disktree](https://github.com/tobi/disktree), written by
