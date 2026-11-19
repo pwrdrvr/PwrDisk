@@ -1367,6 +1367,54 @@ fn a_permanent_deletion_asks_in_an_alert_dialog_then_removes(
     );
 }
 
+/// A path missing at confirmation contributes no allocation or authority
+/// even if another process recreates it while the dialog is open.
+#[gpui_kit::test]
+fn review_omits_gone_marks_and_requires_consent_for_replacements(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let gone = temp.path().join("junk");
+    let present = temp.path().join("keep");
+
+    update(&view, cx, |app, cx| {
+        for name in ["junk", "keep"] {
+            let crumbs = child_crumbs(app, &[], name);
+            app.toggle_mark(&crumbs, cx);
+        }
+        app.removal_mode = RemovalMode::Permanent;
+        app.open_review(cx);
+    });
+    cx.run_until_parked();
+    std::fs::remove_dir_all(&gone).unwrap();
+    update(&view, cx, |app, cx| {
+        let plan = app.plan();
+        assert_eq!(plan.targets.len(), 1);
+        assert_eq!(plan.targets[0].path, present);
+        assert_eq!(plan.blocked.len(), 1);
+        assert_eq!(plan.blocked[0].path, gone);
+        assert_eq!(plan.blocked[0].reason, "Already gone");
+        assert_eq!(plan.bytes(), 1_000);
+        app.commit(false, cx);
+        assert!(app.confirm_open, "{:?}", app.notice());
+    });
+
+    std::fs::create_dir(&gone).unwrap();
+    std::fs::write(gone.join("replacement"), b"preserve me").unwrap();
+    update(&view, cx, |app, cx| {
+        app.confirm_delete(cx);
+        assert!(app.run.is_none());
+        assert_eq!(app.screen, Screen::Review);
+    });
+    assert_eq!(
+        std::fs::read(gone.join("replacement")).unwrap(),
+        b"preserve me"
+    );
+    assert!(present.join("notes.txt").is_file());
+}
+
 /// A subdivided directory keeps a band at the top for its own name, and its
 /// children start below it. That is what makes the inner tiles selectable: the
 /// parent's name never covers them.

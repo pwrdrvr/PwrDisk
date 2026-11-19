@@ -8,6 +8,7 @@ use std::path::Path;
 #[cfg(not(target_os = "macos"))]
 use rustix::fs::Dir;
 use rustix::fs::{AtFlags, CWD, FileType, Stat, statat};
+use rustix::io::Errno;
 
 use super::{Volume, open_dir};
 
@@ -40,13 +41,17 @@ pub fn inspect(
     let failure = |error| format!("Cannot inspect {}: {error}", path.display());
     let stat = match entry_stat(CWD, path) {
         Ok(stat) => stat,
-        Err(rustix::io::Errno::NOENT) => return Ok(()),
+        Err(Errno::NOENT) => return Ok(()),
         Err(error) => return Err(failure(error)),
     };
     if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
         return visit(path, None);
     }
-    let dir = open_dir(CWD, path).map_err(failure)?;
+    let dir = match open_dir(CWD, path) {
+        Ok(dir) => dir,
+        Err(Errno::NOENT) => return Ok(()),
+        Err(error) => return Err(failure(error)),
+    };
     let top = Volume::of(&dir).map_err(|error| {
         format!("Cannot inspect {}: {error}", path.display())
     })?;
@@ -70,9 +75,19 @@ pub fn inspect(
             let parent = listing_fd(entries).map_err(|error| {
                 format!("Cannot inspect {}: {error}", current.display())
             })?;
-            let dir = open_dir(parent, entry.name()).map_err(|error| {
-                format!("Cannot open {}: {error}", current.display())
-            })?;
+            let dir = match open_dir(parent, entry.name()) {
+                Ok(dir) => dir,
+                Err(Errno::NOENT) => {
+                    current.pop();
+                    continue;
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "Cannot open {}: {error}",
+                        current.display()
+                    ));
+                }
+            };
             let volume = Volume::of(&dir).map_err(|error| {
                 format!("Cannot inspect {}: {error}", current.display())
             })?;
@@ -168,7 +183,11 @@ fn next_entry(entries: &mut Listing) -> std::io::Result<Option<ListedEntry>> {
         if name == c"." || name == c".." {
             continue;
         }
-        let stat = entry_stat(listing_fd(entries)?, name)?;
+        let stat = match entry_stat(listing_fd(entries)?, name) {
+            Ok(stat) => stat,
+            Err(Errno::NOENT) => continue,
+            Err(error) => return Err(error.into()),
+        };
         return Ok(Some(ListedEntry {
             entry,
             directory: FileType::from_raw_mode(stat.st_mode)

@@ -17,7 +17,7 @@ use disktree_core::insights::{Candidate, worth_a_look};
 use disktree_core::path_style::PathStyle;
 use disktree_core::removal::{
     Plan, RemovalEvent, RemovalHandle, RemovalMode, Target, TrashBackend,
-    detect_trash_backend, plan,
+    detect_trash_backend, plan, plan_for_review,
 };
 use disktree_core::scan::{Known, ScanHandle, ScanOptions, ScanSnapshot};
 use disktree_core::space::{
@@ -611,6 +611,7 @@ pub struct Disktree {
     /// The permanent-deletion alert dialog is open. Trash needs no dialog: it
     /// is reversible, so it commits directly.
     pub confirm_open: bool,
+    confirm_paths: Option<Vec<PathBuf>>,
     /// Focus owner for the alert dialog while it is open.
     pub confirm_focus: FocusHandle,
     pub overlay_return: Option<FocusHandle>,
@@ -989,6 +990,7 @@ impl Disktree {
             cleanup_actions: vec![],
             cleanup_path: None,
             confirm_open: false,
+            confirm_paths: None,
             confirm_focus: cx.focus_handle(),
             overlay_return: None,
             app_menu_index: 0,
@@ -3322,11 +3324,15 @@ impl Disktree {
         {
             return approved.plan.clone();
         }
-        self.selection_plan()
+        self.plan_selection(self.removal_mode != RemovalMode::OwnerCleanup)
     }
 
     /// Only marked paths: owner execution scopes must never widen exports.
     pub(crate) fn selection_plan(&self) -> Plan {
+        self.plan_selection(false)
+    }
+
+    fn plan_selection(&self, omit_missing: bool) -> Plan {
         #[cfg(test)]
         crate::marks::work::PLANS.set(crate::marks::work::PLANS.get() + 1);
         if self.remote.is_some() {
@@ -3347,7 +3353,8 @@ impl Disktree {
             // this computer's mounts or project an unmeasured saving.
             return selection;
         }
-        let mut plan = plan(self.marks.items(), &self.root_path);
+        let build = if omit_missing { plan_for_review } else { plan };
+        let mut plan = build(self.marks.items(), &self.root_path);
         plan.scan_options = self.options.clone();
         if let Some(tree) = &self.tree {
             let mut cached = self.accounting.borrow_mut();
@@ -4039,6 +4046,13 @@ impl Disktree {
         match self.removal_mode {
             RemovalMode::Trash => self.begin_removal(cx),
             RemovalMode::Permanent | RemovalMode::OwnerCleanup => {
+                self.confirm_paths =
+                    (self.removal_mode == RemovalMode::Permanent).then(|| {
+                        plan.targets
+                            .iter()
+                            .map(|target| target.path.clone())
+                            .collect()
+                    });
                 self.confirm_open = true;
                 self.focus_request = Some(FocusTarget::Dialog);
                 cx.notify();
@@ -4056,6 +4070,7 @@ impl Disktree {
 
     /// The alert dialog's `Cancel`, or Escape.
     pub fn cancel_delete(&mut self, cx: &mut Context<'_, Self>) {
+        self.confirm_paths = None;
         self.confirm_open = false;
         self.focus_request = Some(FocusTarget::Root);
         cx.notify();
@@ -4187,9 +4202,18 @@ impl Disktree {
             cx.notify();
             return;
         }
-        let mut plan = cleanup
-            .as_ref()
-            .map_or_else(|| self.plan(), |approved| approved.plan.clone());
+        let mut plan = cleanup.as_ref().map_or_else(
+            || match by {
+                Remover::Person => self.plan(),
+                Remover::Agent => self.selection_plan(),
+            },
+            |approved| approved.plan.clone(),
+        );
+        let confirm_paths = if by == Remover::Person {
+            self.confirm_paths.take()
+        } else {
+            None
+        };
         if let Some(scope) = scope {
             if let Err(reason) = plan.bind_approval(scope) {
                 self.say(reason, Status::Warning, cx);
@@ -4221,6 +4245,20 @@ impl Disktree {
             && cleanup.is_none()
             && !self.raw_removal_reviewed(cx)
         {
+            return;
+        }
+        if by == Remover::Person
+            && let Some(paths) = confirm_paths
+            && plan
+                .targets
+                .iter()
+                .any(|target| paths.binary_search(&target.path).is_err())
+        {
+            self.warn(
+                "The removal selection changed. Review it and confirm again."
+                    .into(),
+                cx,
+            );
             return;
         }
         // This window quits once the prompt is answered yes, and quitting

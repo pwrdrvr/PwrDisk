@@ -459,6 +459,10 @@ impl WalkContext {
         self.progress.is_cancelled()
     }
 
+    fn entry_vanished(&self, error: &io::Error) -> bool {
+        self.require_complete && error.kind() == io::ErrorKind::NotFound
+    }
+
     /// Decide what to do with an entry listed in `dir`.
     ///
     /// The entry's path is built only where it is used: most entries are
@@ -467,6 +471,9 @@ impl WalkContext {
     fn classify(&self, dir: &Path, entry: &mut impl Listed) -> Classified {
         let listing = match entry.listing() {
             Ok(listing) => listing,
+            Err(error) if self.entry_vanished(&error) => {
+                return Classified::Skipped;
+            }
             Err(error) => {
                 self.progress.record_error(&entry.entry_path(dir), &error);
                 return Classified::Unreadable;
@@ -495,6 +502,9 @@ impl WalkContext {
                             NodeKind::Symlink,
                             facts,
                         ),
+                        Err(error) if self.entry_vanished(&error) => {
+                            Classified::Skipped
+                        }
                         Err(error) => {
                             self.progress
                                 .record_error(&entry.entry_path(dir), &error);
@@ -513,6 +523,7 @@ impl WalkContext {
         };
         match entry.facts(dir, self.options.apparent_size, self) {
             Ok(facts) => self.leaf(entry.take_name(), kind, facts),
+            Err(error) if self.entry_vanished(&error) => Classified::Skipped,
             Err(error) => {
                 self.progress.record_error(&entry.entry_path(dir), &error);
                 Classified::Unreadable
@@ -1734,6 +1745,7 @@ fn walk<'h>(
                             tally.flush(&context.progress, &dir.path);
                         }
                     }
+                    Err(error) if context.entry_vanished(&error) => {}
                     Err(error) => {
                         context.progress.record_error(&dir.path, &error);
                         dir.read_error.store(true, Ordering::Relaxed);
@@ -1741,6 +1753,8 @@ fn walk<'h>(
                 }
             }
         }
+        Err(error)
+            if dir.parent.is_some() && context.entry_vanished(&error) => {}
         Err(error) => {
             context.progress.record_error(&dir.path, &error);
             dir.read_error.store(true, Ordering::Relaxed);
