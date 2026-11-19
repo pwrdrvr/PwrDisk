@@ -9,8 +9,8 @@ resource API through a single probe in `macos/capacity.rs`.
 | Operation | Probe calls per mounted volume | Projected log lines |
 | --- | ---: | ---: |
 | Startup in the source chooser | 0 | 0 |
-| Startup with a local root, scan or rescan | At most 1, when the scan lands | Up to ~120 |
-| Live meter refresh | At most 1 across all samples in 60 seconds | Up to ~120 per minute |
+| Startup with a local root, scan or rescan | At most 1, when the scan lands | ~120 at the call limit |
+| Live meter refresh | At most 1 across all samples in 60 seconds | ~120 per minute at the call limit |
 | Scan report snapshots, MCP readings and removal measurements | 0 | 0 |
 | Regular test suite | 0 | 0 |
 | Opt-in native integration test | 1 | ~120 |

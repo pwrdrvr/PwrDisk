@@ -71,7 +71,7 @@ impl CapacityProbe for SystemProbe {
 // CoreFoundation's important-usage key goes through CacheDelete on macOS
 // 27. A miss can write roughly 120 persisted log lines. Include failed
 // lookups in the same budget so an unavailable estimate cannot spin.
-const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const REFRESH_INTERVAL: Duration = Duration::from_mins(1);
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct MountedVolume {
@@ -220,7 +220,7 @@ pub(super) fn volume_used(path: &Path) -> Option<u64> {
     Some(u64::from_ne_bytes(buffer[4..].try_into().ok()?))
 }
 
-pub(crate) fn presentation(
+pub fn presentation(
     path: &Path,
     total: u64,
     raw_available: u64,
@@ -325,7 +325,12 @@ mod tests {
         assert_eq!(sampler.available(fixture("one"), start, false), Some(10));
         assert_eq!(sampler.probe.calls, 2 * CALLS_PER_VOLUME_REFRESH);
 
-        let expired = start + REFRESH_INTERVAL;
+        let nearly_expired = start + Duration::from_secs(59);
+        assert_eq!(
+            sampler.available(fixture("one"), nearly_expired, true),
+            Some(10)
+        );
+        let expired = start + Duration::from_mins(1);
         assert_eq!(sampler.available(fixture("one"), expired, false), None);
         assert_eq!(sampler.probe.calls, 2 * CALLS_PER_VOLUME_REFRESH);
         assert_eq!(sampler.available(fixture("one"), expired, true), Some(20));
