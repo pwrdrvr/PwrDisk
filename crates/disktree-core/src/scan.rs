@@ -459,10 +459,6 @@ impl WalkContext {
         self.progress.is_cancelled()
     }
 
-    fn entry_vanished(&self, error: &io::Error) -> bool {
-        self.require_complete && error.kind() == io::ErrorKind::NotFound
-    }
-
     /// Decide what to do with an entry listed in `dir`.
     ///
     /// The entry's path is built only where it is used: most entries are
@@ -471,9 +467,6 @@ impl WalkContext {
     fn classify(&self, dir: &Path, entry: &mut impl Listed) -> Classified {
         let listing = match entry.listing() {
             Ok(listing) => listing,
-            Err(error) if self.entry_vanished(&error) => {
-                return Classified::Skipped;
-            }
             Err(error) => {
                 self.progress.record_error(&entry.entry_path(dir), &error);
                 return Classified::Unreadable;
@@ -502,9 +495,6 @@ impl WalkContext {
                             NodeKind::Symlink,
                             facts,
                         ),
-                        Err(error) if self.entry_vanished(&error) => {
-                            Classified::Skipped
-                        }
                         Err(error) => {
                             self.progress
                                 .record_error(&entry.entry_path(dir), &error);
@@ -523,7 +513,6 @@ impl WalkContext {
         };
         match entry.facts(dir, self.options.apparent_size, self) {
             Ok(facts) => self.leaf(entry.take_name(), kind, facts),
-            Err(error) if self.entry_vanished(&error) => Classified::Skipped,
             Err(error) => {
                 self.progress.record_error(&entry.entry_path(dir), &error);
                 Classified::Unreadable
@@ -601,9 +590,6 @@ impl WalkContext {
                 (Ok(directory), Some(root_device))
                     if directory.device != root_device =>
                 {
-                    return Classified::Skipped;
-                }
-                (Err(error), _) if self.entry_vanished(error) => {
                     return Classified::Skipped;
                 }
                 (Err(error), _) => {
@@ -1748,7 +1734,6 @@ fn walk<'h>(
                             tally.flush(&context.progress, &dir.path);
                         }
                     }
-                    Err(error) if context.entry_vanished(&error) => {}
                     Err(error) => {
                         context.progress.record_error(&dir.path, &error);
                         dir.read_error.store(true, Ordering::Relaxed);
@@ -1756,8 +1741,6 @@ fn walk<'h>(
                 }
             }
         }
-        Err(error)
-            if dir.parent.is_some() && context.entry_vanished(&error) => {}
         Err(error) => {
             context.progress.record_error(&dir.path, &error);
             dir.read_error.store(true, Ordering::Relaxed);
@@ -2960,6 +2943,53 @@ mod tests {
         let by_files = by_files.root().children().at(0);
         assert_eq!(by_files.name(), "many");
         assert_eq!(by_files.files, 5);
+    }
+
+    #[test]
+    fn strict_scan_refuses_a_subtree_renamed_after_enumeration() {
+        let temp = TempDir::new().expect("fixture");
+        let root = temp.path();
+        write(root, "old/payload", 42);
+        let context = WalkContext {
+            known: None,
+            options: options().for_removal(),
+            progress: Arc::new(ScanProgress::default()),
+            root_device: Mutex::new(None),
+            foreign_mounts: OnceLock::new(),
+            never_scanned: OnceLock::new(),
+            data_volume: OnceLock::new(),
+            data_error: OnceLock::new(),
+            data_device: OnceLock::new(),
+            visited_dirs: Mutex::new(FxHashSet::default()),
+            accounted: Arc::new(Seen::new()),
+            require_complete: true,
+            leaves: None,
+            volume: OnceLock::new(),
+            #[cfg(target_os = "macos")]
+            clone_cache: crate::clone_cache::Cache::default(),
+        };
+        let tree = Tree::try_build(|builder| {
+            let sink = Sink {
+                builder,
+                root: Mutex::new(None),
+            };
+            let pending = Arc::new(PendingDir::new(
+                root.to_owned(),
+                "root".into(),
+                None,
+                0,
+            ));
+            let children = walk(&pending, &context, &sink);
+            assert_eq!(children.len(), 1);
+            fs::rename(root.join("old"), root.join("new")).expect("rename");
+            assert!(walk(&children[0], &context, &sink).is_empty());
+            Ok::<_, io::Error>(lock(&sink.root).take().expect("finished root"))
+        })
+        .expect("tree");
+        assert!(root.join("new/payload").is_file(), "still inside selection");
+        let error = finish_tree(tree, root, &context, &WALK_POOL)
+            .expect_err("the queued walk missed the renamed payload");
+        assert!(error.to_string().contains("Cannot enforce removal limit"));
     }
 
     #[cfg(unix)]

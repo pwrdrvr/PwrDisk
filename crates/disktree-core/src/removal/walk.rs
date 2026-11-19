@@ -8,7 +8,6 @@ use std::path::Path;
 #[cfg(not(target_os = "macos"))]
 use rustix::fs::Dir;
 use rustix::fs::{AtFlags, CWD, FileType, Stat, statat};
-use rustix::io::Errno;
 
 use super::{Volume, open_dir};
 
@@ -39,19 +38,11 @@ pub fn inspect(
     mut visit: impl FnMut(&Path, Option<BorrowedFd<'_>>) -> Result<(), String>,
 ) -> Result<(), String> {
     let failure = |error| format!("Cannot inspect {}: {error}", path.display());
-    let stat = match entry_stat(CWD, path) {
-        Ok(stat) => stat,
-        Err(Errno::NOENT) => return Ok(()),
-        Err(error) => return Err(failure(error)),
-    };
+    let stat = entry_stat(CWD, path).map_err(failure)?;
     if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
         return visit(path, None);
     }
-    let dir = match open_dir(CWD, path) {
-        Ok(dir) => dir,
-        Err(Errno::NOENT) => return Ok(()),
-        Err(error) => return Err(failure(error)),
-    };
+    let dir = open_dir(CWD, path).map_err(failure)?;
     let top = Volume::of(&dir).map_err(|error| {
         format!("Cannot inspect {}: {error}", path.display())
     })?;
@@ -75,19 +66,9 @@ pub fn inspect(
             let parent = listing_fd(entries).map_err(|error| {
                 format!("Cannot inspect {}: {error}", current.display())
             })?;
-            let dir = match open_dir(parent, entry.name()) {
-                Ok(dir) => dir,
-                Err(Errno::NOENT) => {
-                    current.pop();
-                    continue;
-                }
-                Err(error) => {
-                    return Err(format!(
-                        "Cannot open {}: {error}",
-                        current.display()
-                    ));
-                }
-            };
+            let dir = open_dir(parent, entry.name()).map_err(|error| {
+                format!("Cannot open {}: {error}", current.display())
+            })?;
             let volume = Volume::of(&dir).map_err(|error| {
                 format!("Cannot inspect {}: {error}", current.display())
             })?;
@@ -183,11 +164,7 @@ fn next_entry(entries: &mut Listing) -> std::io::Result<Option<ListedEntry>> {
         if name == c"." || name == c".." {
             continue;
         }
-        let stat = match entry_stat(listing_fd(entries)?, name) {
-            Ok(stat) => stat,
-            Err(Errno::NOENT) => continue,
-            Err(error) => return Err(error.into()),
-        };
+        let stat = entry_stat(listing_fd(entries)?, name)?;
         return Ok(Some(ListedEntry {
             entry,
             directory: FileType::from_raw_mode(stat.st_mode)
@@ -227,6 +204,33 @@ mod tests {
             std::fs::read(&foreign).expect("untouched"),
             b"outside the root volume"
         );
+    }
+
+    #[test]
+    fn bulk_inspection_refuses_a_directory_renamed_after_listing() {
+        let temp = tempfile::tempdir_in("/tmp").expect("fixture");
+        let root = temp.path().canonicalize().expect("root");
+        for name in ["a", "b"] {
+            let dir = root.join(name);
+            std::fs::create_dir(&dir).expect("directory");
+            std::fs::write(dir.join("payload"), b"still selected")
+                .expect("file");
+        }
+        let mut renamed = false;
+        let error = inspect(&root, |path, dir| {
+            if !renamed && path != root && dir.is_some() {
+                // Both entries fit the bulk buffer. Move whichever listed
+                // name the inspector has yet to open.
+                let other = if path.ends_with("a") { "b" } else { "a" };
+                std::fs::rename(root.join(other), root.join("new"))
+                    .expect("rename listed sibling");
+                renamed = true;
+            }
+            Ok(())
+        })
+        .expect_err("inspection missed the renamed directory");
+        assert!(error.contains("Cannot open"), "{error}");
+        assert!(root.join("new/payload").is_file());
     }
 
     fn oracle(

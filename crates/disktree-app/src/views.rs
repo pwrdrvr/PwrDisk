@@ -115,7 +115,6 @@ pub fn root(
         app.prepare_picker_inputs(window, cx);
     }
     if app.screen == Screen::Review {
-        app.prepare_raw_inspection(cx);
         app.prepare_over_phrase(window, cx);
     }
     app.apply_focus(window, cx);
@@ -949,7 +948,13 @@ fn delete_dialog(
     window: &Window,
     cx: &mut Context<'_, Disktree>,
 ) -> impl IntoElement {
-    let plan = app.plan();
+    let current;
+    let plan = if let Some(confirmed) = &app.confirm_plan {
+        confirmed
+    } else {
+        current = app.plan();
+        &current
+    };
     let approved = (app.removal_mode == RemovalMode::OwnerCleanup)
         .then(|| app.cleanup_approved().ok())
         .flatten();
@@ -5989,7 +5994,7 @@ fn marks_ancestor(
 // ── review ──────────────────────────────────────────────────────────────
 
 fn review(
-    app: &Disktree,
+    app: &mut Disktree,
     toasts: Option<AnyElement>,
     window: &mut Window,
     cx: &mut Context<'_, Disktree>,
@@ -5999,6 +6004,16 @@ fn review(
         / window.rem_size().as_f32()
         < REVIEW_COLUMNS_REMS;
     let plan = app.plan();
+    if app.removal_mode != RemovalMode::OwnerCleanup {
+        app.prepare_raw_inspection_for(&plan.targets, cx);
+    }
+    app.review_paths =
+        (app.removal_mode != RemovalMode::OwnerCleanup).then(|| {
+            plan.targets
+                .iter()
+                .map(|target| target.path.clone())
+                .collect()
+        });
     let items = app.marks.items();
     let status = ReviewStatus::new(&plan);
 
@@ -6497,7 +6512,11 @@ fn review_summary(
         );
 
     if app.remote.is_none() {
-        let hint = app.raw_inspection_hint();
+        let hint = if app.removal_mode == RemovalMode::OwnerCleanup {
+            app.raw_inspection_hint()
+        } else {
+            app.raw_inspection_ready(&plan.targets).err()
+        };
         if let Some(hint) = hint {
             panel = panel.child(
                 div()
@@ -6563,11 +6582,7 @@ fn review_summary(
 /// The list handed on instead of acted on: saved as paths, or copied as a
 /// prompt or script for a person or a coding agent to act on with care.
 /// One menu, so four ways of handing it on don't outweigh the commit.
-fn export_menu(
-    app: &Disktree,
-    plan: &disktree_core::removal::Plan,
-    cx: &Context<'_, Disktree>,
-) -> impl IntoElement {
+fn export_menu(app: &Disktree, cx: &Context<'_, Disktree>) -> impl IntoElement {
     type Export = fn(&mut Disktree, &mut Context<'_, Disktree>);
     let theme = cx.omarchy().clone();
     let rows: [(&'static str, &'static str, &'static str, Export); 4] = [
@@ -6655,7 +6670,7 @@ fn export_menu(
         .child(
             button("export", "Export \u{25be}", ButtonVariant::Outline, cx)
             .debug_selector(|| "export".into())
-                .semantic_disabled(plan.is_empty())
+                .semantic_disabled(app.selection_plan().is_empty())
                 .selected(app.export_menu_open)
                 // Capture runs before the open menu's press-outside handler
                 // closes it, so a press on the button toggles.
@@ -6915,7 +6930,7 @@ fn review_actions(
     let unavailable = plan.is_empty()
         || (app.remote.is_none()
             && app.removal_mode != RemovalMode::OwnerCleanup
-            && app.raw_inspection_ready().is_err())
+            && app.raw_inspection_ready(&plan.targets).is_err())
         || (app.removal_mode == RemovalMode::Trash
             && !app.trash_backend.is_available())
         || app
@@ -6991,7 +7006,7 @@ fn review_actions(
         .into_any_element();
     dialog_footer(
         [
-            export_menu(app, plan, cx).into_any_element(),
+            export_menu(app, cx).into_any_element(),
             unmark.into_any_element(),
         ],
         Some(trailing),

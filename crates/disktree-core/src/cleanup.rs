@@ -143,13 +143,8 @@ fn inspect_raw_tree(
         if *visited > maximum {
             return Err(bound());
         }
-        let meta = match std::fs::symlink_metadata(&path) {
-            Ok(meta) => meta,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                continue;
-            }
-            Err(error) => return Err(error.to_string()),
-        };
+        let meta = std::fs::symlink_metadata(&path)
+            .map_err(|error| error.to_string())?;
         if meta.is_dir() {
             if let Some(owner) = recognize::cleanable_root(&path, roots) {
                 return Err(format!(
@@ -158,14 +153,9 @@ fn inspect_raw_tree(
                     owner.command_label()
                 ));
             }
-            let entries = match std::fs::read_dir(&path) {
-                Ok(entries) => entries,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    continue;
-                }
-                Err(error) => return Err(error.to_string()),
-            };
-            for entry in entries {
+            for entry in
+                std::fs::read_dir(&path).map_err(|error| error.to_string())?
+            {
                 if *visited + pending.len() >= maximum {
                     // Discarding this mark's queued paths must not give a
                     // later mark a fresh budget after the selection hit it.

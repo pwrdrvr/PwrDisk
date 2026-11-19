@@ -197,9 +197,9 @@ impl Disktree {
         if plan.is_empty() {
             return Err("Nothing is marked".into());
         }
-        self.raw_inspection_ready()?;
         let limit = crate::safety::load(self.removal_settings_dir.as_deref())?;
         let volumes = limit.check(&plan.targets)?;
+        self.raw_inspection_ready(&plan.targets)?;
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| error.to_string())?

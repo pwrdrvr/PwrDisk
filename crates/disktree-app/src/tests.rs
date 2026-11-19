@@ -1415,6 +1415,82 @@ fn review_omits_gone_marks_and_requires_consent_for_replacements(
     assert!(present.join("notes.txt").is_file());
 }
 
+/// The permanent dialog keeps the scope it presented. The immediate
+/// Trash action must likewise reject additions to the rendered Review.
+#[gpui_kit::test]
+fn removal_buttons_use_the_presented_review_scope(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let gone = temp.path().join("junk");
+    let moved = temp.path().join("moved");
+
+    update(&view, cx, |app, cx| {
+        for name in ["junk", "keep"] {
+            let crumbs = child_crumbs(app, &[], name);
+            app.toggle_mark(&crumbs, cx);
+        }
+        app.removal_mode = RemovalMode::Permanent;
+        app.open_review(cx);
+    });
+    cx.run_until_parked();
+    draw(cx);
+    update(&view, cx, |app, cx| app.commit(false, cx));
+    std::fs::rename(&gone, &moved).unwrap();
+    draw(cx);
+    read(&view, cx, |app| {
+        assert_eq!(app.plan().targets.len(), 1);
+        assert_eq!(app.confirm_plan.as_ref().unwrap().targets.len(), 2);
+    });
+    update(&view, cx, |app, cx| {
+        app.cancel_delete(cx);
+        app.removal_mode = RemovalMode::Trash;
+    });
+    draw(cx);
+    std::fs::rename(&moved, &gone).unwrap();
+    update(&view, cx, |app, cx| {
+        // Run the activation without ever using the host Trash, even if
+        // the scope check regresses.
+        app.restarting = true;
+        app.commit(false, cx);
+        let (notice, _) = app.notice().expect("selection change notice");
+        assert!(notice.contains("selection changed"), "{notice}");
+        assert!(app.run.is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn missing_cache_marks_do_not_route_review_and_can_still_be_exported(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init);
+    let temp = fixture();
+    let payload = npm_cache(temp.path());
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        for path in [&payload, &temp.path().join("keep")] {
+            let crumbs = app.crumbs_for_path(path).expect("scanned item");
+            app.toggle_mark(&crumbs, cx);
+        }
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    std::fs::remove_file(&payload).unwrap();
+    update(&view, cx, Disktree::open_review);
+    cx.run_until_parked();
+    draw(cx);
+    update(&view, cx, |app, cx| {
+        assert_eq!(app.removal_mode, RemovalMode::Permanent);
+        assert_eq!(app.plan().targets.len(), 1);
+        assert!(app.raw_inspection_hint().is_none());
+        app.unmark(&temp.path().join("keep"), cx);
+        assert!(app.plan().is_empty());
+        assert_eq!(app.export_text(false).unwrap().1, 1);
+    });
+    draw(cx);
+    click_on(cx, "export");
+    assert!(read(&view, cx, |app| app.export_menu_open));
+}
+
 /// A subdivided directory keeps a band at the top for its own name, and its
 /// children start below it. That is what makes the inner tiles selectable: the
 /// parent's name never covers them.
@@ -11298,7 +11374,7 @@ fn review_inspection_agrees_with_worker_for_relocated_layouts(
         cx.run_until_parked();
         draw(cx);
         read(&view, cx, |app| {
-            assert_eq!(app.raw_inspection_ready().is_err(), refused, "{name}");
+            assert_eq!(app.raw_inspection_hint().is_some(), refused, "{name}");
             assert_eq!(
                 app.removal_mode == RemovalMode::OwnerCleanup,
                 refused,
@@ -11332,7 +11408,7 @@ fn review_inspection_discards_replaced_selection_and_scan(
     });
     cx.run_until_parked();
     read(&view, cx, |app| {
-        assert!(app.raw_inspection_ready().is_ok());
+        assert!(app.raw_inspection_hint().is_none());
         assert_eq!(app.removal_mode, RemovalMode::Permanent);
     });
     update(&view, cx, |app, cx| {
@@ -11353,7 +11429,7 @@ fn review_inspection_discards_replaced_selection_and_scan(
         app.tree = Some(std::sync::Arc::new(
             scan(temp.path(), options()).expect("new scan"),
         ));
-        assert!(app.raw_inspection_ready().is_err());
+        assert!(app.raw_inspection_hint().is_some());
         app.removal_mode = RemovalMode::Permanent;
     });
     draw(cx);
