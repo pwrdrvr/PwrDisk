@@ -250,6 +250,11 @@ pub fn forward_to_main<A: Action>(cx: &mut App) {
             // focus. The listener must be free to update the root view.
             let _ = AnyWindowHandle::from(main).update(cx, |_, window, cx| {
                 window.activate_window();
+                // Escape needs a rendered focus target to reach the scan
+                // controls, even when the menu can dispatch directly.
+                if !root.contains_focused(window, cx) {
+                    root.focus(window, cx);
+                }
                 forwarding.set(true);
                 root.dispatch_action(action.as_ref(), window, cx);
                 forwarding.set(false);
