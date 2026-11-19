@@ -176,8 +176,21 @@ pub fn space_info(path: &Path) -> io::Result<SpaceInfo> {
     Ok(space)
 }
 
-/// OS-facing counters without changing the raw samples used by guards.
+/// OS-facing counters using a cached purgeable estimate when one is fresh.
+/// Never asks macOS to recompute its purgeable estimate.
 pub fn display_space_info(path: &Path) -> io::Result<SpaceInfo> {
+    display_space(path, false)
+}
+
+/// Refresh the live meter, including at most one macOS purgeable query per
+/// mounted volume per minute. Raw free space is always measured afresh.
+pub fn refresh_display_space_info(path: &Path) -> io::Result<SpaceInfo> {
+    display_space(path, true)
+}
+
+fn display_space(path: &Path, refresh: bool) -> io::Result<SpaceInfo> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = refresh;
     let space = space_info(path)?;
     #[cfg(target_os = "macos")]
     let space = SpaceInfo {
@@ -185,6 +198,7 @@ pub fn display_space_info(path: &Path) -> io::Result<SpaceInfo> {
             path,
             space.total,
             space.available,
+            refresh,
         ),
         ..space
     };

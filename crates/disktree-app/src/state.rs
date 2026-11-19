@@ -21,7 +21,8 @@ use disktree_core::removal::{
 };
 use disktree_core::scan::{Known, ScanHandle, ScanOptions, ScanSnapshot};
 use disktree_core::space::{
-    SpaceInfo, device_for, display_space_info as space_info, volume_root_for,
+    SpaceInfo, device_for, display_space_info as space_info,
+    space_info as raw_space_info, volume_root_for,
 };
 use disktree_core::tree::{Metric, Node, Tree, path_of};
 use disktree_core::treemap::{
@@ -40,6 +41,12 @@ use crate::git_store::{self, Ask, GitProbe, GitStore, Wanted};
 
 use crate::marks::{Marks, is_hidden};
 use crate::treemap_view::{Mosaic, TileDeco};
+
+// Harnesses read real raw counters on fixtures without querying CacheDelete.
+#[cfg(any(test, feature = "screenshots"))]
+use disktree_core::space::display_space_info as refresh_meter;
+#[cfg(not(any(test, feature = "screenshots")))]
+use disktree_core::space::refresh_display_space_info as refresh_meter;
 
 /// What a tile's colour says.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2197,10 +2204,10 @@ impl Disktree {
                 if came_from.is_some() {
                     self.clear_filter();
                     self.root_path.clone_from(&self.scan_root);
-                    self.space = space_info(&self.root_path).ok();
                     self.device = device_for(&self.root_path);
                     self.file_table = file_table_readable(&self.root_path);
                 }
+                self.space = refresh_meter(&self.root_path).ok();
                 let metric = self.options.metric;
                 self.marks.refresh(
                     &self.root_path,
@@ -2283,16 +2290,26 @@ impl Disktree {
                     (this.remote.is_none()
                         && !this.awaiting_root
                         && this.tree.is_some())
-                    .then(|| (this.root_path.clone(), this.scan_epoch))
+                    .then(|| {
+                        let refresh = this.screen != Screen::Running
+                            && !this.is_indexing();
+                        (this.root_path.clone(), this.scan_epoch, refresh)
+                    })
                 });
                 let Ok(request) = request else { break };
-                let Some((path, epoch)) = request else {
+                let Some((path, epoch, refresh)) = request else {
                     continue;
                 };
                 let sample_path = path.clone();
                 let fresh = cx
                     .background_executor()
-                    .spawn(async move { space_info(&sample_path).ok() })
+                    .spawn(async move {
+                        if refresh {
+                            refresh_meter(&sample_path).ok()
+                        } else {
+                            space_info(&sample_path).ok()
+                        }
+                    })
                     .await;
                 if this
                     .update(cx, |this, cx| {
@@ -4329,7 +4346,7 @@ impl Disktree {
         }
         // Measured now rather than read from the ticker, which can be a
         // second old: the observed figure is only as good as its baseline.
-        let before = space_info(&self.root_path).ok().or(self.space);
+        let before = raw_space_info(&self.root_path).ok().or(self.space);
         self.space_baseline = before.or(self.space_baseline);
         self.ledger.begin(self.scans_done);
         self.run_start = Some(crate::ledger::Start {
@@ -4588,7 +4605,7 @@ impl Disktree {
             reported: totals.reported_done,
             private,
             before: start.before,
-            after: space_info(&self.root_path)
+            after: raw_space_info(&self.root_path)
                 .ok()
                 .map(|space| space.available),
             started: start.started,
