@@ -504,6 +504,19 @@ fn volumes_dialog(
             volume.device.as_deref().unwrap_or("Mounted volume")
         );
         let id = ElementId::Name(crate::file_list::path_id(&volume.point));
+        // The rule between the recent roots and the rest; it is not a
+        // row, so Up and Down never land on it.
+        if index > 0 && index == app.volumes_recent {
+            rows = rows.child(
+                div()
+                    .debug_selector(|| "source-recent-rule".into())
+                    .flex_none()
+                    .h(px(1.))
+                    .mx(space::MD)
+                    .my(space::XS)
+                    .bg(theme.divider()),
+            );
+        }
         rows = rows.child(row(id, index, label.clone()).child(label).on_click(
             cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.volume_highlight = index;

@@ -1,0 +1,8 @@
+{
+  "size": [1180, 720],
+  "theme": "tokyo_night",
+  "steps": [
+    {"op": "setup", "state": {"type": "chooser_recent"}},
+    {"op": "capture", "name": "chooser-recent.png"}
+  ]
+}

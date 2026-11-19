@@ -546,6 +546,44 @@ fn setup(
                     app.volume_highlight = 1;
                     app.volumes_open = true;
                 }
+                State::ChooserRecent => {
+                    ensure!(
+                        root.starts_with("/Volumes/Fixtures"),
+                        "chooser pictures require the contrived Fixtures image"
+                    );
+                    // The same two invented rows, with the fixture root and
+                    // its Projects folder as the recent roots above the
+                    // rule. Nothing is remembered: the path is unset.
+                    let now = chrono::Utc::now().timestamp();
+                    app.recent_roots = vec![
+                        crate::recent_roots::Recent {
+                            path: root.into(),
+                            at: now,
+                        },
+                        crate::recent_roots::Recent {
+                            path: root.join("Projects"),
+                            at: now - 86_400,
+                        },
+                    ];
+                    let listed = [root.parent().unwrap_or(root), root]
+                        .into_iter()
+                        .map(|point| disktree_core::space::Volume {
+                            point: point.into(),
+                            device: None,
+                            space: None,
+                        })
+                        .collect();
+                    (app.volumes, app.volumes_recent) =
+                        crate::recent_roots::arrange(
+                            &app.recent_roots,
+                            listed,
+                            |_| true,
+                            chrono::Local::now().date_naive(),
+                        );
+                    app.volumes_loading = false;
+                    app.volume_highlight = 0;
+                    app.volumes_open = true;
+                }
             }
             cx.notify();
             Ok(())

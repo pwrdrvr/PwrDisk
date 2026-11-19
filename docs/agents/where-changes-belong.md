@@ -37,6 +37,8 @@ Read this before adding code, or when unsure which file owns a behavior.
 | the title strip, window controls, the client-side frame | `crates/disktree-app/src/chrome.rs` |
 | where the main window opens, and remembering it | `crates/disktree-app/src/window_frame.rs` |
 | which display a new window opens on | `crates/disktree-app/src/placement.rs` |
+| which mounts Choose what to scan offers | `crates/disktree-core/src/space.rs` (`volume_roots`, `macos_offers_root`) |
+| the chooser's recent roots, above its rule | `crates/disktree-app/src/recent_roots.rs` |
 | the menu bar, its shortcuts, the strip's menu off macOS | `crates/disktree-app/src/app_menu.rs`, the dropdown in `views.rs` |
 | Help's rows, Copy Diagnostics Info | `crates/disktree-app/src/help.rs`, the report in `diagnostics.rs` |
 | Settings (General, Updates, Safety, Agents (MCP), Diagnostics, About) | `crates/disktree-app/src/settings.rs` |

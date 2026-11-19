@@ -76,6 +76,7 @@ pub enum State {
     FileList,
     Help,
     Chooser,
+    ChooserRecent,
 }
 
 impl Scenario {
@@ -178,7 +179,8 @@ impl Scenario {
                     | State::RemovalRefused
                     | State::FileList
                     | State::Help
-                    | State::Chooser => {}
+                    | State::Chooser
+                    | State::ChooserRecent => {}
                 },
             }
         }
@@ -249,6 +251,7 @@ mod tests {
             {"op": "setup", "state": {"type": "file_list"}},
             {"op": "setup", "state": {"type": "help"}},
             {"op": "setup", "state": {"type": "chooser"}},
+            {"op": "setup", "state": {"type": "chooser_recent"}},
             {"op": "setup", "state": {"type": "system_folders"}},
             {"op": "setup", "state": {"type": "disk_capacity"}},
             {"op": "setup", "state": {"type": "removal_check"}},

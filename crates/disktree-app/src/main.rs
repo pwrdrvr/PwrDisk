@@ -46,6 +46,7 @@ mod placement;
 mod pointer_card;
 mod power;
 mod raw_inspection;
+mod recent_roots;
 mod report_cli;
 mod run_list;
 mod run_view;
