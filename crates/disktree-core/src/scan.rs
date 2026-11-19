@@ -603,6 +603,9 @@ impl WalkContext {
                 {
                     return Classified::Skipped;
                 }
+                (Err(error), _) if self.entry_vanished(error) => {
+                    return Classified::Skipped;
+                }
                 (Err(error), _) => {
                     self.progress.record_error(&path, error);
                     return Classified::Unreadable;

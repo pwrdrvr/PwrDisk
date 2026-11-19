@@ -148,10 +148,10 @@ impl Plan {
             }
             match volume {
                 crate::space::Attribution::Scanned => {
-                    self.reclaim -= target.bytes
+                    self.reclaim -= target.bytes;
                 }
                 crate::space::Attribution::Other => {
-                    self.foreign -= target.bytes
+                    self.foreign -= target.bytes;
                 }
                 crate::space::Attribution::Unknown => {}
             }
@@ -2135,10 +2135,7 @@ fn remove_contents(
     top: &Volume,
     path: &Path,
 ) -> io::Result<()> {
-    use rustix::fs::{AtFlags, Dir, FileType};
-    use rustix::io::Errno;
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt as _;
+    use rustix::fs::Dir;
 
     // Names first, then removal: unlinking while a directory stream is open
     // on the same directory may skip entries.
@@ -2150,6 +2147,21 @@ fn remove_contents(
             entries.push((name.to_owned(), entry.file_type()));
         }
     }
+
+    remove_listed_children(dir, top, path, entries)
+}
+
+#[cfg(unix)]
+fn remove_listed_children(
+    dir: &std::os::fd::OwnedFd,
+    top: &Volume,
+    path: &Path,
+    entries: Vec<(std::ffi::CString, rustix::fs::FileType)>,
+) -> io::Result<()> {
+    use rustix::fs::{AtFlags, FileType};
+    use rustix::io::Errno;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
 
     for (name, kind) in entries {
         if !matches!(kind, FileType::Directory | FileType::Unknown) {
@@ -4382,6 +4394,35 @@ mod tests {
         let planned =
             plan(&[target(Path::new("/private/tmp"), 1)], Path::new("/"));
         assert!(planned.targets.is_empty());
+    }
+
+    /// Feed the remover the listing it captured before a concurrent
+    /// cleanup, then compare the directory to the empty-tree oracle.
+    #[cfg(unix)]
+    #[test]
+    fn listed_children_can_vanish_before_they_are_unlinked() {
+        use rustix::fs::FileType;
+
+        let temp = removable_tempdir();
+        for kind in [
+            FileType::RegularFile,
+            FileType::Directory,
+            FileType::Unknown,
+        ] {
+            let path = temp.path().join("target");
+            fs::create_dir(&path).expect("target");
+            fs::write(path.join("still-here"), b"present").expect("child");
+            let dir = open_root(&path).expect("directory handle");
+            let top = Volume::of(&dir).expect("fixture volume");
+            let entries = vec![
+                (c"already-gone".to_owned(), kind),
+                (c"still-here".to_owned(), FileType::RegularFile),
+            ];
+            remove_listed_children(&dir, &top, &path, entries)
+                .expect("missing child has already been removed");
+            assert!(fs::read_dir(&path).expect("target").next().is_none());
+            fs::remove_dir(path).expect("remove the empty fixture");
+        }
     }
 
     #[test]
