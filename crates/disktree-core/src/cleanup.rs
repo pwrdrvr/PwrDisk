@@ -158,9 +158,14 @@ fn inspect_raw_tree(
                     owner.command_label()
                 ));
             }
-            for entry in
-                std::fs::read_dir(&path).map_err(|error| error.to_string())?
-            {
+            let entries = match std::fs::read_dir(&path) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    continue;
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            for entry in entries {
                 if *visited + pending.len() >= maximum {
                     // Discarding this mark's queued paths must not give a
                     // later mark a fresh budget after the selection hit it.

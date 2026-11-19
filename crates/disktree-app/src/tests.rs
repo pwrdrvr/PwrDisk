@@ -5865,6 +5865,8 @@ fn review_status_work(
     update(&view, window, |app, _| {
         if covered {
             let parent = app.target_at(&[0]).expect("parent");
+            // The tree is synthetic, but Review now checks the outer mark.
+            std::fs::create_dir_all(&parent.path).expect("live marked parent");
             app.marks.toggle(parent, app.path_style());
         }
         for index in 0..count {

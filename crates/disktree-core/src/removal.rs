@@ -138,6 +138,7 @@ impl Plan {
     fn omit_missing(&mut self) {
         let mut attribution = self.attribution.iter().copied();
         let mut kept = Vec::with_capacity(self.targets.len());
+        let mut gone = BTreeSet::new();
         self.targets.retain(|target| {
             let volume = attribution
                 .next()
@@ -155,6 +156,7 @@ impl Plan {
                 }
                 crate::space::Attribution::Unknown => {}
             }
+            gone.insert(guard_key(&target.path));
             self.blocked.push(Blocked {
                 path: target.path.clone(),
                 reason: "Already gone".into(),
@@ -162,6 +164,22 @@ impl Plan {
             false
         });
         self.attribution = kept;
+        if !gone.is_empty() {
+            self.covered.retain(|target| {
+                if guard_key(&target.path)
+                    .ancestors()
+                    .any(|parent| gone.contains(parent))
+                {
+                    self.blocked.push(Blocked {
+                        path: target.path.clone(),
+                        reason: "Parent already gone".into(),
+                    });
+                    false
+                } else {
+                    true
+                }
+            });
+        }
     }
 
     pub fn bytes(&self) -> u64 {
@@ -4482,8 +4500,17 @@ mod tests {
             }).collect();
             let keep = temp.path().join("unmarked");
             fs::write(&keep, b"keep").expect("unmarked file");
+            let mut targets = targets;
+            let covered = paths[gone].join("nested");
+            fs::create_dir(&covered).expect("covered directory");
+            targets.push(target(&covered, 0));
             let planned = plan(&targets, temp.path());
-            fs::remove_dir(&paths[gone]).expect("external removal");
+            fs::remove_dir_all(&paths[gone]).expect("external removal");
+
+            let reviewed = plan_for_review(&targets, temp.path());
+            proptest::prop_assert_eq!(reviewed.targets.len(), 2);
+            proptest::prop_assert!(reviewed.covered.is_empty());
+            proptest::prop_assert_eq!(reviewed.blocked.len(), 2);
 
             let handle = start(planned, RemovalMode::Permanent,
                 Some(crate::removal_limit::Ceilings::default()), None, |work| {
