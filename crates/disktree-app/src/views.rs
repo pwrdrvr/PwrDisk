@@ -326,6 +326,10 @@ pub fn root(
     if app.confirm_open {
         root = root.child(delete_dialog(app, window, cx));
     }
+    #[cfg(test)]
+    {
+        root = crate::tests::watch_main_menu_delivery(root, cx);
+    }
     root
 }
 
