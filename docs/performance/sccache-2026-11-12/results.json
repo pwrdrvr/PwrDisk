@@ -1,0 +1,6019 @@
+{
+  "source": {
+    "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2\nBuildVersion:\t\t26B123\n",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)\n",
+    "base": "1673f3ea95264a8b8c5077340148852443ff226a",
+    "lock_sha256": "0dc15b7a5c90812c8dcc25a4937017b092f51214dfa5e6a243fea1c3b21b5f10",
+    "profile_source": "\ndebug = \"limited\"\nopt-level = 1\n\n[profile.dev.package.\"*\"]\nopt-level = 2\n\n[profile.release]\nlto = \"thin\"\ncodegen-units = 1\noverflow-checks = true\n\n",
+    "native_tmpdir_retained": true,
+    "limits": {
+      "aggregate_cargo_jobs": 4,
+      "allocation_bytes": 42949672960,
+      "free_floor_bytes": 51539607552,
+      "physical_bytes": 21474836480,
+      "cache_bytes": 8589934592,
+      "normal_phase_seconds": 1200,
+      "release_seconds": 1800,
+      "overall_seconds": 5400
+    }
+  },
+  "setup": {
+    "wall_seconds": 16.317248000064865,
+    "base": "1673f3ea95264a8b8c5077340148852443ff226a",
+    "sccache": "v0.19.0",
+    "sha256": "a35a0b7d622618774bc1bb8102d72562dfb21e619f88b153b370d7f89bc286af",
+    "source_downloads": "sccache release/docs only; Cargo registry/git APFS-cloned",
+    "epoch": 1794492662.762072
+  },
+  "analysis": {
+    "plain": {
+      "phases": {
+        "dev": {
+          "wall_seconds": 257.171,
+          "exit": 0,
+          "compiling": {
+            "log_records": 448,
+            "distinct_packages": 448
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "lint": {
+          "wall_seconds": 91.443,
+          "exit": 0,
+          "compiling": {
+            "log_records": 66,
+            "distinct_packages": 65
+          },
+          "checking": {
+            "log_records": 374,
+            "distinct_packages": 374
+          }
+        },
+        "test": {
+          "wall_seconds": 378.74,
+          "exit": 0,
+          "compiling": {
+            "log_records": 42,
+            "distinct_packages": 41
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "release": {
+          "wall_seconds": 174.946,
+          "exit": 0,
+          "compiling": {
+            "log_records": 448,
+            "distinct_packages": 448
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        }
+      },
+      "workflow_seconds": 902.3,
+      "tests": {
+        "individual_results": {
+          "ok": 1135,
+          "ignored": 9,
+          "FAILED": 0
+        },
+        "suite_results": [
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out;"
+          ],
+          [
+            "ok",
+            "485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out;"
+          ],
+          [
+            "ok",
+            "505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out;"
+          ]
+        ],
+        "python_suites": [
+          [
+            "5",
+            "OK"
+          ],
+          [
+            "6",
+            "OK"
+          ]
+        ],
+        "individual_multiset_matches_plain": true,
+        "suites_match_plain": true,
+        "python_matches_plain": true,
+        "missing_vs_plain": [],
+        "extra_vs_plain": []
+      }
+    },
+    "populate": {
+      "phases": {
+        "dev": {
+          "wall_seconds": 156.856,
+          "exit": 0,
+          "compiling": {
+            "log_records": 448,
+            "distinct_packages": 448
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "lint": {
+          "wall_seconds": 83.937,
+          "exit": 0,
+          "compiling": {
+            "log_records": 65,
+            "distinct_packages": 64
+          },
+          "checking": {
+            "log_records": 375,
+            "distinct_packages": 375
+          }
+        },
+        "test": {
+          "wall_seconds": 324.325,
+          "exit": 0,
+          "compiling": {
+            "log_records": 42,
+            "distinct_packages": 41
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "release": {
+          "wall_seconds": 173.281,
+          "exit": 0,
+          "compiling": {
+            "log_records": 448,
+            "distinct_packages": 448
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        }
+      },
+      "workflow_seconds": 738.399,
+      "tests": {
+        "individual_results": {
+          "ok": 1135,
+          "ignored": 9,
+          "FAILED": 0
+        },
+        "suite_results": [
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out;"
+          ],
+          [
+            "ok",
+            "485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out;"
+          ],
+          [
+            "ok",
+            "505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out;"
+          ]
+        ],
+        "python_suites": [
+          [
+            "5",
+            "OK"
+          ],
+          [
+            "6",
+            "OK"
+          ]
+        ],
+        "individual_multiset_matches_plain": true,
+        "suites_match_plain": true,
+        "python_matches_plain": true,
+        "missing_vs_plain": [],
+        "extra_vs_plain": []
+      }
+    },
+    "hit": {
+      "phases": {
+        "dev": {
+          "wall_seconds": 102.448,
+          "exit": 0,
+          "compiling": {
+            "log_records": 448,
+            "distinct_packages": 448
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "lint": {
+          "wall_seconds": 58.783,
+          "exit": 0,
+          "compiling": {
+            "log_records": 66,
+            "distinct_packages": 65
+          },
+          "checking": {
+            "log_records": 374,
+            "distinct_packages": 374
+          }
+        },
+        "test": {
+          "wall_seconds": 324.887,
+          "exit": 0,
+          "compiling": {
+            "log_records": 42,
+            "distinct_packages": 41
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "release": {
+          "wall_seconds": 134.962,
+          "exit": 0,
+          "compiling": {
+            "log_records": 448,
+            "distinct_packages": 448
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        }
+      },
+      "workflow_seconds": 621.08,
+      "tests": {
+        "individual_results": {
+          "ok": 1135,
+          "ignored": 9,
+          "FAILED": 0
+        },
+        "suite_results": [
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out;"
+          ],
+          [
+            "ok",
+            "485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out;"
+          ],
+          [
+            "ok",
+            "505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out;"
+          ]
+        ],
+        "python_suites": [
+          [
+            "5",
+            "OK"
+          ],
+          [
+            "6",
+            "OK"
+          ]
+        ],
+        "individual_multiset_matches_plain": true,
+        "suites_match_plain": true,
+        "python_matches_plain": true,
+        "missing_vs_plain": [],
+        "extra_vs_plain": []
+      }
+    },
+    "warm": {
+      "phases": {
+        "dev": {
+          "wall_seconds": 4.921,
+          "exit": 0,
+          "compiling": {
+            "log_records": 7,
+            "distinct_packages": 7
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "lint": {
+          "wall_seconds": 10.34,
+          "exit": 0,
+          "compiling": {
+            "log_records": 4,
+            "distinct_packages": 3
+          },
+          "checking": {
+            "log_records": 4,
+            "distinct_packages": 4
+          }
+        },
+        "test": {
+          "wall_seconds": 256.568,
+          "exit": 0,
+          "compiling": {
+            "log_records": 8,
+            "distinct_packages": 7
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "release": {
+          "wall_seconds": 52.582,
+          "exit": 0,
+          "compiling": {
+            "log_records": 1,
+            "distinct_packages": 1
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        }
+      },
+      "workflow_seconds": 324.411,
+      "tests": {
+        "individual_results": {
+          "ok": 1135,
+          "ignored": 9,
+          "FAILED": 0
+        },
+        "suite_results": [
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out;"
+          ],
+          [
+            "ok",
+            "485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out;"
+          ],
+          [
+            "ok",
+            "505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out;"
+          ]
+        ],
+        "python_suites": [
+          [
+            "5",
+            "OK"
+          ],
+          [
+            "6",
+            "OK"
+          ]
+        ],
+        "individual_multiset_matches_plain": true,
+        "suites_match_plain": true,
+        "python_matches_plain": true,
+        "missing_vs_plain": [],
+        "extra_vs_plain": []
+      }
+    },
+    "edit": {
+      "phases": {
+        "dev": {
+          "wall_seconds": 6.245,
+          "exit": 0,
+          "compiling": {
+            "log_records": 12,
+            "distinct_packages": 12
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "lint": {
+          "wall_seconds": 14.222,
+          "exit": 0,
+          "compiling": {
+            "log_records": 6,
+            "distinct_packages": 5
+          },
+          "checking": {
+            "log_records": 9,
+            "distinct_packages": 9
+          }
+        },
+        "test": {
+          "wall_seconds": 254.368,
+          "exit": 0,
+          "compiling": {
+            "log_records": 13,
+            "distinct_packages": 12
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "release": {
+          "wall_seconds": 77.477,
+          "exit": 0,
+          "compiling": {
+            "log_records": 6,
+            "distinct_packages": 6
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        }
+      },
+      "workflow_seconds": 352.312,
+      "tests": {
+        "individual_results": {
+          "ok": 1135,
+          "ignored": 9,
+          "FAILED": 0
+        },
+        "suite_results": [
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out;"
+          ],
+          [
+            "ok",
+            "485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out;"
+          ],
+          [
+            "ok",
+            "505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out;"
+          ]
+        ],
+        "python_suites": [
+          [
+            "5",
+            "OK"
+          ],
+          [
+            "6",
+            "OK"
+          ]
+        ],
+        "individual_multiset_matches_plain": true,
+        "suites_match_plain": true,
+        "python_matches_plain": true,
+        "missing_vs_plain": [],
+        "extra_vs_plain": []
+      }
+    }
+  },
+  "phases": {
+    "plain": [
+      {
+        "name": "plain-dev",
+        "command": [
+          "cargo",
+          "build",
+          "--workspace",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "$WORKSPACE/a",
+        "exit": 0,
+        "wall_seconds": 257.171,
+        "stopped_by": null,
+        "load_average": [
+          6.09814453125,
+          5.5380859375,
+          4.18310546875
+        ],
+        "peak_sampled_allocated_bytes": 5168877568,
+        "peak_sampled_rss_bytes": 3165913088,
+        "peak_sampled_physical_bytes": 2956007904,
+        "final_inventory": {
+          "logical_bytes": 5299997304,
+          "allocated_bytes": 5562884096,
+          "files": 91109
+        }
+      },
+      {
+        "name": "plain-lint",
+        "command": [
+          "cargo",
+          "xtask",
+          "lint"
+        ],
+        "cwd": "$WORKSPACE/a",
+        "exit": 0,
+        "wall_seconds": 91.443,
+        "stopped_by": null,
+        "load_average": [
+          6.3681640625,
+          5.859375,
+          4.44384765625
+        ],
+        "peak_sampled_allocated_bytes": 6754779136,
+        "peak_sampled_rss_bytes": 2428223488,
+        "peak_sampled_physical_bytes": 2041190472,
+        "final_inventory": {
+          "logical_bytes": 6727829358,
+          "allocated_bytes": 7008161792,
+          "files": 95123
+        }
+      },
+      {
+        "name": "plain-test",
+        "command": [
+          "cargo",
+          "xtask",
+          "test"
+        ],
+        "cwd": "$WORKSPACE/a",
+        "exit": 0,
+        "wall_seconds": 378.74,
+        "stopped_by": null,
+        "load_average": [
+          5.75,
+          7.21044921875,
+          5.759765625
+        ],
+        "peak_sampled_allocated_bytes": 8690933760,
+        "peak_sampled_rss_bytes": 3877339136,
+        "peak_sampled_physical_bytes": 3482295904,
+        "final_inventory": {
+          "logical_bytes": 8666004406,
+          "allocated_bytes": 8944095232,
+          "files": 98243
+        }
+      },
+      {
+        "name": "plain-release",
+        "command": [
+          "cargo",
+          "build",
+          "--release",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "$WORKSPACE/a",
+        "exit": 0,
+        "wall_seconds": 174.946,
+        "stopped_by": null,
+        "load_average": [
+          5.63916015625,
+          6.5400390625,
+          5.75341796875
+        ],
+        "peak_sampled_allocated_bytes": 10705997824,
+        "peak_sampled_rss_bytes": 4639588352,
+        "peak_sampled_physical_bytes": 4025244584,
+        "final_inventory": {
+          "logical_bytes": 10444329371,
+          "allocated_bytes": 10728923136,
+          "files": 102449
+        }
+      }
+    ],
+    "populate": [
+      {
+        "name": "populate-dev",
+        "command": [
+          "cargo",
+          "build",
+          "--workspace",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "$WORKSPACE/b",
+        "exit": 0,
+        "wall_seconds": 156.856,
+        "stopped_by": null,
+        "load_average": [
+          47.84326171875,
+          22.73291015625,
+          12.43505859375
+        ],
+        "peak_sampled_allocated_bytes": 13867237376,
+        "peak_sampled_rss_bytes": 3504308224,
+        "peak_sampled_physical_bytes": 3435897808,
+        "final_inventory": {
+          "logical_bytes": 14076971664,
+          "allocated_bytes": 14406197248,
+          "files": 109984
+        }
+      },
+      {
+        "name": "populate-lint",
+        "command": [
+          "cargo",
+          "xtask",
+          "lint"
+        ],
+        "cwd": "$WORKSPACE/b",
+        "exit": 0,
+        "wall_seconds": 83.937,
+        "stopped_by": null,
+        "load_average": [
+          18.1123046875,
+          19.376953125,
+          12.1298828125
+        ],
+        "peak_sampled_allocated_bytes": 15960719360,
+        "peak_sampled_rss_bytes": 2841411584,
+        "peak_sampled_physical_bytes": 2444043120,
+        "final_inventory": {
+          "logical_bytes": 15672136113,
+          "allocated_bytes": 16019795968,
+          "files": 114464
+        }
+      },
+      {
+        "name": "populate-test",
+        "command": [
+          "cargo",
+          "xtask",
+          "test"
+        ],
+        "cwd": "$WORKSPACE/b",
+        "exit": 0,
+        "wall_seconds": 324.325,
+        "stopped_by": null,
+        "load_average": [
+          17.4873046875,
+          15.19873046875,
+          12.43310546875
+        ],
+        "peak_sampled_allocated_bytes": 18013855744,
+        "peak_sampled_rss_bytes": 3620978688,
+        "peak_sampled_physical_bytes": 2978195968,
+        "final_inventory": {
+          "logical_bytes": 17681608805,
+          "allocated_bytes": 18013855744,
+          "files": 117609
+        }
+      },
+      {
+        "name": "populate-release",
+        "command": [
+          "cargo",
+          "build",
+          "--release",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "$WORKSPACE/b",
+        "exit": 0,
+        "wall_seconds": 173.281,
+        "stopped_by": null,
+        "load_average": [
+          11.501953125,
+          12.517578125,
+          11.75634765625
+        ],
+        "peak_sampled_allocated_bytes": 20203266048,
+        "peak_sampled_rss_bytes": 4011900928,
+        "peak_sampled_physical_bytes": 3626066992,
+        "final_inventory": {
+          "logical_bytes": 19890659289,
+          "allocated_bytes": 20210233344,
+          "files": 122325
+        }
+      }
+    ],
+    "hit": [
+      {
+        "name": "hit-dev",
+        "command": [
+          "cargo",
+          "build",
+          "--workspace",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "$WORKSPACE/c",
+        "exit": 0,
+        "wall_seconds": 102.448,
+        "stopped_by": null,
+        "load_average": [
+          25.16162109375,
+          17.7294921875,
+          13.91064453125
+        ],
+        "peak_sampled_allocated_bytes": 23388286976,
+        "peak_sampled_rss_bytes": 3440410624,
+        "peak_sampled_physical_bytes": 2689394120,
+        "final_inventory": {
+          "logical_bytes": 23089739660,
+          "allocated_bytes": 23477391360,
+          "files": 128700
+        }
+      },
+      {
+        "name": "hit-lint",
+        "command": [
+          "cargo",
+          "xtask",
+          "lint"
+        ],
+        "cwd": "$WORKSPACE/c",
+        "exit": 0,
+        "wall_seconds": 58.783,
+        "stopped_by": null,
+        "load_average": [
+          15.76806640625,
+          16.4833984375,
+          13.70703125
+        ],
+        "peak_sampled_allocated_bytes": 24487378944,
+        "peak_sampled_rss_bytes": 2310815744,
+        "peak_sampled_physical_bytes": 1886282440,
+        "final_inventory": {
+          "logical_bytes": 24563412080,
+          "allocated_bytes": 24969216000,
+          "files": 132770
+        }
+      },
+      {
+        "name": "hit-test",
+        "command": [
+          "cargo",
+          "xtask",
+          "test"
+        ],
+        "cwd": "$WORKSPACE/c",
+        "exit": 0,
+        "wall_seconds": 324.887,
+        "stopped_by": null,
+        "load_average": [
+          20.193359375,
+          16.04345703125,
+          14.55517578125
+        ],
+        "peak_sampled_allocated_bytes": 26943938560,
+        "peak_sampled_rss_bytes": 3597860864,
+        "peak_sampled_physical_bytes": 2952768072,
+        "final_inventory": {
+          "logical_bytes": 26563060327,
+          "allocated_bytes": 26943938560,
+          "files": 135881
+        }
+      },
+      {
+        "name": "hit-release",
+        "command": [
+          "cargo",
+          "build",
+          "--release",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "$WORKSPACE/c",
+        "exit": 0,
+        "wall_seconds": 134.962,
+        "stopped_by": null,
+        "load_average": [
+          19.525390625,
+          15.84130859375,
+          14.5966796875
+        ],
+        "peak_sampled_allocated_bytes": 28850978816,
+        "peak_sampled_rss_bytes": 3485220864,
+        "peak_sampled_physical_bytes": 3208979528,
+        "final_inventory": {
+          "logical_bytes": 28507174061,
+          "allocated_bytes": 28877193216,
+          "files": 140188
+        }
+      }
+    ],
+    "warm": [
+      {
+        "name": "warm-dev",
+        "command": [
+          "cargo",
+          "build",
+          "--workspace",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "$WORKSPACE/c",
+        "exit": 0,
+        "wall_seconds": 4.921,
+        "stopped_by": null,
+        "load_average": [
+          14.4873046875,
+          14.92822265625,
+          14.296875
+        ],
+        "peak_sampled_allocated_bytes": 28861931520,
+        "peak_sampled_rss_bytes": 733102080,
+        "peak_sampled_physical_bytes": 479579760,
+        "final_inventory": {
+          "logical_bytes": 28621930373,
+          "allocated_bytes": 28995641344,
+          "files": 140205
+        }
+      },
+      {
+        "name": "warm-lint",
+        "command": [
+          "cargo",
+          "xtask",
+          "lint"
+        ],
+        "cwd": "$WORKSPACE/c",
+        "exit": 0,
+        "wall_seconds": 10.34,
+        "stopped_by": null,
+        "load_average": [
+          12.560546875,
+          14.501953125,
+          14.15283203125
+        ],
+        "peak_sampled_allocated_bytes": 28995657728,
+        "peak_sampled_rss_bytes": 1443725312,
+        "peak_sampled_physical_bytes": 855873656,
+        "final_inventory": {
+          "logical_bytes": 28987227711,
+          "allocated_bytes": 29364092928,
+          "files": 140225
+        }
+      },
+      {
+        "name": "warm-test",
+        "command": [
+          "cargo",
+          "xtask",
+          "test"
+        ],
+        "cwd": "$WORKSPACE/c",
+        "exit": 0,
+        "wall_seconds": 256.568,
+        "stopped_by": null,
+        "load_average": [
+          7.51025390625,
+          10.28857421875,
+          12.30224609375
+        ],
+        "peak_sampled_allocated_bytes": 29560287232,
+        "peak_sampled_rss_bytes": 1380253696,
+        "peak_sampled_physical_bytes": 1080020568,
+        "final_inventory": {
+          "logical_bytes": 29346035300,
+          "allocated_bytes": 29730811904,
+          "files": 140238
+        }
+      },
+      {
+        "name": "warm-release",
+        "command": [
+          "cargo",
+          "build",
+          "--release",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "$WORKSPACE/c",
+        "exit": 0,
+        "wall_seconds": 52.582,
+        "stopped_by": null,
+        "load_average": [
+          10.22265625,
+          10.50830078125,
+          12.2509765625
+        ],
+        "peak_sampled_allocated_bytes": 29734187008,
+        "peak_sampled_rss_bytes": 3049865216,
+        "peak_sampled_physical_bytes": 3198981064,
+        "final_inventory": {
+          "logical_bytes": 29346053012,
+          "allocated_bytes": 29730840576,
+          "files": 140241
+        }
+      }
+    ],
+    "edit": [
+      {
+        "name": "edit-dev",
+        "command": [
+          "cargo",
+          "build",
+          "--workspace",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "$WORKSPACE/c",
+        "exit": 0,
+        "wall_seconds": 6.245,
+        "stopped_by": null,
+        "load_average": [
+          9.88427734375,
+          10.43310546875,
+          12.2138671875
+        ],
+        "peak_sampled_allocated_bytes": 29719154688,
+        "peak_sampled_rss_bytes": 643973120,
+        "peak_sampled_physical_bytes": 437718688,
+        "final_inventory": {
+          "logical_bytes": 29501791836,
+          "allocated_bytes": 29890260992,
+          "files": 140272
+        }
+      },
+      {
+        "name": "edit-lint",
+        "command": [
+          "cargo",
+          "xtask",
+          "lint"
+        ],
+        "cwd": "$WORKSPACE/c",
+        "exit": 0,
+        "wall_seconds": 14.222,
+        "stopped_by": null,
+        "load_average": [
+          8.32470703125,
+          10.046875,
+          12.033203125
+        ],
+        "peak_sampled_allocated_bytes": 29963247616,
+        "peak_sampled_rss_bytes": 1524432896,
+        "peak_sampled_physical_bytes": 886757568,
+        "final_inventory": {
+          "logical_bytes": 29794813389,
+          "allocated_bytes": 30186295296,
+          "files": 140356
+        }
+      },
+      {
+        "name": "edit-test",
+        "command": [
+          "cargo",
+          "xtask",
+          "test"
+        ],
+        "cwd": "$WORKSPACE/c",
+        "exit": 0,
+        "wall_seconds": 254.368,
+        "stopped_by": null,
+        "load_average": [
+          6.76953125,
+          9.26416015625,
+          11.29345703125
+        ],
+        "peak_sampled_allocated_bytes": 30465355776,
+        "peak_sampled_rss_bytes": 1381335040,
+        "peak_sampled_physical_bytes": 1095863896,
+        "final_inventory": {
+          "logical_bytes": 30032269160,
+          "allocated_bytes": 30417391616,
+          "files": 140419
+        }
+      },
+      {
+        "name": "edit-release",
+        "command": [
+          "cargo",
+          "build",
+          "--release",
+          "--offline",
+          "--locked"
+        ],
+        "cwd": "$WORKSPACE/c",
+        "exit": 0,
+        "wall_seconds": 77.477,
+        "stopped_by": null,
+        "load_average": [
+          16.17626953125,
+          11.3759765625,
+          11.89306640625
+        ],
+        "peak_sampled_allocated_bytes": 30431653888,
+        "peak_sampled_rss_bytes": 2979708928,
+        "peak_sampled_physical_bytes": 3197063968,
+        "final_inventory": {
+          "logical_bytes": 30046019656,
+          "allocated_bytes": 30431158272,
+          "files": 140425
+        }
+      }
+    ]
+  },
+  "cache_stats": {
+    "populate-dev": {
+      "stats": {
+        "compile_requests": 567,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 3,
+        "requests_not_cacheable": 103,
+        "requests_executed": 461,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {
+            "C/C++": 13,
+            "Assembler": 11,
+            "Rust": 434
+          },
+          "adv_counts": {
+            "rust": 434,
+            "assemblerToPreprocess [clang]": 11,
+            "c [clang]": 13
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 458,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 681988027
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 458,
+        "compiler_write_duration": {
+          "secs": 382,
+          "nanos": 188236037
+        },
+        "compile_fails": 3,
+        "not_cached": {
+          "incremental": 3,
+          "crate-type (bin)": 57,
+          "-": 4,
+          "crate-type (proc-macro)": 29,
+          "-o": 6,
+          "missing input": 4
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 457694201,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "populate-lint": {
+      "stats": {
+        "compile_requests": 543,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 1,
+        "requests_not_cacheable": 50,
+        "requests_executed": 492,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "Assembler": 11,
+            "C/C++": 13
+          },
+          "adv_counts": {
+            "c [clang]": 13,
+            "assemblerToPreprocess [clang]": 11
+          }
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 466
+          },
+          "adv_counts": {
+            "rust": 466
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 466,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 301503545
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 6866500
+        },
+        "compilations": 466,
+        "compiler_write_duration": {
+          "secs": 149,
+          "nanos": 603801452
+        },
+        "compile_fails": 2,
+        "not_cached": {
+          "multiple input files": 24,
+          "crate-type (bin)": 10,
+          "-": 3,
+          "crate-type (proc-macro)": 7,
+          "-o": 3,
+          "incremental": 1,
+          "missing output_dir": 2
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 625033236,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "populate-test": {
+      "stats": {
+        "compile_requests": 62,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 28,
+        "requests_executed": 34,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "Rust": 6
+          },
+          "adv_counts": {
+            "rust": 6
+          }
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 28
+          },
+          "adv_counts": {
+            "rust": 28
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 28,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 43069081
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 2010209
+        },
+        "compilations": 28,
+        "compiler_write_duration": {
+          "secs": 73,
+          "nanos": 400154877
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "incremental": 9,
+          "missing input": 6,
+          "crate-type (proc-macro)": 1,
+          "-": 2,
+          "crate-type (bin)": 10
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 696369955,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "populate-release": {
+      "stats": {
+        "compile_requests": 592,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 4,
+        "requests_not_cacheable": 97,
+        "requests_executed": 491,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {
+            "Assembler": 11,
+            "Rust": 464,
+            "C/C++": 13
+          },
+          "adv_counts": {
+            "assemblerToPreprocess [clang]": 11,
+            "c [clang]": 13,
+            "rust": 464
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 488,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 413325338
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 488,
+        "compiler_write_duration": {
+          "secs": 370,
+          "nanos": 794972374
+        },
+        "compile_fails": 3,
+        "not_cached": {
+          "-": 3,
+          "missing input": 2,
+          "crate-type (bin)": 57,
+          "crate-type (proc-macro)": 29,
+          "-o": 6
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1126891043,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "hit-dev": {
+      "stats": {
+        "compile_requests": 567,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 3,
+        "requests_not_cacheable": 103,
+        "requests_executed": 461,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "C/C++": 13,
+            "Assembler": 11,
+            "Rust": 334
+          },
+          "adv_counts": {
+            "assemblerToPreprocess [clang]": 11,
+            "rust": 334,
+            "c [clang]": 13
+          }
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 100
+          },
+          "adv_counts": {
+            "rust": 100
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 100,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 162245958
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 308030215
+        },
+        "compilations": 100,
+        "compiler_write_duration": {
+          "secs": 163,
+          "nanos": 121844368
+        },
+        "compile_fails": 3,
+        "not_cached": {
+          "-": 4,
+          "crate-type (proc-macro)": 29,
+          "missing input": 4,
+          "crate-type (bin)": 57,
+          "-o": 6,
+          "incremental": 3
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1312388303,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "hit-lint": {
+      "stats": {
+        "compile_requests": 543,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 1,
+        "requests_not_cacheable": 50,
+        "requests_executed": 492,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "C/C++": 13,
+            "Assembler": 11,
+            "Rust": 368
+          },
+          "adv_counts": {
+            "rust": 368,
+            "assemblerToPreprocess [clang]": 11,
+            "c [clang]": 13
+          }
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 98
+          },
+          "adv_counts": {
+            "rust": 98
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 98,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 78538499
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 196991777
+        },
+        "compilations": 98,
+        "compiler_write_duration": {
+          "secs": 58,
+          "nanos": 444651088
+        },
+        "compile_fails": 2,
+        "not_cached": {
+          "crate-type (proc-macro)": 7,
+          "-": 3,
+          "incremental": 1,
+          "crate-type (bin)": 10,
+          "missing output_dir": 2,
+          "multiple input files": 24,
+          "-o": 3
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1362506586,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "hit-test": {
+      "stats": {
+        "compile_requests": 62,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 28,
+        "requests_executed": 34,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "Rust": 22
+          },
+          "adv_counts": {
+            "rust": 22
+          }
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 12
+          },
+          "adv_counts": {
+            "rust": 12
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 12,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 38581248
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 7868333
+        },
+        "compilations": 12,
+        "compiler_write_duration": {
+          "secs": 66,
+          "nanos": 749002583
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "crate-type (proc-macro)": 1,
+          "-": 2,
+          "missing input": 6,
+          "crate-type (bin)": 10,
+          "incremental": 9
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1425100786,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "hit-release": {
+      "stats": {
+        "compile_requests": 592,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 4,
+        "requests_not_cacheable": 97,
+        "requests_executed": 491,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "C/C++": 13,
+            "Assembler": 11,
+            "Rust": 361
+          },
+          "adv_counts": {
+            "rust": 361,
+            "c [clang]": 13,
+            "assemblerToPreprocess [clang]": 11
+          }
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 103
+          },
+          "adv_counts": {
+            "rust": 103
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 103,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 88103962
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 139034178
+        },
+        "compilations": 103,
+        "compiler_write_duration": {
+          "secs": 222,
+          "nanos": 403290167
+        },
+        "compile_fails": 3,
+        "not_cached": {
+          "-": 3,
+          "crate-type (proc-macro)": 29,
+          "-o": 6,
+          "crate-type (bin)": 57,
+          "missing input": 2
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1590897265,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "warm-dev": {
+      "stats": {
+        "compile_requests": 31,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 1,
+        "requests_executed": 30,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "C/C++": 13,
+            "Rust": 6,
+            "Assembler": 11
+          },
+          "adv_counts": {
+            "c [clang]": 13,
+            "assemblerToPreprocess [clang]": 11,
+            "rust": 6
+          }
+        },
+        "cache_misses": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 0,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 20808754
+        },
+        "compilations": 0,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "crate-type (bin)": 1
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1590897265,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "warm-lint": {
+      "stats": {
+        "compile_requests": 37,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 7,
+        "requests_executed": 30,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "Assembler": 11,
+            "C/C++": 13,
+            "Rust": 6
+          },
+          "adv_counts": {
+            "assemblerToPreprocess [clang]": 11,
+            "c [clang]": 13,
+            "rust": 6
+          }
+        },
+        "cache_misses": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 0,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 3208125
+        },
+        "compilations": 0,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "multiple input files": 4,
+          "-": 1,
+          "missing output_dir": 2
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1590897265,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "warm-test": {
+      "stats": {
+        "compile_requests": 17,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 11,
+        "requests_executed": 6,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "Rust": 6
+          },
+          "adv_counts": {
+            "rust": 6
+          }
+        },
+        "cache_misses": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 0,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 687876
+        },
+        "compilations": 0,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "-": 2,
+          "missing input": 6,
+          "incremental": 3
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1590897265,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "warm-release": {
+      "stats": {
+        "compile_requests": 1,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 1,
+        "requests_executed": 0,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 0,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 0,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "crate-type (bin)": 1
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1590897265,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "edit-dev": {
+      "stats": {
+        "compile_requests": 36,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 6,
+        "requests_executed": 30,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "Rust": 6,
+            "C/C++": 13,
+            "Assembler": 11
+          },
+          "adv_counts": {
+            "rust": 6,
+            "c [clang]": 13,
+            "assemblerToPreprocess [clang]": 11
+          }
+        },
+        "cache_misses": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 0,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 26682001
+        },
+        "compilations": 0,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "incremental": 3,
+          "crate-type (bin)": 3
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1590897265,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "edit-lint": {
+      "stats": {
+        "compile_requests": 57,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 27,
+        "requests_executed": 30,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "C/C++": 13,
+            "Rust": 6,
+            "Assembler": 11
+          },
+          "adv_counts": {
+            "assemblerToPreprocess [clang]": 11,
+            "c [clang]": 13,
+            "rust": 6
+          }
+        },
+        "cache_misses": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 0,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 3483458
+        },
+        "compilations": 0,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "incremental": 1,
+          "-": 1,
+          "missing output_dir": 2,
+          "multiple input files": 22,
+          "crate-type (bin)": 1
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1590897265,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "edit-test": {
+      "stats": {
+        "compile_requests": 30,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 24,
+        "requests_executed": 6,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "Rust": 6
+          },
+          "adv_counts": {
+            "rust": 6
+          }
+        },
+        "cache_misses": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 0,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 1682250
+        },
+        "compilations": 0,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "crate-type (bin)": 7,
+          "missing input": 6,
+          "incremental": 9,
+          "-": 2
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1590897265,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "edit-release": {
+      "stats": {
+        "compile_requests": 6,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 3,
+        "requests_executed": 3,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 3
+          },
+          "adv_counts": {
+            "rust": 3
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 3,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 13877666
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 3,
+        "compiler_write_duration": {
+          "secs": 44,
+          "nanos": 140816584
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "crate-type (bin)": 3
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1604644115,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    }
+  },
+  "server_startup": {
+    "populate": {
+      "wall_seconds": 0.052551624830812216,
+      "pid": 54144
+    },
+    "hit": {
+      "wall_seconds": 0.00121870799921453,
+      "pid": 1540
+    },
+    "warm": {
+      "wall_seconds": 0.001219040947034955,
+      "pid": 39376
+    },
+    "edit": {
+      "wall_seconds": 0.0013045419473201036,
+      "pid": 47675
+    }
+  },
+  "server_idle": {
+    "populate-dev": {
+      "rss_bytes": 20316160,
+      "physical_bytes": 9273944
+    },
+    "populate-lint": {
+      "rss_bytes": 30900224,
+      "physical_bytes": 15778392
+    },
+    "populate-test": {
+      "rss_bytes": 24231936,
+      "physical_bytes": 9863768
+    },
+    "populate-release": {
+      "rss_bytes": 45678592,
+      "physical_bytes": 29278808
+    },
+    "hit-dev": {
+      "rss_bytes": 26656768,
+      "physical_bytes": 9175640
+    },
+    "hit-lint": {
+      "rss_bytes": 30851072,
+      "physical_bytes": 13009496
+    },
+    "hit-test": {
+      "rss_bytes": 17055744,
+      "physical_bytes": 10027608
+    },
+    "hit-release": {
+      "rss_bytes": 30474240,
+      "physical_bytes": 18154072
+    },
+    "warm-dev": {
+      "rss_bytes": 30146560,
+      "physical_bytes": 22708872
+    },
+    "warm-lint": {
+      "rss_bytes": 31932416,
+      "physical_bytes": 24380088
+    },
+    "warm-test": {
+      "rss_bytes": 15040512,
+      "physical_bytes": 6849088
+    },
+    "warm-release": {
+      "rss_bytes": 15024128,
+      "physical_bytes": 6849088
+    },
+    "edit-dev": {
+      "rss_bytes": 35799040,
+      "physical_bytes": 28197632
+    },
+    "edit-lint": {
+      "rss_bytes": 15056896,
+      "physical_bytes": 6832704
+    },
+    "edit-test": {
+      "rss_bytes": 15089664,
+      "physical_bytes": 6783552
+    },
+    "edit-release": {
+      "rss_bytes": 10010624,
+      "physical_bytes": 7029288
+    }
+  },
+  "workflow_envelopes": {
+    "plain": {
+      "seconds": 907.3310444355011,
+      "method": "File timestamps: initial dev log birth to final results write (plain); server-ready timestamp minus measured startup to stop-server response write (cached). Includes measurement/statistics overhead; wall-clock envelope, not a monotonic timer."
+    },
+    "populate": {
+      "seconds": 744.5964636802673,
+      "method": "File timestamps: initial dev log birth to final results write (plain); server-ready timestamp minus measured startup to stop-server response write (cached). Includes measurement/statistics overhead; wall-clock envelope, not a monotonic timer."
+    },
+    "hit": {
+      "seconds": 628.1885635852814,
+      "method": "File timestamps: initial dev log birth to final results write (plain); server-ready timestamp minus measured startup to stop-server response write (cached). Includes measurement/statistics overhead; wall-clock envelope, not a monotonic timer."
+    },
+    "warm": {
+      "seconds": 331.6383605003357,
+      "method": "File timestamps: initial dev log birth to final results write (plain); server-ready timestamp minus measured startup to stop-server response write (cached). Includes measurement/statistics overhead; wall-clock envelope, not a monotonic timer."
+    },
+    "edit": {
+      "seconds": 359.91743206977844,
+      "method": "File timestamps: initial dev log birth to final results write (plain); server-ready timestamp minus measured startup to stop-server response write (cached). Includes measurement/statistics overhead; wall-clock envelope, not a monotonic timer."
+    }
+  },
+  "test_matches": {
+    "plain": {
+      "sha256_sorted_test_outcomes": "4f3f2bde41b06e27a8748356a736d5b6ff39856a123ef7d028a51935a2932a5a",
+      "individual_results": {
+        "ok": 1135,
+        "ignored": 9,
+        "FAILED": 0
+      },
+      "suite_results": [
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out;"
+        ],
+        [
+          "ok",
+          "485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out;"
+        ],
+        [
+          "ok",
+          "505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out;"
+        ]
+      ],
+      "python_suites": [
+        [
+          "5",
+          "OK"
+        ],
+        [
+          "6",
+          "OK"
+        ]
+      ],
+      "individual_multiset_matches_plain": true,
+      "suites_match_plain": true,
+      "python_matches_plain": true,
+      "missing_vs_plain": [],
+      "extra_vs_plain": []
+    },
+    "populate": {
+      "sha256_sorted_test_outcomes": "4f3f2bde41b06e27a8748356a736d5b6ff39856a123ef7d028a51935a2932a5a",
+      "individual_results": {
+        "ok": 1135,
+        "ignored": 9,
+        "FAILED": 0
+      },
+      "suite_results": [
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out;"
+        ],
+        [
+          "ok",
+          "485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out;"
+        ],
+        [
+          "ok",
+          "505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out;"
+        ]
+      ],
+      "python_suites": [
+        [
+          "5",
+          "OK"
+        ],
+        [
+          "6",
+          "OK"
+        ]
+      ],
+      "individual_multiset_matches_plain": true,
+      "suites_match_plain": true,
+      "python_matches_plain": true,
+      "missing_vs_plain": [],
+      "extra_vs_plain": []
+    },
+    "hit": {
+      "sha256_sorted_test_outcomes": "4f3f2bde41b06e27a8748356a736d5b6ff39856a123ef7d028a51935a2932a5a",
+      "individual_results": {
+        "ok": 1135,
+        "ignored": 9,
+        "FAILED": 0
+      },
+      "suite_results": [
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out;"
+        ],
+        [
+          "ok",
+          "485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out;"
+        ],
+        [
+          "ok",
+          "505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out;"
+        ]
+      ],
+      "python_suites": [
+        [
+          "5",
+          "OK"
+        ],
+        [
+          "6",
+          "OK"
+        ]
+      ],
+      "individual_multiset_matches_plain": true,
+      "suites_match_plain": true,
+      "python_matches_plain": true,
+      "missing_vs_plain": [],
+      "extra_vs_plain": []
+    },
+    "warm": {
+      "sha256_sorted_test_outcomes": "4f3f2bde41b06e27a8748356a736d5b6ff39856a123ef7d028a51935a2932a5a",
+      "individual_results": {
+        "ok": 1135,
+        "ignored": 9,
+        "FAILED": 0
+      },
+      "suite_results": [
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out;"
+        ],
+        [
+          "ok",
+          "485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out;"
+        ],
+        [
+          "ok",
+          "505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out;"
+        ]
+      ],
+      "python_suites": [
+        [
+          "5",
+          "OK"
+        ],
+        [
+          "6",
+          "OK"
+        ]
+      ],
+      "individual_multiset_matches_plain": true,
+      "suites_match_plain": true,
+      "python_matches_plain": true,
+      "missing_vs_plain": [],
+      "extra_vs_plain": []
+    },
+    "edit": {
+      "sha256_sorted_test_outcomes": "4f3f2bde41b06e27a8748356a736d5b6ff39856a123ef7d028a51935a2932a5a",
+      "individual_results": {
+        "ok": 1135,
+        "ignored": 9,
+        "FAILED": 0
+      },
+      "suite_results": [
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out;"
+        ],
+        [
+          "ok",
+          "485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out;"
+        ],
+        [
+          "ok",
+          "505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+        ],
+        [
+          "ok",
+          "9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out;"
+        ]
+      ],
+      "python_suites": [
+        [
+          "5",
+          "OK"
+        ],
+        [
+          "6",
+          "OK"
+        ]
+      ],
+      "individual_multiset_matches_plain": true,
+      "suites_match_plain": true,
+      "python_matches_plain": true,
+      "missing_vs_plain": [],
+      "extra_vs_plain": []
+    }
+  },
+  "timing_observations": {
+    "plain": {
+      "cargo_finished_lines": [
+        "    Finished `dev` profile [optimized + debuginfo] target(s) in 0.17s",
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 1m 54s",
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 24.15s"
+      ],
+      "suite_lines": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.01s",
+        "test result: ok. 485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 16.72s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out; finished in 0.00s",
+        "test result: ok. 505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 212.23s",
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s",
+        "test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.69s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s",
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.02s"
+      ],
+      "python_lines": [
+        "Ran 5 tests in 1.791s",
+        "Ran 6 tests in 0.010s"
+      ]
+    },
+    "populate": {
+      "cargo_finished_lines": [
+        "    Finished `dev` profile [optimized + debuginfo] target(s) in 0.20s",
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 1m 01s",
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 19.56s"
+      ],
+      "suite_lines": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.01s",
+        "test result: ok. 485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 16.57s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out; finished in 0.00s",
+        "test result: ok. 505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 215.29s",
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.66s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s",
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.01s"
+      ],
+      "python_lines": [
+        "Ran 5 tests in 1.749s",
+        "Ran 6 tests in 0.009s"
+      ]
+    },
+    "hit": {
+      "cargo_finished_lines": [
+        "    Finished `dev` profile [optimized + debuginfo] target(s) in 0.20s",
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 1m 02s",
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 19.38s"
+      ],
+      "suite_lines": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.01s",
+        "test result: ok. 485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 16.65s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out; finished in 0.00s",
+        "test result: ok. 505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 214.26s",
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.75s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s",
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.01s"
+      ],
+      "python_lines": [
+        "Ran 5 tests in 2.150s",
+        "Ran 6 tests in 0.009s"
+      ]
+    },
+    "warm": {
+      "cargo_finished_lines": [
+        "    Finished `dev` profile [optimized + debuginfo] target(s) in 0.19s",
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 3.60s",
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 4.70s"
+      ],
+      "suite_lines": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.01s",
+        "test result: ok. 485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 16.76s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out; finished in 0.00s",
+        "test result: ok. 505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 220.84s",
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s",
+        "test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.69s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s",
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.02s"
+      ],
+      "python_lines": [
+        "Ran 5 tests in 1.807s",
+        "Ran 6 tests in 0.010s"
+      ]
+    },
+    "edit": {
+      "cargo_finished_lines": [
+        "    Finished `dev` profile [optimized + debuginfo] target(s) in 0.17s",
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 5.30s",
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 5.70s"
+      ],
+      "suite_lines": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.01s",
+        "test result: ok. 485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 16.85s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out; finished in 0.00s",
+        "test result: ok. 505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 215.22s",
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s",
+        "test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.72s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s",
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.02s"
+      ],
+      "python_lines": [
+        "Ran 5 tests in 1.756s",
+        "Ran 6 tests in 0.011s"
+      ]
+    }
+  },
+  "resources": {
+    "peak_sampled_allocated_bytes": 30465355776,
+    "minimum_available_bytes": 78993788928,
+    "peak_sampled_physical_bytes": 3349241320,
+    "per_mode": {
+      "plain": {
+        "peak_physical_bytes": 3349241320,
+        "peak_allocated_bytes": 10705997824
+      },
+      "populate": {
+        "peak_physical_bytes": 2995167632,
+        "peak_allocated_bytes": 20203266048
+      },
+      "hit": {
+        "peak_physical_bytes": 2634045752,
+        "peak_allocated_bytes": 28850978816
+      },
+      "warm": {
+        "peak_physical_bytes": 2097828736,
+        "peak_allocated_bytes": 29734187008
+      },
+      "edit": {
+        "peak_physical_bytes": 2850509576,
+        "peak_allocated_bytes": 30465355776
+      }
+    }
+  },
+  "inventories": {
+    "plain-complete": {
+      "at_epoch": 1794493620.2249222,
+      "available_bytes": 99351175168,
+      "load_average": [
+        5.5078125,
+        6.49755859375,
+        5.74267578125
+      ],
+      "areas": {
+        "setup-and-evidence": {
+          "files": 83057,
+          "logical_bytes": 2101053558,
+          "allocated_bytes": 2312380416,
+          "apfs_data_allocation_bytes": 2312380416,
+          "apfs_private_bytes": 27688960,
+          "apfs_unavailable_files": 0
+        },
+        "source-a": {
+          "files": 18708,
+          "logical_bytes": 8326672042,
+          "allocated_bytes": 8398331904,
+          "apfs_data_allocation_bytes": 8398331904,
+          "apfs_private_bytes": 7736180736,
+          "apfs_unavailable_files": 0
+        },
+        "source-b": {
+          "files": 342,
+          "logical_bytes": 8302204,
+          "allocated_bytes": 9105408,
+          "apfs_data_allocation_bytes": 9105408,
+          "apfs_private_bytes": 9105408,
+          "apfs_unavailable_files": 0
+        },
+        "source-c": {
+          "files": 342,
+          "logical_bytes": 8302204,
+          "allocated_bytes": 9105408,
+          "apfs_data_allocation_bytes": 9105408,
+          "apfs_private_bytes": 9105408,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-a": {
+          "files": 18366,
+          "logical_bytes": 8318369838,
+          "allocated_bytes": 8389226496,
+          "apfs_data_allocation_bytes": 8389226496,
+          "apfs_private_bytes": 7727075328,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-b": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-c": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cargo-home": {
+          "files": 82909,
+          "logical_bytes": 2073934498,
+          "allocated_bytes": 2284830720,
+          "apfs_data_allocation_bytes": 2284830720,
+          "apfs_private_bytes": 139264,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cache": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-sccache-v0.19.0-aarch64-apple-darwin": {
+          "files": 3,
+          "logical_bytes": 17065314,
+          "allocated_bytes": 17068032,
+          "apfs_data_allocation_bytes": 17068032,
+          "apfs_private_bytes": 17068032,
+          "apfs_unavailable_files": 0
+        },
+        "detail-upstream": {
+          "files": 24,
+          "logical_bytes": 9118077,
+          "allocated_bytes": 9166848,
+          "apfs_data_allocation_bytes": 9166848,
+          "apfs_private_bytes": 9166848,
+          "apfs_unavailable_files": 0
+        }
+      },
+      "totals_inode_dedup": {
+        "files": 102449,
+        "logical_bytes": 10444330008,
+        "allocated_bytes": 10728923136,
+        "apfs_data_allocation_bytes": 10728923136,
+        "apfs_private_bytes": 7782080512,
+        "apfs_unavailable_files": 0
+      }
+    },
+    "population-complete": {
+      "at_epoch": 1794494401.897506,
+      "available_bytes": 89105559552,
+      "load_average": [
+        10.74072265625,
+        12.3427734375,
+        11.69873046875
+      ],
+      "areas": {
+        "setup-and-evidence": {
+          "files": 84570,
+          "logical_bytes": 3229017525,
+          "allocated_bytes": 3443441664,
+          "apfs_data_allocation_bytes": 3443441664,
+          "apfs_private_bytes": 1158750208,
+          "apfs_unavailable_files": 0
+        },
+        "source-a": {
+          "files": 18708,
+          "logical_bytes": 8326672042,
+          "allocated_bytes": 8379092992,
+          "apfs_data_allocation_bytes": 8379092992,
+          "apfs_private_bytes": 7734046720,
+          "apfs_unavailable_files": 0
+        },
+        "source-b": {
+          "files": 18708,
+          "logical_bytes": 8326670961,
+          "allocated_bytes": 8378605568,
+          "apfs_data_allocation_bytes": 8378605568,
+          "apfs_private_bytes": 7733551104,
+          "apfs_unavailable_files": 0
+        },
+        "source-c": {
+          "files": 342,
+          "logical_bytes": 8302204,
+          "allocated_bytes": 9105408,
+          "apfs_data_allocation_bytes": 9105408,
+          "apfs_private_bytes": 9105408,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-a": {
+          "files": 18366,
+          "logical_bytes": 8318369838,
+          "allocated_bytes": 8369987584,
+          "apfs_data_allocation_bytes": 8369987584,
+          "apfs_private_bytes": 7724941312,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-b": {
+          "files": 18366,
+          "logical_bytes": 8318368757,
+          "allocated_bytes": 8369500160,
+          "apfs_data_allocation_bytes": 8369500160,
+          "apfs_private_bytes": 7724445696,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-c": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cargo-home": {
+          "files": 82909,
+          "logical_bytes": 2073934498,
+          "allocated_bytes": 2284830720,
+          "apfs_data_allocation_bytes": 2284830720,
+          "apfs_private_bytes": 139264,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cache": {
+          "files": 1488,
+          "logical_bytes": 1127319671,
+          "allocated_bytes": 1130356736,
+          "apfs_data_allocation_bytes": 1130356736,
+          "apfs_private_bytes": 1130356736,
+          "apfs_unavailable_files": 0
+        },
+        "detail-sccache-v0.19.0-aarch64-apple-darwin": {
+          "files": 3,
+          "logical_bytes": 17065314,
+          "allocated_bytes": 17068032,
+          "apfs_data_allocation_bytes": 17068032,
+          "apfs_private_bytes": 17068032,
+          "apfs_unavailable_files": 0
+        },
+        "detail-upstream": {
+          "files": 24,
+          "logical_bytes": 9118077,
+          "allocated_bytes": 9166848,
+          "apfs_data_allocation_bytes": 9166848,
+          "apfs_private_bytes": 9166848,
+          "apfs_unavailable_files": 0
+        }
+      },
+      "totals_inode_dedup": {
+        "files": 122328,
+        "logical_bytes": 19890662732,
+        "allocated_bytes": 20210245632,
+        "apfs_data_allocation_bytes": 20210245632,
+        "apfs_private_bytes": 16635453440,
+        "apfs_unavailable_files": 0
+      }
+    },
+    "three-workflows": {
+      "at_epoch": 1794495039.715358,
+      "available_bytes": 80696147968,
+      "load_average": [
+        15.66162109375,
+        15.16357421875,
+        14.37548828125
+      ],
+      "areas": {
+        "setup-and-evidence": {
+          "files": 84907,
+          "logical_bytes": 3693247542,
+          "allocated_bytes": 3908374528,
+          "apfs_data_allocation_bytes": 3908374528,
+          "apfs_private_bytes": 1623683072,
+          "apfs_unavailable_files": 0
+        },
+        "source-a": {
+          "files": 18708,
+          "logical_bytes": 8326672042,
+          "allocated_bytes": 8379092992,
+          "apfs_data_allocation_bytes": 8379092992,
+          "apfs_private_bytes": 7734046720,
+          "apfs_unavailable_files": 0
+        },
+        "source-b": {
+          "files": 18708,
+          "logical_bytes": 8326670961,
+          "allocated_bytes": 8378605568,
+          "apfs_data_allocation_bytes": 8378605568,
+          "apfs_private_bytes": 7733551104,
+          "apfs_unavailable_files": 0
+        },
+        "source-c": {
+          "files": 17870,
+          "logical_bytes": 8160600035,
+          "allocated_bytes": 8211152896,
+          "apfs_data_allocation_bytes": 8211152896,
+          "apfs_private_bytes": 7565963264,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-a": {
+          "files": 18366,
+          "logical_bytes": 8318369838,
+          "allocated_bytes": 8369987584,
+          "apfs_data_allocation_bytes": 8369987584,
+          "apfs_private_bytes": 7724941312,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-b": {
+          "files": 18366,
+          "logical_bytes": 8318368757,
+          "allocated_bytes": 8369500160,
+          "apfs_data_allocation_bytes": 8369500160,
+          "apfs_private_bytes": 7724445696,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-c": {
+          "files": 17528,
+          "logical_bytes": 8152297831,
+          "allocated_bytes": 8202047488,
+          "apfs_data_allocation_bytes": 8202047488,
+          "apfs_private_bytes": 7556857856,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cargo-home": {
+          "files": 82909,
+          "logical_bytes": 2073934498,
+          "allocated_bytes": 2284830720,
+          "apfs_data_allocation_bytes": 2284830720,
+          "apfs_private_bytes": 139264,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cache": {
+          "files": 1801,
+          "logical_bytes": 1590897265,
+          "allocated_bytes": 1594572800,
+          "apfs_data_allocation_bytes": 1594572800,
+          "apfs_private_bytes": 1594572800,
+          "apfs_unavailable_files": 0
+        },
+        "detail-sccache-v0.19.0-aarch64-apple-darwin": {
+          "files": 3,
+          "logical_bytes": 17065314,
+          "allocated_bytes": 17068032,
+          "apfs_data_allocation_bytes": 17068032,
+          "apfs_private_bytes": 17068032,
+          "apfs_unavailable_files": 0
+        },
+        "detail-upstream": {
+          "files": 24,
+          "logical_bytes": 9118077,
+          "allocated_bytes": 9166848,
+          "apfs_data_allocation_bytes": 9166848,
+          "apfs_private_bytes": 9166848,
+          "apfs_unavailable_files": 0
+        }
+      },
+      "totals_inode_dedup": {
+        "files": 140193,
+        "logical_bytes": 28507190580,
+        "allocated_bytes": 28877225984,
+        "apfs_data_allocation_bytes": 28877225984,
+        "apfs_private_bytes": 24657244160,
+        "apfs_unavailable_files": 0
+      }
+    },
+    "before-cleanup": {
+      "at_epoch": 1794495874.571649,
+      "available_bytes": 78643200000,
+      "load_average": [
+        6.38623046875,
+        8.720703125,
+        10.7109375
+      ],
+      "areas": {
+        "setup-and-evidence": {
+          "files": 85199,
+          "logical_bytes": 3718692645,
+          "allocated_bytes": 3934695424,
+          "apfs_data_allocation_bytes": 3934695424,
+          "apfs_private_bytes": 1644761088,
+          "apfs_unavailable_files": 0
+        },
+        "report-and-evidence": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "source-a": {
+          "files": 18708,
+          "logical_bytes": 8326672042,
+          "allocated_bytes": 8379092992,
+          "apfs_data_allocation_bytes": 8379092992,
+          "apfs_private_bytes": 7734046720,
+          "apfs_unavailable_files": 0
+        },
+        "source-b": {
+          "files": 18708,
+          "logical_bytes": 8326670961,
+          "allocated_bytes": 8378605568,
+          "apfs_data_allocation_bytes": 8378605568,
+          "apfs_private_bytes": 7733551104,
+          "apfs_unavailable_files": 0
+        },
+        "source-c": {
+          "files": 18061,
+          "logical_bytes": 9682030853,
+          "allocated_bytes": 9747546112,
+          "apfs_data_allocation_bytes": 9747546112,
+          "apfs_private_bytes": 9087852544,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-a": {
+          "files": 18366,
+          "logical_bytes": 8318369838,
+          "allocated_bytes": 8369987584,
+          "apfs_data_allocation_bytes": 8369987584,
+          "apfs_private_bytes": 7724941312,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-b": {
+          "files": 18366,
+          "logical_bytes": 8318368757,
+          "allocated_bytes": 8369500160,
+          "apfs_data_allocation_bytes": 8369500160,
+          "apfs_private_bytes": 7724445696,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-c": {
+          "files": 17719,
+          "logical_bytes": 9673728649,
+          "allocated_bytes": 9723404288,
+          "apfs_data_allocation_bytes": 9723404288,
+          "apfs_private_bytes": 9078358016,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cargo-home": {
+          "files": 82909,
+          "logical_bytes": 2073934498,
+          "allocated_bytes": 2284830720,
+          "apfs_data_allocation_bytes": 2284830720,
+          "apfs_private_bytes": 139264,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cache": {
+          "files": 1811,
+          "logical_bytes": 1604678638,
+          "allocated_bytes": 1608372224,
+          "apfs_data_allocation_bytes": 1608372224,
+          "apfs_private_bytes": 1608372224,
+          "apfs_unavailable_files": 0
+        },
+        "detail-sccache-v0.19.0-aarch64-apple-darwin": {
+          "files": 3,
+          "logical_bytes": 17065314,
+          "allocated_bytes": 17068032,
+          "apfs_data_allocation_bytes": 17068032,
+          "apfs_private_bytes": 17068032,
+          "apfs_unavailable_files": 0
+        },
+        "detail-upstream": {
+          "files": 24,
+          "logical_bytes": 9118077,
+          "allocated_bytes": 9166848,
+          "apfs_data_allocation_bytes": 9166848,
+          "apfs_private_bytes": 9166848,
+          "apfs_unavailable_files": 0
+        }
+      },
+      "totals_inode_dedup": {
+        "files": 140676,
+        "logical_bytes": 30054066501,
+        "allocated_bytes": 30424875008,
+        "apfs_data_allocation_bytes": 30424875008,
+        "apfs_private_bytes": 26199793664,
+        "apfs_unavailable_files": 0
+      }
+    },
+    "after-cleanup": {
+      "at_epoch": 1794496033.203725,
+      "available_bytes": 106086400000,
+      "load_average": [
+        3.8095703125,
+        6.52587890625,
+        9.45068359375
+      ],
+      "areas": {
+        "setup-and-evidence": {
+          "files": 275,
+          "logical_bytes": 6881909,
+          "allocated_bytes": 7634944,
+          "apfs_data_allocation_bytes": 7634944,
+          "apfs_private_bytes": 7634944,
+          "apfs_unavailable_files": 0
+        },
+        "report-and-evidence": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "source-a": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "source-b": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "source-c": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-a": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-b": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-c": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cargo-home": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cache": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-sccache-v0.19.0-aarch64-apple-darwin": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-upstream": {
+          "files": 23,
+          "logical_bytes": 956887,
+          "allocated_bytes": 1003520,
+          "apfs_data_allocation_bytes": 1003520,
+          "apfs_private_bytes": 1003520,
+          "apfs_unavailable_files": 0
+        }
+      },
+      "totals_inode_dedup": {
+        "files": 275,
+        "logical_bytes": 6881909,
+        "allocated_bytes": 7634944,
+        "apfs_data_allocation_bytes": 7634944,
+        "apfs_private_bytes": 7634944,
+        "apfs_unavailable_files": 0
+      }
+    },
+    "final-retained": {
+      "at_epoch": 1794496463.183562,
+      "available_bytes": 106086400000,
+      "load_average": [
+        4.69873046875,
+        3.86767578125,
+        6.841796875
+      ],
+      "areas": {
+        "setup-and-evidence": {
+          "files": 237,
+          "logical_bytes": 4266738,
+          "allocated_bytes": 4952064,
+          "apfs_data_allocation_bytes": 4952064,
+          "apfs_private_bytes": 4952064,
+          "apfs_unavailable_files": 0
+        },
+        "report-and-evidence": {
+          "files": 22,
+          "logical_bytes": 450555,
+          "allocated_bytes": 491520,
+          "apfs_data_allocation_bytes": 491520,
+          "apfs_private_bytes": 491520,
+          "apfs_unavailable_files": 0
+        },
+        "source-a": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "source-b": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "source-c": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-a": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-b": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-c": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cargo-home": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cache": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-sccache-v0.19.0-aarch64-apple-darwin": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-upstream": {
+          "files": 23,
+          "logical_bytes": 956887,
+          "allocated_bytes": 1003520,
+          "apfs_data_allocation_bytes": 1003520,
+          "apfs_private_bytes": 1003520,
+          "apfs_unavailable_files": 0
+        }
+      },
+      "totals_inode_dedup": {
+        "files": 259,
+        "logical_bytes": 4717293,
+        "allocated_bytes": 5443584,
+        "apfs_data_allocation_bytes": 5443584,
+        "apfs_private_bytes": 5443584,
+        "apfs_unavailable_files": 0
+      }
+    }
+  },
+  "checks": {
+    "probes-outcomes": [
+      {
+        "label": "oracle-donor",
+        "output": "generated-manifest7"
+      },
+      {
+        "label": "oracle-relocated",
+        "output": "generated-manifest7"
+      },
+      {
+        "label": "oracle-proc-macro-changed",
+        "output": "generated-manifest7"
+      },
+      {
+        "label": "oracle-proc-macro-plain",
+        "output": "generated-manifest9"
+      },
+      {
+        "proc_macro_untracked_input_stale": true,
+        "cached": "generated-manifest7",
+        "plain": "generated-manifest9",
+        "donor_present": false
+      }
+    ],
+    "drift-outcomes": {
+      "wall_seconds": 2.285844375146553,
+      "peak_physical_bytes": 9569744,
+      "clients": [
+        {
+          "lane": "a",
+          "exit": 0,
+          "value": "41"
+        },
+        {
+          "lane": "b",
+          "exit": 0,
+          "value": "42"
+        }
+      ],
+      "cargo_jobs_per_client": 2,
+      "aggregate_jobs": 4,
+      "dependency_versions": {
+        "a": "0.1.0",
+        "b": "0.2.0"
+      }
+    },
+    "drift-concurrent-stats": {
+      "stats": {
+        "compile_requests": 13,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 9,
+        "requests_executed": 4,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "Rust": 3
+          },
+          "adv_counts": {
+            "rust": 3
+          }
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 1
+          },
+          "adv_counts": {
+            "rust": 1
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 1,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 210792
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 453125
+        },
+        "compilations": 1,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 24202208
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "missing input": 6,
+          "-": 1,
+          "crate-type (bin)": 2
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1604678638,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "drift-stable-stats": {
+      "stats": {
+        "compile_requests": 10,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 8,
+        "requests_executed": 2,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 2
+          },
+          "adv_counts": {
+            "rust": 2
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 2,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 554458
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 2,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 55770208
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "-": 1,
+          "missing input": 6,
+          "crate-type (bin)": 1
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1604674682,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "eviction-outcomes": [
+      {
+        "label": "first",
+        "stats": {
+          "stats": {
+            "compile_requests": 1,
+            "requests_unsupported_compiler": 0,
+            "requests_not_compile": 0,
+            "requests_not_cacheable": 0,
+            "requests_executed": 1,
+            "cache_errors": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_hits": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_misses": {
+              "counts": {
+                "Rust": 1
+              },
+              "adv_counts": {
+                "rust": 1
+              }
+            },
+            "cache_timeouts": 0,
+            "cache_read_errors": 0,
+            "non_cacheable_compilations": 0,
+            "forced_recaches": 0,
+            "cache_write_errors": 0,
+            "cache_writes": 1,
+            "cache_write_duration": {
+              "secs": 0,
+              "nanos": 277959
+            },
+            "cache_read_hit_duration": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "compilations": 1,
+            "compiler_write_duration": {
+              "secs": 0,
+              "nanos": 21065375
+            },
+            "compile_fails": 0,
+            "not_cached": {},
+            "dist_compiles": {},
+            "dist_errors": 0,
+            "multi_level": null
+          },
+          "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/eviction/cache\"",
+          "cache_size": 74521,
+          "max_cache_size": 131072,
+          "use_preprocessor_cache_mode": true,
+          "version": "0.19.0",
+          "basedirs": [],
+          "effective_cache_mode": "ReadWrite",
+          "observed_artifact_sha256": {
+            "libc0.rlib": "5e7543e9bcc4ed7f1d5aa9fdab44a02b615e170c70022b5e6bec0596273cf83e",
+            "libc0.rmeta": "8c678cbc4e59f17fbb6186f5a970dbf82e722f92b02ccdc977794d062d1a2347"
+          }
+        }
+      },
+      {
+        "label": "hit",
+        "stats": {
+          "stats": {
+            "compile_requests": 1,
+            "requests_unsupported_compiler": 0,
+            "requests_not_compile": 0,
+            "requests_not_cacheable": 0,
+            "requests_executed": 1,
+            "cache_errors": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_hits": {
+              "counts": {
+                "Rust": 1
+              },
+              "adv_counts": {
+                "rust": 1
+              }
+            },
+            "cache_misses": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_timeouts": 0,
+            "cache_read_errors": 0,
+            "non_cacheable_compilations": 0,
+            "forced_recaches": 0,
+            "cache_write_errors": 0,
+            "cache_writes": 0,
+            "cache_write_duration": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "cache_read_hit_duration": {
+              "secs": 0,
+              "nanos": 139750
+            },
+            "compilations": 0,
+            "compiler_write_duration": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "compile_fails": 0,
+            "not_cached": {},
+            "dist_compiles": {},
+            "dist_errors": 0,
+            "multi_level": null
+          },
+          "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/eviction/cache\"",
+          "cache_size": 74521,
+          "max_cache_size": 131072,
+          "use_preprocessor_cache_mode": true,
+          "version": "0.19.0",
+          "basedirs": [],
+          "effective_cache_mode": "ReadWrite",
+          "observed_artifact_sha256": {
+            "libc0.rlib": "5e7543e9bcc4ed7f1d5aa9fdab44a02b615e170c70022b5e6bec0596273cf83e",
+            "libc0.rmeta": "8c678cbc4e59f17fbb6186f5a970dbf82e722f92b02ccdc977794d062d1a2347"
+          }
+        }
+      },
+      {
+        "label": "fill-1",
+        "stats": {
+          "stats": {
+            "compile_requests": 1,
+            "requests_unsupported_compiler": 0,
+            "requests_not_compile": 0,
+            "requests_not_cacheable": 0,
+            "requests_executed": 1,
+            "cache_errors": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_hits": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_misses": {
+              "counts": {
+                "Rust": 1
+              },
+              "adv_counts": {
+                "rust": 1
+              }
+            },
+            "cache_timeouts": 0,
+            "cache_read_errors": 0,
+            "non_cacheable_compilations": 0,
+            "forced_recaches": 0,
+            "cache_write_errors": 0,
+            "cache_writes": 1,
+            "cache_write_duration": {
+              "secs": 0,
+              "nanos": 265375
+            },
+            "cache_read_hit_duration": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "compilations": 1,
+            "compiler_write_duration": {
+              "secs": 0,
+              "nanos": 20658291
+            },
+            "compile_fails": 0,
+            "not_cached": {},
+            "dist_compiles": {},
+            "dist_errors": 0,
+            "multi_level": null
+          },
+          "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/eviction/cache\"",
+          "cache_size": 75084,
+          "max_cache_size": 131072,
+          "use_preprocessor_cache_mode": true,
+          "version": "0.19.0",
+          "basedirs": [],
+          "effective_cache_mode": "ReadWrite",
+          "observed_artifact_sha256": {
+            "libc1.rlib": "37d825dc8e31815e38c12d88c4c6b7eb595277adc05c85e85e14aacca65c47ee",
+            "libc1.rmeta": "d49b2787a8ea8958962b1b47fd5995b9c33780ec27d91e34e0ad613302bc8154"
+          }
+        }
+      },
+      {
+        "label": "fill-2",
+        "stats": {
+          "stats": {
+            "compile_requests": 1,
+            "requests_unsupported_compiler": 0,
+            "requests_not_compile": 0,
+            "requests_not_cacheable": 0,
+            "requests_executed": 1,
+            "cache_errors": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_hits": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_misses": {
+              "counts": {
+                "Rust": 1
+              },
+              "adv_counts": {
+                "rust": 1
+              }
+            },
+            "cache_timeouts": 0,
+            "cache_read_errors": 0,
+            "non_cacheable_compilations": 0,
+            "forced_recaches": 0,
+            "cache_write_errors": 0,
+            "cache_writes": 1,
+            "cache_write_duration": {
+              "secs": 0,
+              "nanos": 306000
+            },
+            "cache_read_hit_duration": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "compilations": 1,
+            "compiler_write_duration": {
+              "secs": 0,
+              "nanos": 20544000
+            },
+            "compile_fails": 0,
+            "not_cached": {},
+            "dist_compiles": {},
+            "dist_errors": 0,
+            "multi_level": null
+          },
+          "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/eviction/cache\"",
+          "cache_size": 74836,
+          "max_cache_size": 131072,
+          "use_preprocessor_cache_mode": true,
+          "version": "0.19.0",
+          "basedirs": [],
+          "effective_cache_mode": "ReadWrite",
+          "observed_artifact_sha256": {
+            "libc2.rlib": "997285a106408233fcbc5d63e19a2f6b1bda9e85f40e920ce97cafbbd5b75a2b",
+            "libc2.rmeta": "708a646318a2ef5abf26dfc7e3d9b81a4c319d3dca787aa7eec2746eda1abdc2"
+          }
+        }
+      },
+      {
+        "label": "fill-3",
+        "stats": {
+          "stats": {
+            "compile_requests": 1,
+            "requests_unsupported_compiler": 0,
+            "requests_not_compile": 0,
+            "requests_not_cacheable": 0,
+            "requests_executed": 1,
+            "cache_errors": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_hits": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_misses": {
+              "counts": {
+                "Rust": 1
+              },
+              "adv_counts": {
+                "rust": 1
+              }
+            },
+            "cache_timeouts": 0,
+            "cache_read_errors": 0,
+            "non_cacheable_compilations": 0,
+            "forced_recaches": 0,
+            "cache_write_errors": 0,
+            "cache_writes": 1,
+            "cache_write_duration": {
+              "secs": 0,
+              "nanos": 303875
+            },
+            "cache_read_hit_duration": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "compilations": 1,
+            "compiler_write_duration": {
+              "secs": 0,
+              "nanos": 20696333
+            },
+            "compile_fails": 0,
+            "not_cached": {},
+            "dist_compiles": {},
+            "dist_errors": 0,
+            "multi_level": null
+          },
+          "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/eviction/cache\"",
+          "cache_size": 74975,
+          "max_cache_size": 131072,
+          "use_preprocessor_cache_mode": true,
+          "version": "0.19.0",
+          "basedirs": [],
+          "effective_cache_mode": "ReadWrite",
+          "observed_artifact_sha256": {
+            "libc3.rlib": "3d5757a24c94bd890c49880b330e1582bdd7ea5baa1517f84c97627e29e8e3a1",
+            "libc3.rmeta": "607c60a3798eda5470df3fd5ed695c0d67f6114645d7af75f57216c23e150b11"
+          }
+        }
+      },
+      {
+        "label": "fill-4",
+        "stats": {
+          "stats": {
+            "compile_requests": 1,
+            "requests_unsupported_compiler": 0,
+            "requests_not_compile": 0,
+            "requests_not_cacheable": 0,
+            "requests_executed": 1,
+            "cache_errors": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_hits": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_misses": {
+              "counts": {
+                "Rust": 1
+              },
+              "adv_counts": {
+                "rust": 1
+              }
+            },
+            "cache_timeouts": 0,
+            "cache_read_errors": 0,
+            "non_cacheable_compilations": 0,
+            "forced_recaches": 0,
+            "cache_write_errors": 0,
+            "cache_writes": 1,
+            "cache_write_duration": {
+              "secs": 0,
+              "nanos": 331792
+            },
+            "cache_read_hit_duration": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "compilations": 1,
+            "compiler_write_duration": {
+              "secs": 0,
+              "nanos": 21735500
+            },
+            "compile_fails": 0,
+            "not_cached": {},
+            "dist_compiles": {},
+            "dist_errors": 0,
+            "multi_level": null
+          },
+          "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/eviction/cache\"",
+          "cache_size": 74522,
+          "max_cache_size": 131072,
+          "use_preprocessor_cache_mode": true,
+          "version": "0.19.0",
+          "basedirs": [],
+          "effective_cache_mode": "ReadWrite",
+          "observed_artifact_sha256": {
+            "libc4.rlib": "a56dbec8d4c88db2c8bad9c87d64d4ba49c7f9fe7b162b2078fd69dbfdeca920",
+            "libc4.rmeta": "44bfcebe7bfa2bace153a6b37a4e14fe0648363cf2ca743de8d8c152a56386ab"
+          }
+        }
+      },
+      {
+        "label": "refetch",
+        "stats": {
+          "stats": {
+            "compile_requests": 1,
+            "requests_unsupported_compiler": 0,
+            "requests_not_compile": 0,
+            "requests_not_cacheable": 0,
+            "requests_executed": 1,
+            "cache_errors": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_hits": {
+              "counts": {},
+              "adv_counts": {}
+            },
+            "cache_misses": {
+              "counts": {
+                "Rust": 1
+              },
+              "adv_counts": {
+                "rust": 1
+              }
+            },
+            "cache_timeouts": 0,
+            "cache_read_errors": 0,
+            "non_cacheable_compilations": 0,
+            "forced_recaches": 0,
+            "cache_write_errors": 0,
+            "cache_writes": 1,
+            "cache_write_duration": {
+              "secs": 0,
+              "nanos": 235000
+            },
+            "cache_read_hit_duration": {
+              "secs": 0,
+              "nanos": 0
+            },
+            "compilations": 1,
+            "compiler_write_duration": {
+              "secs": 0,
+              "nanos": 20788209
+            },
+            "compile_fails": 0,
+            "not_cached": {},
+            "dist_compiles": {},
+            "dist_errors": 0,
+            "multi_level": null
+          },
+          "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/eviction/cache\"",
+          "cache_size": 74521,
+          "max_cache_size": 131072,
+          "use_preprocessor_cache_mode": true,
+          "version": "0.19.0",
+          "basedirs": [],
+          "effective_cache_mode": "ReadWrite",
+          "observed_artifact_sha256": {
+            "libc0.rlib": "5e7543e9bcc4ed7f1d5aa9fdab44a02b615e170c70022b5e6bec0596273cf83e",
+            "libc0.rmeta": "8c678cbc4e59f17fbb6186f5a970dbf82e722f92b02ccdc977794d062d1a2347"
+          }
+        }
+      }
+    ],
+    "incremental-oracle": [
+      {
+        "CARGO_INCREMENTAL": "1",
+        "SCCACHE_ALLOW_INCREMENTAL": null,
+        "exit": 1,
+        "stdout": "sccache: incremental compilation is prohibited: Unset CARGO_INCREMENTAL to continue.\n",
+        "stderr": ""
+      },
+      {
+        "CARGO_INCREMENTAL": "1",
+        "SCCACHE_ALLOW_INCREMENTAL": "1",
+        "exit": 1,
+        "stdout": "sccache: incremental compilation is prohibited: Unset CARGO_INCREMENTAL to continue.\n",
+        "stderr": ""
+      }
+    ],
+    "test-output-interleaving": {
+      "plain": [],
+      "populate": [],
+      "hit": [],
+      "warm": [
+        {
+          "test": "removal::walk::tests::bulk_inspection_refuses_a_real_nested_mount_before_visiting_it",
+          "status": "ok",
+          "raw_lines": [
+            "APFS oracle start: \"hdiutil\" \"create\" \"-verbose\" \"-size\" \"128m\" \"-type\" \"SPARSEtest removal::walk::tests::bulk_inspection_refuses_a_real_nested_mount_before_visiting_it ... \" \"-layout\" \"GPTSPUD\" \"-partitionType\" \"Apple_APFS\" \"$NATIVE_TMPDIR/.tmpF89z82/oracle.sparseimage\"",
+            "ok"
+          ]
+        },
+        {
+          "test": "test_paths::disk_image::successful_eject_status_does_not_remove_an_attached_image",
+          "status": "ok",
+          "raw_lines": [
+            "APFS oracle start: \"hdiutil\" \"create\" \"-verbose\" \"-size\" \"128m\" \"-type\" \"SPARSE\" \"-layout\" \"GPTSPUD\" \"-partitionType\" \"Apple_APFS\" \"$NATIVE_TMPDIR/.tmptFZFey/oracle.sparseimage\"test test_paths::disk_image::successful_eject_status_does_not_remove_an_attached_image ... ",
+            "ok"
+          ]
+        }
+      ],
+      "edit": []
+    },
+    "loose-object-difference": {
+      "dependency_objects_absent_after_hit": {
+        "count": 838,
+        "logical_bytes": 166066656,
+        "by_crate": {
+          "pxfm": [
+            16,
+            4253504
+          ],
+          "typed_path": [
+            7,
+            1046296
+          ],
+          "gif": [
+            7,
+            1049952
+          ],
+          "rayon_core": [
+            6,
+            1215664
+          ],
+          "event_listener": [
+            1,
+            39752
+          ],
+          "polling": [
+            3,
+            354144
+          ],
+          "objc2_foundation": [
+            32,
+            20235688
+          ],
+          "float_next_after": [
+            1,
+            6272
+          ],
+          "rusty_fork": [
+            4,
+            523200
+          ],
+          "cocoa": [
+            5,
+            1750664
+          ],
+          "rgb": [
+            1,
+            808
+          ],
+          "rustc_demangle": [
+            3,
+            329600
+          ],
+          "svgtypes": [
+            5,
+            646688
+          ],
+          "lyon_tessellation": [
+            8,
+            1272232
+          ],
+          "tiff": [
+            12,
+            1709008
+          ],
+          "objc2": [
+            9,
+            1124376
+          ],
+          "instant": [
+            1,
+            6312
+          ],
+          "crossbeam_epoch": [
+            1,
+            117768
+          ],
+          "once_cell": [
+            2,
+            46048
+          ],
+          "ryu": [
+            1,
+            75872
+          ],
+          "unicode_bidi": [
+            4,
+            647000
+          ],
+          "futures_sink": [
+            1,
+            808
+          ],
+          "walkdir": [
+            3,
+            400392
+          ],
+          "itoa": [
+            1,
+            22424
+          ],
+          "ring": [
+            16,
+            2073848
+          ],
+          "tendril": [
+            1,
+            1184
+          ],
+          "equivalent": [
+            1,
+            808
+          ],
+          "png": [
+            15,
+            1878944
+          ],
+          "libm": [
+            8,
+            487728
+          ],
+          "futures_executor": [
+            2,
+            322808
+          ],
+          "aho_corasick": [
+            16,
+            2474856
+          ],
+          "tempfile": [
+            12,
+            1555848
+          ],
+          "zmij": [
+            1,
+            64680
+          ],
+          "zlib_rs": [
+            8,
+            793576
+          ],
+          "async_process": [
+            6,
+            989072
+          ],
+          "mio": [
+            4,
+            403704
+          ],
+          "chrono": [
+            11,
+            1258952
+          ],
+          "ropey": [
+            9,
+            1271952
+          ],
+          "taffy": [
+            5,
+            731096
+          ],
+          "idna": [
+            8,
+            1323888
+          ],
+          "untrusted": [
+            1,
+            3648
+          ],
+          "kurbo": [
+            10,
+            1463840
+          ],
+          "waker_fn": [
+            1,
+            808
+          ],
+          "rayon": [
+            4,
+            276448
+          ],
+          "security_framework": [
+            16,
+            2173472
+          ],
+          "regex_syntax": [
+            16,
+            4774016
+          ],
+          "exr": [
+            16,
+            4260632
+          ],
+          "objc2_core_image": [
+            2,
+            383616
+          ],
+          "backtrace": [
+            16,
+            3406736
+          ],
+          "ttf_parser": [
+            16,
+            2064200
+          ],
+          "rustix": [
+            14,
+            1903712
+          ],
+          "itertools": [
+            2,
+            75392
+          ],
+          "async_net": [
+            6,
+            902960
+          ],
+          "memchr": [
+            1,
+            114104
+          ],
+          "http": [
+            5,
+            751688
+          ],
+          "cocoa_foundation": [
+            3,
+            645768
+          ],
+          "lyon_algorithms": [
+            4,
+            537416
+          ],
+          "objc2_app_kit": [
+            21,
+            27283200
+          ],
+          "globset": [
+            10,
+            2368528
+          ],
+          "async_io": [
+            7,
+            1253032
+          ],
+          "image": [
+            16,
+            17140032
+          ],
+          "webpki": [
+            9,
+            1357824
+          ],
+          "xml": [
+            10,
+            1497424
+          ],
+          "utf8_iter": [
+            1,
+            9944
+          ],
+          "slab": [
+            1,
+            3328
+          ],
+          "hashbrown": [
+            2,
+            48752
+          ],
+          "dirs": [
+            1,
+            33808
+          ],
+          "lyon_geom": [
+            1,
+            808
+          ],
+          "core_graphics": [
+            3,
+            390792
+          ],
+          "regex_automata": [
+            16,
+            6916232
+          ],
+          "moxcms": [
+            16,
+            5189016
+          ],
+          "image_webp": [
+            9,
+            1002744
+          ],
+          "typenum": [
+            2,
+            7824
+          ],
+          "phf": [
+            1,
+            808
+          ],
+          "bstr": [
+            1,
+            99928
+          ],
+          "tiny_skia_path": [
+            5,
+            646184
+          ],
+          "tracing_core": [
+            4,
+            567000
+          ],
+          "smol": [
+            7,
+            1005760
+          ],
+          "cpufeatures": [
+            2,
+            28864
+          ],
+          "objc2_encode": [
+            2,
+            241872
+          ],
+          "core_graphics_types": [
+            1,
+            808
+          ],
+          "flume": [
+            1,
+            16264
+          ],
+          "socket2": [
+            3,
+            404040
+          ],
+          "slotmap": [
+            1,
+            7696
+          ],
+          "float_cmp": [
+            1,
+            808
+          ],
+          "bytes": [
+            3,
+            330744
+          ],
+          "async_lock": [
+            2,
+            255504
+          ],
+          "blocking": [
+            2,
+            230944
+          ],
+          "url": [
+            6,
+            1138784
+          ],
+          "quick_error": [
+            2,
+            1616
+          ],
+          "crossbeam_queue": [
+            1,
+            808
+          ],
+          "byteorder": [
+            1,
+            3856
+          ],
+          "utf8": [
+            1,
+            27336
+          ],
+          "subtle": [
+            1,
+            808
+          ],
+          "lyon": [
+            1,
+            808
+          ],
+          "event_listener_strategy": [
+            1,
+            808
+          ],
+          "objc2_security": [
+            1,
+            4344
+          ],
+          "hybrid_array": [
+            1,
+            2848
+          ],
+          "sum_tree": [
+            1,
+            808
+          ],
+          "cfg_if": [
+            1,
+            808
+          ],
+          "hash32": [
+            1,
+            9480
+          ],
+          "objc_sys": [
+            1,
+            808
+          ],
+          "spin": [
+            2,
+            4160
+          ],
+          "rust_embed_utils": [
+            1,
+            253064
+          ],
+          "foreign_types_shared": [
+            1,
+            808
+          ],
+          "wait_timeout": [
+            2,
+            268552
+          ],
+          "link_section": [
+            1,
+            41320
+          ],
+          "tinyvec": [
+            1,
+            808
+          ],
+          "getrandom": [
+            4,
+            100744
+          ],
+          "notify_types": [
+            1,
+            110776
+          ],
+          "utf8_zero": [
+            1,
+            27632
+          ],
+          "fsevent_sys": [
+            1,
+            22608
+          ],
+          "euclid": [
+            1,
+            808
+          ],
+          "futures_concurrency": [
+            2,
+            264400
+          ],
+          "glob": [
+            3,
+            532104
+          ],
+          "anyhow": [
+            2,
+            313496
+          ],
+          "block": [
+            1,
+            808
+          ],
+          "block_buffer": [
+            3,
+            8128
+          ],
+          "polycool": [
+            3,
+            330048
+          ],
+          "siphasher": [
+            1,
+            15608
+          ],
+          "data_url": [
+            2,
+            243928
+          ],
+          "object": [
+            4,
+            382072
+          ],
+          "objc2_core_data": [
+            4,
+            612392
+          ],
+          "imagesize": [
+            4,
+            422768
+          ],
+          "trash": [
+            2,
+            330192
+          ],
+          "regex": [
+            4,
+            805640
+          ],
+          "pico_args": [
+            1,
+            94920
+          ],
+          "lyon_path": [
+            2,
+            264520
+          ],
+          "parking_lot": [
+            4,
+            432104
+          ],
+          "miniz_oxide": [
+            6,
+            738472
+          ],
+          "httparse": [
+            1,
+            73936
+          ],
+          "gimli": [
+            4,
+            677784
+          ],
+          "sha2": [
+            3,
+            360984
+          ],
+          "float_ord": [
+            1,
+            808
+          ],
+          "memmap2": [
+            1,
+            48320
+          ],
+          "lebe": [
+            1,
+            808
+          ],
+          "qoi": [
+            1,
+            12904
+          ],
+          "objc2_quartz_core": [
+            2,
+            429720
+          ],
+          "objc2_cloud_kit": [
+            1,
+            166720
+          ],
+          "sysinfo": [
+            5,
+            717872
+          ],
+          "objc2_user_notifications": [
+            3,
+            566152
+          ],
+          "icu_normalizer": [
+            3,
+            642912
+          ],
+          "zune_jpeg": [
+            4,
+            421480
+          ],
+          "unicode_segmentation": [
+            1,
+            171032
+          ],
+          "async_task": [
+            1,
+            5888
+          ],
+          "crossbeam_utils": [
+            1,
+            160656
+          ],
+          "core_foundation_sys": [
+            1,
+            3776
+          ],
+          "core_detect": [
+            1,
+            808
+          ],
+          "adler2": [
+            1,
+            11016
+          ],
+          "http_body": [
+            1,
+            4800
+          ],
+          "futf": [
+            1,
+            808
+          ],
+          "block2": [
+            1,
+            51312
+          ],
+          "arrayref": [
+            1,
+            808
+          ],
+          "rustls_pki_types": [
+            3,
+            288128
+          ],
+          "fdeflate": [
+            2,
+            229944
+          ],
+          "signal_hook_registry": [
+            1,
+            191840
+          ],
+          "roxmltree": [
+            4,
+            842112
+          ],
+          "bit_vec": [
+            1,
+            28000
+          ],
+          "crypto_common": [
+            4,
+            553544
+          ],
+          "objc2_metal": [
+            2,
+            396048
+          ],
+          "crc32fast": [
+            1,
+            48256
+          ],
+          "icu_normalizer_data": [
+            1,
+            808
+          ],
+          "async_executor": [
+            2,
+            339576
+          ],
+          "etagere": [
+            2,
+            159072
+          ],
+          "futures_channel": [
+            1,
+            7168
+          ],
+          "async_fs": [
+            3,
+            611128
+          ],
+          "errno": [
+            2,
+            34224
+          ],
+          "xmlwriter": [
+            1,
+            166288
+          ],
+          "rand": [
+            2,
+            133424
+          ],
+          "bit_set": [
+            1,
+            2448
+          ],
+          "tokio_util": [
+            3,
+            451064
+          ],
+          "bumpalo": [
+            1,
+            20424
+          ],
+          "weezl": [
+            2,
+            384808
+          ],
+          "unarray": [
+            1,
+            808
+          ],
+          "futures_task": [
+            1,
+            6032
+          ],
+          "objc2_core_text": [
+            1,
+            9536
+          ],
+          "iana_time_zone": [
+            1,
+            18248
+          ],
+          "num_complex": [
+            1,
+            23240
+          ],
+          "base64": [
+            2,
+            144752
+          ],
+          "fixedbitset": [
+            1,
+            138408
+          ],
+          "unicode_bidi_mirroring": [
+            1,
+            15456
+          ],
+          "zune_inflate": [
+            1,
+            114840
+          ],
+          "winnow": [
+            2,
+            161360
+          ],
+          "objc2_core_video": [
+            1,
+            11424
+          ],
+          "rand_core": [
+            2,
+            24768
+          ],
+          "core_text": [
+            2,
+            339848
+          ],
+          "precomputed_hash": [
+            1,
+            808
+          ],
+          "futures_lite": [
+            1,
+            66904
+          ],
+          "async_channel": [
+            1,
+            3792
+          ],
+          "normpath": [
+            1,
+            8800
+          ],
+          "smallvec": [
+            1,
+            8416
+          ],
+          "dunce": [
+            1,
+            808
+          ],
+          "digest": [
+            3,
+            11080
+          ],
+          "fastrand": [
+            1,
+            39560
+          ],
+          "atomic_waker": [
+            1,
+            12688
+          ],
+          "either": [
+            2,
+            1616
+          ],
+          "malloc_buf": [
+            1,
+            2424
+          ],
+          "pollster": [
+            2,
+            109576
+          ],
+          "byteorder_lite": [
+            1,
+            3896
+          ],
+          "litemap": [
+            1,
+            808
+          ],
+          "chacha20": [
+            1,
+            17088
+          ],
+          "unicode_linebreak": [
+            1,
+            52008
+          ],
+          "strict_num": [
+            1,
+            808
+          ],
+          "mac": [
+            1,
+            808
+          ],
+          "icu_properties_data": [
+            1,
+            808
+          ],
+          "heapless": [
+            1,
+            9760
+          ],
+          "scopeguard": [
+            1,
+            808
+          ],
+          "unicode_vo": [
+            1,
+            6808
+          ],
+          "num_cpus": [
+            1,
+            8064
+          ],
+          "foldhash": [
+            1,
+            30784
+          ],
+          "rand_chacha": [
+            1,
+            215144
+          ],
+          "reborrow": [
+            1,
+            808
+          ],
+          "bitflags": [
+            2,
+            56696
+          ],
+          "zeroize": [
+            1,
+            18424
+          ],
+          "form_urlencoded": [
+            1,
+            60528
+          ],
+          "generic_array": [
+            2,
+            7360
+          ],
+          "debug_unreachable": [
+            1,
+            808
+          ],
+          "phf_shared": [
+            1,
+            25760
+          ],
+          "lazy_static": [
+            1,
+            808
+          ],
+          "pathfinder_simd": [
+            1,
+            808
+          ],
+          "num_traits": [
+            2,
+            94696
+          ],
+          "parking_lot_core": [
+            1,
+            95304
+          ],
+          "inventory": [
+            1,
+            3728
+          ],
+          "fax": [
+            1,
+            69984
+          ],
+          "str_indices": [
+            1,
+            808
+          ],
+          "potential_utf": [
+            1,
+            16600
+          ],
+          "arrayvec": [
+            1,
+            2648
+          ],
+          "addr2line": [
+            1,
+            48456
+          ],
+          "security_framework_sys": [
+            1,
+            9224
+          ],
+          "waitpid_any": [
+            1,
+            54200
+          ],
+          "static_assertions": [
+            1,
+            808
+          ],
+          "sha1": [
+            1,
+            31304
+          ],
+          "idna_adapter": [
+            1,
+            808
+          ],
+          "crossbeam_deque": [
+            1,
+            808
+          ],
+          "postage": [
+            1,
+            51648
+          ],
+          "bit_field": [
+            1,
+            808
+          ],
+          "concurrent_queue": [
+            1,
+            3376
+          ],
+          "simd_adler32": [
+            1,
+            23784
+          ],
+          "lock_api": [
+            1,
+            3032
+          ],
+          "futures": [
+            1,
+            808
+          ],
+          "half": [
+            1,
+            51488
+          ],
+          "futures_io": [
+            1,
+            35840
+          ],
+          "filetime": [
+            1,
+            41616
+          ],
+          "objc": [
+            1,
+            142512
+          ],
+          "parking": [
+            1,
+            63384
+          ],
+          "piper": [
+            1,
+            78184
+          ],
+          "unicode_script": [
+            1,
+            180920
+          ],
+          "log": [
+            1,
+            22416
+          ],
+          "unicode_ccc": [
+            1,
+            11824
+          ],
+          "core_foundation": [
+            1,
+            115856
+          ],
+          "ppv_lite86": [
+            1,
+            808
+          ],
+          "const_oid": [
+            1,
+            50744
+          ],
+          "core_maths": [
+            1,
+            808
+          ],
+          "fluent_uri": [
+            1,
+            103280
+          ],
+          "dirs_sys": [
+            1,
+            22968
+          ],
+          "svg_fmt": [
+            1,
+            80304
+          ],
+          "dyn_clone": [
+            1,
+            15232
+          ],
+          "percent_encoding": [
+            1,
+            61664
+          ],
+          "rand_xorshift": [
+            1,
+            9576
+          ],
+          "zune_core": [
+            1,
+            30512
+          ],
+          "fnv": [
+            1,
+            808
+          ],
+          "writeable": [
+            1,
+            41672
+          ],
+          "objc2_core_foundation": [
+            1,
+            69456
+          ],
+          "webpki_roots": [
+            1,
+            808
+          ],
+          "pulp_wasm_simd_flag": [
+            1,
+            808
+          ],
+          "mach2": [
+            1,
+            4024
+          ],
+          "pin_project_lite": [
+            1,
+            808
+          ],
+          "seahash": [
+            1,
+            87624
+          ],
+          "atomic": [
+            1,
+            5552
+          ],
+          "toml_write": [
+            1,
+            12840
+          ],
+          "unicode_id": [
+            1,
+            20256
+          ],
+          "flate2": [
+            1,
+            125600
+          ],
+          "dispatch2": [
+            1,
+            28768
+          ],
+          "web_time": [
+            1,
+            808
+          ],
+          "stable_deref_trait": [
+            1,
+            808
+          ],
+          "futures_core": [
+            1,
+            13104
+          ],
+          "libc": [
+            1,
+            9488
+          ],
+          "rustc_hash": [
+            1,
+            808
+          ],
+          "bytemuck": [
+            1,
+            13816
+          ],
+          "async_signal": [
+            1,
+            133312
+          ],
+          "unicode_properties": [
+            1,
+            48264
+          ],
+          "option_ext": [
+            1,
+            808
+          ],
+          "same_file": [
+            1,
+            41176
+          ],
+          "raw_window_handle": [
+            1,
+            57000
+          ],
+          "objc2_core_graphics": [
+            1,
+            10600
+          ],
+          "color_quant": [
+            1,
+            87296
+          ]
+        }
+      },
+      "observation": "Captured during warm-test; excludes pwrdisk, xtask and disktree_* and stdio integration workspace objects. Primary snapshot target file-count difference was 838. Cache-hit restoration omits loose dependency objects retained by rustc misses; normal rlibs/rmetas/final programs/test outputs are materialized."
+    },
+    "donor-absence": {
+      "donor_original_path_exists": false,
+      "cli_checks": [
+        {
+          "lane": "a",
+          "profile": "debug",
+          "binary": "pwrdisk",
+          "exit": 0,
+          "stdout": "PwrDisk \u2014 a treemap of what is using your disk\n\nusage: pwrdisk [OPTIONS] [PATH]\n       pwrdisk ssh HOST [OPTIONS] [PATH]\n       pwrdisk extract-scanner ARCH OUTPUT\n       pwrdisk mcp\n       pwrdisk report [OPTIONS] [--threshold SIZE] [-o FILE] (PATH | -D)\n       pwrdisk report-diff BEFORE AFTER\n\nLinux packaged builds deploy an embedded static scanner over SSH on demand.\nUnbundled development builds need disktree-scan on the remote PATH or in\n~/.local/bin. ARCH for extraction is x86_64 or aarch64.\nSSH uses your config, keys and agent; password prompts use the terminal.\nRemote sessions are read-only: mark, export list/prompt/delete script.\nUse --check with ssh to deploy and scan without opening a window.\n\narguments:\n  PATH              explicit directory to scan; omitted opens root selection\n  mcp               connect an AI agent to the running desktop over stdio\n                    (--standalone explicitly scans without a desktop)\n  report            write a folder-level usage report without a window;\n                    report-diff compares two (see pwrdisk report --help)\n\nWithout PATH, choose this computer or SSH, then a mount or directory.\nNo scan starts before explicit acceptance. Nested mounts are excluded.\nWith PATH the window scans it directly, largest first. Space marks the\nselected tile, Enter opens it, c reviews the marked list, ? lists every key.\n\noptions:\n  -a, --apparent-size   measure apparent length instead of allocated blocks\n  -l, --follow-links    follow symlinks (local scans only)\n  -H, --no-hidden       skip dotfiles and dot-directories\n  -D, --disk            scan the whole disk the home directory is on\n  -X, --cross-filesystems\n                        also measure other disks, network shares and pseudo\n                        filesystems mounted below PATH (local only; off by default)\n  -d, --depth N         how many levels to draw at once (1-6, default 3)\n      --power-efficiency PRESET\n                        miser, balanced (default), aggressive, drain-my-battery\n      --scan-threads N  fixed scan workers, capped by available CPU count\n      --adaptive-threads\n                        experimental adaptive admission (opt-in)\n      --fixed-threads   disable adaptive admission and CPU governor\n      --thread-throughput-percent N\n                        retain this percent of sampled initial throughput (80)\n      --thread-system-cpu-percent N\n                        best-effort host CPU budget; 0 disables it (80)\n      --metric files    rank by file count instead of bytes\n  -h, --help            show this help\n\n",
+          "stderr": ""
+        },
+        {
+          "lane": "a",
+          "profile": "debug",
+          "binary": "disktree-scan",
+          "exit": 0,
+          "stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+          "stderr": ""
+        },
+        {
+          "lane": "a",
+          "profile": "release",
+          "binary": "pwrdisk",
+          "exit": 0,
+          "stdout": "PwrDisk \u2014 a treemap of what is using your disk\n\nusage: pwrdisk [OPTIONS] [PATH]\n       pwrdisk ssh HOST [OPTIONS] [PATH]\n       pwrdisk extract-scanner ARCH OUTPUT\n       pwrdisk mcp\n       pwrdisk report [OPTIONS] [--threshold SIZE] [-o FILE] (PATH | -D)\n       pwrdisk report-diff BEFORE AFTER\n\nLinux packaged builds deploy an embedded static scanner over SSH on demand.\nUnbundled development builds need disktree-scan on the remote PATH or in\n~/.local/bin. ARCH for extraction is x86_64 or aarch64.\nSSH uses your config, keys and agent; password prompts use the terminal.\nRemote sessions are read-only: mark, export list/prompt/delete script.\nUse --check with ssh to deploy and scan without opening a window.\n\narguments:\n  PATH              explicit directory to scan; omitted opens root selection\n  mcp               connect an AI agent to the running desktop over stdio\n                    (--standalone explicitly scans without a desktop)\n  report            write a folder-level usage report without a window;\n                    report-diff compares two (see pwrdisk report --help)\n\nWithout PATH, choose this computer or SSH, then a mount or directory.\nNo scan starts before explicit acceptance. Nested mounts are excluded.\nWith PATH the window scans it directly, largest first. Space marks the\nselected tile, Enter opens it, c reviews the marked list, ? lists every key.\n\noptions:\n  -a, --apparent-size   measure apparent length instead of allocated blocks\n  -l, --follow-links    follow symlinks (local scans only)\n  -H, --no-hidden       skip dotfiles and dot-directories\n  -D, --disk            scan the whole disk the home directory is on\n  -X, --cross-filesystems\n                        also measure other disks, network shares and pseudo\n                        filesystems mounted below PATH (local only; off by default)\n  -d, --depth N         how many levels to draw at once (1-6, default 3)\n      --power-efficiency PRESET\n                        miser, balanced (default), aggressive, drain-my-battery\n      --scan-threads N  fixed scan workers, capped by available CPU count\n      --adaptive-threads\n                        experimental adaptive admission (opt-in)\n      --fixed-threads   disable adaptive admission and CPU governor\n      --thread-throughput-percent N\n                        retain this percent of sampled initial throughput (80)\n      --thread-system-cpu-percent N\n                        best-effort host CPU budget; 0 disables it (80)\n      --metric files    rank by file count instead of bytes\n  -h, --help            show this help\n\n",
+          "stderr": ""
+        },
+        {
+          "lane": "a",
+          "profile": "release",
+          "binary": "disktree-scan",
+          "exit": 0,
+          "stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+          "stderr": ""
+        },
+        {
+          "lane": "c",
+          "profile": "debug",
+          "binary": "pwrdisk",
+          "exit": 0,
+          "stdout": "PwrDisk \u2014 a treemap of what is using your disk\n\nusage: pwrdisk [OPTIONS] [PATH]\n       pwrdisk ssh HOST [OPTIONS] [PATH]\n       pwrdisk extract-scanner ARCH OUTPUT\n       pwrdisk mcp\n       pwrdisk report [OPTIONS] [--threshold SIZE] [-o FILE] (PATH | -D)\n       pwrdisk report-diff BEFORE AFTER\n\nLinux packaged builds deploy an embedded static scanner over SSH on demand.\nUnbundled development builds need disktree-scan on the remote PATH or in\n~/.local/bin. ARCH for extraction is x86_64 or aarch64.\nSSH uses your config, keys and agent; password prompts use the terminal.\nRemote sessions are read-only: mark, export list/prompt/delete script.\nUse --check with ssh to deploy and scan without opening a window.\n\narguments:\n  PATH              explicit directory to scan; omitted opens root selection\n  mcp               connect an AI agent to the running desktop over stdio\n                    (--standalone explicitly scans without a desktop)\n  report            write a folder-level usage report without a window;\n                    report-diff compares two (see pwrdisk report --help)\n\nWithout PATH, choose this computer or SSH, then a mount or directory.\nNo scan starts before explicit acceptance. Nested mounts are excluded.\nWith PATH the window scans it directly, largest first. Space marks the\nselected tile, Enter opens it, c reviews the marked list, ? lists every key.\n\noptions:\n  -a, --apparent-size   measure apparent length instead of allocated blocks\n  -l, --follow-links    follow symlinks (local scans only)\n  -H, --no-hidden       skip dotfiles and dot-directories\n  -D, --disk            scan the whole disk the home directory is on\n  -X, --cross-filesystems\n                        also measure other disks, network shares and pseudo\n                        filesystems mounted below PATH (local only; off by default)\n  -d, --depth N         how many levels to draw at once (1-6, default 3)\n      --power-efficiency PRESET\n                        miser, balanced (default), aggressive, drain-my-battery\n      --scan-threads N  fixed scan workers, capped by available CPU count\n      --adaptive-threads\n                        experimental adaptive admission (opt-in)\n      --fixed-threads   disable adaptive admission and CPU governor\n      --thread-throughput-percent N\n                        retain this percent of sampled initial throughput (80)\n      --thread-system-cpu-percent N\n                        best-effort host CPU budget; 0 disables it (80)\n      --metric files    rank by file count instead of bytes\n  -h, --help            show this help\n\n",
+          "stderr": ""
+        },
+        {
+          "lane": "c",
+          "profile": "debug",
+          "binary": "disktree-scan",
+          "exit": 0,
+          "stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+          "stderr": ""
+        },
+        {
+          "lane": "c",
+          "profile": "release",
+          "binary": "pwrdisk",
+          "exit": 0,
+          "stdout": "PwrDisk \u2014 a treemap of what is using your disk\n\nusage: pwrdisk [OPTIONS] [PATH]\n       pwrdisk ssh HOST [OPTIONS] [PATH]\n       pwrdisk extract-scanner ARCH OUTPUT\n       pwrdisk mcp\n       pwrdisk report [OPTIONS] [--threshold SIZE] [-o FILE] (PATH | -D)\n       pwrdisk report-diff BEFORE AFTER\n\nLinux packaged builds deploy an embedded static scanner over SSH on demand.\nUnbundled development builds need disktree-scan on the remote PATH or in\n~/.local/bin. ARCH for extraction is x86_64 or aarch64.\nSSH uses your config, keys and agent; password prompts use the terminal.\nRemote sessions are read-only: mark, export list/prompt/delete script.\nUse --check with ssh to deploy and scan without opening a window.\n\narguments:\n  PATH              explicit directory to scan; omitted opens root selection\n  mcp               connect an AI agent to the running desktop over stdio\n                    (--standalone explicitly scans without a desktop)\n  report            write a folder-level usage report without a window;\n                    report-diff compares two (see pwrdisk report --help)\n\nWithout PATH, choose this computer or SSH, then a mount or directory.\nNo scan starts before explicit acceptance. Nested mounts are excluded.\nWith PATH the window scans it directly, largest first. Space marks the\nselected tile, Enter opens it, c reviews the marked list, ? lists every key.\n\noptions:\n  -a, --apparent-size   measure apparent length instead of allocated blocks\n  -l, --follow-links    follow symlinks (local scans only)\n  -H, --no-hidden       skip dotfiles and dot-directories\n  -D, --disk            scan the whole disk the home directory is on\n  -X, --cross-filesystems\n                        also measure other disks, network shares and pseudo\n                        filesystems mounted below PATH (local only; off by default)\n  -d, --depth N         how many levels to draw at once (1-6, default 3)\n      --power-efficiency PRESET\n                        miser, balanced (default), aggressive, drain-my-battery\n      --scan-threads N  fixed scan workers, capped by available CPU count\n      --adaptive-threads\n                        experimental adaptive admission (opt-in)\n      --fixed-threads   disable adaptive admission and CPU governor\n      --thread-throughput-percent N\n                        retain this percent of sampled initial throughput (80)\n      --thread-system-cpu-percent N\n                        best-effort host CPU budget; 0 disables it (80)\n      --metric files    rank by file count instead of bytes\n  -h, --help            show this help\n\n",
+          "stderr": ""
+        },
+        {
+          "lane": "c",
+          "profile": "release",
+          "binary": "disktree-scan",
+          "exit": 0,
+          "stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+          "stderr": ""
+        }
+      ]
+    },
+    "outputs": [
+      {
+        "lane": "a",
+        "profile": "debug",
+        "binary": "pwrdisk",
+        "exit": 0,
+        "stdout": "PwrDisk \u2014 a treemap of what is using your disk\n\nusage: pwrdisk [OPTIONS] [PATH]\n       pwrdisk ssh HOST [OPTIONS] [PATH]\n       pwrdisk extract-scanner ARCH OUTPUT\n       pwrdisk mcp\n       pwrdisk report [OPTIONS] [--threshold SIZE] [-o FILE] (PATH | -D)\n       pwrdisk report-diff BEFORE AFTER\n\nLinux packaged builds deploy an embedded static scanner over SSH on demand.\nUnbundled development builds need disktree-scan on the remote PATH or in\n~/.local/bin. ARCH for extraction is x86_64 or aarch64.\nSSH uses your config, keys and agent; password prompts use the terminal.\nRemote sessions are read-only: mark, export list/prompt/delete script.\nUse --check with ssh to deploy and scan without opening a window.\n\narguments:\n  PATH              explicit directory to scan; omitted opens root selection\n  mcp               connect an AI agent to the running desktop over stdio\n                    (--standalone explicitly scans without a desktop)\n  report            write a folder-level usage report without a window;\n                    report-diff compares two (see pwrdisk report --help)\n\nWithout PATH, choose this computer or SSH, then a mount or directory.\nNo scan starts before explicit acceptance. Nested mounts are excluded.\nWith PATH the window scans it directly, largest first. Space marks the\nselected tile, Enter opens it, c reviews the marked list, ? lists every key.\n\noptions:\n  -a, --apparent-size   measure apparent length instead of allocated blocks\n  -l, --follow-links    follow symlinks (local scans only)\n  -H, --no-hidden       skip dotfiles and dot-directories\n  -D, --disk            scan the whole disk the home directory is on\n  -X, --cross-filesystems\n                        also measure other disks, network shares and pseudo\n                        filesystems mounted below PATH (local only; off by default)\n  -d, --depth N         how many levels to draw at once (1-6, default 3)\n      --power-efficiency PRESET\n                        miser, balanced (default), aggressive, drain-my-battery\n      --scan-threads N  fixed scan workers, capped by available CPU count\n      --adaptive-threads\n                        experimental adaptive admission (opt-in)\n      --fixed-threads   disable adaptive admission and CPU governor\n      --thread-throughput-percent N\n                        retain this percent of sampled initial throughput (80)\n      --thread-system-cpu-percent N\n                        best-effort host CPU budget; 0 disables it (80)\n      --metric files    rank by file count instead of bytes\n  -h, --help            show this help\n\n",
+        "stderr": "",
+        "sha256": "2713e38ad11998d3e18594286883be1e910f98161cd8019e7fc7563cdfe5fcd8",
+        "help_matches_plain": true
+      },
+      {
+        "lane": "a",
+        "profile": "debug",
+        "binary": "disktree-scan",
+        "exit": 0,
+        "stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+        "stderr": "",
+        "sha256": "24294db61ced0db1d4539f6c6b860696a93931732b0d1303567965983dedbd23",
+        "help_matches_plain": true
+      },
+      {
+        "lane": "a",
+        "profile": "release",
+        "binary": "pwrdisk",
+        "exit": 0,
+        "stdout": "PwrDisk \u2014 a treemap of what is using your disk\n\nusage: pwrdisk [OPTIONS] [PATH]\n       pwrdisk ssh HOST [OPTIONS] [PATH]\n       pwrdisk extract-scanner ARCH OUTPUT\n       pwrdisk mcp\n       pwrdisk report [OPTIONS] [--threshold SIZE] [-o FILE] (PATH | -D)\n       pwrdisk report-diff BEFORE AFTER\n\nLinux packaged builds deploy an embedded static scanner over SSH on demand.\nUnbundled development builds need disktree-scan on the remote PATH or in\n~/.local/bin. ARCH for extraction is x86_64 or aarch64.\nSSH uses your config, keys and agent; password prompts use the terminal.\nRemote sessions are read-only: mark, export list/prompt/delete script.\nUse --check with ssh to deploy and scan without opening a window.\n\narguments:\n  PATH              explicit directory to scan; omitted opens root selection\n  mcp               connect an AI agent to the running desktop over stdio\n                    (--standalone explicitly scans without a desktop)\n  report            write a folder-level usage report without a window;\n                    report-diff compares two (see pwrdisk report --help)\n\nWithout PATH, choose this computer or SSH, then a mount or directory.\nNo scan starts before explicit acceptance. Nested mounts are excluded.\nWith PATH the window scans it directly, largest first. Space marks the\nselected tile, Enter opens it, c reviews the marked list, ? lists every key.\n\noptions:\n  -a, --apparent-size   measure apparent length instead of allocated blocks\n  -l, --follow-links    follow symlinks (local scans only)\n  -H, --no-hidden       skip dotfiles and dot-directories\n  -D, --disk            scan the whole disk the home directory is on\n  -X, --cross-filesystems\n                        also measure other disks, network shares and pseudo\n                        filesystems mounted below PATH (local only; off by default)\n  -d, --depth N         how many levels to draw at once (1-6, default 3)\n      --power-efficiency PRESET\n                        miser, balanced (default), aggressive, drain-my-battery\n      --scan-threads N  fixed scan workers, capped by available CPU count\n      --adaptive-threads\n                        experimental adaptive admission (opt-in)\n      --fixed-threads   disable adaptive admission and CPU governor\n      --thread-throughput-percent N\n                        retain this percent of sampled initial throughput (80)\n      --thread-system-cpu-percent N\n                        best-effort host CPU budget; 0 disables it (80)\n      --metric files    rank by file count instead of bytes\n  -h, --help            show this help\n\n",
+        "stderr": "",
+        "sha256": "a5bfba926c524d2b9db7c33759ea10a480b1c3ae85754ad06c05ed863103285e",
+        "help_matches_plain": true
+      },
+      {
+        "lane": "a",
+        "profile": "release",
+        "binary": "disktree-scan",
+        "exit": 0,
+        "stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+        "stderr": "",
+        "sha256": "46035b839a6e8b52761c264f6ff4d8c0814a21b134b3ff583dcd5ac77c978d5c",
+        "help_matches_plain": true
+      },
+      {
+        "lane": "b",
+        "profile": "debug",
+        "binary": "pwrdisk",
+        "exit": 0,
+        "stdout": "PwrDisk \u2014 a treemap of what is using your disk\n\nusage: pwrdisk [OPTIONS] [PATH]\n       pwrdisk ssh HOST [OPTIONS] [PATH]\n       pwrdisk extract-scanner ARCH OUTPUT\n       pwrdisk mcp\n       pwrdisk report [OPTIONS] [--threshold SIZE] [-o FILE] (PATH | -D)\n       pwrdisk report-diff BEFORE AFTER\n\nLinux packaged builds deploy an embedded static scanner over SSH on demand.\nUnbundled development builds need disktree-scan on the remote PATH or in\n~/.local/bin. ARCH for extraction is x86_64 or aarch64.\nSSH uses your config, keys and agent; password prompts use the terminal.\nRemote sessions are read-only: mark, export list/prompt/delete script.\nUse --check with ssh to deploy and scan without opening a window.\n\narguments:\n  PATH              explicit directory to scan; omitted opens root selection\n  mcp               connect an AI agent to the running desktop over stdio\n                    (--standalone explicitly scans without a desktop)\n  report            write a folder-level usage report without a window;\n                    report-diff compares two (see pwrdisk report --help)\n\nWithout PATH, choose this computer or SSH, then a mount or directory.\nNo scan starts before explicit acceptance. Nested mounts are excluded.\nWith PATH the window scans it directly, largest first. Space marks the\nselected tile, Enter opens it, c reviews the marked list, ? lists every key.\n\noptions:\n  -a, --apparent-size   measure apparent length instead of allocated blocks\n  -l, --follow-links    follow symlinks (local scans only)\n  -H, --no-hidden       skip dotfiles and dot-directories\n  -D, --disk            scan the whole disk the home directory is on\n  -X, --cross-filesystems\n                        also measure other disks, network shares and pseudo\n                        filesystems mounted below PATH (local only; off by default)\n  -d, --depth N         how many levels to draw at once (1-6, default 3)\n      --power-efficiency PRESET\n                        miser, balanced (default), aggressive, drain-my-battery\n      --scan-threads N  fixed scan workers, capped by available CPU count\n      --adaptive-threads\n                        experimental adaptive admission (opt-in)\n      --fixed-threads   disable adaptive admission and CPU governor\n      --thread-throughput-percent N\n                        retain this percent of sampled initial throughput (80)\n      --thread-system-cpu-percent N\n                        best-effort host CPU budget; 0 disables it (80)\n      --metric files    rank by file count instead of bytes\n  -h, --help            show this help\n\n",
+        "stderr": "",
+        "sha256": "53d590372004d390814e3465fd0b82ad5ffc487ffddcd37b6f420e1e1902756c",
+        "help_matches_plain": true
+      },
+      {
+        "lane": "b",
+        "profile": "debug",
+        "binary": "disktree-scan",
+        "exit": 0,
+        "stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+        "stderr": "",
+        "sha256": "4108c92a015ad9a64c004d470263cf1cecbc983f43044b7214be6d01ec4dabfa",
+        "help_matches_plain": true
+      },
+      {
+        "lane": "b",
+        "profile": "release",
+        "binary": "pwrdisk",
+        "exit": 0,
+        "stdout": "PwrDisk \u2014 a treemap of what is using your disk\n\nusage: pwrdisk [OPTIONS] [PATH]\n       pwrdisk ssh HOST [OPTIONS] [PATH]\n       pwrdisk extract-scanner ARCH OUTPUT\n       pwrdisk mcp\n       pwrdisk report [OPTIONS] [--threshold SIZE] [-o FILE] (PATH | -D)\n       pwrdisk report-diff BEFORE AFTER\n\nLinux packaged builds deploy an embedded static scanner over SSH on demand.\nUnbundled development builds need disktree-scan on the remote PATH or in\n~/.local/bin. ARCH for extraction is x86_64 or aarch64.\nSSH uses your config, keys and agent; password prompts use the terminal.\nRemote sessions are read-only: mark, export list/prompt/delete script.\nUse --check with ssh to deploy and scan without opening a window.\n\narguments:\n  PATH              explicit directory to scan; omitted opens root selection\n  mcp               connect an AI agent to the running desktop over stdio\n                    (--standalone explicitly scans without a desktop)\n  report            write a folder-level usage report without a window;\n                    report-diff compares two (see pwrdisk report --help)\n\nWithout PATH, choose this computer or SSH, then a mount or directory.\nNo scan starts before explicit acceptance. Nested mounts are excluded.\nWith PATH the window scans it directly, largest first. Space marks the\nselected tile, Enter opens it, c reviews the marked list, ? lists every key.\n\noptions:\n  -a, --apparent-size   measure apparent length instead of allocated blocks\n  -l, --follow-links    follow symlinks (local scans only)\n  -H, --no-hidden       skip dotfiles and dot-directories\n  -D, --disk            scan the whole disk the home directory is on\n  -X, --cross-filesystems\n                        also measure other disks, network shares and pseudo\n                        filesystems mounted below PATH (local only; off by default)\n  -d, --depth N         how many levels to draw at once (1-6, default 3)\n      --power-efficiency PRESET\n                        miser, balanced (default), aggressive, drain-my-battery\n      --scan-threads N  fixed scan workers, capped by available CPU count\n      --adaptive-threads\n                        experimental adaptive admission (opt-in)\n      --fixed-threads   disable adaptive admission and CPU governor\n      --thread-throughput-percent N\n                        retain this percent of sampled initial throughput (80)\n      --thread-system-cpu-percent N\n                        best-effort host CPU budget; 0 disables it (80)\n      --metric files    rank by file count instead of bytes\n  -h, --help            show this help\n\n",
+        "stderr": "",
+        "sha256": "457d6b5e35d1d52f0603fe76ac556a520718ddc47ef9eb52771f78a2070aeca1",
+        "help_matches_plain": true
+      },
+      {
+        "lane": "b",
+        "profile": "release",
+        "binary": "disktree-scan",
+        "exit": 0,
+        "stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+        "stderr": "",
+        "sha256": "46035b839a6e8b52761c264f6ff4d8c0814a21b134b3ff583dcd5ac77c978d5c",
+        "help_matches_plain": true
+      },
+      {
+        "lane": "c",
+        "profile": "debug",
+        "binary": "pwrdisk",
+        "exit": 0,
+        "stdout": "PwrDisk \u2014 a treemap of what is using your disk\n\nusage: pwrdisk [OPTIONS] [PATH]\n       pwrdisk ssh HOST [OPTIONS] [PATH]\n       pwrdisk extract-scanner ARCH OUTPUT\n       pwrdisk mcp\n       pwrdisk report [OPTIONS] [--threshold SIZE] [-o FILE] (PATH | -D)\n       pwrdisk report-diff BEFORE AFTER\n\nLinux packaged builds deploy an embedded static scanner over SSH on demand.\nUnbundled development builds need disktree-scan on the remote PATH or in\n~/.local/bin. ARCH for extraction is x86_64 or aarch64.\nSSH uses your config, keys and agent; password prompts use the terminal.\nRemote sessions are read-only: mark, export list/prompt/delete script.\nUse --check with ssh to deploy and scan without opening a window.\n\narguments:\n  PATH              explicit directory to scan; omitted opens root selection\n  mcp               connect an AI agent to the running desktop over stdio\n                    (--standalone explicitly scans without a desktop)\n  report            write a folder-level usage report without a window;\n                    report-diff compares two (see pwrdisk report --help)\n\nWithout PATH, choose this computer or SSH, then a mount or directory.\nNo scan starts before explicit acceptance. Nested mounts are excluded.\nWith PATH the window scans it directly, largest first. Space marks the\nselected tile, Enter opens it, c reviews the marked list, ? lists every key.\n\noptions:\n  -a, --apparent-size   measure apparent length instead of allocated blocks\n  -l, --follow-links    follow symlinks (local scans only)\n  -H, --no-hidden       skip dotfiles and dot-directories\n  -D, --disk            scan the whole disk the home directory is on\n  -X, --cross-filesystems\n                        also measure other disks, network shares and pseudo\n                        filesystems mounted below PATH (local only; off by default)\n  -d, --depth N         how many levels to draw at once (1-6, default 3)\n      --power-efficiency PRESET\n                        miser, balanced (default), aggressive, drain-my-battery\n      --scan-threads N  fixed scan workers, capped by available CPU count\n      --adaptive-threads\n                        experimental adaptive admission (opt-in)\n      --fixed-threads   disable adaptive admission and CPU governor\n      --thread-throughput-percent N\n                        retain this percent of sampled initial throughput (80)\n      --thread-system-cpu-percent N\n                        best-effort host CPU budget; 0 disables it (80)\n      --metric files    rank by file count instead of bytes\n  -h, --help            show this help\n\n",
+        "stderr": "",
+        "sha256": "db9b666bedce954a051a8209b0332adfc25da05f895cee56295119e8c0a14b06",
+        "help_matches_plain": true
+      },
+      {
+        "lane": "c",
+        "profile": "debug",
+        "binary": "disktree-scan",
+        "exit": 0,
+        "stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+        "stderr": "",
+        "sha256": "d86e638300d6dfc26568e3399e5def2a29f4855df9aa0295a25e8dfaa5cf7bfe",
+        "help_matches_plain": true
+      },
+      {
+        "lane": "c",
+        "profile": "release",
+        "binary": "pwrdisk",
+        "exit": 0,
+        "stdout": "PwrDisk \u2014 a treemap of what is using your disk\n\nusage: pwrdisk [OPTIONS] [PATH]\n       pwrdisk ssh HOST [OPTIONS] [PATH]\n       pwrdisk extract-scanner ARCH OUTPUT\n       pwrdisk mcp\n       pwrdisk report [OPTIONS] [--threshold SIZE] [-o FILE] (PATH | -D)\n       pwrdisk report-diff BEFORE AFTER\n\nLinux packaged builds deploy an embedded static scanner over SSH on demand.\nUnbundled development builds need disktree-scan on the remote PATH or in\n~/.local/bin. ARCH for extraction is x86_64 or aarch64.\nSSH uses your config, keys and agent; password prompts use the terminal.\nRemote sessions are read-only: mark, export list/prompt/delete script.\nUse --check with ssh to deploy and scan without opening a window.\n\narguments:\n  PATH              explicit directory to scan; omitted opens root selection\n  mcp               connect an AI agent to the running desktop over stdio\n                    (--standalone explicitly scans without a desktop)\n  report            write a folder-level usage report without a window;\n                    report-diff compares two (see pwrdisk report --help)\n\nWithout PATH, choose this computer or SSH, then a mount or directory.\nNo scan starts before explicit acceptance. Nested mounts are excluded.\nWith PATH the window scans it directly, largest first. Space marks the\nselected tile, Enter opens it, c reviews the marked list, ? lists every key.\n\noptions:\n  -a, --apparent-size   measure apparent length instead of allocated blocks\n  -l, --follow-links    follow symlinks (local scans only)\n  -H, --no-hidden       skip dotfiles and dot-directories\n  -D, --disk            scan the whole disk the home directory is on\n  -X, --cross-filesystems\n                        also measure other disks, network shares and pseudo\n                        filesystems mounted below PATH (local only; off by default)\n  -d, --depth N         how many levels to draw at once (1-6, default 3)\n      --power-efficiency PRESET\n                        miser, balanced (default), aggressive, drain-my-battery\n      --scan-threads N  fixed scan workers, capped by available CPU count\n      --adaptive-threads\n                        experimental adaptive admission (opt-in)\n      --fixed-threads   disable adaptive admission and CPU governor\n      --thread-throughput-percent N\n                        retain this percent of sampled initial throughput (80)\n      --thread-system-cpu-percent N\n                        best-effort host CPU budget; 0 disables it (80)\n      --metric files    rank by file count instead of bytes\n  -h, --help            show this help\n\n",
+        "stderr": "",
+        "sha256": "b2f369fa483bea7e061fb554bf533465ddac7638c1d6e6b09b8e03421c13c2a7",
+        "help_matches_plain": true
+      },
+      {
+        "lane": "c",
+        "profile": "release",
+        "binary": "disktree-scan",
+        "exit": 0,
+        "stdout": "disktree-scan \u2014 read-only SSH scan helper\nusage: disktree-scan --stdio-v1\nUsed by: pwrdisk ssh HOST [PATH]\nReads a versioned JSON request from stdin and streams a snapshot to stdout. No deletion commands.\n",
+        "stderr": "",
+        "sha256": "46035b839a6e8b52761c264f6ff4d8c0814a21b134b3ff583dcd5ac77c978d5c",
+        "help_matches_plain": true
+      }
+    ],
+    "cleanup": {
+      "epoch": 1794496009.3374562,
+      "removed": [
+        "a",
+        "b",
+        "c",
+        "cargo-home",
+        "cache",
+        "sccache distribution",
+        "clang-cache",
+        "probes",
+        "drift",
+        "eviction",
+        "cli-home",
+        "download archive",
+        "cached-config",
+        "apfs.dylib"
+      ],
+      "available_bytes": 106264797184
+    },
+    "stale-socket-proof": {
+      "endpoint": "$WORKSPACE/.local/sccache-study/s.sock",
+      "connect": "ECONNREFUSED",
+      "all_started_servers_waited_for_exit": true
+    },
+    "physical-oracle": {
+      "before": 8045048,
+      "after": 142361176,
+      "delta": 134316128
+    },
+    "setup-failures": {
+      "population_start_attempt_1": "Unknown field disk in config; no compilation; corrected to cache.disk. Startup failure cleanup attempted to kill an already exited owned PID; corrected."
+    },
+    "sequence-complete": {
+      "epoch": 1794495784.1046221,
+      "overall_seconds": 3121.3425509929657
+    },
+    "oracle-donor-stats": {
+      "stats": {
+        "compile_requests": 12,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 10,
+        "requests_executed": 2,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 2
+          },
+          "adv_counts": {
+            "rust": 2
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 2,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 564375
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 2,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 99821209
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "missing input": 6,
+          "crate-type (proc-macro)": 1,
+          "-": 1,
+          "crate-type (bin)": 2
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1604655430,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "oracle-proc-macro-changed-stats": {
+      "stats": {
+        "compile_requests": 2,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 1,
+        "requests_executed": 1,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "Rust": 1
+          },
+          "adv_counts": {
+            "rust": 1
+          }
+        },
+        "cache_misses": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 0,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 145292
+        },
+        "compilations": 0,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "crate-type (bin)": 1
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1604666744,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "oracle-proc-macro-plain-stats": {
+      "stats": {
+        "compile_requests": 0,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 0,
+        "requests_executed": 0,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 0,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 0,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compile_fails": 0,
+        "not_cached": {},
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1604666744,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "oracle-relocated-stats": {
+      "stats": {
+        "compile_requests": 12,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 10,
+        "requests_executed": 2,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 2
+          },
+          "adv_counts": {
+            "rust": 2
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 2,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 488459
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 2,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 90110042
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "missing input": 6,
+          "crate-type (proc-macro)": 1,
+          "crate-type (bin)": 2,
+          "-": 1
+        },
+        "dist_compiles": {},
+        "dist_errors": 0,
+        "multi_level": null
+      },
+      "cache_location": "Local disk: \"$WORKSPACE/.local/sccache-study/cache\"",
+      "cache_size": 1604666744,
+      "max_cache_size": 8589934592,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.19.0",
+      "basedirs": [],
+      "effective_cache_mode": "ReadWrite"
+    },
+    "raw-log-archive": {
+      "archive": "raw-logs.tar.gz",
+      "sha256": "9f049a23f019f1a487395f2433772b213f239796fc4966c6f007c145f6207117",
+      "logical_bytes": 310911,
+      "raw_members": {
+        "drift-a.log": {
+          "logical_bytes": 408,
+          "sha256": "d54eee79f1cdd5a1341f14b1e8729964ea87db18b97fb313560acbe587b117ff"
+        },
+        "drift-b.log": {
+          "logical_bytes": 474,
+          "sha256": "31a9070f4aa57097a680eb8fd28cc0b37e2761a92ca8afaaa91c8dd4ef6a7ac3"
+        },
+        "drift-own-target-reset.log": {
+          "logical_bytes": 38,
+          "sha256": "8074611321baea145cdd299f4fb959db2fef01849800db8887394d5746a278fa"
+        },
+        "drift-server.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "drift-stable-populate.log": {
+          "logical_bytes": 474,
+          "sha256": "bd0dd90b4ae1aca3cac648257e22c643a275bd8302b5778ec5de2d667da44d11"
+        },
+        "edit-dev.log": {
+          "logical_bytes": 1146,
+          "sha256": "b3fba597b7e92ea232b9094920ced28cdeb05b603f51377a73de276c3ab3d762"
+        },
+        "edit-lint.log": {
+          "logical_bytes": 1876,
+          "sha256": "6cafd54554a7ce1bd67a7ef5764af99a69ef6675350354366aadf4fdc225ce83"
+        },
+        "edit-release.log": {
+          "logical_bytes": 945,
+          "sha256": "966f7f3929642c4ba89d60ff6a0c069814a1de909ade9185b532759feb5a7372"
+        },
+        "edit-server.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "edit-test.log": {
+          "logical_bytes": 560531,
+          "sha256": "0707dd971e738cc91745e03f1135fed3189a8c3e9fb79a392a75b53a6ef05c9c"
+        },
+        "eviction-fill-1.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "eviction-fill-2.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "eviction-fill-3.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "eviction-fill-4.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "eviction-first.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "eviction-hit.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "eviction-refetch.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "eviction-server.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "hit-dev.log": {
+          "logical_bytes": 14943,
+          "sha256": "587c05b6080b0964345d1f5cffb90008e29a9f2cf0cce3ce33bac7251b54d6c7"
+        },
+        "hit-lint.log": {
+          "logical_bytes": 15194,
+          "sha256": "e05c80df49e72f56e4f6abaf7dece1a8284d5f61134f8211aaa8ae2d8e6c0df4"
+        },
+        "hit-release.log": {
+          "logical_bytes": 14935,
+          "sha256": "6e68b2b9ce99693da67ed278a6a93566e65d363fc563e16b0d76aa9a94b794ec"
+        },
+        "hit-server.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "hit-test.log": {
+          "logical_bytes": 562549,
+          "sha256": "1c89e85f0fcbf60e58057d8f8e9d3538d542fd3b4046d542dba52b252b5ca850"
+        },
+        "oracle-donor.log": {
+          "logical_bytes": 471,
+          "sha256": "79449d4f70eab09a45363d22b5cb1bb339694bc756529543abdbdc2f8df0ec77"
+        },
+        "oracle-plain-clean.log": {
+          "logical_bytes": 38,
+          "sha256": "e5d6a605311be94fff9c0f9d0c2167c707379abcc71812ae0df833fbed35d8ef"
+        },
+        "oracle-proc-macro-changed.log": {
+          "logical_bytes": 172,
+          "sha256": "7662d4a6cf6c284572d88808ca428f5f31198415647a94bfe85998833792fb0d"
+        },
+        "oracle-proc-macro-plain.log": {
+          "logical_bytes": 172,
+          "sha256": "4d20caceb0a1d9a5f4aa3435d2caf4066ec39c97ad2de0f70a759b0b5a41a70b"
+        },
+        "oracle-relocated.log": {
+          "logical_bytes": 471,
+          "sha256": "32341e6344879bc99041464305e4853cfe01ce76a1abaf541805ac23dae83013"
+        },
+        "plain-dev.log": {
+          "logical_bytes": 14943,
+          "sha256": "37e6646869163dca6260673f2277f933c4e8bdb840818c8b684680b9548a0833"
+        },
+        "plain-lint.log": {
+          "logical_bytes": 15195,
+          "sha256": "99ec83c21fec59daff1e6255b70179c895dd81425d10c2d6bebf0123bd89ac56"
+        },
+        "plain-release.log": {
+          "logical_bytes": 14935,
+          "sha256": "73223e0fd60c7904dd53440a77bc52e8bc07cd19720e9cdfac98734973b49024"
+        },
+        "plain-test.log": {
+          "logical_bytes": 563720,
+          "sha256": "096f8212b13c61fc5ebbd148079b3d00f3f6b235518cfd4836448b53a5d3aab8"
+        },
+        "populate-dev.log": {
+          "logical_bytes": 14943,
+          "sha256": "2f69542dcf1334ea3075f5bfc081dcfeb71cb295db8ab225894cfa8f9705b6c7"
+        },
+        "populate-lint.log": {
+          "logical_bytes": 15195,
+          "sha256": "8766dc1be6d6bc4dd0700502a225c0370bd97d959e641f6f5c5d1e5644e2ef2b"
+        },
+        "populate-release.log": {
+          "logical_bytes": 14935,
+          "sha256": "a8b479f712a0061e07778cecd316e78e07a2e43029d64eb78f4beaddf4e8ba6d"
+        },
+        "populate-server-start-attempt-1.log": {
+          "logical_bytes": 382,
+          "sha256": "44f2278906c8946276fe6e1cee86dfca820ff83ed18f01ba578cd1777f8f6f24"
+        },
+        "populate-server.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "populate-test.log": {
+          "logical_bytes": 558273,
+          "sha256": "89cc1a2ae1314e04fa880272172a22409d4c1588a95be2b0bfc9f59a4c915e22"
+        },
+        "probes-server.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "warm-dev.log": {
+          "logical_bytes": 616,
+          "sha256": "80dab63ab6c21f708859227289424aba7c9c522fce2c6138fcac3b39b142584e"
+        },
+        "warm-lint.log": {
+          "logical_bytes": 1147,
+          "sha256": "e7cae4f92d97295e9c14a6e836582ef53a16aee379a99d17bf4ab00bcb02e747"
+        },
+        "warm-release.log": {
+          "logical_bytes": 415,
+          "sha256": "0a343526722eba7409b3dca2915b95f6e2a6c717b358bcc794ec5522dfb2ed2f"
+        },
+        "warm-server.log": {
+          "logical_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "warm-test.log": {
+          "logical_bytes": 571296,
+          "sha256": "e3749f453ecba15e28ed4da93fed8088be6d8aac7cdbcd1dd3328604f2ac392f"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "sccache_tag": "v0.19.0",
+  "development_main": "7df8044dcabc3f7a0948e3df30678bf6f7b72eae",
+  "downloaded_official_source_sha256": {
+    "Cargo.toml": "d93cf9f76efa9919a8aa4fa0b9c40727da40851e3205ceccef4a5ae4369bd659",
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "README.md": "2b6a3375859a0964a5e76d4899d74d3efbdf765714079317f83dacbd8043c2b6",
+    "docs-Configuration.md": "8678cc35a8d974f38e1cef9cbe71a23d9cbf1d5937c1d4bd91f0b98a1b790dc8",
+    "docs-Local.md": "55922de7991ac13e836286d375e0c545d284e22b08719e83b31e1f74df67340e",
+    "docs-Rust.md": "e3a623f2e9593e23885cd75e5c3e9739933741e40359f9033c572394fbdd1410",
+    "main-commit.json": "315bf189f14a073db974cc1096cb2e9075de538c9eefdbc5e338cf3380bb6eea",
+    "main-docs-Rust.md": "5b520832b3d72711ee6494682d88118c204fdad3983d2d47c738f068942ebf44",
+    "main-src-commands.rs": "0cca118d3150dad6b31c88d1dc3984045647f2f624288b15b8060d9cddc9c25d",
+    "main-src-compiler-rust.rs": "090265850a2ba664fe9c2310ccb28603cae656b9be14cead223657435a3ff940",
+    "pwrgit-BENCHMARK.md": "c1acc2535873f8a132838795f72da4d26af05e4e9270e7436a0ff0dde5d0d79a",
+    "pwrgit-README.md": "f7eb427eedd83acacc6213993a2004e00eb79c3ea12adfb1e06dcd7142cc6742",
+    "release.json": "1f6d4637b75c92cdad7b9476df57752b28833638cc9e6fb9b480172766e22129",
+    "src-cache-disk.rs": "c7a10401d8a2c77384e1452e6dc923a3fb3e2b45396d866b4b804def05d336af",
+    "src-compiler-rust.rs": "128ef5eb2e89dc3ab69ec810e68ab271169b3a74e711fa80023e0578f90aa4eb",
+    "src-config.rs": "286f1f67288b1543114e5baa917660a78be2e3dda3a3508285e054e9e6fba7e2",
+    "src-jobserver.rs": "ce4675805be15a8cc5aaef8881f461c553f5665d15a5287c59e4bbed4223faf9",
+    "src-lru_disk_cache-mod.rs": "bda0efab8fb7c127ba09f9fdc64f216fda379d9501806486f86f09e87240ca79",
+    "src-server.rs": "76925d9e58166b8c26b849c5ff7ac4f1633b154f8b45c2be988eeddc1aac5e6b",
+    "src-util.rs": "f6deaf23c1e809ab8bbc1e1311dec7366b2d571d71db08cf752ebfbfb9cb8ecd",
+    "v0.19.0-docs-DistributedQuickstart.md": "3edee572494536a73b155abaee93d70ed40c626aad14be5a87961b23e695c82b",
+    "v0.19.0-docs-S3.md": "805c8e20f452f5e31fac89dd088a24d023bbc8e18fbd051a4d3b9471701bfb67",
+    "v0.19.0-src-commands.rs": "582ca060bceccc97e5d246463b1ad92e1a74c9b53ba2f7e7c999b91ed7caa690"
+  }
+}

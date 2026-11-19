@@ -1,0 +1,26 @@
+#include <sys/attr.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+
+static uint64_t u64(const unsigned char *buffer, size_t offset) {
+    uint64_t value;
+    memcpy(&value, buffer + offset, sizeof value);
+    return value;
+}
+int probe(const char *path, uint64_t *values) {
+ struct attrlist request = {0}; request.bitmapcount=ATTR_BIT_MAP_COUNT;
+ request.commonattr=ATTR_CMN_RETURNED_ATTRS|ATTR_CMN_FILEID;
+ request.fileattr=ATTR_FILE_DATAALLOCSIZE;
+ request.forkattr=ATTR_CMNEXT_PRIVATESIZE|ATTR_CMNEXT_CLONEID|ATTR_CMNEXT_REALDEVID;
+ unsigned char buffer[96]={0};
+ if(getattrlist(path,&request,buffer,sizeof buffer,FSOPT_ATTR_CMN_EXTENDED|FSOPT_NOFOLLOW|FSOPT_PACK_INVAL_ATTRS))return errno;
+ attribute_set_t returned;memcpy(&returned,buffer+4,sizeof returned);
+ uint32_t length;memcpy(&length,buffer,4);
+ if(length<60 || !(returned.forkattr&ATTR_CMNEXT_PRIVATESIZE)||!(returned.forkattr&ATTR_CMNEXT_CLONEID))return -1;
+ values[0]=u64(buffer,24);values[1]=u64(buffer,32);values[2]=u64(buffer,40);values[3]=u64(buffer,52);
+ return 0;
+}

@@ -1,0 +1,11 @@
+"""The released client's guard runs before any server connection."""
+import guard as g
+import subprocess,json
+rows=[]
+for allow in [False,True]:
+ env=g.common.copy();env['CARGO_INCREMENTAL']='1'
+ if allow:env['SCCACHE_ALLOW_INCREMENTAL']='1'
+ q=subprocess.run([str(g.BIN),'rustc','-vV'],env=env,text=True,capture_output=True,timeout=15)
+ rows.append({'CARGO_INCREMENTAL':'1','SCCACHE_ALLOW_INCREMENTAL':'1' if allow else None,'exit':q.returncode,'stdout':q.stdout,'stderr':q.stderr})
+ assert q.returncode==1 and 'incremental compilation is prohibited' in q.stdout
+(g.ROOT/'logs/incremental-oracle.json').write_text(json.dumps(rows,indent=2))

@@ -1,0 +1,145 @@
+=== plain-dev ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 4m 16s
+=== plain-lint ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 18.60s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 04s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 7.23s
+=== plain-test ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.17s
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 54s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.01s
+test result: ok. 485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 16.72s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out; finished in 0.00s
+test result: ok. 505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 212.23s
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.69s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    Finished `test` profile [optimized + debuginfo] target(s) in 24.15s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.02s
+Ran 5 tests in 1.791s
+OK
+Ran 6 tests in 0.010s
+OK
+=== plain-release ===
+    Finished `release` profile [optimized] target(s) in 2m 54s
+=== populate-dev ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2m 36s
+=== populate-lint ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 12.54s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 02s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 7.35s
+=== populate-test ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.20s
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.01s
+test result: ok. 485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 16.57s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out; finished in 0.00s
+test result: ok. 505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 215.29s
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.66s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    Finished `test` profile [optimized + debuginfo] target(s) in 19.56s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.01s
+Ran 5 tests in 1.749s
+OK
+Ran 6 tests in 0.009s
+OK
+=== populate-release ===
+    Finished `release` profile [optimized] target(s) in 2m 53s
+=== hit-dev ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 42s
+=== hit-lint ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 9.94s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 40.35s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 7.28s
+=== hit-test ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.20s
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.01s
+test result: ok. 485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 16.65s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out; finished in 0.00s
+test result: ok. 505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 214.26s
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.75s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    Finished `test` profile [optimized + debuginfo] target(s) in 19.38s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.01s
+Ran 5 tests in 2.150s
+OK
+Ran 6 tests in 0.009s
+OK
+=== hit-release ===
+    Finished `release` profile [optimized] target(s) in 2m 14s
+=== warm-dev ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 4.83s
+=== warm-lint ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.13s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 5.34s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 3.75s
+=== warm-test ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.19s
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.60s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.01s
+test result: ok. 485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 16.76s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out; finished in 0.00s
+test result: ok. 505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 220.84s
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.69s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    Finished `test` profile [optimized + debuginfo] target(s) in 4.70s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.02s
+Ran 5 tests in 1.807s
+OK
+Ran 6 tests in 0.010s
+OK
+=== warm-release ===
+    Finished `release` profile [optimized] target(s) in 52.31s
+=== edit-dev ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 6.08s
+=== edit-lint ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.55s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 7.41s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 3.98s
+=== edit-test ===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.17s
+    Finished `test` profile [optimized + debuginfo] target(s) in 5.30s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.01s
+test result: ok. 485 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 16.85s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out; finished in 0.00s
+test result: ok. 505 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 215.22s
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.72s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    Finished `test` profile [optimized + debuginfo] target(s) in 5.70s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.02s
+Ran 5 tests in 1.756s
+OK
+Ran 6 tests in 0.011s
+OK
+=== edit-release ===
+    Finished `release` profile [optimized] target(s) in 1m 17s

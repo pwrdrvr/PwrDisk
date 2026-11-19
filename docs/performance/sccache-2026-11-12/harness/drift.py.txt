@@ -1,0 +1,61 @@
+"""Bounded simultaneous clients: two Cargo jobs each; independent outputs."""
+import guard as g
+import os,pathlib,subprocess,time,json,signal
+R=g.ROOT;P=R/'drift';P.mkdir(exist_ok=True)
+def write(p,s):p.parent.mkdir(parents=True,exist_ok=True);p.write_text(s)
+def lib(p,name,value):
+ version=f'0.{value}.0' if name=='drift_dep' else '0.1.0'
+ write(p/'Cargo.toml',f'[package]\nname="{name}"\nversion="{version}"\nedition="2024"\n[workspace]\n')
+ write(p/'src/lib.rs',f'pub fn value()->u32{{{value}}}\n')
+lib(P/'stable','stable_dep',40)
+for v in [1,2]:lib(P/f'v{v}','drift_dep',v)
+for lane,v in [('a',1),('b',2)]:
+ write(P/lane/'Cargo.toml',f'[package]\nname="drift_oracle"\nversion="0.1.0"\nedition="2024"\n[dependencies]\nstable_dep={{path="../stable"}}\ndrift_dep={{path="../v{v}"}}\n[workspace]\n')
+ write(P/lane/'src/main.rs','fn main(){println!("{}",stable_dep::value()+drift_dep::value());}\n')
+# Materialize both before any build; populate dependency-context units in a.
+env=g.cache_env();env['CARGO_BUILD_JOBS']='2';e=env.copy();e.update(SCCACHE_START_SERVER='1',SCCACHE_NO_DAEMON='1')
+log=(R/'logs/drift-server.log').open('w');server=subprocess.Popen([str(g.BIN)],env=e,cwd=R,stdout=log,stderr=log,start_new_session=True)
+children=[];rows=[]
+try:
+ for _ in range(200):
+  if (R/'s.sock').exists():break
+  if server.poll() is not None:raise RuntimeError('server failed')
+  time.sleep(.05)
+ # Shared dependency alone uses its own target; no incremental override.
+ g.stats(['--zero-stats'])
+ g.run('drift-stable-populate',['cargo','build','--release','--offline'],env,P/'a',120,(server.pid,))
+ (R/'logs/drift-before-own-target-reset.json').write_text(json.dumps(g.allocation(),indent=2))
+ g.run('drift-own-target-reset',['cargo','clean','--release'],env,P/'a',120,(server.pid,))
+ (R/'logs/drift-stable-stats.json').write_text(g.stats(['--show-stats','--stats-format','json']))
+ g.stats(['--zero-stats']);start=time.monotonic()
+ for lane in ['a','b']:
+  out=(R/'logs'/f'drift-{lane}.log').open('w')
+  p=subprocess.Popen(['cargo','build','--release','--offline'],env=env,cwd=P/lane,stdout=out,stderr=out,start_new_session=True);children.append((lane,p,out))
+ peak=0;next_alloc=0
+ while any(p.poll() is None for _,p,_ in children):
+  try:
+   rss,physical=g.rss_tree([server.pid,*[p.pid for _,p,_ in children]])
+   peak=max(peak,physical);s=os.statvfs(R)
+   assert physical<=20*1024**3,'physical guard'
+   assert s.f_bavail*s.f_frsize>=48*1024**3,'free-space guard'
+   assert time.monotonic()-start<120,'phase time guard'
+   if time.monotonic()>=next_alloc:
+    assert g.allocation()['allocated_bytes']<=40*1024**3,'allocation guard';next_alloc=time.monotonic()+10
+   assert time.time()-g.overall_start<5400,'overall guard'
+  except BaseException:
+   for _,p,_ in children:
+    if p.poll() is None:os.killpg(p.pid,signal.SIGKILL)
+   raise
+  time.sleep(.25)
+ for lane,p,out in children:
+  out.close();assert p.returncode==0
+  value=subprocess.check_output([str(P/lane/'target/release/drift_oracle')],text=True).strip();assert value=={'a':'41','b':'42'}[lane];rows.append({'lane':lane,'exit':p.returncode,'value':value})
+ (R/'logs/drift-concurrent-stats.json').write_text(g.stats(['--show-stats','--stats-format','json']))
+ (R/'logs/drift-outcomes.json').write_text(json.dumps({'wall_seconds':time.monotonic()-start,'peak_physical_bytes':peak,'clients':rows,'cargo_jobs_per_client':2,'aggregate_jobs':4,'dependency_versions':{'a':'0.1.0','b':'0.2.0'}},indent=2))
+finally:
+ for _,p,_ in children:
+  if p.poll() is None:os.killpg(p.pid,signal.SIGKILL);p.wait()
+ try:(R/'logs/drift-shutdown.txt').write_text(g.stats(['--stop-server']))
+ finally:
+  try:server.wait(timeout=10)
+  except subprocess.TimeoutExpired:os.killpg(server.pid,signal.SIGKILL);server.wait()

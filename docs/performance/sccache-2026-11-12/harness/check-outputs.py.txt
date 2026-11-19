@@ -1,0 +1,20 @@
+"""Headless CLI checks only; private HOME contains any app startup logs."""
+import hashlib,json,os,pathlib,subprocess
+E=pathlib.Path(__file__).resolve().parent;W=E.parent.parent
+home=E/'cli-home';home.mkdir(exist_ok=True)
+rows=[]
+for lane in ('a','b','c'):
+ for profile in ('debug','release'):
+  for binary in ('pwrdisk','disktree-scan'):
+   p=W/lane/'target'/profile/binary
+   env=os.environ.copy();env.update(HOME=str(home))
+   run=subprocess.run([str(p),'--help'],env=env,cwd=W/lane,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
+   row={'lane':lane,'profile':profile,'binary':binary,'exit':run.returncode,'stdout':run.stdout,'stderr':run.stderr,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
+   rows.append(row)
+   assert run.returncode==0,row
+for row in rows:
+ donor=next(x for x in rows if x['lane']=='a' and x['profile']==row['profile'] and x['binary']==row['binary'])
+ row['help_matches_plain']=row['stdout']==donor['stdout'] and row['stderr']==donor['stderr']
+ assert row['help_matches_plain'],row
+(E/'logs/outputs.json').write_text(json.dumps(rows,indent=2)+'\n')
+print('All 12 CLI checks exited zero; help output matched the plain arm.')
