@@ -144,9 +144,9 @@ impl AccessibleButton for gpui_omarchy::Button {
     }
 }
 
-/// Cycle inside a modal even though GPUI's global tab order includes its
-/// painted background. A full cycle without an eligible stop leaves focus
-/// on the modal container, rather than looping or escaping it.
+/// Cycle inside a popover even though GPUI's global tab order includes
+/// the page under it. A full cycle without an eligible stop leaves focus
+/// on the popover's container, rather than looping or escaping it.
 pub fn advance_focus(
     window: &mut gpui_kit::Window,
     cx: &mut gpui_kit::App,

@@ -12405,6 +12405,140 @@ fn the_mark_menu_takes_focus_and_keeps_tab_inside_it(cx: &mut TestAppContext) {
     assert_eq!(mark_focus(&view, cx), "treemap");
 }
 
+/// The ways a popover is opened and the container that holds its stops,
+/// for the property below.
+#[derive(Clone, Copy, Debug)]
+enum Popover {
+    MarkMenu,
+    LegendMenu,
+    AppMenu,
+    Help,
+}
+
+impl Popover {
+    const ALL: [Self; 4] =
+        [Self::MarkMenu, Self::LegendMenu, Self::AppMenu, Self::Help];
+
+    fn container(self, app: &Disktree) -> gpui_kit::FocusHandle {
+        match self {
+            Self::MarkMenu => app.mark_menu_focus.clone(),
+            Self::LegendMenu => app.legend_menu_focus.clone(),
+            Self::AppMenu | Self::Help => app.confirm_focus.clone(),
+        }
+    }
+
+    fn is_open(self, app: &Disktree) -> bool {
+        match self {
+            Self::MarkMenu => app.mark_menu.is_some(),
+            Self::LegendMenu => app.legend_menu_open,
+            Self::AppMenu => app.app_menu_open,
+            Self::Help => app.show_help,
+        }
+    }
+
+    /// Whether Tab has more than one stop to visit in it. Help has one,
+    /// its Close button, and the app menu none: its rows are the arrows',
+    /// so Tab keeps focus on the menu itself.
+    const fn has_several_stops(self) -> bool {
+        matches!(self, Self::MarkMenu | Self::LegendMenu)
+    }
+
+    /// Whether it pulls focus in from the page rather than only keeping
+    /// focus that is already inside it.
+    const fn is_modal(self) -> bool {
+        matches!(self, Self::AppMenu | Self::Help)
+    }
+
+    /// Opens it as a person would, and returns with focus inside it.
+    fn open(self, view: &Entity<Disktree>, cx: &mut Window) {
+        match self {
+            Self::MarkMenu => click_on(cx, "inspector-mark-more"),
+            Self::LegendMenu => click_on(cx, "legend-more"),
+            Self::AppMenu => update(view, cx, Disktree::toggle_app_menu),
+            Self::Help => update(view, cx, Disktree::open_help),
+        }
+        draw(cx);
+        assert!(read(view, cx, |app| self.is_open(app)), "{self:?} opens");
+        // The "+N" menu leaves focus on its button, and its chips come
+        // last in the window's order: Tab walks the page to reach them.
+        for _ in 0..400 {
+            if popover_holds_focus(self, view, cx) {
+                return;
+            }
+            press(cx, "tab");
+        }
+        panic!("Tab never reached the {self:?}");
+    }
+}
+
+fn popover_holds_focus(
+    popover: Popover,
+    view: &Entity<Disktree>,
+    cx: &mut Window,
+) -> bool {
+    let container = read(view, cx, |app| popover.container(app));
+    cx.update(|window, cx| container.contains_focused(window, cx))
+}
+
+/// Property: while a popover holds focus, Tab and Shift-Tab, in any order
+/// and any number, keep focus inside it and leave it open. From the page,
+/// Tab enters a modal one and leaves any other alone. GPUI paints a
+/// popover after the rest of the window, so its stops come last in the
+/// window's tab order; without a scope, Tab from its last stop walked
+/// into the page under it. The legend's "+N" menu did exactly that, while
+/// the dialogs, the app menu and the Mark menu each had a branch of
+/// their own.
+#[gpui_kit::test]
+fn tab_never_leaves_the_popover_that_holds_focus(cx: &mut TestAppContext) {
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = over_limit_view(temp.path(), cx);
+    cx.simulate_resize(gpui_kit::size(px(1440.), px(900.)));
+    draw(cx);
+    // Long enough to wrap every popover's stops, both ways, more than
+    // once; the walk turns at uneven points.
+    let walk = ["tab"; 9].into_iter().chain(["shift-tab"; 13]).chain([
+        "tab",
+        "shift-tab",
+        "tab",
+        "tab",
+    ]);
+    for popover in Popover::ALL {
+        popover.open(&view, cx);
+        let mut stops = Vec::new();
+        for (step, keys) in walk.clone().enumerate() {
+            press(cx, keys);
+            let case = format!("{popover:?}, step {step}: {keys}");
+            assert!(read(&view, cx, |app| popover.is_open(app)), "{case}");
+            assert!(popover_holds_focus(popover, &view, cx), "{case}");
+            let focused = cx.update(|window, cx| window.focused(cx));
+            if !stops.contains(&focused) {
+                stops.push(focused);
+            }
+        }
+        // Not vacuous: where there are stops, Tab moved between them.
+        if popover.has_several_stops() {
+            assert!(stops.len() > 1, "{popover:?} has stops to visit");
+        }
+        // From the page, Tab is pulled into a modal popover; an open menu
+        // does not trap a keyboard that is working elsewhere.
+        let root = read(&view, cx, |app| app.focus.clone());
+        cx.update(|window, cx| window.focus(&root, cx));
+        press(cx, "tab");
+        assert_eq!(
+            popover_holds_focus(popover, &view, cx),
+            popover.is_modal(),
+            "{popover:?}: Tab from the page"
+        );
+        // Closed from the page, as after a click there, so the next opens
+        // from the page too. (From a focused control, Escape first
+        // returns focus to the page.)
+        cx.update(|window, cx| window.focus(&root, cx));
+        press(cx, "escape");
+        assert!(!read(&view, cx, |app| popover.is_open(app)), "{popover:?}");
+    }
+}
+
 /// Whether a bar is drawn for each scroll area, against what its handle
 /// says: present exactly when the area's content is taller than it.
 /// Returns which areas scrolled, so a run can show it was not vacuous.
