@@ -12443,6 +12443,12 @@ impl Popover {
         matches!(self, Self::MarkMenu | Self::LegendMenu)
     }
 
+    /// Whether it pulls focus in from the page rather than only keeping
+    /// focus that is already inside it.
+    const fn is_modal(self) -> bool {
+        matches!(self, Self::AppMenu | Self::Help)
+    }
+
     /// Opens it as a person would, and returns with focus inside it.
     fn open(self, view: &Entity<Disktree>, cx: &mut Window) {
         match self {
@@ -12475,7 +12481,8 @@ fn popover_holds_focus(
 }
 
 /// Property: while a popover holds focus, Tab and Shift-Tab, in any order
-/// and any number, keep focus inside it and leave it open. GPUI paints a
+/// and any number, keep focus inside it and leave it open. From the page,
+/// Tab enters a modal one and leaves any other alone. GPUI paints a
 /// popover after the rest of the window, so its stops come last in the
 /// window's tab order; without a scope, Tab from its last stop walked
 /// into the page under it. The legend's "+N" menu did exactly that, while
@@ -12510,11 +12517,22 @@ fn tab_never_leaves_the_popover_that_holds_focus(cx: &mut TestAppContext) {
             }
         }
         // Not vacuous: where there are stops, Tab moved between them.
-        assert_eq!(stops.len() > 1, popover.has_several_stops(), "{popover:?}");
+        if popover.has_several_stops() {
+            assert!(stops.len() > 1, "{popover:?} has stops to visit");
+        }
+        // From the page, Tab is pulled into a modal popover; an open menu
+        // does not trap a keyboard that is working elsewhere.
+        let root = read(&view, cx, |app| app.focus.clone());
+        cx.update(|window, cx| window.focus(&root, cx));
+        press(cx, "tab");
+        assert_eq!(
+            popover_holds_focus(popover, &view, cx),
+            popover.is_modal(),
+            "{popover:?}: Tab from the page"
+        );
         // Closed from the page, as after a click there, so the next opens
         // from the page too. (From a focused control, Escape first
         // returns focus to the page.)
-        let root = read(&view, cx, |app| app.focus.clone());
         cx.update(|window, cx| window.focus(&root, cx));
         press(cx, "escape");
         assert!(!read(&view, cx, |app| popover.is_open(app)), "{popover:?}");
