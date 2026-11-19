@@ -78,6 +78,7 @@ async fn only_interactive_user_confirmation_reaches_the_removal_request() {
                     }],
                     space: None,
                     removal_operation: None,
+                    awaiting_approval: None,
                     removal: None,
                     removals: None,
                     tree: None,

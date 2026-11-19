@@ -283,22 +283,95 @@ impl Disktree {
             .map_or(MarkCheck::Allowed, MarkCheck::OverLimit)
     }
 
-    /// Why an agent may not mark `target`, if it may not. An agent is held
-    /// to the limit with no way past it, and to the default one when the
-    /// window's is off: going past it is the person's call, in the window.
+    /// Why an agent may not mark `target`, if it may not: the guards
+    /// refuse it. A mark past the limit is taken, as a request: the
+    /// selection then waits for the person in Review, and no agent can
+    /// preview or remove it (see [`Self::agent_gate`]).
     pub fn agent_mark_refusal(&self, target: &Target) -> Option<String> {
-        if let Some(reason) = self.refusal_of(&target.path) {
-            return Some(reason);
+        self.refusal_of(&target.path)
+    }
+
+    /// Whether an agent marked anything in the current selection.
+    pub fn agent_proposed(&self) -> bool {
+        !self.agent_marked.is_empty()
+            && self
+                .marks
+                .items()
+                .iter()
+                .any(|mark| self.agent_marked.contains(&mark.path))
+    }
+
+    /// Every disk `plan` takes past the agent limit, counted as the worker
+    /// counts. `Some` means only the person can approve it, in Review. A
+    /// disk that cannot be read is `None` here; the preview's own check
+    /// then fails closed.
+    pub fn agent_gate(&self, plan: &Plan) -> Option<Gate> {
+        if self.remote.is_some() || plan.is_empty() {
+            return None;
         }
-        let limit = self.policy().agent_limit();
-        self.over_limit(target, limit).map(|share| {
-            format!(
-                "marking it would put {}% of the volume in the list, over \
-                 the {}% limit; only the person can mark past it, in the \
-                 window",
-                share.percent, share.limit
-            )
+        let (usage, names) = self.usage(plan, false).ok()?;
+        Gate::new(usage, &names, self.policy().agent_limit())
+    }
+
+    /// The marked selection, when it is past the agent limit and so waits
+    /// for the person: what the agent's state reports.
+    pub fn awaiting_approval(&self) -> Option<disktree_link::AwaitingApproval> {
+        if self.tree.is_none() || self.scan.is_some() {
+            return None;
+        }
+        self.awaiting_for(&self.selection_plan())
+    }
+
+    /// `plan`, when it is past the agent limit, as an agent is told it.
+    pub fn awaiting_for(
+        &self,
+        plan: &Plan,
+    ) -> Option<disktree_link::AwaitingApproval> {
+        let gate = self.agent_gate(plan)?;
+        Some(disktree_link::AwaitingApproval {
+            bytes: plan.bytes(),
+            limit_percent: gate.limit,
+            disks: gate
+                .over
+                .iter()
+                .map(|over| disktree_link::OverDisk {
+                    disk: over.name.clone(),
+                    bytes: over.share.bytes,
+                    capacity: over.share.capacity,
+                    percent: over.share.percent,
+                })
+                .collect(),
         })
+    }
+
+    /// The limit Review's second confirmation is past, as Settings ›
+    /// Safety reads in `policy`. An agent's selection is held to the agent
+    /// limit, so with the window's Off Review still asks the person for it.
+    fn review_limit(&self, policy: Policy) -> Option<Limit> {
+        if self.remote.is_some() {
+            return None;
+        }
+        if self.agent_proposed() {
+            return Some(policy.agent_limit());
+        }
+        policy.limit
+    }
+
+    /// What Review asks past the limit. Asking nothing more trusts that
+    /// the person pressed Mark anyway, which no one did for an agent's
+    /// mark: its selection asks for a tick at least.
+    pub fn gate_confirm(&self) -> Confirm {
+        match self.policy().confirm {
+            Confirm::Nothing if self.agent_proposed() => Confirm::Tick,
+            confirm => confirm,
+        }
+    }
+
+    /// An agent changed the marks: what the person confirmed past the
+    /// limit was for the old selection, so Review asks again.
+    pub(crate) fn forget_over_confirmation(&mut self) {
+        self.over_ticked = None;
+        self.over_phrase = None;
     }
 
     /// The notice for a mark refused here; `None` when it was allowed.
@@ -365,14 +438,12 @@ impl Disktree {
         self.disk_cache.borrow_mut().clear();
     }
 
-    /// Every disk the plan takes past the window's limit, for Review's
-    /// second confirmation. `None` with the limit off, over SSH, or when a
-    /// disk cannot be read, where the worker's own check still stands.
+    /// Every disk the plan takes past the window's limit, or an agent's
+    /// selection past the agent limit, for Review's second confirmation.
+    /// `None` with the limit off for the person's own marks, over SSH, or
+    /// when a disk cannot be read, where the worker's own check stands.
     pub fn removal_gate(&self, plan: &Plan) -> Option<Gate> {
-        if self.remote.is_some() {
-            return None;
-        }
-        let limit = self.policy().limit?;
+        let limit = self.review_limit(self.policy())?;
         let (usage, names) = self.usage(plan, false).ok()?;
         Gate::new(usage, &names, limit)
     }
@@ -384,7 +455,7 @@ impl Disktree {
 
     /// Whether the person has confirmed `gate` as Settings asks.
     pub fn gate_met(&self, gate: &Gate, cx: &App) -> bool {
-        match self.policy().confirm {
+        match self.gate_confirm() {
             Confirm::Nothing => true,
             Confirm::Tick => {
                 self.over_ticked.as_ref()
@@ -406,17 +477,16 @@ impl Disktree {
         cx: &App,
     ) -> Result<Ceilings, String> {
         let policy = self.reload_policy()?;
+        let review = self.review_limit(policy);
         // Off still counts against a capacity, so an unknown one fails
-        // closed; it just never says no for size.
-        let base = policy.limit.map_or_else(|| Limit::new(100), Ok)?;
+        // closed; it just never says no for size. An agent's selection is
+        // held to the agent limit wherever the person confirmed nothing.
+        let base = review.map_or_else(|| Limit::new(100), Ok)?;
         let (usage, names) = self.usage(plan, true)?;
-        let gate = policy
-            .limit
-            .filter(|_| self.remote.is_none())
-            .and_then(|limit| Gate::new(usage, &names, limit));
+        let gate = review.and_then(|limit| Gate::new(usage, &names, limit));
         let ceilings = match gate {
             Some(gate) if !self.gate_met(&gate, cx) => {
-                return Err(match policy.confirm {
+                return Err(match self.gate_confirm() {
                     Confirm::Tick => format!(
                         "this removes {}; tick the box to go past the {}% \
                          limit",

@@ -348,12 +348,16 @@ impl Disktree {
                 if self.screen == Screen::Running {
                     return Response::error("a removal is running");
                 }
+                let before = self.marks.items().to_vec();
                 if paths.is_empty() {
                     self.clear_marks(cx);
                 } else {
                     for path in paths {
                         self.unmark(path, cx);
                     }
+                }
+                if self.marks.items() != before {
+                    self.forget_over_confirmation();
                 }
                 self.leave_review_if_empty();
                 self.note_agent(None, "unmarked".to_string());
@@ -586,6 +590,7 @@ impl Disktree {
         if root != self.root_path {
             self.agent_set_root(root, cx);
         }
+        let before = self.marks.items().to_vec();
         let mut marked = 0_usize;
         let mut refused = Vec::new();
         for target in targets {
@@ -634,6 +639,9 @@ impl Disktree {
                 }),
             }
         }
+        if self.marks.items() != before {
+            self.forget_over_confirmation();
+        }
         self.leave_review_if_empty();
         self.note_agent(
             None,
@@ -659,8 +667,8 @@ impl Disktree {
     /// Mark `target` for an agent: like a press of Space, except it never
     /// unmarks, and a path inside a marked directory is left alone rather
     /// than toggled. Err with the reason when it is not marked afterwards:
-    /// the guards refuse it, or it would take the list past the limit,
-    /// which only the person can go past.
+    /// the guards refuse it. A mark past the limit is taken; the selection
+    /// then waits for the person in Review.
     fn agent_mark(&mut self, target: Target) -> Result<(), String> {
         if self.marks.contains(&target.path, PathStyle::Native) {
             return Ok(());
@@ -679,6 +687,7 @@ impl Disktree {
         }
         self.space_baseline = self.space_baseline.or(self.space);
         let path = target.path.clone();
+        self.agent_marked.insert(path.clone());
         self.marks.toggle(target, PathStyle::Native);
         // A directory's mark absorbs the marks inside it, as Space does.
         let inside: Vec<PathBuf> = self
@@ -861,6 +870,11 @@ impl Disktree {
                 .agent
                 .as_ref()
                 .and_then(|agent| agent.removal_operation.clone()),
+            awaiting_approval: if self.screen == Screen::Running {
+                None
+            } else {
+                self.awaiting_approval()
+            },
             removals: self.agent_ledger(),
             tree: self.tree.as_deref().map(|tree| TreeSummary {
                 bytes: tree.root().bytes,

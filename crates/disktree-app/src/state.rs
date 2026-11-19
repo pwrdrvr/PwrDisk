@@ -824,6 +824,12 @@ pub struct Disktree {
     /// The probe's answers for Review's frames; see
     /// [`Self::removal_gate`].
     pub disk_cache: RefCell<crate::mark_guard::DiskCache>,
+    /// Paths an agent marked. A selection holding any of them is the
+    /// agent's request: past the limit Review always asks the person, even
+    /// with Settings › Safety's limit Off or asking nothing more, since
+    /// the person never pressed Mark anyway for it. Never pruned, so an
+    /// undone Unmark all still reads as the agent's.
+    pub agent_marked: std::collections::HashSet<PathBuf>,
     roots_job: Option<disktree_core::remote::RemoteRoots>,
     volume_epoch: u64,
     pub volumes: Vec<disktree_core::space::Volume>,
@@ -1104,6 +1110,7 @@ impl Disktree {
             over_ticked: None,
             disk_probe: crate::mark_guard::disk_of,
             disk_cache: RefCell::default(),
+            agent_marked: std::collections::HashSet::new(),
             roots_job: None,
             volume_epoch: 0,
             volumes: Vec::new(),

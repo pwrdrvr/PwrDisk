@@ -198,6 +198,7 @@ impl Disktree {
             return Err("Nothing is marked".into());
         }
         let limit = crate::safety::load(self.removal_settings_dir.as_deref())?;
+        self.refuse_awaiting_approval(&plan)?;
         let volumes = limit.check(&plan.targets)?;
         self.raw_inspection_ready(&plan.targets)?;
         let nonce = SystemTime::now()
@@ -238,6 +239,18 @@ impl Disktree {
         })
     }
 
+    /// Past the agent limit there is no preview to confirm: the selection
+    /// waits for the person in Review, and the agent is told so. Settings ›
+    /// Safety is read again first, so a limit changed since counts.
+    fn refuse_awaiting_approval(
+        &self,
+        plan: &disktree_core::removal::Plan,
+    ) -> Result<(), String> {
+        self.reload_policy()?;
+        self.awaiting_for(plan)
+            .map_or(Ok(()), |awaiting| Err(awaiting.describe()))
+    }
+
     /// A cache cleanup preview. Without decisions it lists what each path
     /// offers and cannot be confirmed; with one decision per marked path it
     /// is a single-use preview of exactly those steps and their phrase.
@@ -276,6 +289,7 @@ impl Disktree {
         };
         let (plan, volumes) = match &approved {
             Some(approved) => {
+                self.refuse_awaiting_approval(&approved.plan)?;
                 (approved.plan.clone(), limit.check(&approved.plan.targets)?)
             }
             None => (disktree_core::removal::Plan::default(), vec![]),

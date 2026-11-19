@@ -2102,9 +2102,14 @@ impl Session {
                     ),
                     None => String::new(),
                 };
+                let awaiting = state
+                    .awaiting_approval
+                    .as_ref()
+                    .map(|awaiting| format!("{}\n", awaiting.describe()))
+                    .unwrap_or_default();
                 format!(
                     "Window: open on {}{tree}, {} screen{}{} (PwrDisk {}). Its tree is \
-                     what pwrdisk_ls and pwrdisk_find read.\n{}{}",
+                     what pwrdisk_ls and pwrdisk_find read.\n{awaiting}{}{}",
                     self.show(&state.root),
                     state.screen,
                     if state.scanning { ", scanning" } else { "" },
@@ -2163,6 +2168,14 @@ impl Session {
             FilesModeName::Trash => RemovalChoice::Trash,
             FilesModeName::Permanent => RemovalChoice::Permanent,
         });
+        // Past the limit there is nothing to preview: the request is the
+        // person's, in the window. Said as a result, not a failure, so the
+        // agent waits rather than retries; the window refuses regardless.
+        if let Response::State(state) = self.call(&Request::State)?
+            && let Some(awaiting) = &state.awaiting_approval
+        {
+            return Ok(format!("No preview was made. {}", awaiting.describe()));
+        }
         match self.call(&Request::PrepareRemoval {
             mode: params.mode.into(),
             decisions,
@@ -3575,6 +3588,7 @@ mod tests {
                 options: scan.options.clone(),
                 unreadable: 0,
                 removed: Vec::new(),
+                awaiting: None,
             },
         );
         let mut session = Session::detached(socket, None);
@@ -4683,6 +4697,7 @@ mod tests {
                     options: scan.options.clone(),
                     unreadable: 0,
                     removed: Vec::new(),
+                    awaiting: None,
                 },
             );
             let mut session = Session::detached(socket, None);
@@ -4735,6 +4750,9 @@ mod tests {
         /// What a removal since the scan took, with its scanned bytes: the
         /// window keeps it in the tree and flags it, as the app does.
         removed: Vec<(PathBuf, u64)>,
+        /// Marks past the agent limit wait for the person, as the app
+        /// reports them; `None` answers within it.
+        awaiting: Option<disktree_link::AwaitingApproval>,
     }
 
     #[cfg(any(unix, windows))]
@@ -4750,6 +4768,7 @@ mod tests {
             options: apparent(),
             unreadable: 0,
             removed: vec![],
+            awaiting: None,
         };
         // State reads expose the same recorded scan and removal events. The
         // independent timeline catches clock reads even within one second.
@@ -4822,6 +4841,9 @@ mod tests {
                 marks: self.marks.clone(),
                 space: None,
                 removal_operation: None,
+                awaiting_approval: (!self.marks.is_empty())
+                    .then(|| self.awaiting.clone())
+                    .flatten(),
                 removal: Some(Removal {
                     mode: "trash".into(),
                     removed: 2,
@@ -5022,6 +5044,7 @@ mod tests {
                 options: apparent(),
                 unreadable: 0,
                 removed: Vec::new(),
+                awaiting: None,
             };
             Self::with_tree(socket, fake)
         }
@@ -5103,6 +5126,7 @@ mod tests {
                 options: ScanOptions::default(),
                 unreadable: 0,
                 removed: Vec::new(),
+                awaiting: None,
             },
         );
         let paths: Vec<_> = scan
@@ -5212,6 +5236,7 @@ mod tests {
                 options: apparent(),
                 unreadable: 0,
                 removed: Vec::new(),
+                awaiting: None,
             },
         );
         let mut session = Session::detached(socket, None);
@@ -5238,6 +5263,92 @@ mod tests {
                 .iter()
                 .all(|r| matches!(r, Request::Hello { .. }))
         );
+    }
+
+    /// Past the agent limit the window takes the marks as a request for
+    /// the person. Each result the agent reads (the mark, Review, status
+    /// and a preview attempt) says it awaits human approval in PwrDisk,
+    /// with the selection's size and the limit, and the window is never
+    /// asked for a preview or a removal, so there is nothing to confirm.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_selection_past_the_limit_reads_as_awaiting_human_approval() {
+        let temp = fixture();
+        let root = temp.path().canonicalize().expect("root");
+        let socket_dir = tempfile::TempDir::new().expect("socket dir");
+        let socket = endpoint(socket_dir.path());
+        let window = FakeWindow::with_tree(
+            &socket,
+            FakeTree {
+                protocol: VERSION,
+                root: root.clone(),
+                tree: Arc::new(
+                    disktree_core::scan::scan(&root, apparent()).expect("scan"),
+                ),
+                marks: vec![],
+                remote: None,
+                busy: false,
+                options: apparent(),
+                unreadable: 0,
+                removed: Vec::new(),
+                awaiting: Some(disktree_link::AwaitingApproval {
+                    bytes: 300_000,
+                    limit_percent: 5,
+                    disks: vec![disktree_link::OverDisk {
+                        disk: "/Volumes/Fixture".into(),
+                        bytes: 300_000,
+                        capacity: 1_000_000,
+                        percent: 30,
+                    }],
+                }),
+            },
+        );
+        let mut session = Session::detached(socket, None);
+        let marked = session
+            .mark(&PathsParams {
+                paths: vec![root.join("src/app/target")],
+            })
+            .expect("taken as a request");
+        let review = session.review().expect("review");
+        let status = session.status();
+        for text in [&marked, &review, &status] {
+            assert!(
+                text.contains("Awaiting human approval in PwrDisk"),
+                "{text}"
+            );
+            assert!(text.contains("(293 KiB)"), "{text}");
+            assert!(
+                text.contains("over the 5% per-operation removal limit"),
+                "{text}"
+            );
+            assert!(text.contains("30% of /Volumes/Fixture"), "{text}");
+            assert!(text.contains("nothing has been removed"), "{text}");
+        }
+        for mode in [RemovalModeName::Trash, RemovalModeName::Permanent] {
+            let preview = session
+                .removal_preview(&RemovalPreviewParams {
+                    mode,
+                    decisions: None,
+                    delete_files_mode: None,
+                })
+                .expect("a pending result, not a failure");
+            assert!(
+                preview.starts_with(
+                    "No preview was made. Awaiting human approval"
+                ),
+                "{preview}"
+            );
+            assert!(session.pending_removal.is_none(), "nothing to confirm");
+        }
+        assert!(
+            !window.asked().iter().any(|request| matches!(
+                request,
+                Request::PrepareRemoval { .. } | Request::Remove(_)
+            )),
+            "{:?}",
+            window.asked()
+        );
+        assert!(root.join("src/app/target/debug/app").exists());
     }
 
     #[cfg(any(unix, windows))]
@@ -5269,6 +5380,7 @@ mod tests {
                     },
                     unreadable,
                     removed: Vec::new(),
+                    awaiting: None,
                 },
             );
             let mut session = Session::detached(socket, None);
@@ -5347,6 +5459,7 @@ mod tests {
                         options: apparent(),
                         unreadable: 0,
                         removed: Vec::new(),
+                        awaiting: None,
                     },
                 )
             });
@@ -5961,6 +6074,7 @@ mod tests {
             options: apparent(),
             unreadable: 0,
             removed: Vec::new(),
+            awaiting: None,
         };
         fake.removed = vec![(temp.path().join(".cache/pip"), 400_000)];
         let _window = FakeWindow::with_tree(&socket, fake);

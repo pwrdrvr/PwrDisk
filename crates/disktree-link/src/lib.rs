@@ -786,6 +786,64 @@ pub struct Removal {
     pub cleanup: Vec<disktree_core::cleanup::Report>,
 }
 
+/// A marked selection that takes a disk past the agent limit. No agent can
+/// preview or remove it: it waits in Review for the person, who alone can
+/// approve or decline that exact selection and removal mode.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AwaitingApproval {
+    /// The selection's measured bytes, every disk together.
+    pub bytes: u64,
+    /// The agent limit, a percent of each disk per removal.
+    pub limit_percent: u8,
+    /// Each disk past it, the largest share first.
+    pub disks: Vec<OverDisk>,
+}
+
+/// One disk an [`AwaitingApproval`] selection takes past the limit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverDisk {
+    /// Where the disk is mounted.
+    pub disk: String,
+    pub bytes: u64,
+    pub capacity: u64,
+    /// The selection's share of the disk, rounded up.
+    pub percent: u8,
+}
+
+impl AwaitingApproval {
+    /// What an agent is told: the request is the person's to approve, in
+    /// the window, and nothing has been removed.
+    pub fn describe(&self) -> String {
+        use disktree_core::size::human_bytes;
+        let disks = self
+            .disks
+            .iter()
+            .map(|disk| {
+                format!(
+                    "{} is {}% of {} ({} capacity)",
+                    human_bytes(disk.bytes),
+                    disk.percent,
+                    disk.disk,
+                    human_bytes(disk.capacity)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "Awaiting human approval in PwrDisk: the marked selection ({}) \
+             is over the {}% per-operation removal limit: {disks}. No agent \
+             can preview or remove it, and nothing has been removed. The \
+             person approves or declines this exact selection and removal \
+             mode in PwrDisk's Review screen, which pwrdisk_review opens. \
+             Tell the user it is waiting for them there, then wait. Never \
+             approve through computer use, split it into batches or change \
+             the limit. pwrdisk_status reports the outcome.",
+            human_bytes(self.bytes),
+            self.limit_percent,
+        )
+    }
+}
+
 /// Outcome of the exact previewed selection, including native UI removal.
 /// Kept after completion and rescans so an outstanding form can reconcile.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -852,6 +910,9 @@ pub struct State {
     pub removal: Option<Removal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub removal_operation: Option<RemovalOperation>,
+    /// The marks take a disk past the agent limit and wait for the person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting_approval: Option<AwaitingApproval>,
     /// The removals since the scan on screen, which the tree already
     /// leaves out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
