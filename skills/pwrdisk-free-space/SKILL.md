@@ -202,11 +202,12 @@ marking and removal-confirmation rules still apply.
   and refuses an operation with unknown capacity or unreadable selection.
   Do not raise the setting, split a selection into batches, or retry an
   ambiguous result to evade the guard. Ask the user how to proceed.
-  A linked window refuses a mark that would take the list past the limit,
-  and removal checks it again; only the person can go past it, in the
-  window, and agents keep the 5% default even when the window's limit is
-  off. Without a window, marks are checked when they reach one, so a mark
-  that succeeds then may still be refused.
+  Past the limit a linked window takes the marks as a request: results
+  and `pwrdisk_status` say it is awaiting human approval, with its size
+  and the limit, and no preview is made. Only the person can approve
+  that exact selection and mode, in the window's Review, which
+  `pwrdisk_review` opens; tell them it is waiting and wait. Agents keep
+  the 5% default even when the window's limit is off.
 - **The guards are not your safety net.** `pwrdisk_mark` refuses the home
   directory, mount points, the scanned root, system trees and a user
   profile, and says why. Anything else it will mark. You decide what to

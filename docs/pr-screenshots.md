@@ -125,6 +125,10 @@ Setup hooks are `legend` with a `kind` (the core category name, such as
 POSIX fixture `path`, `crumb_menu` with the `path` of a directory to go into
 and open its crumb's sibling menu, and `review`, `file_list`, `help` or
 `chooser` without arguments.
+`agent_mark` with a `path` marks it as a linked agent's request does,
+through the window's agent handling with no link; past the limit it waits
+in Review as the agent's request, and `scripts/screenshots/agent-request.json`
+captures that gate.
 `legend` cycles that category as a click does. Marks obey the normal guards
 and capacity limit; a refused mark fails the scenario. Setup does not
 confirm removal. Never use clicks to approve removal, open the source

@@ -13185,7 +13185,8 @@ fn an_agent_removal_stays_at_the_agent_limit_with_the_windows_off(
 
     // Since the preview, `junk` has become 30% of its disk: a pretend
     // 1 MB disk stands in for growth the fixture cannot make on a real
-    // one. The person's removal would be allowed, the agent's is not.
+    // one. Even the person's removal of the agent's selection now asks
+    // in Review, and the agent's is refused.
     update(&view, cx, |app, cx| {
         app.disk_probe = |_| {
             Ok(crate::mark_guard::Disk {
@@ -13195,8 +13196,8 @@ fn an_agent_removal_stays_at_the_agent_limit_with_the_windows_off(
             })
         };
         let plan = app.plan();
-        let person = app.removal_limit(&plan, cx).expect("Off allows it");
-        assert_eq!(person.of("disk").percent(), 100);
+        let person = app.removal_limit(&plan, cx).expect_err("Review asks");
+        assert!(person.contains("past the 5% limit"), "{person}");
         let refused = app.agent_removal_limit(&plan).expect_err("held to 5%");
         assert!(refused.contains("5% per-operation"), "{refused}");
     });
@@ -13210,10 +13211,13 @@ fn an_agent_removal_stays_at_the_agent_limit_with_the_windows_off(
             confirmation: preview.mode.confirmation().into(),
         }),
     );
+    // The fresh check before the worker refuses it first: grown past the
+    // limit, the selection is now the person's to approve.
     assert!(
         matches!(
             removed,
-            Response::Error { ref message } if message.contains("did not start")
+            Response::Error { ref message }
+                if message.contains("Awaiting human approval")
         ),
         "{removed:?}"
     );
@@ -13222,6 +13226,262 @@ fn an_agent_removal_stays_at_the_agent_limit_with_the_windows_off(
         assert!(app.run.is_none());
     });
     assert!(root.join("junk/blob.bin").exists(), "nothing removed");
+}
+
+/// An agent's selection past the limit is taken as a request, not refused:
+/// the window says it awaits the person, no agent can preview or remove
+/// it, and Review shows whose it is, its size and the limit. Back and the
+/// permanent dialog's Cancel leave every file in place; only the person's
+/// typed approval of this selection and mode removes it, and a change to
+/// the marks since the phrase was typed voids it.
+#[cfg(any(unix, windows))]
+#[gpui_kit::test]
+fn an_agent_request_past_the_limit_waits_for_the_persons_approval(
+    cx: &mut TestAppContext,
+) {
+    use disktree_link::{
+        ConfirmedRemoval, MarkRequest, RemovalChoice, Request, Response,
+    };
+
+    cx.update(init);
+    let temp = fixture();
+    let root = temp.path().to_path_buf();
+    let (view, cx, _) = over_limit_view(temp.path(), cx);
+    let sockets = socket_dir();
+    let mut link = Some(link_agent(&view, sockets.path(), cx));
+    let mut ask = |cx: &mut Window, request: Request| -> Response {
+        ask_over(&view, &mut link, cx, request)
+    };
+    let hello = ask(
+        cx,
+        Request::Hello {
+            client: "Claude Code".into(),
+            version: disktree_link::VERSION,
+        },
+    );
+    assert!(matches!(hello, Response::State(_)), "{hello:?}");
+    let mark = |path: &str| Request::Mark {
+        root: root.clone(),
+        targets: vec![MarkRequest {
+            path: root.join(path),
+            bytes: 0,
+            is_dir: true,
+        }],
+    };
+
+    let Response::Marked { state, refused } = ask(cx, mark("junk")) else {
+        panic!("marks are answered with the marks taken");
+    };
+    assert_eq!(refused, [], "past the limit is a request, not a refusal");
+    assert_eq!(state.marks.len(), 1);
+    let awaiting = state.awaiting_approval.expect("awaits the person");
+    assert_eq!(awaiting.limit_percent, 5);
+    assert_eq!(awaiting.bytes, 300_000);
+    assert_eq!(awaiting.disks.len(), 1);
+    assert_eq!(
+        (awaiting.disks[0].disk.as_str(), awaiting.disks[0].percent),
+        ("/", 30)
+    );
+
+    // No agent route: no preview in either mode, and a removal without one
+    // is refused.
+    for mode in [RemovalChoice::Trash, RemovalChoice::Permanent] {
+        let refused = ask(
+            cx,
+            Request::PrepareRemoval {
+                mode,
+                decisions: None,
+                files: None,
+            },
+        );
+        assert!(
+            matches!(
+                refused,
+                Response::Error { ref message }
+                    if message.contains("Awaiting human approval")
+                        && message.contains("5% per-operation")
+            ),
+            "{refused:?}"
+        );
+    }
+    let forged = ask(
+        cx,
+        Request::Remove(ConfirmedRemoval {
+            rescan: false,
+            preview_id: "forged".into(),
+            mode: RemovalChoice::Permanent,
+            paths: vec![root.join("junk")],
+            confirmation: RemovalChoice::Permanent.confirmation().into(),
+        }),
+    );
+    assert!(
+        matches!(
+            forged,
+            Response::Error { ref message }
+                if message.contains("No unused removal preview")
+        ),
+        "{forged:?}"
+    );
+
+    // Review presents it in the window, saying whose it is.
+    assert_eq!(ask(cx, Request::Review), Response::Ok);
+    update(&view, cx, |app, _| {
+        app.removal_mode = RemovalMode::Permanent;
+    });
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Review);
+    assert!(cx.debug_bounds("over-limit-gate").is_some());
+    assert!(cx.debug_bounds("over-limit-agent").is_some());
+    press(cx, "enter");
+    read(&view, cx, |app| {
+        assert!(!app.confirm_open && app.run.is_none(), "not approved");
+    });
+
+    // Declining: Back leaves everything in place.
+    click_on(cx, "back");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Explore);
+    assert!(root.join("junk/blob.bin").exists());
+
+    // A phrase typed for the old selection is void once the agent changes
+    // it, even back to the same share. The field is emptied in place, so
+    // a person typing in it keeps it.
+    assert_eq!(ask(cx, Request::Review), Response::Ok);
+    click_on(cx, "over-limit-phrase");
+    cx.simulate_input("delete 30% of my disk");
+    draw(cx);
+    assert!(cx.debug_bounds("over-limit-matched").is_some());
+    let field = read(&view, cx, |app| {
+        app.over_phrase.as_ref().map(Entity::entity_id)
+    });
+    ask(cx, mark("keep"));
+    update(&view, cx, |app, cx| {
+        let plan = app.plan();
+        let gate = app.removal_gate(&plan).expect("still past the limit");
+        assert!(!app.gate_met(&gate, cx), "void before the next frame");
+    });
+    ask(
+        cx,
+        Request::Unmark {
+            paths: vec![root.join("keep")],
+        },
+    );
+    assert_eq!(ask(cx, Request::Review), Response::Ok);
+    assert!(cx.debug_bounds("over-limit-matched").is_none());
+    update(&view, cx, |app, cx| {
+        let input = app.over_phrase.as_ref().expect("the field");
+        assert_eq!(Some(input.entity_id()), field, "the same field");
+        assert_eq!(input.read(cx).value().to_string(), "");
+    });
+
+    // Cancelling the permanent dialog leaves everything in place too.
+    click_on(cx, "over-limit-phrase");
+    cx.simulate_input("delete 30% of my disk");
+    draw(cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert!(read(&view, cx, |app| app.confirm_open));
+    press(cx, "escape");
+    read(&view, cx, |app| {
+        assert!(!app.confirm_open && app.run.is_none());
+    });
+    assert!(root.join("junk/blob.bin").exists());
+
+    // The person's approval removes exactly what was shown.
+    update(&view, cx, |app, cx| app.commit(false, cx));
+    draw(cx);
+    assert!(read(&view, cx, |app| app.confirm_open));
+    press(cx, "enter");
+    assert_eq!(read(&view, cx, |app| app.screen), Screen::Running);
+    let epoch = read(&view, cx, |app| app.run_epoch);
+    let mut finished = false;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        finished = update(&view, cx, |app, cx| {
+            app.poll_removal_once(epoch, cx);
+            app.screen == Screen::Done
+        });
+        if finished {
+            break;
+        }
+    }
+    assert!(finished, "the removal finished");
+    assert!(!root.join("junk").exists());
+    assert!(root.join("keep/notes.txt").exists());
+    let Response::State(state) = ask(cx, Request::State) else {
+        panic!("state");
+    };
+    assert_eq!(state.awaiting_approval, None);
+    assert!(state.removal.is_some_and(|removal| removal.removed == 1));
+}
+
+/// Safety settings relaxed for the person's own marks do not relax an
+/// agent's request: with the limit Off and nothing more asked past it,
+/// the person's mark goes without a gate, but an agent's mark of the same
+/// path asks for a tick at the agent limit, and the worker is held to the
+/// share ticked for that disk and to the agent limit everywhere else.
+#[gpui_kit::test]
+fn an_agent_request_asks_the_person_even_with_safety_relaxed(
+    cx: &mut TestAppContext,
+) {
+    use crate::safety::{Confirm, save_confirm, save_limit};
+    use disktree_link::{MarkRequest, Request};
+
+    cx.update(init);
+    let temp = fixture();
+    let root = temp.path().to_path_buf();
+    let settings = tempfile::TempDir::new().expect("settings");
+    save_limit(Some(settings.path()), None).expect("off");
+    save_confirm(Some(settings.path()), Confirm::Nothing).expect("nothing");
+    let (view, cx, junk) = over_limit_view(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        app.removal_settings_dir = Some(settings.path().to_path_buf());
+        app.safety_policy.replace(None);
+        app.removal_mode = RemovalMode::Permanent;
+
+        // The person's own mark: Off asks nothing more.
+        app.toggle_mark_checked(&junk, true, cx);
+        let plan = app.plan();
+        assert_eq!(app.removal_gate(&plan), None);
+        assert_eq!(app.gate_confirm(), Confirm::Nothing);
+        app.clear_marks(cx);
+
+        // The agent's mark of the same path asks for a tick.
+        let mark = |path: &str| Request::Mark {
+            root: root.clone(),
+            targets: vec![MarkRequest {
+                path: root.join(path),
+                bytes: 0,
+                is_dir: true,
+            }],
+        };
+        app.answer_agent(&mark("junk"), cx);
+        assert!(app.agent_proposed());
+        let plan = app.plan();
+        let gate = app.removal_gate(&plan).expect("the agent's request");
+        assert_eq!((gate.limit, gate.percents()), (5, vec![30]));
+        assert_eq!(app.gate_confirm(), Confirm::Tick);
+        let refused = app.removal_limit(&plan, cx).expect_err("unticked");
+        assert!(refused.contains("tick the box"), "{refused}");
+
+        app.over_ticked = Some(gate.ticked(app.removal_mode));
+        let ceilings = app.removal_limit(&plan, cx).expect("ticked");
+        assert_eq!(ceilings.of("disk").percent(), 30);
+        assert_eq!(ceilings.of("elsewhere").percent(), 5);
+
+        // The agent adding to the selection voids the tick.
+        app.answer_agent(&mark("keep"), cx);
+        assert_eq!(app.over_ticked, None);
+        let plan = app.plan();
+        assert!(app.removal_limit(&plan, cx).is_err());
+
+        // Unmarked and marked again by the person, it is the person's.
+        app.clear_marks(cx);
+        app.toggle_mark_checked(&junk, true, cx);
+        assert!(!app.agent_proposed());
+        assert_eq!(app.removal_gate(&app.plan()), None);
+    });
+    assert!(root.join("junk/blob.bin").exists());
+    assert!(root.join("keep/notes.txt").exists());
 }
 
 /// Settings › Safety relaxes the window, never an agent: Off gives the
@@ -13291,11 +13551,13 @@ fn safety_settings_relax_the_window_but_never_an_agent(
     assert!(cx.debug_bounds("inspector-mark-more").is_none());
     assert!(cx.debug_bounds("mark-guard").is_none());
     update(&view, cx, |app, _| {
+        // An agent's mark is taken as a request, but its selection is
+        // still past the agent limit, where only the person can approve.
         let target = app.target_at(&junk).expect("junk");
-        assert!(
-            app.agent_mark_refusal(&target)
-                .is_some_and(|reason| reason.contains("5% limit"))
-        );
+        assert_eq!(app.agent_mark_refusal(&target), None);
+        let plan = disktree_core::removal::plan(&[target], &app.root_path);
+        let gate = app.agent_gate(&plan).expect("held to 5%");
+        assert_eq!(gate.limit, 5);
     });
     press(cx, "space");
     assert_eq!(read(&view, cx, |app| app.marks.len()), 1);

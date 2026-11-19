@@ -821,12 +821,22 @@ pub struct Disktree {
     /// "20% of this disk, to the trash", and means nothing once any of it
     /// changes.
     pub over_ticked: Option<crate::mark_guard::Ticked>,
+    /// The phrase field holds text typed for a selection an agent has
+    /// changed since: it confirms nothing, and is emptied at the next
+    /// frame.
+    pub over_phrase_stale: bool,
     /// How Review finds the disk a marked path is on. A field so a test
     /// can stand in two disks where its fixture has one.
     pub disk_probe: crate::mark_guard::DiskProbe,
     /// The probe's answers for Review's frames; see
     /// [`Self::removal_gate`].
     pub disk_cache: RefCell<crate::mark_guard::DiskCache>,
+    /// Paths an agent marked. A selection holding any of them is the
+    /// agent's request: past the limit Review always asks the person, even
+    /// with Settings › Safety's limit Off or asking nothing more, since
+    /// the person never pressed Mark anyway for it. Never pruned, so an
+    /// undone Unmark all still reads as the agent's.
+    pub agent_marked: std::collections::HashSet<PathBuf>,
     roots_job: Option<disktree_core::remote::RemoteRoots>,
     volume_epoch: u64,
     pub volumes: Vec<disktree_core::space::Volume>,
@@ -1119,8 +1129,10 @@ impl Disktree {
             mark_anyway_focus: cx.focus_handle().tab_stop(true),
             over_phrase: None,
             over_ticked: None,
+            over_phrase_stale: false,
             disk_probe: crate::mark_guard::disk_of,
             disk_cache: RefCell::default(),
+            agent_marked: std::collections::HashSet::new(),
             roots_job: None,
             volume_epoch: 0,
             volumes: Vec::new(),
@@ -3299,6 +3311,8 @@ impl Disktree {
         let path = target.path.clone();
         let style = self.path_style();
         if self.marks.toggle(target, self.path_style()) {
+            // The person's own mark now, whoever marked it before.
+            self.agent_marked.remove(&path);
             self.space_baseline = self.space_baseline.or(self.space);
             let inside = self.marks.absorb(&path, style);
             if inside > 0 {

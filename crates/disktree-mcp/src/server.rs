@@ -100,8 +100,9 @@ anything. No fallback from Trash to permanent deletion; no headless or SSH \
 removal. Refusal, changed scan/marks/policy or expiration requires a new \
 preview and user confirmation. Never retry removal automatically, split \
 batches, change the limit, or use shell/UI deletion to bypass protection. \
-A window refuses a mark past the limit, including marks made before it \
-was linked; only the person can mark past it, in the window. \
+A window takes a mark past the limit as a request awaiting human \
+approval: no preview is made for it, and only the person can approve \
+that exact selection and mode, in the window's Review. \
 pwrdisk_status reports completion, failures and measured freed space. \
 A linked window's tree and marks are the source of truth. Read \
 skill://pwrdisk-free-space/SKILL.md and the matching references/macos.md, \
@@ -438,9 +439,9 @@ impl Server {
     /// keep back and why (the home directory, an account's folder, a mount
     /// point, a system tree), what is covered by another mark, and
     /// scan-derived reclaim bounds before retention. These are not
-    /// guaranteed recovered space. A linked window refuses a mark that
-    /// would take the list past the capacity limit; only the person can
-    /// mark past it, in the window.
+    /// guaranteed recovered space. Past the capacity limit a linked window
+    /// takes the marks as a request awaiting human approval: no agent can
+    /// preview or remove it, and only the person approves it, in Review.
     #[tool(
         name = "pwrdisk_mark",
         annotations(

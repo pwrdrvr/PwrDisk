@@ -415,6 +415,25 @@ fn setup(
                         app.select(Some(crumbs), cx);
                     }
                 }
+                State::AgentMark { path } => {
+                    // The window's own handling of an agent's mark, with
+                    // no link: the guards still refuse, and past the
+                    // limit the mark waits for the person in Review.
+                    let path_in_tree = app.root_path.join(path);
+                    let request = disktree_link::Request::Mark {
+                        root: app.root_path.clone(),
+                        targets: vec![disktree_link::MarkRequest {
+                            path: path_in_tree.clone(),
+                            bytes: 0,
+                            is_dir: true,
+                        }],
+                    };
+                    app.answer_agent(&request, cx);
+                    ensure!(
+                        app.marks.contains(&path_in_tree, app.path_style()),
+                        "fixture agent mark was refused: {path}"
+                    );
+                }
                 State::CrumbMenu { path } => {
                     let crumbs = app
                         .crumbs_for_path(&app.root_path.join(path))

@@ -6712,10 +6712,9 @@ fn review_summary(
                         .child(explanation),
                 ),
         )
-        .children(
-            app.removal_gate(plan)
-                .map(|gate| over_limit_gate(app, &gate, theme, window, cx)),
-        )
+        .children(app.removal_gate(plan).map(|gate| {
+            over_limit_gate(app, &gate, plan.bytes(), theme, window, cx)
+        }))
         .child(
             div()
                 .flex()
@@ -6936,17 +6935,33 @@ fn export_menu(app: &Disktree, cx: &Context<'_, Disktree>) -> impl IntoElement {
 
 /// Past the limit, Review asks again before the commit button wakes: each
 /// disk past it with its share against the limit, then the phrase to type
-/// or the box to tick that Settings › Safety picked.
+/// or the box to tick that Settings › Safety picked. An agent's selection
+/// says whose it is and its size: no agent can remove it, so it waits
+/// here for the person.
 fn over_limit_gate(
     app: &Disktree,
     gate: &Gate,
+    selected: u64,
     theme: &Theme,
     window: &Window,
     cx: &mut Context<'_, Disktree>,
 ) -> Stateful<Div> {
     let phrase = app.gate_phrase(gate);
-    let policy = app.policy();
-    let ask: AnyElement = match policy.confirm {
+    let agent = app.agent_proposed().then(|| {
+        div()
+            .debug_selector(|| "over-limit-agent".into())
+            .text_size(text::CAPTION)
+            .text_color(theme.foreground)
+            .child(format!(
+                "An agent asked to remove this selection, {}, past the {}% \
+                 limit. It cannot remove it: nothing goes unless you approve \
+                 this exact selection and mode here. Back or Unmark leaves \
+                 every file in place.",
+                human_bytes(selected),
+                gate.limit
+            ))
+    });
+    let ask: AnyElement = match app.gate_confirm() {
         Confirm::Nothing => div()
             .text_size(text::CAPTION)
             .text_color(theme.foreground)
@@ -7080,6 +7095,7 @@ fn over_limit_gate(
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(heading),
         )
+        .children(agent)
         .children(
             gate.over
                 .iter()

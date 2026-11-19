@@ -73,6 +73,9 @@ impl Policy {
 }
 
 /// The limit an agent's removal is held to; see [`Policy::agent_limit`].
+/// Removal reads it through [`crate::state::Disktree::reload_policy`],
+/// which keeps the window's copy current; tests read it here.
+#[cfg(test)]
 pub fn load(dir: Option<&Path>) -> Result<Limit, String> {
     load_policy(dir).map(Policy::agent_limit)
 }
