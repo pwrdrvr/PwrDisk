@@ -2031,6 +2031,199 @@ fn settings_pane(cx: &mut VisualTestContext) -> Option<crate::settings::Pane> {
     })
 }
 
+/// Count entries into the app-level path and cut off a repeat. The old
+/// forwarding loop drains effects synchronously, so a GPUI timer cannot
+/// stop it once dispatch starts.
+fn count_menu_fallbacks<A: gpui_kit::Action>(
+    cx: &mut gpui_kit::App,
+    attempts: &std::rc::Rc<std::cell::Cell<u32>>,
+    limit: u32,
+) {
+    let attempts = attempts.clone();
+    cx.on_action(move |_: &A, cx| {
+        attempts.set(attempts.get() + 1);
+        if attempts.get() <= limit {
+            cx.propagate();
+        }
+    });
+}
+
+fn dispatch_menu_action(cx: &mut Window, action: Box<dyn gpui_kit::Action>) {
+    // Use the same app entry point as the native menu once the harness
+    // releases its mutable borrow of the main window.
+    cx.update(|_, cx| cx.defer(move |cx| cx.dispatch_action(action.as_ref())));
+}
+
+#[gpui_kit::test]
+fn menu_actions_reach_the_main_window_with_missing_focus(
+    cx: &mut TestAppContext,
+) {
+    use crate::app_menu as menu;
+
+    cx.update(init);
+    let attempts = std::rc::Rc::new(std::cell::Cell::new(0));
+    let actions = cx.update(|cx| {
+        menu::install(cx);
+        macro_rules! watch {
+            ($($action:ident),+ $(,)?) => {{
+                $(count_menu_fallbacks::<menu::$action>(cx, &attempts, 1);)+
+                let actions: Vec<Box<dyn gpui_kit::Action>> =
+                    vec![$(Box::new(menu::$action)),+];
+                actions
+            }};
+        }
+        watch![
+            Rescan,
+            SaveUsageReport,
+            OpenFolder,
+            ChooseSource,
+            ShowInFinder,
+            GoBack,
+            GoForward,
+            ShowExplore,
+            ShowReview,
+            ShowTreemap,
+            ShowFileList,
+            ShowKeyboardShortcuts,
+            ConnectAgent,
+        ]
+    });
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    let focus = read(&view, cx, |app| app.focus.clone());
+    let stale = cx.update(|_, cx| cx.focus_handle());
+    let mut failures = Vec::new();
+    for (focus_state, missing) in [("unfocused", None), ("stale", Some(&stale))]
+    {
+        for action in &actions {
+            // Review and its help overlay allow the root listeners to
+            // consume actions without starting scans or opening Finder.
+            update(&view, cx, |app, state| {
+                app.screen = Screen::Review;
+                app.show_help = true;
+                state.notify();
+            });
+            draw(cx);
+            cx.update(|window, cx| {
+                window.activate_window();
+                if let Some(missing) = missing {
+                    window.focus(missing, cx);
+                } else {
+                    window.blur(cx);
+                }
+                assert_eq!(window.focused(cx).as_ref(), missing);
+                assert!(!window.is_action_available(action.as_ref(), cx));
+                assert!(window.is_action_available_in(action.as_ref(), &focus));
+            });
+            attempts.set(0);
+            dispatch_menu_action(cx, action.boxed_clone());
+            // Every action has a root listener and should leave app-level
+            // dispatch after its first forwarding attempt.
+            if attempts.get() != 1 {
+                failures.push((action.name(), focus_state, attempts.get()));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "unexpected fallback counts: {failures:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn menu_rescan_starts_once_from_the_unfocused_main_and_auxiliary_windows(
+    cx: &mut TestAppContext,
+) {
+    use crate::app_menu::Rescan;
+
+    cx.update(init);
+    let attempts = std::rc::Rc::new(std::cell::Cell::new(0));
+    cx.update(|cx| {
+        crate::app_menu::install(cx);
+        count_menu_fallbacks::<Rescan>(cx, &attempts, 1);
+    });
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    let windows = cx.update(|window, cx| {
+        window.blur(cx);
+        assert!(window.focused(cx).is_none());
+        [
+            ("main", window.window_handle()),
+            (
+                "Settings",
+                crate::settings::open_window(
+                    crate::settings::Pane::General,
+                    cx,
+                )
+                .expect("Settings")
+                .into(),
+            ),
+            (
+                "Help",
+                crate::doc_window::open_window(
+                    crate::doc_window::Doc::Changelog,
+                    cx,
+                )
+                .expect("Help document")
+                .into(),
+            ),
+            (
+                "Logs",
+                crate::logs_window::open_window(None, None, cx)
+                    .expect("Logs")
+                    .into(),
+            ),
+        ]
+    });
+
+    let mut failures = Vec::new();
+    for (source, handle) in windows {
+        cx.update(|_, cx| {
+            cx.defer(move |cx| {
+                handle
+                    .update(cx, |_, window, cx| {
+                        window.draw(cx).clear(cx);
+                        window.activate_window();
+                    })
+                    .expect("activate the source window");
+                assert_eq!(cx.active_window(), Some(handle));
+            });
+        });
+        let epoch = read(&view, cx, |app| app.scan_epoch);
+        attempts.set(0);
+        dispatch_menu_action(cx, Box::new(Rescan));
+        if attempts.get() != 1
+            || read(&view, cx, |app| app.scan_epoch) != epoch + 1
+        {
+            failures.push(source);
+        } else {
+            finish_scan(&view, cx);
+        }
+    }
+    assert!(failures.is_empty(), "Rescan failed from {failures:?}");
+}
+
+#[gpui_kit::test]
+fn unhandled_menu_action_is_forwarded_at_most_once(cx: &mut TestAppContext) {
+    #[derive(Clone, Debug, Default, Eq, PartialEq, gpui_kit::Action)]
+    #[action(namespace = menu_forwarding_test)]
+    struct UnhandledMenuAction;
+    cx.update(init);
+    let attempts = std::rc::Rc::new(std::cell::Cell::new(0));
+    cx.update(|cx| {
+        crate::app_menu::forward_to_main::<UnhandledMenuAction>(cx);
+        count_menu_fallbacks::<UnhandledMenuAction>(cx, &attempts, 2);
+    });
+    let temp = fixture();
+    let (_, cx) = view_over(temp.path(), cx);
+    draw(cx);
+    cx.update(gpui_kit::Window::blur);
+    dispatch_menu_action(cx, Box::new(UnhandledMenuAction));
+    // One app dispatch and one unhandled dispatch from the main window.
+    assert_eq!(attempts.get(), 2);
+}
+
 /// Opens one overlay, for the cases of `overlays_fit_a_short_window`.
 type OpenOverlay = fn(&mut Disktree);
 

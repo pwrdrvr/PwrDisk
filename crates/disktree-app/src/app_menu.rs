@@ -10,7 +10,12 @@
 //! one dropdown (`views::app_menu_dropdown`). Design: "Menus and Help
 //! Windows" in the PwrDisk Claude Design project, turns 1 and 2.
 
-use gpui_kit::{App, KeyBinding, Keystroke, Menu, MenuItem, SystemMenuType};
+use std::{cell::Cell, rc::Rc};
+
+use gpui_kit::{
+    Action, AnyWindowHandle, App, KeyBinding, Keystroke, Menu, MenuItem,
+    SystemMenuType,
+};
 
 use crate::{help, settings};
 
@@ -223,18 +228,31 @@ const MAIN_WINDOW_ACTIONS: [fn(&mut App); 13] = [
     |cx| forward_to_main::<ConnectAgent>(cx),
 ];
 
-/// An app-level fallback for `A`: it only runs when no element in the
-/// window in front handled it, which is when that window is not the main
-/// one.
-fn forward_to_main<A: gpui_kit::Action + Default>(cx: &mut App) {
-    cx.on_action(|_: &A, cx| {
-        cx.defer(|cx| {
+/// Forward an unhandled menu action to the main window's root listener.
+pub fn forward_to_main<A: Action>(cx: &mut App) {
+    let forwarding = Rc::new(Cell::new(false));
+    cx.on_action(move |action: &A, cx| {
+        // An unhandled dispatch bubbles to this same fallback. Drop it
+        // before it can queue another turn through the app's effect loop.
+        if forwarding.get() {
+            return;
+        }
+        let forwarding = forwarding.clone();
+        let action = action.boxed_clone();
+        cx.defer(move |cx| {
             let Some(main) = main_window(cx) else {
                 return;
             };
-            let _ = main.update(cx, |_, window, cx| {
+            let Ok(root) = main.read(cx).map(|view| view.focus.clone()) else {
+                return;
+            };
+            // Dispatch synchronously at the rendered root, independent of
+            // focus. The listener must be free to update the root view.
+            let _ = AnyWindowHandle::from(main).update(cx, |_, window, cx| {
                 window.activate_window();
-                window.dispatch_action(Box::new(A::default()), cx);
+                forwarding.set(true);
+                root.dispatch_action(action.as_ref(), window, cx);
+                forwarding.set(false);
             });
         });
     });
