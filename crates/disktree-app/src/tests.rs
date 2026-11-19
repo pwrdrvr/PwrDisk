@@ -2178,6 +2178,28 @@ fn dispatch_menu_action(cx: &mut Window, action: Box<dyn gpui_kit::Action>) {
     cx.update(|_, cx| cx.defer(move |cx| cx.dispatch_action(action.as_ref())));
 }
 
+/// As [`dispatch_menu_action`], with the main window's focus first moved
+/// to `missing`, or cleared, in the same step. Done any earlier, the next
+/// frame's focus-lost listener would put focus back on the page and the
+/// action would never need the fallback under test.
+fn dispatch_menu_action_with_focus(
+    cx: &mut Window,
+    missing: Option<gpui_kit::FocusHandle>,
+    action: Box<dyn gpui_kit::Action>,
+) {
+    let main = cx.update(|window, _| window.window_handle());
+    cx.update(|_, cx| {
+        cx.defer(move |cx| {
+            main.update(cx, |_, window, cx| match &missing {
+                Some(missing) => window.focus(missing, cx),
+                None => window.blur(cx),
+            })
+            .expect("the main window");
+            cx.dispatch_action(action.as_ref());
+        });
+    });
+}
+
 type MenuRoot = gpui_kit::Stateful<gpui_kit::Div>;
 
 struct MenuDelivery {
@@ -2273,7 +2295,11 @@ fn menu_actions_reach_the_main_window_with_missing_focus(
                 assert!(window.is_action_available_in(action.as_ref(), &focus));
             });
             attempts.set(0);
-            dispatch_menu_action(cx, action.boxed_clone());
+            dispatch_menu_action_with_focus(
+                cx,
+                missing.cloned(),
+                action.boxed_clone(),
+            );
             let received = cx.update(|_, cx| {
                 std::mem::take(&mut cx.global_mut::<MenuDelivery>().received)
             });
@@ -2355,7 +2381,13 @@ fn menu_rescan_starts_once_from_the_unfocused_main_and_auxiliary_windows(
         });
         let epoch = read(&view, cx, |app| app.scan_epoch);
         attempts.set(0);
-        dispatch_menu_action(cx, Box::new(Rescan));
+        if source == "main" {
+            // Unfocused, as at the start, though drawing it since has
+            // put focus back on the page.
+            dispatch_menu_action_with_focus(cx, None, Box::new(Rescan));
+        } else {
+            dispatch_menu_action(cx, Box::new(Rescan));
+        }
         if attempts.get() != 1
             || read(&view, cx, |app| app.scan_epoch) != epoch + 1
         {
@@ -12775,6 +12807,117 @@ fn a_key_on_a_row_chip_cycles_it_once_and_keeps_focus(cx: &mut TestAppContext) {
         let focused = cx.update(|window, cx| window.focused(cx));
         assert_eq!(focused, on_chip, "{keys}: focus stays on the chip");
     }
+}
+
+/// Whether focus is on a control the last frame drew. Every control,
+/// popovers included, is drawn under the root, so a focused handle the
+/// root does not contain is one no frame drew, where no key reaches.
+fn focus_is_drawn(view: &Entity<Disktree>, cx: &mut Window) -> bool {
+    let root = read(view, cx, |app| app.focus.clone());
+    cx.update(|window, cx| {
+        window.focused(cx).is_some() && root.contains_focused(window, cx)
+    })
+}
+
+/// Property: focus is never left on a control that stopped being drawn.
+/// Whatever stop Tab reached, narrowing the window, which folds toolbar
+/// controls into ⋮ and drops the side panel, leaves focus on something
+/// drawn; so does a chip on the legend's row going back to "+N", and the
+/// Mark menu closing without being told where focus goes. GPUI kept focus
+/// on such a handle, and the keyboard seemed dead until Escape.
+#[gpui_kit::test]
+fn focus_never_stays_on_a_control_that_is_no_longer_drawn(
+    cx: &mut TestAppContext,
+) {
+    use crate::legend::{Chip, ChipId};
+    use disktree_core::classify::Category;
+
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx, _) = over_limit_view(temp.path(), cx);
+    let wide = gpui_kit::size(px(1440.), px(900.));
+    // Under the toolbar's tightest fit and the side panel's width.
+    let narrow = gpui_kit::size(px(560.), px(900.));
+    cx.simulate_resize(wide);
+    draw(cx);
+    draw(cx);
+    let root = read(&view, cx, |app| app.focus.clone());
+
+    // Every stop Tab reaches from the page, then the window narrows.
+    let mut stranded = 0;
+    for stops in 1..=80 {
+        cx.update(|window, cx| window.focus(&root, cx));
+        draw(cx);
+        for _ in 0..stops {
+            press(cx, "tab");
+        }
+        let on = cx.update(|window, cx| window.focused(cx));
+        assert!(focus_is_drawn(&view, cx), "stop {stops} is drawn");
+        if stops > 1 && on == Some(root.clone()) {
+            break;
+        }
+        cx.simulate_resize(narrow);
+        draw(cx);
+        let now = cx.update(|window, cx| window.focused(cx));
+        if now != on {
+            stranded += 1;
+        }
+        assert!(focus_is_drawn(&view, cx), "stop {stops} once narrowed");
+        cx.simulate_resize(wide);
+        draw(cx);
+    }
+    assert!(stranded > 0, "not vacuous: some focused stop went away");
+
+    // A chip on the row that goes back to "+N": the fixture holds no
+    // code, so Code is on the row only while set.
+    let code = ChipId::Kind(
+        Category::LEGEND
+            .iter()
+            .position(|kind| *kind == Category::Code)
+            .unwrap(),
+    );
+    update(&view, cx, |app, cx| {
+        app.clear_legend(None, cx);
+        app.cycle_legend(code, cx);
+    });
+    draw(cx);
+    let key = Box::leak(code.key().into_boxed_str());
+    let chip = cx.debug_bounds(key).expect("set: on the row");
+    // A press without a release on it: focus, and no click.
+    cx.simulate_mouse_down(
+        chip.center(),
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    cx.simulate_mouse_up(
+        gpui_kit::point(px(1.), px(899.)),
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    draw(cx);
+    assert!(focus_is_drawn(&view, cx));
+    assert_ne!(
+        cx.update(|window, cx| window.focused(cx)),
+        Some(root.clone())
+    );
+    // Only, Hidden, then Shown: back in the menu.
+    activate(cx, "space");
+    activate(cx, "space");
+    assert_eq!(read(&view, cx, |app| app.legend.get(code)), Chip::Shown);
+    assert!(cx.debug_bounds(key).is_none(), "back in the menu");
+    assert!(focus_is_drawn(&view, cx), "the chip went");
+
+    // The Mark menu closed by something other than its own keys, as the
+    // mark guard does.
+    click_on(cx, "inspector-mark-more");
+    assert_eq!(mark_focus(&view, cx), "mark anyway");
+    update(&view, cx, |app, cx| {
+        app.mark_menu = None;
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("mark-menu").is_none());
+    assert!(focus_is_drawn(&view, cx), "the Mark menu went");
 }
 
 /// Model: a press on the "+N" menu's padding, between its chips, keeps

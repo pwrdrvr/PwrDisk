@@ -150,11 +150,6 @@ pub fn root(
         Screen::Running => crate::run_view::running(app, toasts, window, cx),
         Screen::Done => crate::run_view::done(app, toasts, window, cx),
     };
-    // Laying out the body can close a menu that held focus (the legend's,
-    // when "+N" goes); focus leaves it in this frame, not the next.
-    if app.focus_request.is_some() {
-        app.apply_focus(window, cx);
-    }
     let modal = app.has_modal() || app.app_menu_open;
     let background = div().id("application-content")
         .role(gpui_kit::Role::Group).aria_label("Application content")
@@ -1244,14 +1239,6 @@ fn explore(
     // overflows again. Its button's hover goes with it, since the button
     // may have left from under a resting pointer.
     if !legend_drawn || legend_fit.more.is_empty() {
-        // Focus on "+N" or in its menu would be on nothing drawn, where no
-        // key reaches; it goes to the page, as after a chip is clicked.
-        let held = app.legend_more_focus.is_focused(window)
-            || (app.legend_menu_open
-                && app.legend_menu_focus.contains_focused(window, cx));
-        if held {
-            app.focus_request = Some(crate::state::FocusTarget::Root);
-        }
         app.legend_menu_open = false;
         app.legend_more_hover = false;
     }
