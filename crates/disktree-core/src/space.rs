@@ -805,9 +805,12 @@ pub fn parse_tmutil_destinations(output: &str) -> Vec<PathBuf> {
         .lines()
         .filter_map(|line| {
             let (key, value) = line.split_once(':')?;
-            (key.trim() == "Mount Point").then(|| PathBuf::from(value.trim()))
+            let value = value.trim();
+            // macOS output, read the same on any host: `is_absolute` would
+            // want a drive letter on Windows.
+            (key.trim() == "Mount Point" && value.starts_with('/'))
+                .then(|| PathBuf::from(value))
         })
-        .filter(|point| point.is_absolute())
         .collect()
 }
 
