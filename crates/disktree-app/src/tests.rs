@@ -13208,21 +13208,35 @@ fn an_agent_request_past_the_limit_waits_for_the_persons_approval(
     assert!(root.join("junk/blob.bin").exists());
 
     // A phrase typed for the old selection is void once the agent changes
-    // it, even back to the same share.
+    // it, even back to the same share. The field is emptied in place, so
+    // a person typing in it keeps it.
     assert_eq!(ask(cx, Request::Review), Response::Ok);
     click_on(cx, "over-limit-phrase");
     cx.simulate_input("delete 30% of my disk");
     draw(cx);
     assert!(cx.debug_bounds("over-limit-matched").is_some());
+    let field = read(&view, cx, |app| {
+        app.over_phrase.as_ref().map(Entity::entity_id)
+    });
+    ask(cx, mark("keep"));
+    update(&view, cx, |app, cx| {
+        let plan = app.plan();
+        let gate = app.removal_gate(&plan).expect("still past the limit");
+        assert!(!app.gate_met(&gate, cx), "void before the next frame");
+    });
     ask(
         cx,
         Request::Unmark {
-            paths: vec![root.join("junk")],
+            paths: vec![root.join("keep")],
         },
     );
-    ask(cx, mark("junk"));
     assert_eq!(ask(cx, Request::Review), Response::Ok);
     assert!(cx.debug_bounds("over-limit-matched").is_none());
+    update(&view, cx, |app, cx| {
+        let input = app.over_phrase.as_ref().expect("the field");
+        assert_eq!(Some(input.entity_id()), field, "the same field");
+        assert_eq!(input.read(cx).value().to_string(), "");
+    });
 
     // Cancelling the permanent dialog leaves everything in place too.
     click_on(cx, "over-limit-phrase");
@@ -13324,6 +13338,12 @@ fn an_agent_request_asks_the_person_even_with_safety_relaxed(
         assert_eq!(app.over_ticked, None);
         let plan = app.plan();
         assert!(app.removal_limit(&plan, cx).is_err());
+
+        // Unmarked and marked again by the person, it is the person's.
+        app.clear_marks(cx);
+        app.toggle_mark_checked(&junk, true, cx);
+        assert!(!app.agent_proposed());
+        assert_eq!(app.removal_gate(&app.plan()), None);
     });
     assert!(root.join("junk/blob.bin").exists());
     assert!(root.join("keep/notes.txt").exists());

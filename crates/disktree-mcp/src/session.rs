@@ -2171,7 +2171,12 @@ impl Session {
         // Past the limit there is nothing to preview: the request is the
         // person's, in the window. Said as a result, not a failure, so the
         // agent waits rather than retries; the window refuses regardless.
-        if let Response::State(state) = self.call(&Request::State)?
+        // Cache cleanup proposals without decisions only inform, so they
+        // are still listed.
+        let informs = matches!(params.mode, RemovalModeName::OwnerCleanup)
+            && params.decisions.is_none();
+        if !informs
+            && let Response::State(state) = self.call(&Request::State)?
             && let Some(awaiting) = &state.awaiting_approval
         {
             return Ok(format!("No preview was made. {}", awaiting.describe()));
@@ -5348,6 +5353,16 @@ mod tests {
             "{:?}",
             window.asked()
         );
+        // Cache cleanup proposals only inform, so they are still asked
+        // of the window, which the stand-in refuses.
+        let proposals = session
+            .removal_preview(&RemovalPreviewParams {
+                mode: RemovalModeName::OwnerCleanup,
+                decisions: None,
+                delete_files_mode: None,
+            })
+            .expect_err("asked of the stand-in");
+        assert!(proposals.contains("stand-in window"), "{proposals}");
         assert!(root.join("src/app/target/debug/app").exists());
     }
 

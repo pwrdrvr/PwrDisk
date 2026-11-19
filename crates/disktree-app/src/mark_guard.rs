@@ -196,6 +196,25 @@ impl Gate {
     }
 }
 
+/// The limit Review's second confirmation is past, and what it asks
+/// there, for a selection an agent did (`agent`) or did not mark.
+///
+/// The person's own marks follow Settings › Safety as it reads. An agent's
+/// selection is held to the agent limit, so with the window's Off Review
+/// still asks for it; and asking nothing more trusts that the person
+/// pressed Mark anyway, which no one did for an agent's mark, so its
+/// selection asks for a tick at least.
+fn review_rule(policy: Policy, agent: bool) -> (Option<Limit>, Confirm) {
+    if !agent {
+        return (policy.limit, policy.confirm);
+    }
+    let confirm = match policy.confirm {
+        Confirm::Nothing => Confirm::Tick,
+        confirm => confirm,
+    };
+    (Some(policy.agent_limit()), confirm)
+}
+
 impl Disktree {
     /// Settings › Safety as last read. Read once and again before every
     /// removal, never per frame; Settings saves it, and an unreadable file
@@ -345,30 +364,23 @@ impl Disktree {
     }
 
     /// The limit Review's second confirmation is past, as Settings ›
-    /// Safety reads in `policy`. An agent's selection is held to the agent
-    /// limit, so with the window's Off Review still asks the person for it.
+    /// Safety reads in `policy`; see [`review_rule`].
     fn review_limit(&self, policy: Policy) -> Option<Limit> {
-        if self.agent_proposed() {
-            return Some(policy.agent_limit());
-        }
-        policy.limit
+        review_rule(policy, self.agent_proposed()).0
     }
 
-    /// What Review asks past the limit. Asking nothing more trusts that
-    /// the person pressed Mark anyway, which no one did for an agent's
-    /// mark: its selection asks for a tick at least.
+    /// What Review asks past the limit; see [`review_rule`].
     pub fn gate_confirm(&self) -> Confirm {
-        match self.policy().confirm {
-            Confirm::Nothing if self.agent_proposed() => Confirm::Tick,
-            confirm => confirm,
-        }
+        review_rule(self.policy(), self.agent_proposed()).1
     }
 
     /// An agent changed the marks: what the person confirmed past the
-    /// limit was for the old selection, so Review asks again.
+    /// limit was for the old selection, so Review asks again. The phrase
+    /// field is emptied in place at the next frame, not dropped, so a
+    /// person typing in it keeps the keys.
     pub(crate) fn forget_over_confirmation(&mut self) {
         self.over_ticked = None;
-        self.over_phrase = None;
+        self.over_phrase_stale = self.over_phrase.is_some();
     }
 
     /// The notice for a mark refused here; `None` when it was allowed.
@@ -461,9 +473,15 @@ impl Disktree {
                 self.over_ticked.as_ref()
                     == Some(&gate.ticked(self.removal_mode))
             }
-            Confirm::Phrase => self.over_phrase.as_ref().is_some_and(|input| {
-                matches(&input.read(cx).value(), &self.gate_phrase(gate))
-            }),
+            Confirm::Phrase => {
+                !self.over_phrase_stale
+                    && self.over_phrase.as_ref().is_some_and(|input| {
+                        matches(
+                            &input.read(cx).value(),
+                            &self.gate_phrase(gate),
+                        )
+                    })
+            }
         }
     }
 
@@ -532,9 +550,13 @@ impl Disktree {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.over_phrase.is_some() {
+        if let Some(input) = &self.over_phrase {
+            if std::mem::take(&mut self.over_phrase_stale) {
+                input.update(cx, |input, cx| input.set_value("", window, cx));
+            }
             return;
         }
+        self.over_phrase_stale = false;
         let input = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe(&input, |this, _, event, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
@@ -563,6 +585,67 @@ impl Disktree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn policy() -> impl Strategy<Value = Policy> {
+        (
+            prop::option::of(1_u8..=100),
+            prop::sample::select(Confirm::ALL.to_vec()),
+        )
+            .prop_map(|(limit, confirm)| Policy {
+                limit: limit
+                    .map(|percent| Limit::new(percent).expect("1..=100")),
+                confirm,
+            })
+    }
+
+    proptest! {
+        /// The model: an agent's selection always has a gate at the agent
+        /// limit (the window's, or 5% when it is Off) and never asks
+        /// nothing; the person's own marks follow Settings unchanged. And
+        /// the gate opens exactly where the worker would refuse the agent.
+        #[test]
+        fn an_agent_selection_is_always_gated_for_the_person(
+            policy in policy(),
+            agent in any::<bool>(),
+            capacity in 1_u64..=1 << 40,
+            share in 0_u64..=1_000_000,
+        ) {
+            let (limit, confirm) = review_rule(policy, agent);
+            if agent {
+                let held = policy.limit.unwrap_or_default();
+                prop_assert_eq!(limit, Some(held));
+                prop_assert_ne!(confirm, Confirm::Nothing);
+                if policy.confirm != Confirm::Nothing {
+                    prop_assert_eq!(confirm, policy.confirm);
+                }
+                let bytes = u64::try_from(
+                    u128::from(capacity) * u128::from(share) / 1_000_000,
+                )
+                .expect("at most capacity");
+                let gate = Gate::new(
+                    vec![usage("disk", bytes, capacity)],
+                    &BTreeMap::new(),
+                    held,
+                );
+                // The worker's own check, as an agent's removal meets it.
+                let refused = Ceilings::from(held)
+                    .check_with(
+                        &[Target {
+                            path: "/disk/x".into(),
+                            bytes,
+                            is_dir: false,
+                            hidden: false,
+                        }],
+                        |_| Ok(("disk".to_owned(), capacity)),
+                    )
+                    .is_err();
+                prop_assert_eq!(gate.is_some(), refused);
+            } else {
+                prop_assert_eq!((limit, confirm), (policy.limit, policy.confirm));
+            }
+        }
+    }
 
     #[test]
     fn a_share_is_over_exactly_where_the_worker_refuses() {

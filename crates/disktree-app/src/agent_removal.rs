@@ -197,7 +197,7 @@ impl Disktree {
         if plan.is_empty() {
             return Err("Nothing is marked".into());
         }
-        let limit = crate::safety::load(self.removal_settings_dir.as_deref())?;
+        let limit = self.reload_policy()?.agent_limit();
         self.refuse_awaiting_approval(&plan)?;
         let volumes = limit.check(&plan.targets)?;
         self.raw_inspection_ready(&plan.targets)?;
@@ -240,13 +240,12 @@ impl Disktree {
     }
 
     /// Past the agent limit there is no preview to confirm: the selection
-    /// waits for the person in Review, and the agent is told so. Settings ›
-    /// Safety is read again first, so a limit changed since counts.
+    /// waits for the person in Review, and the agent is told so. Callers
+    /// read Settings › Safety again first, so a limit changed since counts.
     fn refuse_awaiting_approval(
         &self,
         plan: &disktree_core::removal::Plan,
     ) -> Result<(), String> {
-        self.reload_policy()?;
         self.awaiting_for(plan)
             .map_or(Ok(()), |awaiting| Err(awaiting.describe()))
     }
@@ -262,7 +261,7 @@ impl Disktree {
     ) -> Result<PreparedRemoval, String> {
         use disktree_core::cleanup::Action;
         let prepared = self.cleanup_ready()?;
-        let limit = crate::safety::load(self.removal_settings_dir.as_deref())?;
+        let limit = self.reload_policy()?.agent_limit();
         let files_action = match files {
             None => Action::Skip,
             Some(RemovalChoice::Trash) => {
