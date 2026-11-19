@@ -199,7 +199,10 @@ limit: if what is marked has grown past that when the removal starts,
 nothing is removed.
 Settings › Safety sets the limit (1%, 5%, 10%, 25%, 50% or Off) and what
 Review asks past it (type a phrase, tick a box, or nothing more). Neither
-lets an agent past the limit.
+lets an agent past the limit. An agent's marks past it wait for you:
+Review says an agent asked for them, with their size and the limit, and
+asks at least for the tick even when the limit is Off or asks nothing
+more. Back or Unmark leaves every file in place.
 
 The commit is the footer's right-hand button; beside it, **Move & rescan**
 (**Delete & rescan…** in permanent mode, `shift enter`) does the same and

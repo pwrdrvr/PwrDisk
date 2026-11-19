@@ -130,10 +130,10 @@ paths and mode from `pwrdisk_removal_preview` before the destructive
 emptied, but is not guaranteed; permanent deletion cannot be undone through
 PwrDisk. Both modes use the existing removal guards and Settings > Safety's
 per-operation limit, 5% of each volume's capacity by default. Never bypass a
-refusal, increase the setting or split batches to evade it. A window
-refuses a mark that would take the list past the limit, and marks made
-without one are checked when they reach it: only the person can mark past
-it, in the window. Say so, and let them decide.
+refusal, increase the setting or split batches to evade it. Past the
+limit a window takes the marks as a request awaiting human approval, with
+no preview: only the person can approve it, in Review. Say so, and let
+them decide.
 
 The worker counts hardlinked allocation once across the complete selection,
 including aliases in different marked folders. Scan and recheck use the

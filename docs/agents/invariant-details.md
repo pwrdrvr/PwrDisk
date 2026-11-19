@@ -114,10 +114,15 @@ Past the limit only the person can go: in the window, through Mark
 anyway and then Review's second confirmation (a typed phrase by
 default), which names each disk past the limit, with the worker
 holding each of those disks to its confirmed share and every other
-disk to the limit. An agent's mark past the limit is refused, and
-agents keep the default limit when the window's is Off, on the
-worker as at the preview: nothing the person confirms in Review
-raises an agent's removal. `mark_guard.rs` holds the rule.
+disk to the limit. An agent's mark past the limit is taken as a
+request, never a removal: the window reports it as awaiting the
+person's approval, no preview is made for it, and agents keep the
+default limit when the window's is Off, on the worker as at the
+preview: nothing the person confirms in Review raises an agent's
+removal. Review always asks the person for an agent's selection past
+that limit, with a tick at least, even when the window's limit is Off
+or asks nothing more, and an agent's change to the marks voids what
+was confirmed. `mark_guard.rs` holds the rule.
 Trash never falls back to permanent deletion. No headless or SSH removal.
 
 A linked window's tree and marks remain the source of truth; `ls` and
