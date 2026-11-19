@@ -1329,16 +1329,14 @@ impl Disktree {
                 }
             }
         } else {
-            let recents: Vec<PathBuf> = self
-                .recent_roots
-                .iter()
-                .map(|recent| recent.path.clone())
-                .collect();
+            let recents = self.recent_roots.clone();
             let task = cx.background_executor().spawn(async move {
-                // A metadata check, off the UI thread: an unplugged disk's
-                // root is not offered, and nothing inside is read.
-                let present: Vec<PathBuf> =
-                    recents.into_iter().filter(|path| path.is_dir()).collect();
+                // An unplugged disk's recent root is left out by its
+                // volume's mount point, from the mount table: discovery
+                // probes no mount, recent or not.
+                let mounted = disktree_core::space::mount_points().ok();
+                let present =
+                    crate::recent_roots::present(&recents, mounted.as_deref());
                 (
                     disktree_core::space::volume_roots()
                         .map(|volumes| (volumes, std::env::home_dir())),
@@ -1625,7 +1623,7 @@ impl Disktree {
         self.awaiting_root = false;
         self.close_volumes(cx);
         if self.remote.is_none() {
-            self.remember_root(path.clone(), cx);
+            self.remember_root(&path, cx);
         }
         self.set_root(path, cx);
         self.arm_report();
@@ -1633,10 +1631,15 @@ impl Disktree {
 
     /// Put a root the person chose at the top of the chooser's recent
     /// roots. Said only when it could not be saved.
-    pub fn remember_root(&mut self, path: PathBuf, cx: &mut Context<'_, Self>) {
+    pub fn remember_root(&mut self, path: &Path, cx: &mut Context<'_, Self>) {
+        // Open Folder canonicalizes with std, which spells a Windows drive
+        // `\\?\C:\`; the chooser's rows and its Directory row use `C:\`.
+        let path = dunce::simplified(path).to_path_buf();
+        let volume = volume_root_for(&path);
         crate::recent_roots::record(
             &mut self.recent_roots,
             path,
+            volume,
             chrono::Utc::now().timestamp(),
         );
         if let Some(saved) = self.recent_roots_path.as_deref()
@@ -4969,7 +4972,7 @@ impl Disktree {
             // removal may have started while it was open.
             let _ = this.update(cx, |this, cx| {
                 if this.can_start_over() {
-                    this.remember_root(path.clone(), cx);
+                    this.remember_root(&path, cx);
                     this.set_root(path, cx);
                 }
             });

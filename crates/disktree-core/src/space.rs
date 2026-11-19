@@ -1075,6 +1075,32 @@ pub fn volume_roots() -> io::Result<Vec<Volume>> {
     }
 }
 
+/// Every mount point on this machine, hidden ones included, read from the
+/// mount table without probing any of them. The chooser asks whether a
+/// recent root's volume is still mounted with this.
+pub fn mount_points() -> io::Result<Vec<PathBuf>> {
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Ok(mount_table()
+            .ok_or_else(|| io::Error::other("cannot read mount table"))?
+            .into_iter()
+            .map(|mount| mount.point)
+            .collect())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("mount").output()?;
+        if !output.status.success() {
+            return Err(io::Error::other("cannot list mounted volumes"));
+        }
+        Ok(parse_macos_mounts(&String::from_utf8_lossy(&output.stdout)))
+    }
+    #[cfg(windows)]
+    {
+        Ok(crate::windows::mount_points())
+    }
+}
+
 /// Root candidates from a mount table; deliberately never calls statvfs.
 pub fn volume_roots_in(mounts: &[Mount]) -> Vec<Volume> {
     let mut seen: Vec<&Mount> = Vec::new();

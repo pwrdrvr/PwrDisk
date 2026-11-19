@@ -14716,10 +14716,12 @@ fn the_chooser_lists_recent_roots_first_and_remembers_the_chosen_one(
         app.recent_roots = vec![
             Recent {
                 path: unplugged,
+                volume: None,
                 at: 2,
             },
             Recent {
                 path: kept_recent.clone(),
+                volume: None,
                 at: 1,
             },
         ];
@@ -14762,6 +14764,43 @@ fn the_chooser_lists_recent_roots_first_and_remembers_the_chosen_one(
         load(&saved).into_iter().map(|recent| recent.path).collect();
     assert_eq!(remembered, expected);
     finish_scan(&view, cx);
+}
+
+/// When every listed root is recent the rule still comes before the
+/// Directory row.
+#[gpui_kit::test]
+fn the_rule_precedes_directory_when_every_root_is_recent(
+    cx: &mut TestAppContext,
+) {
+    use crate::recent_roots::Recent;
+
+    cx.update(init);
+    let temp = fixture();
+    let reports = tempfile::tempdir().expect("tempdir");
+    let (view, cx) = chooser_over(temp.path(), reports.path(), cx);
+    let listed = temp.path().to_path_buf();
+    update(&view, cx, move |app, cx| {
+        app.recent_roots = vec![Recent {
+            path: listed.clone(),
+            volume: None,
+            at: 0,
+        }];
+        app.finish_volume_listing(
+            Ok((
+                vec![Volume {
+                    point: listed.clone(),
+                    device: None,
+                    space: None,
+                }],
+                None,
+            )),
+            &[listed],
+            cx,
+        );
+    });
+    draw(cx);
+    assert_eq!(read(&view, cx, |app| app.volumes_recent), 1);
+    assert!(cx.debug_bounds("source-recent-rule").is_some());
 }
 
 /// Without recent roots there is no rule.

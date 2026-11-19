@@ -4,8 +4,8 @@
 //! A root counts when the person chose it: a row or the Directory row in
 //! the chooser, or File › Open Folder. A rescan through the chooser moves
 //! it to the top. Going up a level, and a scan an agent asks for, leave the
-//! list alone. Only paths and times are kept, on this computer, and SSH
-//! hosts keep none.
+//! list alone. Only paths, their volumes' mount points and times are kept,
+//! on this computer, and SSH hosts keep none.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -21,6 +21,12 @@ pub const LIMIT: usize = 5;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recent {
     pub path: PathBuf,
+    /// Where the volume holding it was mounted when it was chosen. The
+    /// chooser offers the root while that mount point is in the mount
+    /// table, so an unplugged disk's root is left out without probing it.
+    /// `None` when that could not be told: always offered.
+    #[serde(default)]
+    pub volume: Option<PathBuf>,
     /// Unix seconds.
     pub at: i64,
 }
@@ -46,10 +52,32 @@ pub fn save(path: &Path, list: &[Recent]) -> io::Result<()> {
 }
 
 /// Put `path` at the top: once, newest first, at most [`LIMIT`].
-pub fn record(list: &mut Vec<Recent>, path: PathBuf, at: i64) {
+pub fn record(
+    list: &mut Vec<Recent>,
+    path: PathBuf,
+    volume: Option<PathBuf>,
+    at: i64,
+) {
     list.retain(|recent| recent.path != path);
-    list.insert(0, Recent { path, at });
+    list.insert(0, Recent { path, volume, at });
     list.truncate(LIMIT);
+}
+
+/// The recent roots whose volume is mounted now, judged from the mount
+/// table alone: nothing on any volume is read. With no mount table, all
+/// of them.
+pub fn present(list: &[Recent], mounted: Option<&[PathBuf]>) -> Vec<PathBuf> {
+    list.iter()
+        .filter(|recent| {
+            mounted.is_none_or(|mounted| {
+                recent
+                    .volume
+                    .as_ref()
+                    .is_none_or(|volume| mounted.contains(volume))
+            })
+        })
+        .map(|recent| recent.path.clone())
+        .collect()
 }
 
 /// "Scanned today", "Scanned yesterday" or "Scanned N days ago", by the
@@ -134,10 +162,12 @@ mod tests {
         let list = vec![
             Recent {
                 path: "/Volumes/Projects".into(),
+                volume: None,
                 at: 1_795_000_000,
             },
             Recent {
                 path: "/".into(),
+                volume: None,
                 at: 1_794_000_000,
             },
         ];
@@ -153,14 +183,17 @@ mod tests {
         let recents = vec![
             Recent {
                 path: "/Volumes/Projects".into(),
+                volume: None,
                 at: 0,
             },
             Recent {
                 path: "/Users/me/Library".into(),
+                volume: None,
                 at: 0,
             },
             Recent {
                 path: "/Volumes/Gone".into(),
+                volume: None,
                 at: 0,
             },
         ];
@@ -182,6 +215,33 @@ mod tests {
             ["/Volumes/Projects", "/Users/me/Library", "/Users/me", "/"]
         );
         assert_eq!(recent, 2);
+    }
+
+    #[test]
+    fn a_root_is_present_while_its_volume_is_mounted() {
+        let recent = |path: &str, volume: Option<&str>| Recent {
+            path: path.into(),
+            volume: volume.map(PathBuf::from),
+            at: 0,
+        };
+        let list = [
+            recent("/Volumes/Projects/src", Some("/Volumes/Projects")),
+            recent("/Users/me", Some("/System/Volumes/Data")),
+            recent("/old", None),
+        ];
+        let mounted =
+            [PathBuf::from("/"), PathBuf::from("/System/Volumes/Data")];
+        let paths = |list: Vec<PathBuf>| {
+            list.into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            paths(present(&list, Some(&mounted))),
+            ["/Users/me", "/old"]
+        );
+        // No mount table: nothing can be ruled out.
+        assert_eq!(present(&list, None).len(), 3);
     }
 
     #[derive(Clone, Debug)]
@@ -220,7 +280,14 @@ mod tests {
             for (at, step) in steps.into_iter().enumerate() {
                 match step {
                     Step::Scan(index) => {
-                        record(&mut list, root(index), i64::try_from(at).unwrap());
+                        // Each root is its own disk, so unplugging it
+                        // takes its mount point out of the table.
+                        record(
+                            &mut list,
+                            root(index),
+                            Some(root(index)),
+                            i64::try_from(at).unwrap(),
+                        );
                         log.push(index);
                     }
                     Step::Toggle(index) => present[index] = !present[index],
@@ -245,10 +312,13 @@ mod tests {
                     .filter(|&i| present[i])
                     .map(|i| volume(root(i).to_str().unwrap()))
                     .collect();
+                let mounted: Vec<PathBuf> =
+                    (0..ROOTS).filter(|&i| present[i]).map(root).collect();
+                let there = super::present(&list, Some(&mounted));
                 let (rows, recent) = arrange(
                     &list,
                     listed,
-                    |path| (0..ROOTS).any(|i| present[i] && root(i) == path),
+                    |path| there.iter().any(|known| known == path),
                     today,
                 );
                 let mut expected: Vec<PathBuf> = newest

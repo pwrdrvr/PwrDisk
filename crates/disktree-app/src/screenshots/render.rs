@@ -558,10 +558,13 @@ fn setup(
                     app.recent_roots = vec![
                         crate::recent_roots::Recent {
                             path: root.into(),
+                            volume: None,
                             at: now,
                         },
                         crate::recent_roots::Recent {
                             path: root.join("Projects"),
+                            volume: None,
+                            // A day earlier, in seconds: "yesterday".
                             at: now - 86_400,
                         },
                     ];

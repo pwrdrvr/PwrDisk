@@ -410,6 +410,17 @@ fn save_report_tick(app: &Disktree, cx: &Context<'_, Disktree>) -> Div {
 }
 
 /// Discovery is lightweight; a separate, explicit action starts the walk.
+/// The chooser's rule under its recent roots.
+fn recent_rule(theme: &Theme) -> Div {
+    div()
+        .debug_selector(|| "source-recent-rule".into())
+        .flex_none()
+        .h(px(1.))
+        .mx(space::MD)
+        .my(space::XS)
+        .bg(theme.divider())
+}
+
 fn volumes_dialog(
     app: &Disktree,
     window: &mut Window,
@@ -507,15 +518,7 @@ fn volumes_dialog(
         // The rule between the recent roots and the rest; it is not a
         // row, so Up and Down never land on it.
         if index > 0 && index == app.volumes_recent {
-            rows = rows.child(
-                div()
-                    .debug_selector(|| "source-recent-rule".into())
-                    .flex_none()
-                    .h(px(1.))
-                    .mx(space::MD)
-                    .my(space::XS)
-                    .bg(theme.divider()),
-            );
+            rows = rows.child(recent_rule(&theme));
         }
         rows = rows.child(row(id, index, label.clone()).child(label).on_click(
             cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -542,6 +545,10 @@ fn volumes_dialog(
     // The typed path is the list's last row, so one Scan acts on whichever
     // row is highlighted and Enter never depends on which field has focus.
     let directory = app.volumes.len();
+    // Every listed root is recent: the rule still comes before Directory.
+    if listable && directory > 0 && app.volumes_recent == directory {
+        rows = rows.child(recent_rule(&theme));
+    }
     if listable {
         rows = rows.child(
             row(

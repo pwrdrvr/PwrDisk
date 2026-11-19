@@ -55,8 +55,10 @@ On this computer the five roots scanned most recently come first, newest at
 the top, each with when it was last scanned, then a rule and the other
 roots. A root counts when you choose it in the chooser or with **Open
 Folder**, and Enter right after opening the chooser rescans the last one. A
-recent root that is not there now, such as an unplugged disk, is left out
-until it is back. The list keeps paths and times only, on this computer.
+recent root whose disk is not mounted now, such as an unplugged disk, is
+left out until it is back; the chooser tells from the mount table without
+reading the disk. The list keeps paths, their disks' mount points and times
+only, on this computer.
 
 The list ends with a **Directory** row: type an absolute path there, or
 choose **Choose…** for the system's folder picker on this computer. Select
