@@ -16,9 +16,12 @@ resource API through a single probe in `macos/capacity.rs`.
 | Opt-in native integration test | 1 | ~120 |
 
 The scan and meter share a per-process cache keyed by mount point and
-source. A successful or unavailable estimate consumes the same 60-second
-budget. The fast ticker still samples raw free space on every tick. It
-uses only a cached estimate while a scan or removal is running.
+filesystem UUID. Volumes without a usable UUID still show raw free space.
+An in-flight query reserves its volume's budget without holding the cache
+lock. A successful or unavailable estimate consumes the same 60-second
+budget. The fast ticker measures raw free space on every tick and shows a
+cached estimate only when its raw free-space reading matches. While a
+scan or removal is running, the ticker uses only the cached estimate.
 
 The capacity unit tests count calls at the probe boundary using a fake
 that exercises the production sampler. The native integration test is
