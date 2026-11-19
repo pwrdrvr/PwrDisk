@@ -271,9 +271,21 @@ pub fn root(
             if this.app_menu_open && app_menu_key(this, event, window, cx) { return; }
             if !this.has_modal() && this.screen == Screen::Review && !this.editing_phrase(window, cx) && crate::ui::scroll_key(&event.keystroke.key, &this.review_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
             if this.show_help && crate::ui::scroll_key(&event.keystroke.key, &this.help_scroll, window.rem_size()) { cx.stop_propagation(); cx.notify(); return; }
+            // The Mark menu owns Escape and Tab while focus is inside it.
+            let in_mark_menu = this.mark_menu.is_some()
+                && this.mark_menu_focus.contains_focused(window, cx);
+            if in_mark_menu && event.keystroke.key == "escape" {
+                close_mark_menu(this, true, window, cx);
+                cx.stop_propagation();
+                return;
+            }
             if event.keystroke.key == "tab" && !event.keystroke.modifiers.control && !event.keystroke.modifiers.platform {
                 if !this.has_modal() { this.find_open = false; }
-                let scope = (this.has_modal() || this.app_menu_open).then(|| this.confirm_focus.clone());
+                let scope = if this.has_modal() || this.app_menu_open {
+                    Some(this.confirm_focus.clone())
+                } else {
+                    in_mark_menu.then(|| this.mark_menu_focus.clone())
+                };
                 crate::semantics::advance_focus(window, cx, event.keystroke.modifiers.shift, scope.as_ref());
                 cx.stop_propagation();
                 cx.notify();
@@ -428,6 +440,7 @@ fn volumes_dialog(
         .flex_col()
         .max_h(size::SOURCE_LIST_HEIGHT)
         .overflow_y_scroll()
+        .track_scroll(&app.volume_scroll)
         .border_1()
         .border_color(theme.border)
         .bg(theme.inset);
@@ -684,7 +697,17 @@ fn volumes_dialog(
                 .text_color(theme.bright)
                 .child(source)
         }))
-        .child(rows)
+        .child(crate::scroll_bar::framed(
+            div(),
+            rows,
+            crate::scroll_bar::bar(
+                "volume-rows-bar",
+                &app.volume_scroll,
+                px(0.),
+                app.rem,
+                theme.foreground,
+            ),
+        ))
         .children(app.report_offered().then(|| save_report_tick(app, cx)))
         .child(dialog_description(
             if app.picker_ssh {
@@ -727,8 +750,16 @@ fn volumes_dialog(
                 * size::SOURCE_VIEWPORT_FRACTION,
         ))
         .overflow_y_scroll()
+        .track_scroll(&app.picker_scroll)
         .child(popup);
-    let centred = centred_popup(popup);
+    let bar = crate::scroll_bar::bar(
+        "source-picker-bar",
+        &app.picker_scroll,
+        px(0.),
+        app.rem,
+        cx.omarchy().foreground,
+    );
+    let centred = centred_popup(crate::scroll_bar::framed(div(), popup, bar));
     let accept = cx.entity().downgrade();
     alert_dialog(&app.confirm_focus, cx)
         .open(true)
@@ -1047,7 +1078,19 @@ fn delete_dialog(
                 * size::CLEANUP_PREVIEW_HEIGHT_FRACTION,
         ))
         .overflow_scroll()
+        .track_scroll(&app.confirm_scroll)
         .child(dialog_description(body.clone(), cx));
+    let description = crate::scroll_bar::framed(
+        div().min_w_0(),
+        description,
+        crate::scroll_bar::bar(
+            "cleanup-confirmation-bar",
+            &app.confirm_scroll,
+            px(0.),
+            app.rem,
+            cx.omarchy().foreground,
+        ),
+    );
     let tick = (files > 0).then(|| {
         let entity = cx.entity().downgrade();
         checkbox(
@@ -1606,6 +1649,7 @@ fn sibling_menu(
         .w(size::SIBLING_MENU)
         .max_h(size::SIBLING_MENU_HEIGHT)
         .overflow_y_scroll()
+        .track_scroll(&app.crumb_scroll)
         .p(space::XS)
         .bg(theme.surface)
         .border_1()
@@ -1697,7 +1741,17 @@ fn sibling_menu(
                 .child(format!("+{more} smaller")),
         );
     }
-    panel
+    crate::scroll_bar::framed(
+        div(),
+        panel,
+        crate::scroll_bar::bar(
+            "sibling-menu-bar",
+            &app.crumb_scroll,
+            px(0.),
+            app.rem,
+            theme.foreground,
+        ),
+    )
 }
 
 /// How the mosaic is measured and drawn, as real controls with visible state.
@@ -3453,7 +3507,7 @@ fn side_panel(
     compact: bool,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
-) -> Div {
+) -> Stateful<Div> {
     // Once per frame: the marked list, the marked total and the disk all
     // read it, and building it reads the mount table.
     let plan = app.plan();
@@ -3476,6 +3530,8 @@ fn side_panel(
             }
         }));
     div()
+        .id("side-panel")
+        .debug_selector(|| "side-panel".into())
         .relative()
         .flex()
         .flex_col()
@@ -3570,12 +3626,18 @@ fn panel_lists(
                 .collect();
             if *seen.borrow() != now {
                 *seen.borrow_mut() = now;
-                window.refresh();
+                // Not `refresh`, which GPUI ignores while a frame draws.
+                window.request_animation_frame();
             }
         })
         .id("panel-lists")
         .debug_selector(|| "side-panel-scroll".into())
         .track_scroll(&app.panel_scroll)
+        // A menu opened from the selection floats over the panel, so it
+        // would stay behind while its chevron scrolls away: it closes.
+        .on_scroll_wheel(cx.listener(|this, _, window, cx| {
+            close_mark_menu(this, false, window, cx);
+        }))
         .flex()
         .flex_col()
         .gap(if compact { space::MD } else { space::LG })
@@ -3587,6 +3649,13 @@ fn panel_lists(
         scroll = scroll.child(list);
         heads.push(head);
     }
+    let extent = crate::scroll_bar::Extent::of(&app.panel_scroll);
+    // The panel's side padding: hairlines reach its borders, and the bar
+    // sits in the right-hand one, clear of the buttons.
+    let gutter = px(space::LG.0 * app.rem);
+    let edge = |id, top| {
+        crate::scroll_bar::edge(id, top, gutter, theme.border, theme.surface)
+    };
     div()
         .relative()
         .flex()
@@ -3594,6 +3663,16 @@ fn panel_lists(
         .flex_1()
         .min_h_0()
         .child(scroll)
+        .children(
+            extent
+                .more_above
+                .then(|| edge("side-panel-more-above", true)),
+        )
+        .children(
+            extent
+                .more_below
+                .then(|| edge("side-panel-more-below", false)),
+        )
         .children(pinned.and_then(|(index, top)| {
             let head = heads.get_mut(index)?.take()?;
             Some(
@@ -3618,6 +3697,13 @@ fn panel_lists(
                     .child(head),
             )
         }))
+        .child(crate::scroll_bar::bar(
+            "side-panel-scrollbar",
+            &app.panel_scroll,
+            crate::scroll_bar::in_gutter(gutter, app.rem),
+            app.rem,
+            theme.foreground,
+        ))
 }
 
 /// Which header to pin over the panel's lists, and how far up the next
@@ -4049,7 +4135,6 @@ fn selection_section(
             .map_or(MarkCheck::Allowed, |candidate| app.mark_check(&candidate))
     };
     let guard = mark_guard_note(app, &check, node.is_dir(), theme, cx);
-    let mut menu = None;
     if let MarkCheck::Protected(_) = &check {
         actions = actions.child(
             button("mark", "Can\u{2019}t remove", ButtonVariant::Outline, cx)
@@ -4061,14 +4146,16 @@ fn selection_section(
         );
     } else if let (MarkCheck::OverLimit(share), Some(path)) = (&check, &path) {
         let open = app.mark_menu.as_deref() == Some(path.as_path());
+        let menu =
+            open.then(|| mark_menu(share, target.clone(), app, theme, cx));
         actions = actions.child(over_limit_mark(
             share,
             path.clone(),
-            open,
+            menu,
+            app,
             theme,
             cx,
         ));
-        menu = open.then(|| mark_menu(share, target.clone(), theme, cx));
     } else if !is_current_root && !removed {
         // Inside a marked directory there is nothing to mark on its own: it
         // goes with that directory, so the button offers to keep it by
@@ -4136,7 +4223,6 @@ fn selection_section(
         }))
         .children(guard)
         .child(actions)
-        .children(menu)
         .children(match node.category {
             Category::FilesystemEvents => Some(service_guidance(
                 disktree_core::macos_services::Service::Fsevents,
@@ -4384,33 +4470,73 @@ fn sentence(reason: &str) -> String {
 
 /// Mark past the limit: the main part says why it does nothing, and the
 /// chevron beside it, the one live part, opens the menu with Mark anyway.
+///
+/// The menu floats over the panel from the chevron, as every other menu
+/// here does. It once opened in the panel's flow, under the buttons; on a
+/// short window that was below the part of the scroll in sight, so a press
+/// seemed to do nothing and the menu looked hidden behind the marked total.
+/// It opens below the chevron and flips above it when the window has no
+/// room below: GPUI's anchored element flips about its anchor point, so the
+/// point is the chevron's top corner and the offset its height, both from
+/// the last frame (`mark_menu_anchor`, the chevron's bounds).
 fn over_limit_mark(
     share: &Share,
     path: std::path::PathBuf,
-    open: bool,
+    menu: Option<Stateful<Div>>,
+    app: &Disktree,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
-    div()
-        .flex()
-        .flex_row()
-        .flex_1()
-        .child(
-            button(
-                "mark",
-                format!("Over {}% limit", share.limit),
-                ButtonVariant::Outline,
-                cx,
-            )
-            .debug_selector(|| "inspector-mark".into())
-            .flex_1()
-            .justify_center()
-            .semantic_disabled(true),
+    let open = menu.is_some();
+    let anchor = app.mark_menu_anchor.clone();
+    let row = div().flex().flex_row().flex_1();
+    let floating = menu.zip(app.mark_menu_anchor.get()).map(|(menu, at)| {
+        // The gap between chevron and menu, on whichever side it opens.
+        let gap = px(4.);
+        deferred(
+            anchored()
+                .anchor(gpui_kit::Anchor::TopRight)
+                .position(gpui_kit::point(at.right(), at.top()))
+                .offset(gpui_kit::point(px(0.), at.size.height))
+                .child(div().py(gap).child(menu)),
         )
-        .child(
-            button("mark-more", "\u{25be}", ButtonVariant::Outline, cx)
+        .with_priority(2)
+    });
+    row.child(
+        div()
+            // The chevron, the row's second child, as last laid out. A move
+            // while the menu is open takes one more frame, so the menu
+            // follows; a closed menu only remembers. Not `refresh`, which
+            // GPUI ignores while a frame draws.
+            .on_children_prepainted(move |bounds, window, _| {
+                let Some(now) = bounds.get(1).copied() else {
+                    return;
+                };
+                if anchor.replace(Some(now)) != Some(now) && open {
+                    window.request_animation_frame();
+                }
+            })
+            .flex()
+            .flex_row()
+            .flex_1()
+            .child(
+                button(
+                    "mark",
+                    format!("Over {}% limit", share.limit),
+                    ButtonVariant::Outline,
+                    cx,
+                )
+                .debug_selector(|| "inspector-mark".into())
+                .flex_1()
+                .justify_center()
+                .semantic_disabled(true),
+            )
+            .child(
+                button("mark-more", "\u{25be}", ButtonVariant::Outline, cx)
                 .debug_selector(|| "inspector-mark-more".into())
                 .aria_label("More ways to mark")
+                .aria_expanded(open)
+                .track_focus(&app.mark_more_focus)
                 .tab_stop(true)
                 // At body size the glyph reads as a dot beside the label.
                 .text_size(text::HEADING)
@@ -4418,20 +4544,51 @@ fn over_limit_mark(
                 .text_color(theme.warning)
                 .when(open, |button| button.bg(theme.warning.opacity(0.16)))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.mark_menu = (!open).then(|| path.clone());
-                    window.focus(&this.focus, cx);
-                    cx.notify();
+                    if open {
+                        close_mark_menu(this, false, window, cx);
+                    } else {
+                        // A menu takes the keys while it is open, as the
+                        // system's do: Enter on Mark anyway, Tab between
+                        // its two buttons, Escape back to the chevron.
+                        this.mark_menu = Some(path.clone());
+                        window.focus(&this.mark_anyway_focus, cx);
+                        cx.notify();
+                    }
                 })),
-        )
+            ),
+    )
+    .children(floating)
+}
+
+/// Close the Mark menu. Focus inside it goes back to the chevron when
+/// `to_chevron` (Escape, as a menu returns focus to its button), else to
+/// the treemap, and is left alone when it was elsewhere already.
+pub fn close_mark_menu(
+    this: &mut Disktree,
+    to_chevron: bool,
+    window: &mut Window,
+    cx: &mut Context<'_, Disktree>,
+) {
+    if this.mark_menu.take().is_none() {
+        return;
+    }
+    if to_chevron {
+        window.focus(&this.mark_more_focus, cx);
+    } else if this.mark_menu_focus.contains_focused(window, cx)
+        || this.mark_more_focus.is_focused(window)
+    {
+        window.focus(&this.focus, cx);
+    }
+    cx.notify();
 }
 
 /// What the chevron holds: Mark anyway, which names its cost, and the
-/// way to the setting. Drawn in the panel's flow, below the actions, so
-/// the panel's scroll never clips it; its rows are buttons, so Tab and a
-/// screen reader reach them as they reach Mark.
+/// way to the setting. Its rows are buttons, so Tab and a screen reader
+/// reach them as they reach Mark; Escape or a click elsewhere closes it.
 fn mark_menu(
     share: &Share,
     crumbs: Vec<usize>,
+    app: &Disktree,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Stateful<Div> {
@@ -4442,7 +4599,16 @@ fn mark_menu(
     div()
         .id("mark-menu")
         .debug_selector(|| "mark-menu".into())
+        .role(gpui_kit::Role::Group)
+        .aria_label("More ways to mark")
+        // The scope Tab cycles in while focus is inside (see the root's
+        // key handler): drawn deferred, the menu's buttons would otherwise
+        // come after everything else in the window's tab order.
+        .track_focus(&app.mark_menu_focus)
         .occlude()
+        // The panel's width less its padding would crowd the treemap; this
+        // fits the cost on two lines.
+        .w(Rems(15.))
         .flex()
         .flex_col()
         .gap(space::SM)
@@ -4451,14 +4617,25 @@ fn mark_menu(
         .border_color(theme.border)
         .bg(theme.surface)
         .shadow_lg()
-        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-            this.mark_menu = None;
-            cx.notify();
-        }))
+        .on_mouse_down_out(cx.listener(
+            |this, event: &gpui_kit::MouseDownEvent, window, cx| {
+                // A press on the chevron is its own: its click closes the
+                // menu. Closing here too drew a frame before the release,
+                // so the click saw a closed menu and opened it again.
+                let on_chevron = this
+                    .mark_menu_anchor
+                    .get()
+                    .is_some_and(|chevron| chevron.contains(&event.position));
+                if !on_chevron {
+                    close_mark_menu(this, false, window, cx);
+                }
+            },
+        ))
         .child(
             button("mark-anyway", "Mark anyway", ButtonVariant::Outline, cx)
                 .debug_selector(|| "mark-anyway".into())
                 .aria_description(cost.clone())
+                .track_focus(&app.mark_anyway_focus)
                 .tab_stop(true)
                 .justify_center()
                 .border_color(theme.warning)
@@ -6036,7 +6213,9 @@ fn review(
         .flex_col()
         .flex_1()
         .min_w_0()
+        .min_h_0()
         .overflow_y_scroll()
+        .track_scroll(&app.marked_scroll)
         .border_1()
         .border_color(theme.border)
         .bg(theme.inset)
@@ -6186,9 +6365,52 @@ fn review(
                     .p(space::LG)
                     .flex_1()
                     .min_h_0()
-                    .child(list)
-                    .child(summary))
-                .children(toasts),
+                    .child(crate::scroll_bar::framed(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .when(compact, gpui_kit::Styled::flex_none),
+                        list,
+                        crate::scroll_bar::bar(
+                            "marked-list-bar",
+                            &app.marked_scroll,
+                            px(0.),
+                            app.rem,
+                            theme.foreground,
+                        ),
+                    ))
+                    .child(crate::scroll_bar::framed(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_shrink_0()
+                            .min_h_0(),
+                        // In its frame the summary shrinks to the row, so
+                        // its own scroll takes what does not fit.
+                        summary.flex_shrink(1.),
+                        crate::scroll_bar::bar(
+                            "review-summary-bar",
+                            &app.summary_scroll,
+                            px(0.),
+                            app.rem,
+                            theme.foreground,
+                        ),
+                    )))
+                .children(toasts)
+                // In the screen's padding, beside the list and summary.
+                .child(crate::scroll_bar::bar(
+                    "review-scroll-bar",
+                    &app.review_scroll,
+                    crate::scroll_bar::in_padding(
+                        px(space::LG.0 * app.rem),
+                        app.rem,
+                    ),
+                    app.rem,
+                    theme.foreground,
+                )),
         )
         .when(
             chrome::Platform::current() == chrome::Platform::Linux,
@@ -6453,6 +6675,7 @@ fn review_summary(
         .flex_shrink_0()
         .min_h_0()
         .overflow_y_scroll()
+        .track_scroll(&app.summary_scroll)
         .p(space::LG)
         .border_1()
         .border_color(theme.border)
@@ -7706,7 +7929,21 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
                         .child("Keyboard and mouse"),
                     ),
             )
-            .child(keys)
+            .child(crate::scroll_bar::framed(
+                div().flex().flex_col().flex_1().min_h_0(),
+                keys,
+                crate::scroll_bar::bar(
+                    "help-scroll-bar",
+                    &app.help_scroll,
+                    // In the card's padding, clear of the longest line.
+                    crate::scroll_bar::in_gutter(
+                        px(space::XL.0 * app.rem),
+                        app.rem,
+                    ),
+                    app.rem,
+                    theme.foreground,
+                ),
+            ))
             .child(overlay_footer(note, close, cx).flex_shrink_0()),
         close,
         cx,
@@ -7928,7 +8165,17 @@ fn app_menu_dropdown(
                 crate::ui::chrome::STOPLIGHT_ZONE,
                 crate::ui::chrome::STRIP,
             ))
-            .child(list),
+            .child(crate::scroll_bar::framed(
+                div(),
+                list,
+                crate::scroll_bar::bar(
+                    "app-menu-bar",
+                    &app.menu_scroll,
+                    px(0.),
+                    app.rem,
+                    theme.foreground,
+                ),
+            )),
     )
 }
 

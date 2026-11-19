@@ -395,7 +395,17 @@ pub fn list(
                 })
                 .when(!compact, |header| header.child(summary)),
         )
-        .child(rows)
+        .child(crate::scroll_bar::framed(
+            div().flex().flex_col().flex_1().min_h_0(),
+            rows,
+            crate::scroll_bar::bar(
+                "file-rows-bar",
+                &app.file_scroll,
+                gpui_kit::px(0.),
+                app.rem,
+                theme.foreground,
+            ),
+        ))
         .child(
             div()
                 .flex()

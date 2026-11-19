@@ -306,8 +306,27 @@ fn body(
         },
     );
 
-    let sidebar = sidebar(app, phase, totals, &theme, cx)
-        .when(compact, |panel| panel.w_full().max_h(relative(0.45)));
+    let sidebar = crate::scroll_bar::framed(
+        div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .min_h_0()
+            .when(compact, |frame| frame.w_full().max_h(relative(0.45))),
+        // In its frame the panel shrinks to fit, so its own scroll takes
+        // what does not.
+        sidebar(app, phase, totals, &theme, cx)
+            .track_scroll(&app.run_summary_scroll)
+            .flex_shrink(1.)
+            .when(compact, gpui_kit::Styled::w_full),
+        crate::scroll_bar::bar(
+            "run-summary-bar",
+            &app.run_summary_scroll,
+            px(0.),
+            app.rem,
+            theme.foreground,
+        ),
+    );
     div()
         .relative()
         .flex()
@@ -440,6 +459,7 @@ fn list_column(
         .flex_col()
         .flex_1()
         .min_h_0()
+        .relative()
         .overflow_hidden()
         .border_1()
         .border_color(theme.border)
@@ -450,7 +470,22 @@ fn list_column(
             this.run_list.scrolled_by_hand = true;
             cx.notify();
         }))
-        .child(rows);
+        .child(rows)
+        .child(
+            crate::scroll_bar::bar(
+                "run-list-bar",
+                &app.run_scroll,
+                px(0.),
+                app.rem,
+                theme.foreground,
+            )
+            // Taking the bar is scrolling by hand, as the wheel is: the
+            // list stops following the item in hand.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                this.run_list.scrolled_by_hand = true;
+                cx.notify();
+            })),
+        );
 
     let cohorts = app.ledger.cohorts();
     div()

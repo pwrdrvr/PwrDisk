@@ -32,6 +32,7 @@ Read this before adding code, or when unsure which file owns a behavior.
 | spacing, type and size | `crates/disktree-app/src/ui.rs` — tokens only, no `px` in layout |
 | the mosaic's painting or labels | `crates/disktree-app/src/treemap_view.rs` |
 | layout of a screen | `crates/disktree-app/src/views.rs` |
+| a scroll area's bar and its more-above/below edges; every scroll area draws one in a frame around it | `crates/disktree-app/src/scroll_bar.rs` |
 | colours derived from the theme | `crates/disktree-app/src/palette.rs` |
 | the title strip, window controls, the client-side frame | `crates/disktree-app/src/chrome.rs` |
 | where the main window opens, and remembering it | `crates/disktree-app/src/window_frame.rs` |

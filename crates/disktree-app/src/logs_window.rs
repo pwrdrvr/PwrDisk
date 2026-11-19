@@ -1096,7 +1096,7 @@ impl Render for LogsWindow {
                     .min_h_0()
                     .px(space::LG)
                     .pb(space::SM)
-                    .child(self.viewport(&theme, cx)),
+                    .child(self.viewport(&theme, window.rem_size().as_f32(), cx)),
             )
             .child(self.status_bar(&theme));
         aux_window::frame(&["Help", "Logs"], actions, content, window, cx)
@@ -1445,6 +1445,7 @@ impl LogsWindow {
     fn viewport(
         &self,
         theme: &Theme,
+        rem: f32,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let frame = div()
@@ -1510,6 +1511,25 @@ impl LogsWindow {
                         },
                     ))
                     .child(rows),
+            )
+            // Over the frame, which is the viewport's size: the list's
+            // own rows fill it edge to edge.
+            .child(
+                crate::scroll_bar::bar(
+                    "logs-bar",
+                    &self.list,
+                    gpui_kit::px(0.),
+                    rem,
+                    theme.foreground,
+                )
+                // Taking the bar is scrolling by hand, as the wheel is:
+                // following stops, or the next line pulls the list back
+                // to the end under the pointer.
+                .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                    if this.live && this.scrollable() {
+                        this.set_live(false, cx);
+                    }
+                })),
             )
             .when(!self.live && self.new_lines > 0, |frame| {
                 frame.child(self.pill(theme, cx))

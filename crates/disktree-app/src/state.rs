@@ -542,6 +542,15 @@ pub struct Disktree {
     pub review_scroll: gpui_kit::ScrollHandle,
     /// The side panel's lists, measured to pin their headers.
     pub panel_scroll: gpui_kit::ScrollHandle,
+    /// The other scroll areas of this window, each tracked so its bar
+    /// (`scroll_bar::bar`) can read and move it.
+    pub volume_scroll: gpui_kit::ScrollHandle,
+    pub picker_scroll: gpui_kit::ScrollHandle,
+    pub crumb_scroll: gpui_kit::ScrollHandle,
+    pub marked_scroll: gpui_kit::ScrollHandle,
+    pub summary_scroll: gpui_kit::ScrollHandle,
+    pub run_summary_scroll: gpui_kit::ScrollHandle,
+    pub confirm_scroll: gpui_kit::ScrollHandle,
     /// Their sections' bounds as last laid out: a change asks for one more
     /// frame, so the pinned header follows the new layout.
     pub panel_layout: std::rc::Rc<
@@ -792,6 +801,17 @@ pub struct Disktree {
     /// The path whose Mark ▾ menu is open, which holds Mark anyway. Kept
     /// by path so a menu never stays open over another selection.
     pub mark_menu: Option<PathBuf>,
+    /// Where the over-limit Mark and its chevron were last drawn, which
+    /// the menu floats from (`views::over_limit_mark`).
+    pub mark_menu_anchor: std::rc::Rc<
+        std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>,
+    >,
+    /// The chevron that opens the Mark menu, the menu, and its first
+    /// button: opening moves focus to Mark anyway, Tab stays inside the
+    /// menu, and Escape returns to the chevron.
+    pub mark_more_focus: FocusHandle,
+    pub mark_menu_focus: FocusHandle,
+    pub mark_anyway_focus: FocusHandle,
     /// Review's field for the over-limit phrase, made when first shown.
     pub over_phrase: Option<Entity<InputState>>,
     /// The shares and mode the over-limit box was ticked for: a tick says
@@ -960,6 +980,13 @@ impl Disktree {
             review_page: 0,
             review_scroll: gpui_kit::ScrollHandle::new(),
             panel_scroll: gpui_kit::ScrollHandle::new(),
+            volume_scroll: gpui_kit::ScrollHandle::new(),
+            picker_scroll: gpui_kit::ScrollHandle::new(),
+            crumb_scroll: gpui_kit::ScrollHandle::new(),
+            marked_scroll: gpui_kit::ScrollHandle::new(),
+            summary_scroll: gpui_kit::ScrollHandle::new(),
+            run_summary_scroll: gpui_kit::ScrollHandle::new(),
+            confirm_scroll: gpui_kit::ScrollHandle::new(),
             panel_layout: std::rc::Rc::default(),
             layout_options: LayoutOptions {
                 max_depth: depth.clamp(1, 6),
@@ -1069,6 +1096,10 @@ impl Disktree {
             safety_policy: RefCell::new(None),
             refusal_cache: RefCell::new(None),
             mark_menu: None,
+            mark_menu_anchor: std::rc::Rc::default(),
+            mark_more_focus: cx.focus_handle().tab_stop(true),
+            mark_menu_focus: cx.focus_handle(),
+            mark_anyway_focus: cx.focus_handle().tab_stop(true),
             over_phrase: None,
             over_ticked: None,
             disk_probe: crate::mark_guard::disk_of,
@@ -5096,6 +5127,12 @@ impl Disktree {
             return;
         }
 
+        // The Mark menu closes before Escape does anything else.
+        if self.mark_menu.is_some() && key == "escape" {
+            self.mark_menu = None;
+            cx.notify();
+            return;
+        }
         // The legend's "+N" menu closes before Escape clears the legend.
         if self.legend_menu_open
             && key == "escape"
