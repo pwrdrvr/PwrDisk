@@ -65,6 +65,7 @@ pub enum State {
     Select { path: String },
     CrumbMenu { path: String },
     Mark { path: String },
+    AgentMark { path: String },
     Removed { path: String },
     Review,
     PermanentReview,
@@ -156,6 +157,7 @@ impl Scenario {
                     State::Select { path }
                     | State::CrumbMenu { path }
                     | State::Mark { path }
+                    | State::AgentMark { path }
                     | State::Removed { path } => {
                         // Scenario paths are portable POSIX fixture paths;
                         // no spelling may escape the explicitly scanned root.
@@ -334,7 +336,9 @@ mod tests {
             let expected = !parts.is_empty() && parts.iter().all(|p| {
                 !p.is_empty() && p != "." && p != ".."
             });
-            for kind in ["select", "crumb_menu", "mark", "removed"] {
+            for kind in
+                ["select", "crumb_menu", "mark", "agent_mark", "removed"]
+            {
                 let accepted = Scenario::parse(&script(&json!([
                     {"op": "setup", "state": {"type": kind, "path": path}},
                     {"op": "capture", "name": "x.png"}
