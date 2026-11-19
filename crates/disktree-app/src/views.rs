@@ -3395,36 +3395,48 @@ fn legend_chip(
                     cx.notify();
                 }
             }))
+            // Enter and Space reach the chip as a click, GPUI's for a
+            // focused element. Handled on key-down as well, one press
+            // cycled the chip twice and sent focus to the treemap.
             .on_key_down(cx.listener(
                 move |this, event: &KeyDownEvent, window, cx| {
+                    // The pill, for the keyboard. Plain `o` only: Cmd-O
+                    // and Ctrl-O belong to the app's bindings.
                     let plain = !event.keystroke.modifiers.modified();
-                    match event.keystroke.key.as_str() {
-                        "enter" | "space" => this.cycle_legend(id, cx),
-                        // The pill, for the keyboard. Plain `o` only:
-                        // Cmd-O and Ctrl-O belong to the app's bindings.
-                        "o" if plain && this.legend.offers_only(id) => {
-                            this.solo_legend(id, cx);
-                        }
-                        _ => return,
+                    if event.keystroke.key != "o"
+                        || !plain
+                        || !this.legend.offers_only(id)
+                    {
+                        return;
                     }
-                    // Chosen from the menu, the chip moves to the row and
-                    // the menu closes; focus goes back to "+N", ready for
-                    // the next, not to a chip that is no longer drawn.
+                    this.solo_legend(id, cx);
                     if in_menu {
                         close_legend_menu(this, true, window, cx);
                     }
                     cx.stop_propagation();
                 },
             ))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.cycle_legend(id, cx);
-                // A chip set from the menu moves to the row, where its
-                // state shows; the menu has done its job.
-                if in_menu {
-                    this.legend_menu_open = false;
-                }
-                window.focus(&this.focus, cx);
-            }))
+            .on_click(cx.listener(
+                move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                    this.cycle_legend(id, cx);
+                    if event.is_keyboard() {
+                        // Chosen from the menu, the chip moves to the row
+                        // and the menu closes; focus goes back to "+N",
+                        // ready for the next, not to a chip no longer
+                        // drawn. On the row, focus stays on the chip.
+                        if in_menu {
+                            close_legend_menu(this, true, window, cx);
+                        }
+                        return;
+                    }
+                    // A chip set from the menu moves to the row, where its
+                    // state shows; the menu has done its job.
+                    if in_menu {
+                        this.legend_menu_open = false;
+                    }
+                    window.focus(&this.focus, cx);
+                },
+            ))
             .when(in_menu, |row| row.w_full().px(space::SM))
             .child(swatch)
             .child(

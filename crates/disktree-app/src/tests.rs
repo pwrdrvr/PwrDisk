@@ -12737,6 +12737,46 @@ fn a_chip_chosen_in_the_legend_menu_leaves_focus_where_keys_work(
     assert!(cx.debug_bounds("legend-more").is_none(), "the menu emptied");
 }
 
+/// Model: Enter or Space on a chip on the row cycles it one step and
+/// leaves focus on it. The chip handled both on key-down and, as GPUI
+/// turns them into a click on release, in its click handler: one press
+/// cycled twice and sent focus to the treemap.
+#[gpui_kit::test]
+fn a_key_on_a_row_chip_cycles_it_once_and_keeps_focus(cx: &mut TestAppContext) {
+    let temp = fixture();
+    let (view, cx) = legend_menu_view(temp.path(), cx);
+    // Focus on a chip on the row: the stop before "+N".
+    click_on(cx, "legend-more");
+    press(cx, "escape");
+    assert_eq!(legend_focus(&view, cx), "+N");
+    press(cx, "shift-tab");
+    let on_chip = cx.update(|window, cx| window.focused(cx));
+    assert!(on_chip.is_some(), "a stop before +N");
+    for keys in ["enter", "space", "enter", "space", "enter", "space"] {
+        let before = read(&view, cx, |app| app.legend.clone());
+        activate(cx, keys);
+        let after = read(&view, cx, |app| app.legend.clone());
+        // Exactly one chip, one step: some chip's cycle gives `after`.
+        let ids = std::iter::once(crate::legend::ChipId::Reclaimable)
+            .chain(
+                (0..disktree_core::classify::Category::LEGEND.len())
+                    .map(crate::legend::ChipId::Kind),
+            )
+            .chain(
+                (0..crate::palette::AGE_BUCKETS.len())
+                    .map(crate::legend::ChipId::Age),
+            );
+        let once = ids.into_iter().any(|id| {
+            let mut stepped = before.clone();
+            stepped.cycle(id);
+            stepped == after
+        });
+        assert!(once, "{keys}: one step, {before:?} to {after:?}");
+        let focused = cx.update(|window, cx| window.focused(cx));
+        assert_eq!(focused, on_chip, "{keys}: focus stays on the chip");
+    }
+}
+
 /// Model: a press on the "+N" menu's padding, between its chips, keeps
 /// the menu open with focus inside it, so its keys still work: Tab reaches
 /// a chip and one Escape closes it, back to "+N". Such a press once took
