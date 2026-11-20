@@ -280,6 +280,17 @@ pub fn root(
                 cx.stop_propagation();
                 return;
             }
+            // So does the legend's "+N" menu, returning to "+N". Without
+            // this, the Escape below sends focus to the page first and the
+            // menu only closes on a second press.
+            let in_legend_menu = this.legend_menu_open
+                && (this.legend_menu_focus.contains_focused(window, cx)
+                    || this.legend_more_focus.is_focused(window));
+            if in_legend_menu && event.keystroke.key == "escape" {
+                close_legend_menu(this, true, window, cx);
+                cx.stop_propagation();
+                return;
+            }
             if event.keystroke.key == "tab" && !event.keystroke.modifiers.control && !event.keystroke.modifiers.platform {
                 if !this.has_modal() { this.find_open = false; }
                 let scope = this.tab_scope(window, cx);
@@ -3069,8 +3080,7 @@ fn legend_more(
                 if count == 1 { "chip" } else { "chips" }
             ))
             .aria_expanded(open)
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&app.legend_more_focus)
             .flex()
             .flex_row()
             .items_center()
@@ -3092,16 +3102,10 @@ fn legend_more(
             .on_hover(cx.listener(|this, hovered: &bool, _, _| {
                 this.legend_more_hover = *hovered;
             }))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    this.legend_menu_open = !this.legend_menu_open;
-                    cx.notify();
-                    cx.stop_propagation();
-                }
-            }))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.legend_menu_open = !this.legend_menu_open;
-                cx.notify();
+            // Enter and Space press it too, as a click: GPUI's for a
+            // focused element, as on the Mark menu's chevron.
+            .on_click(cx.listener(|this, _, window, cx| {
+                toggle_legend_menu(this, window, cx);
             }))
             .child(format!("+{count}"))
             .child(
@@ -3111,10 +3115,11 @@ fn legend_more(
         "Kinds with little or no data, and those the row has no room for",
     );
     let menu = open.then(|| {
-        let rows = fit
-            .more
-            .iter()
-            .map(|id| legend_chip(app, theme, *id, true, cx));
+        let rows = fit.more.iter().enumerate().map(|(index, id)| {
+            legend_chip(app, theme, *id, true, cx).when(index == 0, |chip| {
+                chip.track_focus(&app.legend_menu_first_focus)
+            })
+        });
         div().absolute().top_full().right_0().child(
             deferred(
                 // Hung from the right edge, the row's end, so it opens
@@ -3137,13 +3142,16 @@ fn legend_more(
                             .border_1()
                             .border_color(theme.control_border())
                             .shadow_lg()
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                // A press on "+N" is the button's.
-                                if !this.legend_more_hover {
-                                    this.legend_menu_open = false;
-                                    cx.notify();
-                                }
-                            }))
+                            .on_mouse_down_out(cx.listener(
+                                |this, _, window, cx| {
+                                    // A press on "+N" is the button's.
+                                    if !this.legend_more_hover {
+                                        close_legend_menu(
+                                            this, false, window, cx,
+                                        );
+                                    }
+                                },
+                            ))
                             .children(rows),
                     ),
             )
@@ -3157,6 +3165,44 @@ fn legend_more(
             .child(button)
             .children(menu),
     )
+}
+
+/// "+N", by click or key. Opening moves focus to the menu's first chip,
+/// as the Mark menu's chevron moves it to Mark anyway: drawn last, the
+/// chips would otherwise come after the rest of the window in its tab
+/// order. Closing returns focus to "+N".
+fn toggle_legend_menu(
+    this: &mut Disktree,
+    window: &mut Window,
+    cx: &mut Context<'_, Disktree>,
+) {
+    if this.legend_menu_open {
+        close_legend_menu(this, true, window, cx);
+    } else {
+        this.legend_menu_open = true;
+        window.focus(&this.legend_menu_first_focus, cx);
+        cx.notify();
+    }
+}
+
+/// Close the legend's "+N" menu. Focus goes to "+N" when `to_button`
+/// (Escape, or a chip chosen by key), and otherwise leaves the menu for
+/// the page if it was inside; focus elsewhere is left alone.
+fn close_legend_menu(
+    this: &mut Disktree,
+    to_button: bool,
+    window: &mut Window,
+    cx: &mut Context<'_, Disktree>,
+) {
+    if !std::mem::take(&mut this.legend_menu_open) {
+        return;
+    }
+    if to_button {
+        window.focus(&this.legend_more_focus, cx);
+    } else if this.legend_menu_focus.contains_focused(window, cx) {
+        window.focus(&this.focus, cx);
+    }
+    cx.notify();
 }
 
 /// Over a mosaic or list the legend has emptied: that nothing here
@@ -3356,30 +3402,48 @@ fn legend_chip(
                     cx.notify();
                 }
             }))
+            // Enter and Space reach the chip as a click, GPUI's for a
+            // focused element. Handled on key-down as well, one press
+            // cycled the chip twice and sent focus to the treemap.
             .on_key_down(cx.listener(
-                move |this, event: &KeyDownEvent, _, cx| {
+                move |this, event: &KeyDownEvent, window, cx| {
+                    // The pill, for the keyboard. Plain `o` only: Cmd-O
+                    // and Ctrl-O belong to the app's bindings.
                     let plain = !event.keystroke.modifiers.modified();
-                    match event.keystroke.key.as_str() {
-                        "enter" | "space" => this.cycle_legend(id, cx),
-                        // The pill, for the keyboard. Plain `o` only:
-                        // Cmd-O and Ctrl-O belong to the app's bindings.
-                        "o" if plain && this.legend.offers_only(id) => {
-                            this.solo_legend(id, cx);
-                        }
-                        _ => return,
+                    if event.keystroke.key != "o"
+                        || !plain
+                        || !this.legend.offers_only(id)
+                    {
+                        return;
+                    }
+                    this.solo_legend(id, cx);
+                    if in_menu {
+                        close_legend_menu(this, true, window, cx);
                     }
                     cx.stop_propagation();
                 },
             ))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.cycle_legend(id, cx);
-                // A chip set from the menu moves to the row, where its
-                // state shows; the menu has done its job.
-                if in_menu {
-                    this.legend_menu_open = false;
-                }
-                window.focus(&this.focus, cx);
-            }))
+            .on_click(cx.listener(
+                move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                    this.cycle_legend(id, cx);
+                    if event.is_keyboard() {
+                        // Chosen from the menu, the chip moves to the row
+                        // and the menu closes; focus goes back to "+N",
+                        // ready for the next, not to a chip no longer
+                        // drawn. On the row, focus stays on the chip.
+                        if in_menu {
+                            close_legend_menu(this, true, window, cx);
+                        }
+                        return;
+                    }
+                    // A chip set from the menu moves to the row, where its
+                    // state shows; the menu has done its job.
+                    if in_menu {
+                        this.legend_menu_open = false;
+                    }
+                    window.focus(&this.focus, cx);
+                },
+            ))
             .when(in_menu, |row| row.w_full().px(space::SM))
             .child(swatch)
             .child(

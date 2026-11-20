@@ -724,6 +724,13 @@ pub struct Disktree {
     /// The "+N" menu's container. Its chips are tab stops, so Tab can
     /// land in it, and [`Disktree::tab_scope`] then keeps Tab there.
     pub legend_menu_focus: FocusHandle,
+    /// The "+N" button, where Escape in its menu, or a chip chosen there
+    /// by key, returns focus, as a menu returns focus to its button.
+    pub legend_more_focus: FocusHandle,
+    /// The first chip in the "+N" menu, which takes focus as it opens:
+    /// drawn last, the menu's chips would otherwise come after the rest
+    /// of the window in its tab order.
+    pub legend_menu_first_focus: FocusHandle,
     /// The pointer is over the "+N" button, whose own press toggles the
     /// menu; a press anywhere else closes it.
     pub legend_more_hover: bool,
@@ -752,6 +759,10 @@ pub struct Disktree {
     /// Settings › Safety saved: read the policy again before the next
     /// mark is judged.
     _on_safety: gpui_kit::Subscription,
+    /// Moves focus off a control that stopped being drawn (see
+    /// [`Disktree::refocus_lost`]). Registered on the first frame, the
+    /// first place a window is at hand.
+    on_focus_lost: Option<gpui_kit::Subscription>,
     /// A trail crumb's sibling menu, when open.
     pub crumb_menu: Option<CrumbMenu>,
 
@@ -1094,6 +1105,8 @@ impl Disktree {
             shares_epoch: 0,
             legend_menu_open: false,
             legend_menu_focus: cx.focus_handle(),
+            legend_more_focus: cx.focus_handle().tab_stop(true),
+            legend_menu_first_focus: cx.focus_handle().tab_stop(true),
             legend_more_hover: false,
             legend_hover: None,
             find_epoch: 0,
@@ -1169,6 +1182,7 @@ impl Disktree {
                     cx.notify();
                 },
             ),
+            on_focus_lost: None,
         };
         if local && start {
             tree.device = device_for(&tree.root_path);
@@ -4293,6 +4307,29 @@ impl Disktree {
         }
     }
 
+    /// Focus was on a control the last frame no longer draws: a menu row
+    /// after its menu closed, "+N" once every chip fits, a toolbar button
+    /// folded into ⋮, a chip that moved between the row and "+N". GPUI
+    /// keeps focus on such a handle, where no key reaches but the root's,
+    /// which ignores most of them, so the keyboard seemed dead until
+    /// Escape. Focus goes where Escape would have sent it: the open
+    /// dialog or app menu, else the page.
+    fn refocus_lost(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.has_modal() || self.app_menu_open {
+            window.focus(&self.confirm_focus, cx);
+        } else {
+            self.focus_request = Some(FocusTarget::Root);
+            self.apply_focus(window, cx);
+        }
+        // Drawn during the frame that lost it, the new focus shows on
+        // the next.
+        cx.notify();
+    }
+
     /// `ctrl =`, `ctrl -` and `ctrl 0`: interface zoom. Changes the window's
     /// `rem`, which every size in this app is expressed in, so hierarchy and
     /// spacing keep their proportions at every step.
@@ -6147,6 +6184,10 @@ impl Render for Disktree {
     ) -> impl gpui_kit::IntoElement {
         #[cfg(test)]
         crate::marks::work::RENDERS.set(crate::marks::work::RENDERS.get() + 1);
+        if self.on_focus_lost.is_none() {
+            self.on_focus_lost =
+                Some(cx.on_focus_lost(window, Self::refocus_lost));
+        }
         if crate::ui::sync_scale(window, cx) {
             self.cache = None;
         }
