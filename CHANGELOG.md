@@ -7,6 +7,37 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.27.0
+
+- Scan chooser - Show the five most recent local roots first, with when
+  they were scanned, and leave out roots whose disks are not mounted.
+  On macOS, hide system, automount and Time Machine backup mounts from
+  the offered list; enter a hidden path in Directory to scan it.
+- Scrolling - Show a scrollbar wherever content overflows, including
+  lists, menus, Review and auxiliary windows. Add edge fades to the side
+  panel so content beyond its visible area is easier to find.
+- Menus and keyboard - Keep the Mark anyway menu visible beside its
+  button, move focus into it and the legend's +N menu, and keep Tab
+  inside the focused popover. Escape closes either menu and returns to
+  its button. Cycle a legend chip once per key press and restore usable
+  focus when a control disappears.
+- Menu actions - Fix a macOS hang when Rescan or another main-window
+  menu action is invoked with missing focus or from an auxiliary window.
+- Missing removal targets - Label vanished marks Already gone in Review
+  and exclude them from action counts and space estimates. Skip targets
+  or children that disappear before removal, while retaining the guards
+  on the remaining selection and requiring new confirmation for a
+  replacement path.
+- Agent requests - Let over-limit marks wait for a person in Review,
+  showing the selection's size and each disk's share. Agents cannot
+  preview or approve their removal; the person must confirm the exact
+  selection and mode, even with relaxed Safety settings. Changing the
+  agent's request clears any entered approval.
+- macOS capacity - Limit native Available queries to at most one per
+  mounted volume per minute across scan completion and the live meter,
+  reducing CacheDelete log traffic. Raw free space still updates on each
+  tick; chooser, report, MCP and removal readings make no such queries.
+
 ## v0.26.0
 
 - Save scan reports - Add a remembered Save a usage report option to the
