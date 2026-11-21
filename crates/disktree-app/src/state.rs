@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use disktree_core::access::file_table_readable;
 use disktree_core::filter::{Keep, Matches, filter_with, find_ignoring_case};
-use disktree_core::insights::{Candidate, worth_a_look};
+use disktree_core::insights::{Candidate, Weighing, worth_a_look};
 use disktree_core::path_style::PathStyle;
 use disktree_core::removal::{
     Plan, RemovalEvent, RemovalHandle, RemovalMode, Target, TrashBackend,
@@ -1756,22 +1756,20 @@ impl Disktree {
         self.rebuild_insights();
     }
 
-    /// Work "worth a look" out again from the tree as of the scan, ranked
-    /// largest first as sizes read now: by what each holds alone under
-    /// private weights, as the rows then show it. Ranked before what a
-    /// removal since took is discounted, so a row a removal shrinks keeps
-    /// its place. Stable, so equal ones keep the order they were found in.
+    /// Work "worth a look" out again from the tree as of the scan, chosen
+    /// and ranked largest first as sizes read now: by what each holds
+    /// alone under private weights, as the rows then show it, so one that
+    /// holds too little alone gives its place to the next. Chosen and
+    /// ranked before what a removal since took is discounted, so a row a
+    /// removal shrinks keeps its place.
     pub fn rebuild_insights(&mut self) {
+        let weighing = if self.private_weights() {
+            Weighing::Private
+        } else {
+            Weighing::Allocated
+        };
         self.insights = self.tree.as_deref().map_or_else(Vec::new, |tree| {
-            worth_a_look(tree.root(), self.scanned_at, INSIGHT_LIMIT)
-        });
-        let private = self.private_weights();
-        self.insights.sort_by_key(|candidate| {
-            std::cmp::Reverse(if private {
-                candidate.private
-            } else {
-                candidate.bytes
-            })
+            worth_a_look(tree.root(), self.scanned_at, INSIGHT_LIMIT, weighing)
         });
         self.forget_removed_insights();
     }

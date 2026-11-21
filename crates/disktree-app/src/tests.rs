@@ -15238,8 +15238,8 @@ fn worth_a_look_reads_private_sizes_and_removals(cx: &mut TestAppContext) {
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
         let mut cache = Draft::directory(".cache");
-        cache.children.push(clone("a", 1, 10));
-        cache.children.push(clone("b", 2, 20));
+        cache.children.push(clone("a", 1, 30));
+        cache.children.push(clone("b", 2, 50));
         let mut root = Draft::directory("fixture");
         root.children.push(cache);
         let mut root = Tree::from(root);
@@ -15260,7 +15260,7 @@ fn worth_a_look_reads_private_sizes_and_removals(cx: &mut TestAppContext) {
             (candidate.bytes, candidate.private)
         })
     };
-    assert_eq!(first(&view, cx), (160 * MIB, 30 * MIB));
+    assert_eq!(first(&view, cx), (160 * MIB, 80 * MIB));
     update(&view, cx, |app, _| {
         app.removed.toggle(
             disktree_core::removal::Target {
@@ -15273,8 +15273,9 @@ fn worth_a_look_reads_private_sizes_and_removals(cx: &mut TestAppContext) {
         );
         app.rebuild_insights();
     });
-    // a held 10 MiB alone: 20 of the 30 are left, not 30 less 80.
-    assert_eq!(first(&view, cx), (80 * MIB, 20 * MIB));
+    // a held 30 MiB alone: 50 of the 80 are left, not 80 less 80. Below
+    // the floor now, it keeps its row until a rescan.
+    assert_eq!(first(&view, cx), (80 * MIB, 50 * MIB));
     let shown = read(&view, cx, |app| {
         let candidate = app.insights.first().expect("a suggestion");
         if app.private_weights() {
@@ -15283,7 +15284,7 @@ fn worth_a_look_reads_private_sizes_and_removals(cx: &mut TestAppContext) {
             candidate.bytes
         }
     });
-    assert_eq!(shown, if offered { 20 * MIB } else { 80 * MIB });
+    assert_eq!(shown, if offered { 50 * MIB } else { 80 * MIB });
 }
 
 /// Under private weights the List view, its keys, Tab's walk over the

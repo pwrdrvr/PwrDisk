@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use disktree_core::classify::Category;
-use disktree_core::insights::{Candidate, worth_a_look};
+use disktree_core::insights::{Candidate, Weighing, worth_a_look};
 #[cfg(test)]
 use disktree_core::query;
 use disktree_core::query::Kind;
@@ -3171,7 +3171,7 @@ pub fn run_scan(root: PathBuf, options: ScanOptions) -> Result<Scan, String> {
     })?;
     let snapshot = handle.progress.snapshot();
     let at = now();
-    let insights = worth_a_look(tree.root(), at, INSIGHTS);
+    let insights = worth_a_look(tree.root(), at, INSIGHTS, Weighing::Allocated);
     Ok(Scan {
         space: space_info(&root).ok(),
         device: device_for(&root),
