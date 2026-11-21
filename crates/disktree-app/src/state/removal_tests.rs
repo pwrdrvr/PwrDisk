@@ -168,11 +168,23 @@ impl Model {
                 (app.path_at(&candidate.crumbs).unwrap(), candidate.bytes)
             })
             .collect();
+        // A linked agent hears the same suggestions, chosen by allocation
+        // whatever the window shows, in its own largest-first order.
+        let mut told: Vec<_> = app
+            .agent_state()
+            .insights
+            .into_iter()
+            .map(|insight| (insight.path, insight.bytes))
+            .collect();
+        let mut expected = expected;
         prop_assert_eq!(
             insights,
-            expected,
+            expected.clone(),
             "insights count live scanned bytes"
         );
+        told.sort();
+        expected.sort();
+        prop_assert_eq!(told, expected, "the agent hears the same");
         Ok(())
     }
 

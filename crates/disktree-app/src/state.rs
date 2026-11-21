@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use disktree_core::access::file_table_readable;
 use disktree_core::filter::{Keep, Matches, filter_with, find_ignoring_case};
-use disktree_core::insights::{Candidate, worth_a_look};
+use disktree_core::insights::{Candidate, Weighing, worth_a_look};
 use disktree_core::path_style::PathStyle;
 use disktree_core::removal::{
     Plan, RemovalEvent, RemovalHandle, RemovalMode, Target, TrashBackend,
@@ -767,8 +767,12 @@ pub struct Disktree {
     pub crumb_menu: Option<CrumbMenu>,
 
     pub color_mode: ColorMode,
-    /// The largest things worth clearing, recomputed when a scan lands.
+    /// The largest things worth clearing, recomputed when a scan lands,
+    /// chosen and ranked as sizes read now.
     pub insights: Vec<Candidate>,
+    /// The same, always chosen and ranked by allocated bytes: what a linked
+    /// agent is told, whatever Sizes the window shows.
+    pub agent_insights: Vec<Candidate>,
     /// What git knows about the checkouts looked at, and which to ask
     /// next: see `git_store`.
     pub git: GitStore,
@@ -1120,6 +1124,7 @@ impl Disktree {
             crumb_menu: None,
             color_mode: ColorMode::Kind,
             insights: Vec::new(),
+            agent_insights: Vec::new(),
             git: GitStore::new(cx.background_executor().now()),
             git_probe: default_git_probe(),
             git_wake: None,
@@ -1756,24 +1761,31 @@ impl Disktree {
         self.rebuild_insights();
     }
 
-    /// Work "worth a look" out again from the tree as of the scan, ranked
-    /// largest first as sizes read now: by what each holds alone under
-    /// private weights, as the rows then show it. Ranked before what a
-    /// removal since took is discounted, so a row a removal shrinks keeps
-    /// its place. Stable, so equal ones keep the order they were found in.
+    /// Work "worth a look" out again from the tree as of the scan, chosen
+    /// and ranked largest first as sizes read now: by what each holds
+    /// alone under private weights, as the rows then show it, so one that
+    /// holds too little alone gives its place to the next. Chosen and
+    /// ranked before what a removal since took is discounted, so a row a
+    /// removal shrinks keeps its place. A linked agent's list is chosen
+    /// by allocated bytes alone, so it does not follow the Sizes choice.
     pub fn rebuild_insights(&mut self) {
-        self.insights = self.tree.as_deref().map_or_else(Vec::new, |tree| {
-            worth_a_look(tree.root(), self.scanned_at, INSIGHT_LIMIT)
-        });
-        let private = self.private_weights();
-        self.insights.sort_by_key(|candidate| {
-            std::cmp::Reverse(if private {
-                candidate.private
-            } else {
-                candidate.bytes
+        let look = |weighing| {
+            self.tree.as_deref().map_or_else(Vec::new, |tree| {
+                worth_a_look(
+                    tree.root(),
+                    self.scanned_at,
+                    INSIGHT_LIMIT,
+                    weighing,
+                )
             })
-        });
-        self.forget_removed_insights();
+        };
+        let allocated = self.forget_removed_insights(look(Weighing::Allocated));
+        self.insights = if self.private_weights() {
+            self.forget_removed_insights(look(Weighing::Private))
+        } else {
+            allocated.clone()
+        };
+        self.agent_insights = allocated;
     }
 
     /// What the entries removed strictly below `path` held alone, as the
@@ -1795,12 +1807,14 @@ impl Disktree {
 
     /// Drop suggestions a removal since the scan already took, and take
     /// what went out of those it took part of.
-    fn forget_removed_insights(&mut self) {
+    fn forget_removed_insights(
+        &self,
+        mut insights: Vec<Candidate>,
+    ) -> Vec<Candidate> {
         if self.removed.is_empty() {
-            return;
+            return insights;
         }
         let style = self.path_style();
-        let mut insights = std::mem::take(&mut self.insights);
         insights.retain_mut(|candidate| {
             let Some(path) = self.path_at(&candidate.crumbs) else {
                 return false;
@@ -1820,7 +1834,7 @@ impl Disktree {
                 .min(candidate.bytes);
             candidate.bytes > 0
         });
-        self.insights = insights;
+        insights
     }
 
     /// Whether `path` is the top of a checkout, going to the disk only
@@ -2183,6 +2197,7 @@ impl Disktree {
         self.view = View::default();
         self.cache = None;
         self.insights.clear();
+        self.agent_insights.clear();
         self.git.clear();
         // Every new tree arrives through here, removal's rescan included.
         self.checkout = None;

@@ -15238,8 +15238,8 @@ fn worth_a_look_reads_private_sizes_and_removals(cx: &mut TestAppContext) {
     let (view, cx) = view_over(temp.path(), cx);
     update(&view, cx, |app, cx| {
         let mut cache = Draft::directory(".cache");
-        cache.children.push(clone("a", 1, 10));
-        cache.children.push(clone("b", 2, 20));
+        cache.children.push(clone("a", 1, 30));
+        cache.children.push(clone("b", 2, 50));
         let mut root = Draft::directory("fixture");
         root.children.push(cache);
         let mut root = Tree::from(root);
@@ -15260,7 +15260,7 @@ fn worth_a_look_reads_private_sizes_and_removals(cx: &mut TestAppContext) {
             (candidate.bytes, candidate.private)
         })
     };
-    assert_eq!(first(&view, cx), (160 * MIB, 30 * MIB));
+    assert_eq!(first(&view, cx), (160 * MIB, 80 * MIB));
     update(&view, cx, |app, _| {
         app.removed.toggle(
             disktree_core::removal::Target {
@@ -15273,8 +15273,9 @@ fn worth_a_look_reads_private_sizes_and_removals(cx: &mut TestAppContext) {
         );
         app.rebuild_insights();
     });
-    // a held 10 MiB alone: 20 of the 30 are left, not 30 less 80.
-    assert_eq!(first(&view, cx), (80 * MIB, 20 * MIB));
+    // a held 30 MiB alone: 50 of the 80 are left, not 80 less 80. Below
+    // the floor now, it keeps its row until a rescan.
+    assert_eq!(first(&view, cx), (80 * MIB, 50 * MIB));
     let shown = read(&view, cx, |app| {
         let candidate = app.insights.first().expect("a suggestion");
         if app.private_weights() {
@@ -15283,7 +15284,75 @@ fn worth_a_look_reads_private_sizes_and_removals(cx: &mut TestAppContext) {
             candidate.bytes
         }
     });
-    assert_eq!(shown, if offered { 20 * MIB } else { 80 * MIB });
+    assert_eq!(shown, if offered { 50 * MIB } else { 80 * MIB });
+}
+
+/// A linked agent is told the suggestions chosen by allocated bytes,
+/// whatever Sizes the window shows: under Private the window hides a cache
+/// of clones that holds nothing alone, and the agent still hears of it.
+#[gpui_kit::test]
+fn the_agent_hears_of_suggestions_the_private_list_hides(
+    cx: &mut TestAppContext,
+) {
+    use crate::toolbar::Sizes;
+    use disktree_core::sharing::{Allocation, CloneInfo};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+    const MIB: u64 = 1024 * 1024;
+    let clone = |name: &str, id: u64| {
+        let mut file = Draft::entry(name, NodeKind::File, 80 * MIB);
+        file.allocation = Some(Box::new(Allocation {
+            bytes: 80 * MIB,
+            identity: None,
+            links: 1,
+            followed: false,
+            clone: Some(CloneInfo {
+                device: 1,
+                id,
+                references: 2,
+                private_bytes: Some(0),
+                data_bytes: 80 * MIB,
+            }),
+        }));
+        file
+    };
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let mut cache = Draft::directory(".cache");
+        cache.children.push(clone("a", 1));
+        cache.children.push(clone("b", 2));
+        let mut root = Draft::directory("fixture");
+        root.children.push(cache);
+        let mut root = Tree::from(root);
+        aggregate(&mut root, Metric::Bytes);
+        disktree_core::classify::classify(&mut root);
+        app.tree = Some(std::sync::Arc::new(root));
+        app.crumbs = Vec::new();
+        app.options.apparent_size = false;
+        app.set_sizes(Sizes::Private, cx);
+        app.rebuild_insights();
+    });
+    let (private, window, told) = read(&view, cx, |app| {
+        let told: Vec<u64> = app
+            .agent_state()
+            .insights
+            .iter()
+            .map(|insight| insight.bytes)
+            .collect();
+        (app.private_weights(), app.insights.len(), told)
+    });
+    assert_eq!(window, usize::from(!private), "the window's own list");
+    assert_eq!(told, vec![160 * MIB], "the agent's list");
+    // Differential: Allocated tells the agent exactly the same.
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::Allocated, cx));
+    let allocated: Vec<_> = read(&view, cx, |app| app.agent_state().insights);
+    assert_eq!(
+        allocated.iter().map(|i| i.bytes).collect::<Vec<_>>(),
+        told,
+        "the Sizes choice does not change what the agent hears"
+    );
+    assert_eq!(read(&view, cx, |app| app.insights.len()), 1);
 }
 
 /// Under private weights the List view, its keys, Tab's walk over the
