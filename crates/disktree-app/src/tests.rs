@@ -15249,6 +15249,9 @@ fn worth_a_look_reads_private_sizes_and_removals(cx: &mut TestAppContext) {
         app.crumbs = Vec::new();
         app.options.apparent_size = false;
         app.set_sizes(Sizes::Private, cx);
+        // Where Private is not offered set_sizes changes nothing, so the
+        // tree set here has no suggestions until they are worked out.
+        app.rebuild_insights();
     });
     let offered = read(&view, cx, |app| app.sizes_offered(Sizes::Private));
     let first = |view: &Entity<Disktree>, cx: &mut Window| {
@@ -15261,7 +15264,7 @@ fn worth_a_look_reads_private_sizes_and_removals(cx: &mut TestAppContext) {
     update(&view, cx, |app, _| {
         app.removed.toggle(
             disktree_core::removal::Target {
-                path: temp.path().join(".cache/a"),
+                path: temp.path().join(".cache").join("a"),
                 bytes: 80 * MIB,
                 is_dir: true,
                 hidden: false,
