@@ -892,8 +892,15 @@ impl Disktree {
                 .tree
                 .as_deref()
                 .map(|tree| {
-                    self.insights
-                        .iter()
+                    // Largest first by the allocated bytes each row
+                    // reports, whatever order the window's Sizes choice
+                    // gives its own list.
+                    let mut insights: Vec<_> = self.insights.iter().collect();
+                    insights.sort_by_key(|candidate| {
+                        std::cmp::Reverse(candidate.bytes)
+                    });
+                    insights
+                        .into_iter()
                         .map(|candidate| Insight {
                             path: path_of(
                                 &self.root_path,

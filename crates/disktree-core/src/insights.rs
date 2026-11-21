@@ -54,6 +54,9 @@ pub struct Candidate {
     pub crumbs: Vec<usize>,
     /// What clearing it frees. For stale experiments, only the stale ones.
     pub bytes: u64,
+    /// The part of `bytes` it holds alone ([`Node::private_bytes`]), for
+    /// sizes shown as private.
+    pub private: u64,
     pub finding: Finding,
 }
 
@@ -89,6 +92,7 @@ fn visit(
         found.push(Candidate {
             crumbs: crumbs.clone(),
             bytes: node.bytes,
+            private: node.private_bytes(),
             finding: Finding::Reclaimable(reason),
         });
         return;
@@ -111,6 +115,7 @@ fn visit(
             found.push(Candidate {
                 crumbs: crumbs.clone(),
                 bytes: node.bytes,
+                private: node.private_bytes(),
                 finding: Finding::Worktrees {
                     count: trees.len(),
                     oldest_days: (now - oldest).max(0) / DAY,
@@ -122,7 +127,7 @@ fn visit(
     let experiments = scratch
         && (name.eq_ignore_ascii_case("tries")
             || name.eq_ignore_ascii_case("experiments"));
-    let mut stale = (0_usize, 0_u64);
+    let mut stale = (0_usize, 0_u64, 0_u64);
     for (index, child) in node.children().iter().enumerate() {
         let is_stale = experiments
             && child.is_dir()
@@ -131,6 +136,7 @@ fn visit(
         if is_stale {
             stale.0 += 1;
             stale.1 += child.bytes;
+            stale.2 += child.private_bytes();
             // A stale experiment is judged whole; its caches go with it.
             continue;
         }
@@ -142,6 +148,7 @@ fn visit(
         found.push(Candidate {
             crumbs: crumbs.clone(),
             bytes: stale.1,
+            private: stale.2,
             finding: Finding::StaleExperiments { count: stale.0 },
         });
     }

@@ -36,7 +36,8 @@ impl NodeKind {
     serde::Deserialize,
 )]
 pub enum Metric {
-    /// Bytes, apparent or on-disk depending on [`crate::scan::ScanOptions`].
+    /// Bytes, apparent or allocated depending on
+    /// [`crate::scan::ScanOptions`].
     #[default]
     Bytes,
     /// Number of files at or beneath the node.
@@ -165,6 +166,18 @@ impl Node<'_> {
             .iter()
             .filter(|child| !child.is_dir())
             .fold(0, |sum, child| child.bytes.saturating_add(sum))
+    }
+
+    /// [`Self::own_bytes`], each file counting what it holds alone
+    /// ([`Self::private_bytes`]).
+    pub fn own_private_bytes(self) -> u64 {
+        if !self.is_dir() {
+            return self.private_bytes();
+        }
+        self.children()
+            .iter()
+            .filter(|child| !child.is_dir())
+            .fold(0, |sum, child| child.private_bytes().saturating_add(sum))
     }
 
     /// Files directly in this directory; `1` for a file.

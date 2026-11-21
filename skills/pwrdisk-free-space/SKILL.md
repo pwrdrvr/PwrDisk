@@ -224,9 +224,11 @@ marking and removal-confirmation rules still apply.
   Drive, OneDrive, Dropbox or Google Drive removes it from the cloud and
   from every device. Ask every time, and mention the provider's own "free up
   space" or "remove download" instead.
-- **Sizes are bytes on disk.** A sparse disk image or VM disk shows what it
-  occupies, not its nominal size. Clones and hardlinks share blocks; the
-  platform reference says how.
+- **Sizes are allocated bytes.** A sparse disk image or VM disk shows what
+  it occupies, not its nominal size. Clones and hardlinks share blocks, and
+  an allocated size counts a clone's shared blocks in full, so it can be
+  more than the entry takes on disk; its private part is what it holds
+  alone. The platform reference says how.
 - **Trash frees nothing until it is emptied.** The review screen moves marks
   to the Trash or Recycle Bin by default. Tell the user the space comes back
   when they empty it. Emptying it is theirs to do.

@@ -280,12 +280,8 @@ pub fn list(
         // Clone blocks are not what removing the entry frees; say so
         // where the size is read, and nowhere when there are none. Under
         // private weights the private figure leads, as on its tile, and
-        // the split says what it takes on disk instead.
-        let split = if private {
-            crate::views::on_disk_split(node)
-        } else {
-            crate::views::clone_split(node)
-        };
+        // the split adds what is shared and the allocated total.
+        let split = crate::views::size_split(app, node);
         if private && split.is_some() {
             size.push_str(" private");
         }

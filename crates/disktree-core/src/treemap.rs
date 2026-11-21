@@ -315,9 +315,10 @@ fn place_children(
 /// Lists and menus rank by the weights the mosaic is drawn with, so under
 /// private weights the first entry is the largest tile. The tree is not
 /// reordered for it: crumbs, marks, history and a linked agent's view all
-/// read the tree's order, and moving between On disk and Private must not
-/// renumber them. Ties keep the tree's order, which is the on-disk rank,
-/// so equal private sizes still read largest on disk first. `None` lets
+/// read the tree's order, and moving between Allocated and Private must
+/// not renumber them. Ties keep the tree's order, which is the allocated
+/// rank, so equal private sizes still read largest allocated first. `None`
+/// lets
 /// a caller keep its index-is-position fast path, which is every
 /// directory without clones beneath it.
 pub fn private_rank(node: Node<'_>) -> Option<Vec<usize>> {
@@ -508,7 +509,7 @@ mod tests {
         /// Private weights give each top-level tile its share of what the
         /// level holds alone: a tile's area, padding aside, is its share
         /// of the private total. A node holding nothing alone, however
-        /// large on disk, gets no tile.
+        /// large its allocation, gets no tile.
         #[test]
         fn private_weights_size_tiles_by_what_they_hold_alone(
             spec in crate::test_clones::dir(),
@@ -609,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn on_disk_weights_ignore_private_sizes() {
+    fn allocated_weights_ignore_private_sizes() {
         use crate::sharing::{Allocation, CloneInfo};
         let mut shared = file("shared", 900);
         shared.allocation = Some(Box::new(Allocation {
@@ -630,8 +631,9 @@ mod tests {
             max_depth: 1,
             ..LayoutOptions::default()
         };
-        let on_disk = layout(root.root(), &[], area(), Metric::Bytes, &options);
-        assert_eq!(on_disk.len(), 2, "both take space on disk");
+        let allocated =
+            layout(root.root(), &[], area(), Metric::Bytes, &options);
+        assert_eq!(allocated.len(), 2, "both are allocated space");
         let private = layout(
             root.root(),
             &[],

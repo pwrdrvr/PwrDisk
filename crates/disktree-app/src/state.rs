@@ -1753,10 +1753,44 @@ impl Disktree {
     /// Recompute "worth a look" from the tree on screen.
     fn refresh_insights(&mut self) {
         self.scanned_at = now_seconds();
+        self.rebuild_insights();
+    }
+
+    /// Work "worth a look" out again from the tree as of the scan, ranked
+    /// largest first as sizes read now: by what each holds alone under
+    /// private weights, as the rows then show it. Ranked before what a
+    /// removal since took is discounted, so a row a removal shrinks keeps
+    /// its place. Stable, so equal ones keep the order they were found in.
+    pub fn rebuild_insights(&mut self) {
         self.insights = self.tree.as_deref().map_or_else(Vec::new, |tree| {
             worth_a_look(tree.root(), self.scanned_at, INSIGHT_LIMIT)
         });
+        let private = self.private_weights();
+        self.insights.sort_by_key(|candidate| {
+            std::cmp::Reverse(if private {
+                candidate.private
+            } else {
+                candidate.bytes
+            })
+        });
         self.forget_removed_insights();
+    }
+
+    /// What the entries removed strictly below `path` held alone, as the
+    /// scan measured them: the private counterpart of
+    /// [`crate::marks::Marks::below`], which sums their allocation.
+    fn removed_private_below(&self, path: &Path) -> u64 {
+        let style = self.path_style();
+        self.removed
+            .items()
+            .iter()
+            .filter(|item| {
+                item.path != path && style.is_below(&item.path, path)
+            })
+            .filter_map(|item| self.crumbs_for_path(&item.path))
+            .filter_map(|crumbs| self.node_at(&crumbs))
+            .map(disktree_core::tree::Node::private_bytes)
+            .sum()
     }
 
     /// Drop suggestions a removal since the scan already took, and take
@@ -1777,6 +1811,13 @@ impl Disktree {
             candidate.bytes = candidate
                 .bytes
                 .saturating_sub(self.removed.below(&path, style));
+            // The removed entries are still in the scanned tree, with what
+            // each held alone: that, not their allocation, leaves the
+            // private part. Never more than what is left.
+            candidate.private = candidate
+                .private
+                .saturating_sub(self.removed_private_below(&path))
+                .min(candidate.bytes);
             candidate.bytes > 0
         });
         self.insights = insights;
@@ -5949,7 +5990,8 @@ pub struct Label {
     pub marked: bool,
     pub size_text: String,
     /// The other byte figure, under the value where there is room: private
-    /// beside an on-disk size, or on-disk beside a private one. Empty when
+    /// beside an allocated size, or the shared part beside a private one.
+    /// Empty when
     /// it would say nothing new; see [`crate::widgets::tile_values`].
     pub detail_text: String,
     /// The exact fill state is needed for contrast after filtering/marking.
@@ -6046,7 +6088,7 @@ pub fn restart_args(
     } else if private {
         Sizes::Private
     } else {
-        Sizes::OnDisk
+        Sizes::Allocated
     };
     let mut args: Vec<std::ffi::OsString> =
         vec!["--sizes".into(), sizes.flag().into()];

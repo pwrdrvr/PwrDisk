@@ -39,6 +39,9 @@ pub struct Matches {
     /// names are counted; a filter by [`Rule`] alone counts nothing.
     pub count: usize,
     pub bytes: u64,
+    /// The private part of `bytes`: what the kept entries hold alone, as
+    /// [`Node::private_bytes`] counts it, for sizes shown as private.
+    pub private: u64,
     pub files: u64,
     /// What a file must be to be kept, besides matching the needle.
     pub rule: Option<Rule>,
@@ -143,11 +146,23 @@ pub struct Shares {
     /// By age chip, one per limit given; a file with no write time is in
     /// none.
     pub ages: Vec<u64>,
+    /// The same sums of what each file holds alone
+    /// ([`Node::private_bytes`]), for sizes shown as private. Only on the
+    /// shares [`shares`] returns, never on this private copy itself.
+    pub private: Option<Box<Self>>,
 }
 
 impl Shares {
     pub const fn kind(&self, category: Category) -> u64 {
         self.kinds[category as usize]
+    }
+
+    /// These shares, or with `private` their private sums, where known.
+    pub fn weighed(&self, private: bool) -> &Self {
+        match &self.private {
+            Some(sums) if private => sums,
+            _ => self,
+        }
     }
 }
 
@@ -158,6 +173,7 @@ pub fn shares(root: Node<'_>, now: i64, age_limits: &[i64]) -> Shares {
         ages: vec![0; age_limits.len()],
         ..Shares::default()
     };
+    let mut private = shares.clone();
     // A stack, not recursion: a scan can be deeper than a thread's stack
     // is comfortable with. The root's children, as a filter starts there:
     // a scan of one file holds nothing to filter.
@@ -168,19 +184,30 @@ pub fn shares(root: Node<'_>, now: i64, age_limits: &[i64]) -> Shares {
             stack.extend(children.iter());
             continue;
         }
+        let alone = node.private_bytes();
         shares.kinds[node.category as usize] += node.bytes;
+        private.kinds[node.category as usize] += alone;
         if node.reclaim.is_some() {
             shares.suggested += node.bytes;
+            private.suggested += alone;
         }
         if node.modified > 0 && !age_limits.is_empty() {
-            shares.ages[age_bucket(now, age_limits, node.modified)] +=
-                node.bytes;
+            let bucket = age_bucket(now, age_limits, node.modified);
+            shares.ages[bucket] += node.bytes;
+            private.ages[bucket] += alone;
         }
     }
+    shares.private = Some(Box::new(private));
     shares
 }
 
 impl Matches {
+    /// What was kept, in bytes, or with `private` the part of it held
+    /// alone: in the bytes the tiles are weighed by.
+    pub const fn weighed_bytes(&self, private: bool) -> u64 {
+        if private { self.private } else { self.bytes }
+    }
+
     /// How the node at `crumbs` takes part: `None` when it is filtered out.
     /// Anything outside the searched subtree, and anything beneath a match,
     /// is kept whole.
@@ -247,8 +274,9 @@ pub fn filter(node: Node<'_>, base: &[usize], needle: &str) -> Option<Matches> {
         ..Matches::default()
     };
     let mut crumbs = base.to_vec();
-    let (bytes, files) = visit(node, &mut crumbs, &mut matches);
+    let (bytes, private, files) = visit(node, &mut crumbs, &mut matches);
     matches.bytes = bytes;
+    matches.private = private;
     matches.files = files;
     Some(matches)
 }
@@ -278,6 +306,7 @@ pub fn filter_with(
         visit_rule(node, rule, &mut crumbs, &mut matches, &mut kept, named);
     matches.keep = kept.into_iter().collect();
     matches.bytes = tally.bytes;
+    matches.private = tally.private;
     matches.files = tally.files;
     Some(matches)
 }
@@ -286,6 +315,7 @@ pub fn filter_with(
 #[derive(Clone, Copy, Default)]
 struct Tally {
     bytes: u64,
+    private: u64,
     files: u64,
     /// Something passed, even if it weighs nothing.
     any: bool,
@@ -323,6 +353,7 @@ fn visit_rule(
             }
             Tally {
                 bytes: if passes { child.bytes } else { 0 },
+                private: if passes { child.private_bytes() } else { 0 },
                 files: if passes { child.files } else { 0 },
                 any: passes,
                 all: passes,
@@ -349,6 +380,7 @@ fn visit_rule(
             matches.count += 1;
         }
         total.bytes += tally.bytes;
+        total.private += tally.private;
         total.files += tally.files;
         total.any |= tally.any;
         total.all &= tally.all;
@@ -357,31 +389,33 @@ fn visit_rule(
     total
 }
 
-/// Returns the bytes and files that matched at or beneath `node`'s
-/// children, recording what to keep.
+/// Returns the bytes, their private part and the files that matched at or
+/// beneath `node`'s children, recording what to keep.
 fn visit(
     node: Node<'_>,
     crumbs: &mut Vec<usize>,
     matches: &mut Matches,
-) -> (u64, u64) {
-    let mut total = (0, 0);
+) -> (u64, u64, u64) {
+    let mut total = (0, 0, 0);
     for (index, child) in node.children().iter().enumerate() {
         crumbs.push(index);
         if contains_ignoring_case(child.name(), &matches.needle) {
             matches.keep.insert(crumbs.clone(), Keep::Whole);
             matches.count += 1;
             total.0 += child.bytes;
-            total.1 += child.files;
+            total.1 += child.private_bytes();
+            total.2 += child.files;
         } else if !child.children().is_empty() {
             let count_before = matches.count;
-            let (bytes, files) = visit(child, crumbs, matches);
+            let (bytes, private, files) = visit(child, crumbs, matches);
             // An empty matching directory still needs a reachable ancestor.
             if matches.count > count_before {
                 matches
                     .keep
                     .insert(crumbs.clone(), Keep::Partial { bytes, files });
                 total.0 += bytes;
-                total.1 += files;
+                total.1 += private;
+                total.2 += files;
             }
         }
         crumbs.pop();
@@ -781,5 +815,104 @@ mod tests {
         assert_eq!(&name[range], "cache");
         assert_eq!(find_ignoring_case(name, "é c"), Some(6..10));
         assert_eq!(find_ignoring_case("obj", "cache"), None);
+    }
+
+    /// A file APFS cloned, holding `private` of its `bytes` alone.
+    fn cloned(name: &str, bytes: u64, private: u64) -> Draft {
+        use crate::sharing::{Allocation, CloneInfo};
+        let mut node = file(name, bytes);
+        node.allocation = Some(Box::new(Allocation {
+            bytes,
+            identity: None,
+            links: 1,
+            followed: false,
+            clone: Some(CloneInfo {
+                device: 1,
+                id: 1 + bytes,
+                references: 2,
+                private_bytes: Some(private),
+                data_bytes: bytes,
+            }),
+        }));
+        node
+    }
+
+    proptest::proptest! {
+        /// Private sizes on screen add up as the tiles do: a filter's
+        /// private total is the private bytes of exactly the files it
+        /// keeps, and the legend's private sums are the scan's private
+        /// bytes split by kind. The oracle walks the files directly.
+        #[test]
+        fn private_sums_are_the_kept_files_held_alone(
+            files in proptest::collection::vec(
+                (1_u64..10_000, 0_u64..=100, proptest::bool::ANY),
+                1..24,
+            ),
+            needle in 0_usize..12,
+        ) {
+            let drafts: Vec<Draft> = files
+                .iter()
+                .enumerate()
+                .map(|(index, &(bytes, percent, clone))| {
+                    let name = format!("f{index}");
+                    if clone {
+                        cloned(&name, bytes, bytes * percent / 100)
+                    } else {
+                        file(&name, bytes)
+                    }
+                })
+                .collect();
+            let half = drafts.len() / 2;
+            let mut drafts = drafts;
+            let second = drafts.split_off(half);
+            let mut tree = Tree::from(dir(
+                "root",
+                vec![dir("a", drafts), dir("b", second)],
+            ));
+            aggregate(&mut tree, crate::tree::Metric::Bytes);
+            let root = tree.root();
+            let leaves: Vec<Node<'_>> = root
+                .children()
+                .iter()
+                .flat_map(|dir| dir.children().iter().collect::<Vec<_>>())
+                .collect();
+
+            let needle = format!("f{needle}");
+            let expected: u64 = leaves
+                .iter()
+                .filter(|leaf| leaf.name().contains(&needle))
+                .map(|leaf| leaf.private_bytes())
+                .sum();
+            let found = filter(root, &[], &needle);
+            proptest::prop_assert_eq!(
+                found.as_ref().map_or(0, |found| found.private),
+                expected
+            );
+            if let Some(found) = &found {
+                proptest::prop_assert!(found.private <= found.bytes);
+            }
+            let ruled = filter_with(root, &[], "", Some(&Rule {
+                only: Rule::bit(Category::Other),
+                ..Rule::default()
+            }));
+            let kept: u64 = leaves
+                .iter()
+                .filter(|leaf| leaf.category == Category::Other)
+                .map(|leaf| leaf.private_bytes())
+                .sum();
+            proptest::prop_assert_eq!(
+                ruled.map_or(0, |ruled| ruled.private),
+                kept
+            );
+
+            let shares = shares(root, 0, &[]);
+            let sum = |shares: &Shares| shares.kinds.iter().sum::<u64>();
+            proptest::prop_assert_eq!(sum(shares.weighed(false)), root.bytes);
+            proptest::prop_assert_eq!(
+                sum(shares.weighed(true)),
+                root.private_bytes()
+            );
+            proptest::prop_assert!(shares.weighed(true).private.is_none());
+        }
     }
 }

@@ -132,9 +132,9 @@ selected tile, Enter opens it, c reviews the marked list, ? lists every key.
 
 options:
   -a, --apparent-size   measure apparent length instead of allocated blocks
-      --sizes SIZES     on-disk, private (what each holds alone, beside APFS
-                        clones) or apparent; defaults to the last On disk or
-                        Private chosen
+      --sizes SIZES     allocated (APFS clones counted in full), private
+                        (what each holds alone) or apparent; defaults to
+                        the last Allocated or Private chosen
   -l, --follow-links    follow symlinks (local scans only)
   -H, --no-hidden       skip dotfiles and dot-directories
   -D, --disk            scan the whole disk the home directory is on
@@ -503,10 +503,10 @@ fn extract_scanner() -> Result<bool> {
 fn private_at_launch(args: &Args, saved: Option<&std::path::Path>) -> bool {
     let sizes = args.sizes.unwrap_or_else(|| {
         saved
-            .map_or(Ok(toolbar::Sizes::OnDisk), toolbar::load_sizes)
+            .map_or(Ok(toolbar::Sizes::Allocated), toolbar::load_sizes)
             .unwrap_or_else(|error| {
-                eprintln!("Cannot load Sizes: {error}; using On disk");
-                toolbar::Sizes::OnDisk
+                eprintln!("Cannot load Sizes: {error}; using Allocated");
+                toolbar::Sizes::Allocated
             })
     });
     sizes == toolbar::Sizes::Private && !args.options.apparent_size
@@ -565,7 +565,7 @@ fn parse_args_with_power(
                 let chosen =
                     toolbar::Sizes::parse(&value).with_context(|| {
                         format!(
-                            "unknown sizes {value}; try on-disk, private or \
+                            "unknown sizes {value}; try allocated, private or \
                          apparent"
                         )
                     })?;
@@ -905,16 +905,18 @@ mod argument_tests {
             let args = parse_args(arguments(flags)).expect("parses");
             (args.sizes, private_at_launch(&args, Some(&path)))
         };
-        assert_eq!(launch(&[]), (None, false), "nothing saved: on disk");
+        assert_eq!(launch(&[]), (None, false), "nothing saved: allocated");
         toolbar::save_sizes(&path, Sizes::Private).expect("save");
         assert_eq!(launch(&[]), (None, true));
         assert_eq!(launch(&["-a"]), (Some(Sizes::Apparent), false));
-        assert_eq!(
-            launch(&["--sizes", "on-disk"]),
-            (Some(Sizes::OnDisk), false)
-        );
+        for allocated in ["allocated", "on-disk"] {
+            assert_eq!(
+                launch(&["--sizes", allocated]),
+                (Some(Sizes::Allocated), false)
+            );
+        }
         assert_eq!(toolbar::load_sizes(&path).expect("kept"), Sizes::Private);
-        toolbar::save_sizes(&path, Sizes::OnDisk).expect("save");
+        toolbar::save_sizes(&path, Sizes::Allocated).expect("save");
         assert_eq!(
             launch(&["--sizes", "private"]),
             (Some(Sizes::Private), true)
@@ -935,7 +937,7 @@ mod argument_tests {
         );
         assert!(parse_args(arguments(&["--sizes", "logical"])).is_err());
         assert!(parse_args(arguments(&["--sizes"])).is_err());
-        // An unreadable choice is On disk, never a failed launch.
+        // An unreadable choice is Allocated, never a failed launch.
         std::fs::write(&path, "sideways\n").expect("corrupt");
         assert_eq!(launch(&[]), (None, false));
         assert!(!private_at_launch(

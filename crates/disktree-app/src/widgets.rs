@@ -89,8 +89,11 @@ pub fn short_value(node: Node<'_>, metric: Metric) -> String {
 
 /// A tile's value and, under it, the other byte figure when it says
 /// something new: `("96G", "212M private")`, or with `private` weights
-/// `("212M", "96G on disk")`. The second is empty without clone blocks or
-/// when both read the same once shortened, and always for a file count.
+/// the part shared with other clones, `("212M", "+96G shared")`. Never the
+/// allocated total under a private size: that counts the shared blocks in
+/// full, so it is not what the entry takes on disk. The second is empty
+/// without clone blocks or when both read the same once shortened, and
+/// always for a file count.
 pub fn tile_values(
     node: Node<'_>,
     metric: Metric,
@@ -111,7 +114,8 @@ pub fn tile_values(
         return (listed, String::new());
     }
     if private {
-        (alone, format!("{listed} on disk"))
+        let shared = human_bytes_short(node.bytes - held);
+        (alone, format!("+{shared} shared"))
     } else {
         (listed, format!("{alone} private"))
     }
@@ -765,5 +769,74 @@ mod tests {
     fn sizes_split_into_number_and_unit() {
         assert_eq!(split_size("90.1 GiB"), ("90.1".into(), "GiB".into()));
         assert_eq!(split_size("0"), ("0".into(), String::new()));
+    }
+
+    /// A directory of one APFS clone file holding `private` of `bytes`
+    /// alone, or a plain file when `clone` is false.
+    fn clone_tree(bytes: u64, private: u64, clone: bool) -> Tree {
+        use disktree_core::sharing::{Allocation, CloneInfo};
+        use disktree_core::tree::{Draft, Metric, NodeKind, aggregate};
+        let mut data = Draft::entry("data", NodeKind::File, bytes);
+        if clone {
+            data.allocation = Some(Box::new(Allocation {
+                bytes,
+                identity: None,
+                links: 1,
+                followed: false,
+                clone: Some(CloneInfo {
+                    device: 1,
+                    id: 3,
+                    references: 2,
+                    private_bytes: Some(private),
+                    data_bytes: bytes,
+                }),
+            }));
+        }
+        let mut copy = Draft::directory("copy");
+        copy.children.push(data);
+        let mut tree = Tree::from(copy);
+        aggregate(&mut tree, Metric::Bytes);
+        tree
+    }
+
+    use disktree_core::tree::Tree;
+
+    proptest::proptest! {
+        /// The tile rule the "on disk" label broke: under a private size
+        /// the second line is the part shared with other clones, named
+        /// so, never the allocated total; under an allocated size it is
+        /// the private part. Either is left out when it says nothing new.
+        #[test]
+        fn a_tiles_second_figure_names_what_it_counts(
+            bytes in 1_u64..(1 << 40),
+            percent in 0_u64..=100,
+            clone in proptest::bool::ANY,
+        ) {
+            let private = bytes / 100 * percent;
+            let tree = clone_tree(bytes, private, clone);
+            let node = tree.root();
+            let held = node.private_bytes();
+            let (value, detail) = tile_values(node, Metric::Bytes, true);
+            proptest::prop_assert_eq!(&value, &human_bytes_short(held));
+            proptest::prop_assert!(!detail.contains("on disk"), "{detail}");
+            if !detail.is_empty() {
+                proptest::prop_assert_eq!(
+                    &detail,
+                    &format!("+{} shared", human_bytes_short(bytes - held))
+                );
+            }
+            let (value, detail) = tile_values(node, Metric::Bytes, false);
+            proptest::prop_assert_eq!(&value, &human_bytes_short(bytes));
+            if !detail.is_empty() {
+                proptest::prop_assert_eq!(
+                    &detail,
+                    &format!("{} private", human_bytes_short(held))
+                );
+            }
+            // No clone blocks, or none shared: one figure either way.
+            if held == bytes {
+                proptest::prop_assert!(detail.is_empty());
+            }
+        }
     }
 }
