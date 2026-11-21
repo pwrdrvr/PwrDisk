@@ -84,8 +84,8 @@ impl Weighing {
 
 /// The `limit` largest findings beneath `root`, largest first.
 ///
-/// `weighing` names the figure that sizes them, and one below 64 MiB by it
-/// is left off. Equal ones keep the order they were found in. `now` is Unix
+/// `weighing` names the figure that sizes them, and one below `MIN_BYTES`
+/// (64 MiB) by it is left off. Equal ones keep the order they were found in. `now` is Unix
 /// seconds, passed in so the answer is testable.
 pub fn worth_a_look(
     root: Node<'_>,
@@ -405,18 +405,30 @@ mod tests {
             } else {
                 Weighing::Allocated
             };
-            let folders = caches
+            // Each folder's name, allocation and what its cache holds alone.
+            let specs: Vec<(String, u64, u64)> = caches
                 .iter()
                 .enumerate()
                 .map(|(index, &(mib, percent))| {
                     let bytes = mib * MIB;
-                    let blob = if percent == 100 {
-                        file("blob", bytes, 1)
+                    let alone = if percent == 100 {
+                        bytes
                     } else {
-                        let id = u64::try_from(index).unwrap() + 1;
-                        clone("blob", bytes, bytes / 100 * percent, id)
+                        bytes / 100 * percent
                     };
-                    dir(&format!("p{index}"), vec![dir(".cache", vec![blob])])
+                    (format!("p{index}"), bytes, alone)
+                })
+                .collect();
+            let folders = specs
+                .iter()
+                .zip(1_u64..)
+                .map(|((name, bytes, alone), id)| {
+                    let blob = if alone == bytes {
+                        file("blob", *bytes, 1)
+                    } else {
+                        clone("blob", *bytes, *alone, id)
+                    };
+                    dir(name, vec![dir(".cache", vec![blob])])
                 })
                 .collect();
             let tree = scan(dir("home", folders));
@@ -429,18 +441,8 @@ mod tests {
                     .position(|child| child.name() == name)
                     .expect("generated folder")
             };
-            let mut oracle: Vec<(String, u64, u64)> = caches
-                .iter()
-                .enumerate()
-                .map(|(index, &(mib, percent))| {
-                    let bytes = mib * MIB;
-                    let alone = if percent == 100 {
-                        bytes
-                    } else {
-                        bytes / 100 * percent
-                    };
-                    (format!("p{index}"), bytes, alone)
-                })
+            let mut oracle: Vec<(String, u64, u64)> = specs
+                .into_iter()
                 .filter(|&(_, bytes, alone)| {
                     (if private { alone } else { bytes }) >= MIN_BYTES
                 })
