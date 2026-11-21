@@ -15204,6 +15204,85 @@ fn the_sizes_choice_is_saved_for_the_next_launch(cx: &mut TestAppContext) {
     assert!(message.contains("could not be saved"), "{message}");
 }
 
+/// Worth a look follows the Sizes choice: under Private each row is what
+/// the suggestion holds alone, ranked by it. After part of a suggestion is
+/// removed, what is left of its private part is less what the removed
+/// entries held alone, never less their allocation.
+#[gpui_kit::test]
+fn worth_a_look_reads_private_sizes_and_removals(cx: &mut TestAppContext) {
+    use crate::toolbar::Sizes;
+    use disktree_core::sharing::{Allocation, CloneInfo};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+    const MIB: u64 = 1024 * 1024;
+    let clone = |name: &str, id: u64, private: u64| {
+        let mut file = Draft::entry(name, NodeKind::File, 80 * MIB);
+        file.allocation = Some(Box::new(Allocation {
+            bytes: 80 * MIB,
+            identity: None,
+            links: 1,
+            followed: false,
+            clone: Some(CloneInfo {
+                device: 1,
+                id,
+                references: 2,
+                private_bytes: Some(private * MIB),
+                data_bytes: 80 * MIB,
+            }),
+        }));
+        let mut dir = Draft::directory(name);
+        dir.children.push(file);
+        dir
+    };
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let mut cache = Draft::directory(".cache");
+        cache.children.push(clone("a", 1, 10));
+        cache.children.push(clone("b", 2, 20));
+        let mut root = Draft::directory("fixture");
+        root.children.push(cache);
+        let mut root = Tree::from(root);
+        aggregate(&mut root, Metric::Bytes);
+        disktree_core::classify::classify(&mut root);
+        app.tree = Some(std::sync::Arc::new(root));
+        app.crumbs = Vec::new();
+        app.options.apparent_size = false;
+        app.set_sizes(Sizes::Private, cx);
+    });
+    let offered = read(&view, cx, |app| app.sizes_offered(Sizes::Private));
+    let first = |view: &Entity<Disktree>, cx: &mut Window| {
+        read(view, cx, |app| {
+            let candidate = app.insights.first().expect("a suggestion");
+            (candidate.bytes, candidate.private)
+        })
+    };
+    assert_eq!(first(&view, cx), (160 * MIB, 30 * MIB));
+    update(&view, cx, |app, _| {
+        app.removed.toggle(
+            disktree_core::removal::Target {
+                path: temp.path().join(".cache/a"),
+                bytes: 80 * MIB,
+                is_dir: true,
+                hidden: false,
+            },
+            app.path_style(),
+        );
+        app.rebuild_insights();
+    });
+    // a held 10 MiB alone: 20 of the 30 are left, not 30 less 80.
+    assert_eq!(first(&view, cx), (80 * MIB, 20 * MIB));
+    let shown = read(&view, cx, |app| {
+        let candidate = app.insights.first().expect("a suggestion");
+        if app.private_weights() {
+            candidate.private
+        } else {
+            candidate.bytes
+        }
+    });
+    assert_eq!(shown, if offered { 20 * MIB } else { 80 * MIB });
+}
+
 /// Under private weights the List view, its keys, Tab's walk over the
 /// tiles and the sibling menu rank by what each entry holds alone, as
 /// the tiles are sized, and the list and the menu show that figure.

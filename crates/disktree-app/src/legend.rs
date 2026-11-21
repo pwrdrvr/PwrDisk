@@ -345,11 +345,7 @@ impl Disktree {
             // The scanned root is never recorded, only summed: nothing
             // passed when that sum is empty.
             None | Some(Keep::Partial { bytes: 0, files: 0 }) => Some((
-                if self.private_weights() {
-                    matches.private
-                } else {
-                    matches.bytes
-                },
+                matches.weighed_bytes(self.private_weights()),
                 matches.files,
             )),
             Some(_) => None,

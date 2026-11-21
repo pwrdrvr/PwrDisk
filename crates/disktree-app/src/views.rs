@@ -2802,11 +2802,7 @@ fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
         let shown = match app.legend_matches.as_deref() {
             Some(matches) if !app.legend_pending => format!(
                 "Showing {} of {}",
-                human_bytes(if private {
-                    matches.private
-                } else {
-                    matches.bytes
-                }),
+                human_bytes(matches.weighed_bytes(private)),
                 human_bytes(tree.map_or(bytes, |node| app.shown_bytes(node)))
             ),
             _ => "Filtering\u{2026}".to_owned(),
@@ -3864,7 +3860,7 @@ fn head_note(note: &'static str, theme: &Theme) -> Div {
 }
 
 /// A suggestion's size as sizes read now, as its rows are ranked
-/// ([`Disktree::rank_insights`]).
+/// ([`Disktree::rebuild_insights`]).
 fn insight_bytes(
     app: &Disktree,
     candidate: &disktree_core::insights::Candidate,
@@ -6191,11 +6187,7 @@ fn find_field(app: &Disktree, theme: &Theme) -> Div {
                 "{} match{} · {}",
                 widgets::human_count(matches.count as u64),
                 if matches.count == 1 { "" } else { "es" },
-                human_bytes(if app.private_weights() {
-                    matches.private
-                } else {
-                    matches.bytes
-                })
+                human_bytes(matches.weighed_bytes(app.private_weights()))
             ),
             if app.filter_applied {
                 "esc clears"

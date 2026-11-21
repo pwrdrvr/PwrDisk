@@ -365,7 +365,7 @@ impl Disktree {
         if apparent == self.options.apparent_size {
             // The list ranks by these weights too: keep its page on the
             // selection, wherever it now ranks. Worth a look follows.
-            self.rank_insights();
+            self.rebuild_insights();
             self.follow_selection_page();
             cx.notify();
             return;

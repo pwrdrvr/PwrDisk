@@ -202,6 +202,12 @@ pub fn shares(root: Node<'_>, now: i64, age_limits: &[i64]) -> Shares {
 }
 
 impl Matches {
+    /// What was kept, in bytes, or with `private` the part of it held
+    /// alone: in the bytes the tiles are weighed by.
+    pub const fn weighed_bytes(&self, private: bool) -> u64 {
+        if private { self.private } else { self.bytes }
+    }
+
     /// How the node at `crumbs` takes part: `None` when it is filtered out.
     /// Anything outside the searched subtree, and anything beneath a match,
     /// is kept whole.
@@ -886,12 +892,12 @@ mod tests {
                 proptest::prop_assert!(found.private <= found.bytes);
             }
             let ruled = filter_with(root, &[], "", Some(&Rule {
-                only: Rule::bit(crate::classify::Category::Other),
+                only: Rule::bit(Category::Other),
                 ..Rule::default()
             }));
             let kept: u64 = leaves
                 .iter()
-                .filter(|leaf| leaf.category == crate::classify::Category::Other)
+                .filter(|leaf| leaf.category == Category::Other)
                 .map(|leaf| leaf.private_bytes())
                 .sum();
             proptest::prop_assert_eq!(
