@@ -55,7 +55,8 @@ impl Kind {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Order {
-    /// Listed allocation: what the entry takes on disk.
+    /// Listed allocation: every block the entry's files are allocated,
+    /// APFS clone blocks counted in full.
     #[default]
     Size,
     /// What the entry holds alone ([`Node::private_bytes`]): on APFS, the

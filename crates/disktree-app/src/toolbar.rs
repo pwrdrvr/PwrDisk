@@ -4,9 +4,9 @@
 //! apply on the next scan), then history and depth (which have keys), then
 //! Size | Files | Age. The Treemap | List switch never folds.
 //!
-//! Also the Sizes menu, which says what a size counts: on disk, private or
-//! apparent. It sits with the scan options, since one of its three is one.
-//! On disk or Private is remembered between launches; Apparent is not
+//! Also the Sizes menu, which says what a size counts: allocated, private
+//! or apparent. It sits with the scan options, since one of its three is
+//! one. Allocated or Private is remembered between launches; Apparent is not
 //! (see [`save_sizes`]).
 
 use std::io;
@@ -99,20 +99,20 @@ pub enum Sizes {
     /// Allocated blocks: every file's whole allocation, clone blocks it
     /// may share with other clones included.
     #[default]
-    OnDisk,
+    Allocated,
     /// What each holds alone ([`disktree_core::tree::Node::private_bytes`]).
-    /// The same scan as On disk, weighted differently: no rescan.
+    /// The same scan as Allocated, weighted differently: no rescan.
     Private,
     /// File lengths. A scan of its own, with no clone facts.
     Apparent,
 }
 
 impl Sizes {
-    pub const ALL: [Self; 3] = [Self::OnDisk, Self::Private, Self::Apparent];
+    pub const ALL: [Self; 3] = [Self::Allocated, Self::Private, Self::Apparent];
 
     pub const fn name(self) -> &'static str {
         match self {
-            Self::OnDisk => "On disk",
+            Self::Allocated => "Allocated",
             Self::Private => "Private",
             Self::Apparent => "Apparent",
         }
@@ -121,7 +121,7 @@ impl Sizes {
     /// What the choice does, under its name in the menu.
     pub const fn detail(self) -> &'static str {
         match self {
-            Self::OnDisk => "Allocated blocks, clones counted in full",
+            Self::Allocated => "Every block, clones counted in full",
             Self::Private => "Only what each holds alone. No rescan.",
             Self::Apparent => "File lengths. Rescans, without clone facts.",
         }
@@ -129,7 +129,7 @@ impl Sizes {
 
     pub const fn key(self) -> &'static str {
         match self {
-            Self::OnDisk => "sizes-on-disk",
+            Self::Allocated => "sizes-allocated",
             Self::Private => "sizes-private",
             Self::Apparent => "sizes-apparent",
         }
@@ -137,7 +137,7 @@ impl Sizes {
 
     const fn index(self) -> usize {
         match self {
-            Self::OnDisk => 0,
+            Self::Allocated => 0,
             Self::Private => 1,
             Self::Apparent => 2,
         }
@@ -146,13 +146,19 @@ impl Sizes {
     /// The choice as `--sizes` and the saved setting spell it.
     pub const fn flag(self) -> &'static str {
         match self {
-            Self::OnDisk => "on-disk",
+            Self::Allocated => "allocated",
             Self::Private => "private",
             Self::Apparent => "apparent",
         }
     }
 
+    /// A `--sizes` value or a saved choice. `on-disk` is what Allocated
+    /// was called up to v0.27, so older saved choices and scripts still
+    /// load.
     pub fn parse(value: &str) -> Option<Self> {
+        if value == "on-disk" {
+            return Some(Self::Allocated);
+        }
         Self::ALL.into_iter().find(|sizes| sizes.flag() == value)
     }
 }
@@ -162,7 +168,7 @@ pub fn sizes_settings_path() -> Option<PathBuf> {
     crate::power::config_base().map(|base| base.join("pwrdisk/sizes"))
 }
 
-/// The remembered Sizes choice: On disk when none was saved.
+/// The remembered Sizes choice: Allocated when none was saved.
 pub fn load_sizes(path: &Path) -> io::Result<Sizes> {
     match std::fs::read_to_string(path) {
         Ok(value) => match Sizes::parse(value.trim()) {
@@ -173,13 +179,13 @@ pub fn load_sizes(path: &Path) -> io::Result<Sizes> {
             Some(sizes) => Ok(sizes),
         },
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(Sizes::OnDisk)
+            Ok(Sizes::Allocated)
         }
         Err(error) => Err(error),
     }
 }
 
-/// Remember `sizes` for the next launch. Only On disk and Private are
+/// Remember `sizes` for the next launch. Only Allocated and Private are
 /// kept: they weigh one block scan two ways, while Apparent measures
 /// something else, file lengths without clone facts, and that is asked
 /// for each time (`--apparent-size`, or the menu) rather than carried
@@ -297,8 +303,8 @@ impl Disktree {
         cx.notify();
     }
 
-    /// What a size counts now. A Private choice made earlier reads as On
-    /// disk where Private is not offered (an SSH host, no clone facts),
+    /// What a size counts now. A Private choice made earlier reads as
+    /// Allocated where Private is not offered (an SSH host, no clone facts),
     /// and comes back with a scan that offers it.
     pub fn sizes(&self) -> Sizes {
         if self.options.apparent_size {
@@ -308,7 +314,7 @@ impl Disktree {
         {
             Sizes::Private
         } else {
-            Sizes::OnDisk
+            Sizes::Allocated
         }
     }
 
@@ -320,9 +326,21 @@ impl Disktree {
             && self.sizes() == Sizes::Private
     }
 
+    /// `node`'s bytes as sizes read now: what it holds alone under
+    /// private weights, else its allocated bytes. Every figure that sizes
+    /// or ranks what is on screen reads this, so none of them disagrees
+    /// with the tiles.
+    pub fn shown_bytes(&self, node: disktree_core::tree::Node<'_>) -> u64 {
+        if self.private_weights() {
+            node.private_bytes()
+        } else {
+            node.bytes
+        }
+    }
+
     /// Whether `sizes` can be chosen here. Private needs clone facts,
     /// which only a local scan on macOS with clone metadata gathers;
-    /// anywhere else every private size equals its on-disk one.
+    /// anywhere else every private size equals its allocated one.
     pub fn sizes_offered(&self, sizes: Sizes) -> bool {
         sizes != Sizes::Private
             || (cfg!(target_os = "macos")
@@ -330,7 +348,7 @@ impl Disktree {
                 && self.remote.is_none())
     }
 
-    /// Count sizes as `sizes`. Between On disk and Private only the weights
+    /// Count sizes as `sizes`. Between Allocated and Private only the weights
     /// change, so the tree on screen is laid out again; Apparent, or
     /// leaving it, measures differently and rescans.
     pub fn set_sizes(&mut self, sizes: Sizes, cx: &mut Context<'_, Self>) {
@@ -346,7 +364,8 @@ impl Disktree {
         self.layout_options.private = sizes == Sizes::Private;
         if apparent == self.options.apparent_size {
             // The list ranks by these weights too: keep its page on the
-            // selection, wherever it now ranks.
+            // selection, wherever it now ranks. Worth a look follows.
+            self.rank_insights();
             self.follow_selection_page();
             cx.notify();
             return;
@@ -359,7 +378,7 @@ impl Disktree {
     /// preset is. Said only when it could not be: the choice itself shows
     /// in the bar. No settings directory is a session-only setting.
     ///
-    /// Only where Private is offered: elsewhere On disk is the only
+    /// Only where Private is offered: elsewhere Allocated is the only
     /// weighing on screen, and choosing it says nothing about a Private
     /// remembered for local scans on this Mac.
     fn remember_sizes(&mut self, sizes: Sizes, cx: &mut Context<'_, Self>) {
@@ -513,7 +532,7 @@ mod tests {
             BarFit::Folded.more_items(),
             [
                 MoreItem::Hidden,
-                MoreItem::Sizes(Sizes::OnDisk),
+                MoreItem::Sizes(Sizes::Allocated),
                 MoreItem::Sizes(Sizes::Private),
                 MoreItem::Sizes(Sizes::Apparent),
                 MoreItem::Workers
@@ -524,17 +543,17 @@ mod tests {
         assert_eq!(BarFit::Tight.more_items().len(), 11);
     }
 
-    /// On disk and Private come back as saved; Apparent is never written,
+    /// Allocated and Private come back as saved; Apparent is never written,
     /// so choosing it keeps the weighing saved before, and a file that
     /// names it, or anything else, is reported rather than read.
     #[test]
     fn the_saved_sizes_are_a_weighing_never_apparent() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config/sizes");
-        assert_eq!(load_sizes(&path).expect("missing"), Sizes::OnDisk);
+        assert_eq!(load_sizes(&path).expect("missing"), Sizes::Allocated);
         save_sizes(&path, Sizes::Apparent).expect("nothing to write");
         assert!(!path.exists(), "Apparent is not remembered");
-        for sizes in [Sizes::Private, Sizes::OnDisk, Sizes::Private] {
+        for sizes in [Sizes::Private, Sizes::Allocated, Sizes::Private] {
             save_sizes(&path, sizes).expect("save");
             assert_eq!(load_sizes(&path).expect("load"), sizes);
         }
@@ -551,6 +570,23 @@ mod tests {
         for sizes in Sizes::ALL {
             assert_eq!(Sizes::parse(sizes.flag()), Some(sizes));
         }
+    }
+
+    /// Allocated was called On disk up to v0.27 and saved as `on-disk`:
+    /// that file, and `--sizes on-disk` in a script, still mean it, while
+    /// a new save writes the new name.
+    #[test]
+    fn a_choice_saved_as_on_disk_still_loads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sizes");
+        std::fs::write(&path, "on-disk\n").expect("old setting");
+        assert_eq!(load_sizes(&path).expect("load"), Sizes::Allocated);
+        assert_eq!(Sizes::parse("on-disk"), Some(Sizes::Allocated));
+        save_sizes(&path, Sizes::Allocated).expect("save");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read").trim(),
+            "allocated"
+        );
     }
 
     #[test]

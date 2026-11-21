@@ -1753,8 +1753,25 @@ impl Disktree {
     /// Recompute "worth a look" from the tree on screen.
     fn refresh_insights(&mut self) {
         self.scanned_at = now_seconds();
+        self.rank_insights();
+    }
+
+    /// Work "worth a look" out again from the tree as of the scan, ranked
+    /// largest first as sizes read now: by what each holds alone under
+    /// private weights, as the rows then show it. Ranked before what a
+    /// removal since took is discounted, so a row a removal shrinks keeps
+    /// its place. Stable, so equal ones keep the order they were found in.
+    pub fn rank_insights(&mut self) {
         self.insights = self.tree.as_deref().map_or_else(Vec::new, |tree| {
             worth_a_look(tree.root(), self.scanned_at, INSIGHT_LIMIT)
+        });
+        let private = self.private_weights();
+        self.insights.sort_by_key(|candidate| {
+            std::cmp::Reverse(if private {
+                candidate.private
+            } else {
+                candidate.bytes
+            })
         });
         self.forget_removed_insights();
     }
@@ -1774,9 +1791,12 @@ impl Disktree {
             if self.was_removed(&path) {
                 return false;
             }
-            candidate.bytes = candidate
-                .bytes
-                .saturating_sub(self.removed.below(&path, style));
+            let gone = self.removed.below(&path, style);
+            candidate.bytes = candidate.bytes.saturating_sub(gone);
+            // What went is not known as private or shared: the private
+            // part never exceeds what is left.
+            candidate.private =
+                candidate.private.saturating_sub(gone).min(candidate.bytes);
             candidate.bytes > 0
         });
         self.insights = insights;
@@ -5949,7 +5969,8 @@ pub struct Label {
     pub marked: bool,
     pub size_text: String,
     /// The other byte figure, under the value where there is room: private
-    /// beside an on-disk size, or on-disk beside a private one. Empty when
+    /// beside an allocated size, or the shared part beside a private one.
+    /// Empty when
     /// it would say nothing new; see [`crate::widgets::tile_values`].
     pub detail_text: String,
     /// The exact fill state is needed for contrast after filtering/marking.
@@ -6046,7 +6067,7 @@ pub fn restart_args(
     } else if private {
         Sizes::Private
     } else {
-        Sizes::OnDisk
+        Sizes::Allocated
     };
     let mut args: Vec<std::ffi::OsString> =
         vec!["--sizes".into(), sizes.flag().into()];

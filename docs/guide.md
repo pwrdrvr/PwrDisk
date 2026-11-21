@@ -85,7 +85,7 @@ a root. Explicit command-line paths and `--disk` still start directly;
 
 - **Top:** the trail from `/`, then **Treemap | List**, how the directory is
   drawn, and what is measured — **Size**, **Files** or **Age**, **Hidden
-  files**, **Sizes** (what a size counts: on disk, private or apparent), and
+  files**, **Sizes** (what a size counts: allocated, private or apparent), and
   the depth drawn. The list shows the same
   directory one entry per row and is the view for screen readers. When the
   window is too narrow for every control, the ones used least move into
@@ -265,7 +265,7 @@ until the next scan.
 | `c` | review the marked list |
 | `t` | size, files or age: what areas and colours say |
 | `ctrl 1` `ctrl 2` (`⌘` on macOS) | treemap or file list; the list is read by screen readers |
-| `d` | next Sizes choice: on disk, private, apparent |
+| `d` | next Sizes choice: allocated, private, apparent |
 | `i` | include or skip hidden entries |
 | `r` | scan again |
 | `esc` while scanning | stop the scan |
@@ -302,27 +302,35 @@ scroll within long wrapped lines, while Up/Down selects lines for copying.
 
 ## What it measures
 
-- **Disk usage** by default: `st_blocks × 512`, the number `du` reports and the
-  space that actually comes back when a file is deleted. **Sizes** in the bar
-  (or `d`) changes what a size counts:
-  - **On disk**, the default: every file's allocation, APFS clone blocks it
-    shares with other clones included.
+- **Disk usage** by default: `st_blocks × 512`, the number `du` reports. For
+  a file that shares nothing it is the space that comes back when the file is
+  deleted; an APFS clone gives back only its private part. **Sizes** in the
+  bar (or `d`) changes what a size counts:
+  - **Allocated**, the default: every file's allocation, APFS clone blocks
+    it shares with other clones counted in full. A folder of clones can add
+    up to more than the volume holds.
   - **Private** (macOS): only what each file and folder holds alone, so a
     worktree or copy made of clones shrinks to what removing it would hand
     back. It is the same scan, weighted differently, so it needs no rescan.
-    Where a tile's private size differs from its size on disk and there is
-    room, the other figure is shown on a second line, either way round.
-    The List view, its arrow keys, Tab over the tiles and a crumb's sibling
-    menu rank by private size too, and the list and the menu show it.
+    Where a tile's private size differs from its allocated size and there
+    is room, a second line gives the other figure: `767MB private` under
+    an allocated size, `+1.2GB shared` (what it shares with other clones)
+    under a private one. Every figure that sizes or ranks what is on
+    screen follows: the hover card and selection, the List view, its arrow
+    keys, Tab over the tiles, a crumb's sibling menu, the legend's chips,
+    the find field, the filtered scan line and Worth a look. Marks, Review
+    and the removal limit keep counting a mark's whole allocation, with
+    what it frees beside it, as they do under Allocated.
   - **Apparent** (what `ls -l` shows): file lengths. It is a scan of its
     own, so choosing it, or leaving it, rescans; it has no clone facts.
 
-  On disk or Private is remembered for the next launch where Private is
-  offered (choosing On disk on an SSH host keeps a remembered Private),
+  Allocated or Private is remembered for the next launch where Private is
+  offered (choosing Allocated on an SSH host keeps a remembered Private),
   and carried through Restart as Administrator. Apparent is not remembered: it
   measures something else, so it is asked for each time, from the menu or
-  with `--apparent-size`. `--sizes on-disk|private|apparent` chooses for
-  one launch without changing what is remembered.
+  with `--apparent-size`. `--sizes allocated|private|apparent` chooses for
+  one launch without changing what is remembered; `on-disk`, Allocated's
+  name up to v0.27, still works.
 - **Hardlinks once.** Two names for one inode cost one file.
 - **Hidden entries included**, because `~/.cache` is often the biggest thing in
   a home directory. Symlinks are not followed.
@@ -723,16 +731,20 @@ What is different from Linux:
   physical use; the
   remaining difference is not a measurement of unreadable files.
 - **Cloned files** (copies APFS shares blocks between, as Finder's Duplicate
-  makes) remain counted in full in the treemap. The scan line separately
-  reports bytes in cloned files and estimated repeated data-fork allocation.
-  The selection panel and a tile's hover card split the listed bytes into
-  private and shared: shared bytes are clone blocks another clone, inside
-  the scan or outside it, may still hold. In `pwrdisk mcp`, every
-  `pwrdisk_scan`, `pwrdisk_ls` and `pwrdisk_find` row with clone blocks
-  reads `0 B private · 11 MiB shared with other APFS clones · frees ≈ 0 B
-  alone`, and the scan and listing headers say how much is counted again
-  and what the files take on disk. Rows without clones, and every row off
-  APFS or in an apparent-size scan, read as before.
+  makes) remain counted in full in the treemap under Sizes: Allocated, and
+  the scan line names its total allocated. It separately reports bytes in
+  cloned files and estimated repeated data-fork allocation. The selection
+  panel and a tile's hover card split the listed bytes into private and
+  shared (`767 MB private · 1.2 GB shared with other APFS clones`; under
+  Sizes: Private, where the private figure leads, `+1.2 GB shared with
+  other APFS clones · 2.0 GB allocated`): shared bytes are clone blocks
+  another clone, inside the scan or outside it, may still hold. In
+  `pwrdisk mcp`, every `pwrdisk_scan`, `pwrdisk_ls` and `pwrdisk_find` row
+  with clone blocks reads `0 B private · 11 MiB shared with other APFS
+  clones · frees ≈ 0 B alone`, and the scan and listing headers say how
+  much is counted again and what the files take on disk once it is not.
+  Rows without clones, and every row off APFS or in an apparent-size scan,
+  read as before.
   The panel's marked total, the review and the permanent-delete
   confirmation estimate savings from the accepted set of marks together;
   the selection's own line says what that entry frees removed on its own,

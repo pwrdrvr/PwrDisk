@@ -5538,9 +5538,9 @@ fn restart_arguments_parse_back_to_the_same_scan() {
     for (options, private, depth, sizes) in [
         (changed, false, 5, Sizes::Apparent),
         (blocks.clone(), true, 4, Sizes::Private),
-        (blocks, false, 2, Sizes::OnDisk),
+        (blocks, false, 2, Sizes::Allocated),
         (ScanOptions::default(), true, 1, Sizes::Private),
-        (ScanOptions::default(), false, 1, Sizes::OnDisk),
+        (ScanOptions::default(), false, 1, Sizes::Allocated),
     ] {
         let args = crate::state::restart_args(&options, private, depth, &root);
         let parsed = crate::parse_args(args.into_iter()).expect("parses");
@@ -14985,7 +14985,7 @@ fn control_tooltips_never_leave_the_content(cx: &mut TestAppContext) {
     assert!(tried.contains(&"more-toggle"), "⋮ was tried");
 }
 
-/// The Sizes menu says what a size counts. On disk and Private are one
+/// The Sizes menu says what a size counts. Allocated and Private are one
 /// scan weighted two ways, so moving between them never rescans; Apparent
 /// measures differently, so choosing it or leaving it does, and `d` steps
 /// through what this scan can offer.
@@ -15007,10 +15007,10 @@ fn sizes_reweigh_without_a_rescan_and_only_apparent_rescans(
     draw(cx);
     assert!(cx.debug_bounds("sizes-menu").is_none(), "escape closes it");
 
-    update(&view, cx, |app, cx| app.set_sizes(Sizes::OnDisk, cx));
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::Allocated, cx));
     assert!(read(&view, cx, |app| app.scan.is_some()), "leaving rescans");
     finish_scan(&view, cx);
-    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::OnDisk);
+    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::Allocated);
     assert!(!read(&view, cx, |app| app.options.apparent_size));
 
     let offered = read(&view, cx, |app| app.sizes_offered(Sizes::Private));
@@ -15038,8 +15038,8 @@ fn sizes_reweigh_without_a_rescan_and_only_apparent_rescans(
 }
 
 /// A tile shows the other byte figure under its value when it has room
-/// and the two differ: private under an on-disk size, on-disk under a
-/// private one. A tile with no clones shows one figure, as before.
+/// and the two differ: private under an allocated size, the shared part
+/// under a private one. A tile with no clones shows one figure, as before.
 #[gpui_kit::test]
 fn tiles_give_the_other_byte_figure_a_second_line(cx: &mut TestAppContext) {
     use disktree_core::sharing::{Allocation, CloneInfo};
@@ -15097,17 +15097,17 @@ fn tiles_give_the_other_byte_figure_a_second_line(cx: &mut TestAppContext) {
             .cloned()
             .unwrap_or_else(|| panic!("{name} in {labels:?}"))
     };
-    let on_disk = labels(&view, cx);
-    let copy = find(&on_disk, "copy");
+    let allocated = labels(&view, cx);
+    let copy = find(&allocated, "copy");
     assert_eq!(
         (copy.1.as_str(), copy.2.as_str()),
         ("40MiB", "2.0MiB private")
     );
-    assert_eq!(find(&on_disk, "plain").2, "", "no clones, one figure");
+    assert_eq!(find(&allocated, "plain").2, "", "no clones, one figure");
 
     // Set directly, as a Private choice carried over would be. Only where
     // Private is offered (a local scan on macOS) do the labels follow it;
-    // elsewhere they stay on disk, as the Sizes menu says.
+    // elsewhere they stay allocated, as the Sizes menu says.
     update(&view, cx, |app, cx| {
         app.layout_options.private = true;
         cx.notify();
@@ -15119,7 +15119,7 @@ fn tiles_give_the_other_byte_figure_a_second_line(cx: &mut TestAppContext) {
     let private = labels(&view, cx);
     let copy = find(&private, "copy");
     let expected = if offered {
-        ("2.0MiB", "40MiB on disk")
+        ("2.0MiB", "+38MiB shared")
     } else {
         ("40MiB", "2.0MiB private")
     };
@@ -15135,10 +15135,10 @@ fn tiles_give_the_other_byte_figure_a_second_line(cx: &mut TestAppContext) {
     assert_eq!(filtered, "2.0MiB of 2.0MiB");
 }
 
-/// The Sizes menu remembers On disk or Private for the next launch, as
+/// The Sizes menu remembers Allocated or Private for the next launch, as
 /// the Power Efficiency menu remembers its preset, wherever both are
 /// offered. Apparent is not remembered: choosing it keeps the saved
-/// weighing. Nor is On disk where Private is not offered (an SSH host,
+/// weighing. Nor is Allocated where Private is not offered (an SSH host,
 /// clone metadata off), where it is the only weighing on screen. A
 /// choice that cannot be saved still applies, and says it was not saved.
 #[gpui_kit::test]
@@ -15154,16 +15154,16 @@ fn the_sizes_choice_is_saved_for_the_next_launch(cx: &mut TestAppContext) {
     });
     let offered = read(&view, cx, |app| app.sizes_offered(Sizes::Private));
     // The fixture is scanned with apparent sizes; leaving them rescans.
-    update(&view, cx, |app, cx| app.set_sizes(Sizes::OnDisk, cx));
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::Allocated, cx));
     finish_scan(&view, cx);
     assert_eq!(path.exists(), offered, "saved only where Private is");
-    assert_eq!(load_sizes(&path).expect("saved"), Sizes::OnDisk);
+    assert_eq!(load_sizes(&path).expect("saved"), Sizes::Allocated);
 
     update(&view, cx, |app, cx| app.set_sizes(Sizes::Private, cx));
     let weighed = if offered {
         Sizes::Private
     } else {
-        Sizes::OnDisk
+        Sizes::Allocated
     };
     assert_eq!(load_sizes(&path).expect("saved"), weighed);
 
@@ -15177,14 +15177,14 @@ fn the_sizes_choice_is_saved_for_the_next_launch(cx: &mut TestAppContext) {
     );
     assert_eq!(read(&view, cx, Disktree::notice), None);
 
-    // Without clone facts On disk is all there is: choosing it keeps the
+    // Without clone facts Allocated is all there is: choosing it keeps the
     // Private remembered for scans that have them.
     update(&view, cx, |app, cx| {
         app.options.apfs_clone_metadata = false;
-        app.set_sizes(Sizes::OnDisk, cx);
+        app.set_sizes(Sizes::Allocated, cx);
     });
     finish_scan(&view, cx);
-    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::OnDisk);
+    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::Allocated);
     assert_eq!(load_sizes(&path).expect("kept"), weighed);
     update(&view, cx, |app, _| app.options.apfs_clone_metadata = true);
     if !offered {
@@ -15196,8 +15196,8 @@ fn the_sizes_choice_is_saved_for_the_next_launch(cx: &mut TestAppContext) {
     update(&view, cx, |app, _| {
         app.sizes_settings_path = Some(config.path().to_owned());
     });
-    update(&view, cx, |app, cx| app.set_sizes(Sizes::OnDisk, cx));
-    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::OnDisk);
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::Allocated, cx));
+    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::Allocated);
     let (message, status) =
         read(&view, cx, Disktree::notice).expect("a notice");
     assert_eq!(status, gpui_omarchy::Status::Warning);
@@ -15206,8 +15206,8 @@ fn the_sizes_choice_is_saved_for_the_next_launch(cx: &mut TestAppContext) {
 
 /// Under private weights the List view, its keys, Tab's walk over the
 /// tiles and the sibling menu rank by what each entry holds alone, as
-/// the tiles are sized, and the list and the menu show that figure. On
-/// disk, every one of them reads the tree's own on-disk order again.
+/// the tiles are sized, and the list and the menu show that figure.
+/// Allocated, every one of them reads the tree's own allocated order again.
 /// Where Private is not offered nothing changes.
 #[gpui_kit::test]
 fn private_weights_rank_the_list_and_the_sibling_menu(cx: &mut TestAppContext) {
@@ -15219,7 +15219,7 @@ fn private_weights_rank_the_list_and_the_sibling_menu(cx: &mut TestAppContext) {
     cx.update(init);
     let temp = fixture();
     let (view, cx) = view_over(temp.path(), cx);
-    // On disk: copy (40 MiB, 2 MiB of it its own), plain (9), small (3).
+    // Allocated: copy (40 MiB, 2 MiB of it its own), plain (9), small (3).
     // Alone: plain, small, copy.
     update(&view, cx, |app, cx| {
         let mut root = Draft::directory("fixture");
@@ -15279,13 +15279,13 @@ fn private_weights_rank_the_list_and_the_sibling_menu(cx: &mut TestAppContext) {
             app.node_at(&crumbs).expect("node").name().to_string()
         })
     };
-    let on_disk = ["copy", "plain", "small"].map(String::from).to_vec();
+    let allocated = ["copy", "plain", "small"].map(String::from).to_vec();
     let alone = ["plain", "small", "copy"].map(String::from).to_vec();
 
     update(&view, cx, |app, cx| app.set_sizes(Sizes::Private, cx));
     focus_file_list(&view, cx);
     let (listed, menu) = names(&view, cx);
-    let expected = if offered { &alone } else { &on_disk };
+    let expected = if offered { &alone } else { &allocated };
     assert_eq!(&listed, expected);
     let menu_names: Vec<String> =
         menu.iter().map(|(name, _)| name.clone()).collect();
@@ -15301,7 +15301,8 @@ fn private_weights_rank_the_list_and_the_sibling_menu(cx: &mut TestAppContext) {
     assert_eq!(selected_name(&view, cx), expected[0]);
     press(cx, "down");
     assert_eq!(selected_name(&view, cx), expected[1]);
-    // The row says the figure it is ranked by, and what it takes on disk.
+    // The row says the figure it is ranked by, what more it shares with
+    // other clones and the allocated total, never as "on disk".
     let copy_size = read(&view, cx, |app| {
         let crumbs = vec![0];
         let node = app.node_at(&crumbs).expect("copy");
@@ -15314,10 +15315,18 @@ fn private_weights_rank_the_list_and_the_sibling_menu(cx: &mut TestAppContext) {
     );
     if offered {
         let split = read(&view, cx, |app| {
-            app.node_at(&[0]).and_then(crate::views::on_disk_split)
+            app.node_at(&[0])
+                .and_then(|node| crate::views::size_split(app, node))
         })
         .expect("a clone split");
-        assert!(split.starts_with(&human_bytes(40 * MIB)), "{split}");
+        assert_eq!(
+            split,
+            format!(
+                "+{} shared with other APFS clones \u{00b7} {} allocated",
+                human_bytes(38 * MIB),
+                human_bytes(40 * MIB)
+            )
+        );
     }
     // Tab over the tiles walks the same rank.
     update(&view, cx, |app, cx| {
@@ -15346,18 +15355,18 @@ fn private_weights_rank_the_list_and_the_sibling_menu(cx: &mut TestAppContext) {
     let entries = read(&view, cx, Disktree::file_entries);
     assert_eq!(entries, [0], "plain holds one file");
 
-    // On disk again: the tree's own order, and on-disk figures.
+    // Allocated again: the tree's own order, and allocated figures.
     update(&view, cx, |app, cx| {
         app.go_to(Vec::new(), cx);
-        app.set_sizes(Sizes::OnDisk, cx);
+        app.set_sizes(Sizes::Allocated, cx);
     });
     let (listed, menu) = names(&view, cx);
-    assert_eq!(listed, on_disk);
+    assert_eq!(listed, allocated);
     assert_eq!(menu[0], ("copy".to_string(), 40 * MIB));
 }
 
 /// The List view follows the selection to the page it ranks on when the
-/// Sizes choice reorders it: a large clone, first on disk, ranks last by
+/// Sizes choice reorders it: a large clone, first allocated, ranks last by
 /// what it holds alone, a page further on.
 #[gpui_kit::test]
 fn the_list_follows_the_selection_when_sizes_rerank_it(
@@ -15411,7 +15420,7 @@ fn the_list_follows_the_selection_when_sizes_rerank_it(
         cx.notify();
     });
     draw(cx);
-    assert_eq!(read(&view, cx, |app| app.file_page), 0, "first on disk");
+    assert_eq!(read(&view, cx, |app| app.file_page), 0, "first allocated");
     let offered = read(&view, cx, |app| app.sizes_offered(Sizes::Private));
     update(&view, cx, |app, cx| app.set_sizes(Sizes::Private, cx));
     draw(cx);
@@ -15420,7 +15429,7 @@ fn the_list_follows_the_selection_when_sizes_rerank_it(
         usize::from(offered),
         "holding nothing alone, it ranks last"
     );
-    update(&view, cx, |app, cx| app.set_sizes(Sizes::OnDisk, cx));
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::Allocated, cx));
     assert_eq!(read(&view, cx, |app| app.file_page), 0);
 }
 
@@ -15428,7 +15437,7 @@ fn the_list_follows_the_selection_when_sizes_rerank_it(
 /// offered: an SSH host's tree has no clone facts, so its sizes are on
 /// disk, and the bar must say so.
 #[gpui_kit::test]
-fn sizes_read_on_disk_where_private_is_not_offered(cx: &mut TestAppContext) {
+fn sizes_read_allocated_where_private_is_not_offered(cx: &mut TestAppContext) {
     use crate::toolbar::Sizes;
     cx.update(init);
     let temp = fixture();
@@ -15440,7 +15449,7 @@ fn sizes_read_on_disk_where_private_is_not_offered(cx: &mut TestAppContext) {
         cx.notify();
     });
     assert!(!read(&view, cx, |app| app.sizes_offered(Sizes::Private)));
-    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::OnDisk);
+    assert_eq!(read(&view, cx, Disktree::sizes), Sizes::Allocated);
 }
 
 /// The startup chooser over one listed root, `root`, with usage reports

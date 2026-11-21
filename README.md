@@ -36,8 +36,9 @@ Disks fill up slowly and then all at once. PwrDisk shows you where the space
 went in one picture, and gets it back without the "wait, what did I just
 delete?" moment.
 
-- **The whole drive at a glance.** Every folder is a tile sized by what it
-  really costs on disk, coloured by what it holds: code, caches, toolchains,
+- **The whole drive at a glance.** Every folder is a tile sized by the
+  space it is allocated, or by what it holds alone beside its APFS clones
+  (**Sizes: Private**), coloured by what it holds: code, caches, toolchains,
   synced files, media, documents. Space you can safely get back — caches,
   build output, package stores — is hatched.
 - **Worth a look.** The side panel lists the biggest things that could

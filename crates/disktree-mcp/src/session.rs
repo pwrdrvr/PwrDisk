@@ -177,7 +177,8 @@ pub struct ScanParams {
     #[serde(default)]
     pub disk: bool,
     /// Measure apparent length, as `ls -l` shows it, instead of allocated
-    /// blocks. Blocks are what the disk spends and what deleting frees.
+    /// blocks. Blocks are what the disk spends; APFS clones share some of
+    /// them, so deleting a clone frees only its private part.
     #[serde(default)]
     pub apparent_size: bool,
     /// Skip dotfiles and dot-directories. Off by default: `~/.cache` is
@@ -220,8 +221,9 @@ pub struct LsParams {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ListBy {
-    /// Listed allocation: everything an entry's files take on disk,
-    /// clone blocks they may share included.
+    /// Listed allocation: every block an entry's files are allocated,
+    /// clone blocks they may share counted in full. More than the entry
+    /// takes on disk where it shares blocks with clones.
     #[default]
     Size,
     /// Private allocation: what the entry holds alone, outside clone

@@ -2796,11 +2796,18 @@ fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
     // Filtered, the line says what share of the scan is on screen, in the
     // bright colour, so a filtered mosaic is never taken for the whole.
     if tree.is_some() && app.legend.is_active() {
+        // In the bytes the tiles are weighed by, so the share on screen
+        // reads the same as the mosaic.
+        let private = app.private_weights();
         let shown = match app.legend_matches.as_deref() {
             Some(matches) if !app.legend_pending => format!(
                 "Showing {} of {}",
-                human_bytes(matches.bytes),
-                human_bytes(bytes)
+                human_bytes(if private {
+                    matches.private
+                } else {
+                    matches.bytes
+                }),
+                human_bytes(tree.map_or(bytes, |node| app.shown_bytes(node)))
             ),
             _ => "Filtering\u{2026}".to_owned(),
         };
@@ -2816,6 +2823,10 @@ fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
             .child(div().text_color(theme.bright).child(shown))
             .child(format!("\u{00b7} {}", app.legend.summary()));
     }
+    // With clones the scan's total counts their shared blocks in full,
+    // whatever Sizes says: named for what it is, beside how much of it is
+    // counted again.
+    let cloned = tree.is_some_and(|node| node.sharing().files > 0);
     div()
         .debug_selector(|| "scan-totals".into())
         .flex()
@@ -2825,17 +2836,17 @@ fn scan_totals(app: &Disktree, theme: &Theme) -> Div {
         .flex_shrink_0()
         .text_size(text::CAPTION)
         .text_color(theme.secondary)
-        .child(
-            div()
-                .text_color(theme.foreground)
-                .child(format!("Scanned {}", human_bytes(bytes))),
-        )
+        .child(div().text_color(theme.foreground).child(format!(
+            "Scanned {}{}",
+            human_bytes(bytes),
+            if cloned { " allocated" } else { "" }
+        )))
         .child(format!(
             "· {} files · {} dirs",
             widgets::human_count(files),
             widgets::human_count(dirs)
         ))
-        .when(tree.is_some_and(|node| node.sharing().files > 0), |this| {
+        .when(cloned, |this| {
             let sharing = tree.expect("checked above").sharing();
             this.child(format!(
                 "· APFS clones: {} · ≈ {} counted again{}",
@@ -2867,7 +2878,7 @@ pub struct LegendFit {
 /// What a chip keeps of the whole scan, once that is worked out.
 fn chip_share(app: &Disktree, id: crate::legend::ChipId) -> Option<u64> {
     use crate::legend::ChipId;
-    let shares = app.legend_shares.as_deref()?;
+    let shares = app.legend_shares.as_deref()?.weighed(app.private_weights());
     Some(match id {
         ChipId::Reclaimable => shares.suggested,
         ChipId::Kind(index) => shares.kind(Category::LEGEND[index]),
@@ -2904,7 +2915,7 @@ fn legend_fit(
     } else {
         ids.extend((0..Category::LEGEND.len()).map(ChipId::Kind));
     }
-    let total = app.tree().map_or(0, |tree| tree.bytes);
+    let total = app.tree().map_or(0, |tree| app.shown_bytes(tree));
     let set = |id: ChipId| app.legend.get(id) != Chip::Shown;
     let little = |id: ChipId| {
         chip_share(app, id).is_some_and(|bytes| {
@@ -3852,12 +3863,29 @@ fn head_note(note: &'static str, theme: &Theme) -> Div {
         .child(note)
 }
 
+/// A suggestion's size as sizes read now, as its rows are ranked
+/// ([`Disktree::rank_insights`]).
+fn insight_bytes(
+    app: &Disktree,
+    candidate: &disktree_core::insights::Candidate,
+) -> u64 {
+    if app.private_weights() {
+        candidate.private
+    } else {
+        candidate.bytes
+    }
+}
+
 fn worth_head(
     app: &Disktree,
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
-    let total: u64 = app.insights.iter().map(|candidate| candidate.bytes).sum();
+    let total: u64 = app
+        .insights
+        .iter()
+        .map(|candidate| insight_bytes(app, candidate))
+        .sum();
     let head = section_head(widgets::eyebrow("Worth a look", cx));
     if app.insights.is_empty() {
         // Listed rows are suggestions for review, so an empty list says
@@ -4013,7 +4041,7 @@ fn selection_section(
             cx,
         ))
         .child(widgets::bar(share, highlight, cx))
-        .when_some(clone_split(node), |this, split| {
+        .when_some(size_split(app, node), |this, split| {
             this.child(
                 div()
                     .text_size(text::CAPTION)
@@ -4061,8 +4089,12 @@ fn selection_section(
                 .child(format!(
                     "{} passes the filter. Marking takes all {}, including \
                      what is filtered out.",
-                    human_bytes(shown),
-                    human_bytes(node.bytes)
+                    human_bytes(if private {
+                        disktree_core::treemap::private_share(shown, node)
+                    } else {
+                        shown
+                    }),
+                    human_bytes(app.shown_bytes(node))
                 )),
         )
     });
@@ -4098,7 +4130,12 @@ fn selection_section(
         );
         ("Kind", kind, theme.bright)
     };
-    let of_scan = widgets::percent(node.bytes, root_value);
+    // The share the bar above draws: of the scan's private bytes under
+    // private weights.
+    let of_scan = widgets::percent(
+        app.shown_bytes(node),
+        app.tree().map_or(root_value, |tree| app.shown_bytes(tree)),
+    );
     let written = widgets::ago(crate::state::now_seconds(), node.modified);
     // Compact, the four figures are one line the person can open: the
     // decision rests on the name, the size and the assessment, which stay.
@@ -4877,7 +4914,10 @@ fn worth_section(
     theme: &Theme,
     cx: &Context<'_, Disktree>,
 ) -> Div {
-    let largest = app.insights.first().map_or(1, |candidate| candidate.bytes);
+    let largest = app
+        .insights
+        .first()
+        .map_or(1, |candidate| insight_bytes(app, candidate));
     let mut section = div()
         .debug_selector(|| "worth-section".into())
         .flex()
@@ -4949,10 +4989,13 @@ fn worth_section(
                             div()
                                 .text_size(text::BODY)
                                 .text_color(theme.bright)
-                                .child(human_bytes(candidate.bytes)),
+                                .child(human_bytes(insight_bytes(
+                                    app, candidate,
+                                ))),
                         )
                         .child(widgets::bar(
-                            candidate.bytes as f32 / largest.max(1) as f32,
+                            insight_bytes(app, candidate) as f32
+                                / largest.max(1) as f32,
                             accent,
                             cx,
                         )),
@@ -6148,7 +6191,11 @@ fn find_field(app: &Disktree, theme: &Theme) -> Div {
                 "{} match{} · {}",
                 widgets::human_count(matches.count as u64),
                 if matches.count == 1 { "" } else { "es" },
-                human_bytes(matches.bytes)
+                human_bytes(if app.private_weights() {
+                    matches.private
+                } else {
+                    matches.bytes
+                })
             ),
             if app.filter_applied {
                 "esc clears"
@@ -7684,7 +7731,18 @@ fn node_card(
     let node = app.node_at(crumbs)?;
     let path = app.path_at(crumbs);
     let parent = crumbs[..crumbs.len().saturating_sub(1)].to_vec();
-    let parent_value = app.node_at(&parent).map_or(0, |node| node.bytes);
+    // The card leads with the figure the tile is sized by, and its share
+    // of the parent in the same bytes: under private weights, what each
+    // holds alone, said so beside the share.
+    let private = app.private_weights();
+    let value = app.shown_bytes(node);
+    let parent_value =
+        app.node_at(&parent).map_or(0, |node| app.shown_bytes(node));
+    let direct = if private {
+        node.own_private_bytes()
+    } else {
+        node.own_bytes()
+    };
     let marked = path
         .as_deref()
         .is_some_and(|path| app.marks.contains(path, app.path_style()));
@@ -7739,10 +7797,10 @@ fn node_card(
                             .text_size(text::TITLE)
                             .font_weight(FontWeight::BOLD)
                             .text_color(theme.bright)
-                            .child(human_bytes(node.bytes)),
+                            .child(human_bytes(value)),
                     )
                     .child(widgets::glyph_bar(
-                        node.bytes,
+                        value,
                         parent_value.max(1),
                         10,
                         theme.secondary,
@@ -7752,7 +7810,11 @@ fn node_card(
                         div()
                             .text_size(text::CAPTION)
                             .text_color(theme.secondary)
-                            .child(widgets::percent(node.bytes, parent_value)),
+                            .child(format!(
+                                "{}{}",
+                                if private { "private \u{00b7} " } else { "" },
+                                widgets::percent(value, parent_value)
+                            )),
                     ),
             )
             .child(
@@ -7766,10 +7828,10 @@ fn node_card(
                             u64::from(node.dirs)
                                 .saturating_sub(u64::from(node.is_dir()))
                         ),
-                        human_bytes(node.own_bytes())
+                        human_bytes(direct)
                     )),
             )
-            .when_some(clone_split(node), |this, split| {
+            .when_some(size_split(app, node), |this, split| {
                 this.child(
                     div()
                         .text_size(text::CAPTION)
@@ -7885,7 +7947,7 @@ fn help_overlay(app: &Disktree, cx: &Context<'_, Disktree>) -> Stateful<Div> {
         ("v", "Scan another volume"),
         (MODIFIER_OPEN, "Choose another directory to scan"),
         ("g", "The whole disk; click any directory above to widen"),
-        ("d", "Sizes: on disk, private or apparent"),
+        ("d", "Sizes: allocated, private or apparent"),
         ("i", "Include or skip hidden entries"),
         ("p", "Show or hide the selection line"),
         (
@@ -8062,18 +8124,33 @@ pub fn clone_split(node: disktree_core::tree::Node<'_>) -> Option<String> {
     disktree_link::Clones::of(node)?.split()
 }
 
-/// [`clone_split`] where the private figure already leads: what the entry
-/// takes on disk and how much of that other clones may hold. `None`
-/// without clone blocks, where both figures are the same.
-pub fn on_disk_split(node: disktree_core::tree::Node<'_>) -> Option<String> {
+/// [`clone_split`] where the private figure already leads: how much more
+/// the entry shares with other clones, and the allocated total that
+/// counts it in full. Never called "on disk": the allocated total is not
+/// what the entry takes there, its private part is. `None` without clone
+/// blocks, where both figures are the same.
+pub fn private_split(node: disktree_core::tree::Node<'_>) -> Option<String> {
     let clones = disktree_link::Clones::of(node)?;
     (clones.shared > 0).then(|| {
         format!(
-            "{} on disk \u{00b7} {} shared with other APFS clones",
-            human_bytes(node.bytes),
-            human_bytes(clones.shared)
+            "+{} shared with other APFS clones \u{00b7} {} allocated",
+            human_bytes(clones.shared),
+            human_bytes(node.bytes)
         )
     })
+}
+
+/// The clone line under a size as sizes read now: [`private_split`] under
+/// private weights, where the private figure leads, else [`clone_split`].
+pub fn size_split(
+    app: &Disktree,
+    node: disktree_core::tree::Node<'_>,
+) -> Option<String> {
+    if app.private_weights() {
+        private_split(node)
+    } else {
+        clone_split(node)
+    }
 }
 
 /// Both ends are scan-derived; the meter uses the lower bound only.

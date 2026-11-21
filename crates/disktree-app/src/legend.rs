@@ -344,9 +344,14 @@ impl Disktree {
         match matches.keep(&self.crumbs) {
             // The scanned root is never recorded, only summed: nothing
             // passed when that sum is empty.
-            None | Some(Keep::Partial { bytes: 0, files: 0 }) => {
-                Some((matches.bytes, matches.files))
-            }
+            None | Some(Keep::Partial { bytes: 0, files: 0 }) => Some((
+                if self.private_weights() {
+                    matches.private
+                } else {
+                    matches.bytes
+                },
+                matches.files,
+            )),
             Some(_) => None,
         }
     }
