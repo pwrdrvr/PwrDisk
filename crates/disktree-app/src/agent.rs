@@ -892,10 +892,11 @@ impl Disktree {
                 .tree
                 .as_deref()
                 .map(|tree| {
-                    // Largest first by the allocated bytes each row
-                    // reports, whatever order the window's Sizes choice
-                    // gives its own list.
-                    let mut insights: Vec<_> = self.insights.iter().collect();
+                    // Chosen by allocated bytes, whatever the window's
+                    // Sizes choice, and largest first by what each row
+                    // reports once removals are discounted.
+                    let mut insights: Vec<_> =
+                        self.agent_insights.iter().collect();
                     insights.sort_by_key(|candidate| {
                         std::cmp::Reverse(candidate.bytes)
                     });

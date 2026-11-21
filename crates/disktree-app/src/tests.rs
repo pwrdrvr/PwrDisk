@@ -15287,6 +15287,65 @@ fn worth_a_look_reads_private_sizes_and_removals(cx: &mut TestAppContext) {
     assert_eq!(shown, if offered { 50 * MIB } else { 80 * MIB });
 }
 
+/// A linked agent is told the suggestions chosen by allocated bytes,
+/// whatever Sizes the window shows: under Private the window hides a cache
+/// of clones that holds nothing alone, and the agent still hears of it.
+#[gpui_kit::test]
+fn the_agent_hears_of_suggestions_the_private_list_hides(
+    cx: &mut TestAppContext,
+) {
+    use crate::toolbar::Sizes;
+    use disktree_core::sharing::{Allocation, CloneInfo};
+    use disktree_core::tree::{Draft, Metric, NodeKind, Tree, aggregate};
+    const MIB: u64 = 1024 * 1024;
+    let clone = |name: &str, id: u64| {
+        let mut file = Draft::entry(name, NodeKind::File, 80 * MIB);
+        file.allocation = Some(Box::new(Allocation {
+            bytes: 80 * MIB,
+            identity: None,
+            links: 1,
+            followed: false,
+            clone: Some(CloneInfo {
+                device: 1,
+                id,
+                references: 2,
+                private_bytes: Some(0),
+                data_bytes: 80 * MIB,
+            }),
+        }));
+        file
+    };
+    cx.update(init);
+    let temp = fixture();
+    let (view, cx) = view_over(temp.path(), cx);
+    update(&view, cx, |app, cx| {
+        let mut cache = Draft::directory(".cache");
+        cache.children.push(clone("a", 1));
+        cache.children.push(clone("b", 2));
+        let mut root = Draft::directory("fixture");
+        root.children.push(cache);
+        let mut root = Tree::from(root);
+        aggregate(&mut root, Metric::Bytes);
+        disktree_core::classify::classify(&mut root);
+        app.tree = Some(std::sync::Arc::new(root));
+        app.crumbs = Vec::new();
+        app.options.apparent_size = false;
+        app.set_sizes(Sizes::Private, cx);
+        app.rebuild_insights();
+    });
+    let (private, window, told) = read(&view, cx, |app| {
+        let told: Vec<u64> = app
+            .agent_state()
+            .insights
+            .iter()
+            .map(|insight| insight.bytes)
+            .collect();
+        (app.private_weights(), app.insights.len(), told)
+    });
+    assert_eq!(window, usize::from(!private), "the window's own list");
+    assert_eq!(told, vec![160 * MIB], "the agent's list");
+}
+
 /// Under private weights the List view, its keys, Tab's walk over the
 /// tiles and the sibling menu rank by what each entry holds alone, as
 /// the tiles are sized, and the list and the menu show that figure.
