@@ -318,9 +318,12 @@ scroll within long wrapped lines, while Up/Down selects lines for copying.
     under a private one. Every figure that sizes or ranks what is on
     screen follows: the hover card and selection, the List view, its arrow
     keys, Tab over the tiles, a crumb's sibling menu, the legend's chips,
-    the find field, the filtered scan line and Worth a look. Marks, Review
-    and the removal limit keep counting a mark's whole allocation, with
-    what it frees beside it, as they do under Allocated.
+    the find field, the filtered scan line and Worth a look. Worth a look
+    also chooses by it: a suggestion that holds less than 64 MiB alone
+    gives its place to the next, and comes back under Allocated. A linked
+    agent is told the suggestions chosen by allocation either way. Marks,
+    Review and the removal limit keep counting a mark's whole allocation,
+    with what it frees beside it, as they do under Allocated.
   - **Apparent** (what `ls -l` shows): file lengths. It is a scan of its
     own, so choosing it, or leaving it, rescans; it has no clone facts.
 

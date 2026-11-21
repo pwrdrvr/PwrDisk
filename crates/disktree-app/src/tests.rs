@@ -15344,6 +15344,15 @@ fn the_agent_hears_of_suggestions_the_private_list_hides(
     });
     assert_eq!(window, usize::from(!private), "the window's own list");
     assert_eq!(told, vec![160 * MIB], "the agent's list");
+    // Differential: Allocated tells the agent exactly the same.
+    update(&view, cx, |app, cx| app.set_sizes(Sizes::Allocated, cx));
+    let allocated: Vec<_> = read(&view, cx, |app| app.agent_state().insights);
+    assert_eq!(
+        allocated.iter().map(|i| i.bytes).collect::<Vec<_>>(),
+        told,
+        "the Sizes choice does not change what the agent hears"
+    );
+    assert_eq!(read(&view, cx, |app| app.insights.len()), 1);
 }
 
 /// Under private weights the List view, its keys, Tab's walk over the
