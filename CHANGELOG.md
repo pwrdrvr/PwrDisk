@@ -7,6 +7,22 @@ an update. Keep new entries under Unreleased until the version is cut.
 
 ## Unreleased
 
+## v0.27.1
+
+- Size wording - Rename On disk to Allocated: every file's allocation,
+  with APFS clone blocks counted in full. Under Private, show the extra
+  shared bytes instead of calling the clone-inflated total on disk.
+  Use `--sizes allocated|private|apparent`; the older `on-disk` option and
+  saved choices still work.
+- Private sizes - Make hover cards, selection percentages, legend chips,
+  search and filter totals follow the Private choice consistently.
+  Marks, Review and removal limits still count the whole allocation,
+  with estimated savings shown separately.
+- Worth a look - Under Private, choose suggestions, rank them and apply
+  the 64 MiB minimum by what each holds alone. A folder of clones with
+  little or no private allocation no longer crowds out larger private
+  candidates. Linked agents keep receiving allocation-based suggestions.
+
 ## v0.27.0
 
 - Scan chooser - Show the five most recent local roots first, with when
