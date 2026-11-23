@@ -72,8 +72,8 @@ delete?" moment.
 | Windows 10 / 11, ARM64 | [PwrDisk-win-arm64-Setup.exe](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-arm64-Setup.exe) | The same, for ARM PCs. |
 | Windows, for deployment tools | [x64 .msi](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win.msi) · [ARM64 .msi](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-arm64.msi) | Installs the same way as Setup.exe. |
 | Windows, portable | [x64 .zip](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-Portable.zip) · [ARM64 .zip](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-arm64-Portable.zip) | Runs from wherever you unpack it. |
-| Linux, x86-64 | [pwrdisk-x86_64-linux.tar.gz](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-x86_64-linux.tar.gz) | Unpack and run `./install.sh`. |
-| Linux, ARM64 | [pwrdisk-aarch64-linux.tar.gz](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-aarch64-linux.tar.gz) | The same, for ARM. |
+| Linux, x86-64 (Intel and AMD) | [Debian package](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-linux-amd64.deb) · [tarball](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-x86_64-linux.tar.gz) | For Ubuntu and Debian, install the `.deb` with APT. |
+| Linux, ARM64 | [Debian package](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-linux-arm64.deb) · [tarball](https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-aarch64-linux.tar.gz) | The same, for ARM. |
 
 Every release, with checksums, is on the
 [releases page](https://github.com/pwrdrvr/PwrDisk/releases).
@@ -89,13 +89,21 @@ unreadable rather than guessing.
 uninstall from Settings › Apps. When PwrDisk would be faster or see more as
 administrator, the side panel offers **Restart as Administrator**.
 
-**Linux.** No root needed; this installs into `~/.local` with a launcher
+**Linux.** On Ubuntu or Debian, download the `.deb` for your architecture
+and run `sudo apt install ./PwrDisk-linux-amd64.deb` (use `arm64` on ARM).
+APT installs the launcher and runtime dependencies. To remove PwrDisk, run
+`sudo apt remove pwrdisk`.
+
+For a per-user install, the tarball installs into `~/.local` with a launcher
 entry and an icon. Use `aarch64` in place of `x86_64` on ARM:
 
 ```sh
 curl -fL https://github.com/pwrdrvr/PwrDisk/releases/latest/download/pwrdisk-x86_64-linux.tar.gz | tar xz
 cd pwrdisk-*-x86_64-linux && ./install.sh
 ```
+
+If you switch from the tarball to APT, the files in `~/.local` can still take
+precedence. The APT-installed executable is `/usr/bin/pwrdisk`.
 
 You need a Wayland or X11 session with a GPU that does Vulkan. On Omarchy
 PwrDisk follows your theme; on Hyprland, see
@@ -104,8 +112,8 @@ PwrDisk follows your theme; on Hyprland, see
 **Updates.** The Mac app and Windows installs check for a new release when
 they start and every six hours, download it in the background, and install
 it when you quit (or right away from **Restart to update**). **Shift-U**
-shows the version and lets you pick a release channel. The Linux tarball
-does not update itself; download the next release.
+shows the version and lets you pick a release channel. On Linux, update by
+downloading and installing the next release.
 
 ## Using it
 

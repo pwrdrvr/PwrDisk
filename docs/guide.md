@@ -688,9 +688,9 @@ Until you pick one, a copy follows the channel its own version implies, so
 a beta keeps getting betas. Picking an older line downloads its release on
 **Check now**, and it installs only from **Restart to switch**.
 
-Copies that did not come from an installer — the Linux tarball, `make
-install`, `cargo build` — do not update themselves; download the next
-release.
+On Linux, download and install the next release manually. If you built from
+source, update your checkout and rebuild. In-app updates apply to the signed
+macOS and Windows installers.
 
 ## On macOS
 

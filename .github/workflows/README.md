@@ -169,7 +169,7 @@ release. The Windows installers are unsigned, so SmartScreen warns.
 | Job | Runner | Environment | Does |
 |---|---|---|---|
 | `check` | ubuntu-24.04 | — | `cargo xtask release-check`, `cargo xtask lint`; hands the changelog section on as the release notes. |
-| `linux` | ubuntu-22.04, ubuntu-22.04-arm | — | Tests, `cargo xtask portable`, the tarball and its `.sha256`. The oldest runners, for the oldest glibc floor. |
+| `linux` | ubuntu-22.04, ubuntu-22.04-arm | — | Tests, `cargo xtask portable`, tarballs, and install-tested amd64 and arm64 Debian packages with checksums. The oldest runners, for the oldest glibc floor. |
 | `macos-prepare` | macos-26 | — | Tests; `cargo xtask bundle --universal --app-only`, with the Icon Composer catalog checked; archives `PwrDisk.app`, the entitlements, the DMG background, `macos-dmg.sh`, `dmg-layout.py`, `macos-signing.py`, `install-vpk.sh` and the notes. |
 | `macos-sign` | macos-26 | `apple-signing` | `vpk pack`, signed, notarized and stapled; the DMG from the packed app, the same; verifies both. |
 | `windows-prepare` | windows-2025 (x64), windows-11-arm (ARM64) | — | Tests; `cargo build --release` with the static C runtime; archives `pwrdisk.exe`, README, LICENSE, the Velopack notices, `install-vpk.sh`, `vpk-pack-windows.ps1`, the icon and the notes. |
@@ -235,7 +235,6 @@ other.
 - **The separate `typecheck`/`build`/`test` jobs.** PwrDisk's `ci.yml`
   lints and tests in one job per platform; the release lints once and tests
   on each platform it builds. PwrRoute's main-only Rust cache is ported.
-- **Linux `.deb`.** PwrDisk keeps its tarball and `install.sh`.
 
 ## PR labels
 
