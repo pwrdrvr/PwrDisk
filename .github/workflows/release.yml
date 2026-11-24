@@ -109,6 +109,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            dpkg-dev desktop-file-utils \
             pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
             libvulkan-dev libasound2-dev libssl-dev libzstd-dev
@@ -145,6 +146,23 @@ jobs:
           # README's .../releases/latest/download/ link never goes stale.
           cp "dist/$name.tar.gz" "dist/pwrdisk-$ARCH-linux.tar.gz"
 
+      - name: Build and smoke test Debian package
+        run: |
+          version="${RELEASE_TAG#v}"
+          arch=$(dpkg --print-architecture)
+          package="PwrDisk-$version-linux-$arch.deb"
+          scripts/release/linux-deb.sh "$version" target/portable/pwrdisk dist
+          sudo apt-get install -y --no-install-recommends "./dist/$package"
+          test "$(dpkg-query -W -f='${Architecture}' pwrdisk)" = "$arch"
+          cmp target/portable/pwrdisk /usr/bin/pwrdisk
+          desktop-file-validate /usr/share/applications/pwrdisk.desktop
+          /usr/bin/pwrdisk --help
+          for scanner in x86_64 aarch64; do
+            /usr/bin/pwrdisk extract-scanner "$scanner" "$RUNNER_TEMP/scan-$scanner"
+          done
+          (cd dist && sha256sum "$package" > "$package.sha256")
+          cp "dist/$package" "dist/PwrDisk-linux-$arch.deb"
+
       - name: Upload Linux release assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -152,6 +170,8 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
+            dist/*.deb
+            dist/*.deb.sha256
           if-no-files-found: error
           retention-days: 90
 

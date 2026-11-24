@@ -40,9 +40,10 @@ release fails at the end, so delete that release first.
 | Windows ARM64 | the same with `win-arm64` in place of `win` |
 | Windows, both | `PwrDisk-<v>-windows-SHA256SUMS` |
 | Linux | `pwrdisk-<v>-<arch>-linux.tar.gz` and `.sha256`, for x86_64 and aarch64, and the same tarballs as `pwrdisk-<arch>-linux.tar.gz` |
+| Ubuntu and Debian | `PwrDisk-<v>-linux-<arch>.deb` and `.sha256`, for amd64 and arm64, and the same packages as `PwrDisk-linux-<arch>.deb` |
 
-Velopack's installer and portable names carry no version, and the DMG and
-tarballs get unversioned copies, so links such as
+Velopack's installer and portable names carry no version, and the DMG,
+Linux tarballs and Debian packages get unversioned copies, so links such as
 `https://github.com/pwrdrvr/PwrDisk/releases/latest/download/PwrDisk-win-Setup.exe`
 and `.../latest/download/PwrDisk.dmg` stay good once a release is promoted.
 The README's download buttons rely on them; rename one and update it too. The `releases.<channel>.json`
@@ -77,8 +78,9 @@ rerun `scripts/release/velopack-notices.sh` to regenerate
 install and the Mac app carry that file as `VELOPACK-NOTICES.txt`.
 
 Linux does not use Velopack: `vpk`'s Linux output is an AppImage, and its
-updater only runs from one. The tarball updates by downloading the next
-release.
+updater only runs from one. Update Linux installs by downloading and
+installing the next release. Debian packages use a tilde for pre-release
+versions (for example, `0.27.0~rc.1`) so APT upgrades to the final release.
 
 To rebuild an existing tag, run the Release workflow by hand with **Use
 workflow from** set to that tag, and the same tag in the form. The signing
