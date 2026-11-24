@@ -1,0 +1,33 @@
+"""APFS file-level measurements; private bytes cannot count shared extent unions."""
+import ctypes,json,os,pathlib,stat,sys,time
+ROOT=pathlib.Path(__file__).resolve().parent
+WORKSPACE=ROOT.parent.parent
+lib=ctypes.CDLL(str(ROOT/'apfs.dylib'),use_errno=True)
+lib.probe.argtypes=[ctypes.c_char_p,ctypes.POINTER(ctypes.c_uint64)]
+areas={'setup-and-evidence':ROOT}
+for lane in ('d','b','s'):
+ areas['source-'+lane]=WORKSPACE/lane
+# Detail targets are not added again to the total.
+def count(path,seen):
+ row=dict(files=0,logical_bytes=0,allocated_bytes=0,apfs_data_allocation_bytes=0,apfs_private_bytes=0,apfs_unavailable_files=0)
+ for base,dirs,names in os.walk(path,followlinks=False):
+  for name in names:
+   f=pathlib.Path(base)/name
+   try:s=f.lstat()
+   except FileNotFoundError:continue
+   if not stat.S_ISREG(s.st_mode) or (s.st_dev,s.st_ino) in seen:continue
+   seen.add((s.st_dev,s.st_ino));row['files']+=1;row['logical_bytes']+=s.st_size;row['allocated_bytes']+=s.st_blocks*512
+   out=(ctypes.c_uint64*4)();rc=lib.probe(os.fsencode(f),out)
+   if rc:row['apfs_unavailable_files']+=1
+   else:row['apfs_data_allocation_bytes']+=out[1];row['apfs_private_bytes']+=out[2]
+ return row
+rows={k:count(v,set()) for k,v in areas.items()}
+for lane in ('d','b','s'):rows['detail-target-'+lane]=count(WORKSPACE/lane/'target',set())
+for label in ('cargo-home','tool-target','tool-git'):rows['detail-'+label]=count(ROOT/label,set())
+seen=set();total={}
+for p in areas.values():
+ for k,v in count(p,seen).items():total[k]=total.get(k,0)+v
+s=os.statvfs(ROOT)
+r=dict(at_epoch=time.time(),available_bytes=s.f_bavail*s.f_frsize,load_average=os.getloadavg(),areas=rows,totals_inode_dedup=total)
+(ROOT/'logs'/sys.argv[1]).write_text(json.dumps(r,indent=2)+'\n')
+print(json.dumps(r,indent=2))

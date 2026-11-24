@@ -1,0 +1,1080 @@
+{
+  "source": {
+    "project-cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "project-rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6",
+    "tool-cargo": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+    "tool-rustc": "rustc 1.94.1 (e408947bf 2026-03-25)\nbinary: rustc\ncommit-hash: e408947bfd200af42db322daf0fadfe7e26d3bd1\ncommit-date: 2026-03-25\nhost: aarch64-apple-darwin\nrelease: 1.94.1\nLLVM version: 21.1.8",
+    "git-runtime": "git version 2.56.0-dev-pwrgit.4",
+    "tool_source_head": "d2e3a806aa4ba384d6e1c30756853a529b6f7036",
+    "project_source": "6a7bad7e5fc53fd54bdbb271fc5b68f789b2d597",
+    "tool_sha256": "51c4da06bc1afc9e32107ac8f17b01127987fb28bf59b2e6ae053aba979a9302",
+    "tool_tracked_diff": ""
+  },
+  "workflow": {
+    "plain": {
+      "phases": {
+        "dev": {
+          "wall_seconds": 263.124,
+          "exit": 0,
+          "compiling": {
+            "log_records": 447,
+            "distinct_packages": 447
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "lint": {
+          "wall_seconds": 92.369,
+          "exit": 0,
+          "compiling": {
+            "log_records": 65,
+            "distinct_packages": 64
+          },
+          "checking": {
+            "log_records": 374,
+            "distinct_packages": 374
+          }
+        },
+        "test": {
+          "wall_seconds": 378.83,
+          "exit": 0,
+          "compiling": {
+            "log_records": 42,
+            "distinct_packages": 41
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "release": {
+          "wall_seconds": 175.409,
+          "exit": 0,
+          "compiling": {
+            "log_records": 447,
+            "distinct_packages": 447
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        }
+      },
+      "workflow_seconds": 909.732,
+      "tests": {
+        "individual_results": {
+          "ok": 1073,
+          "ignored": 9,
+          "FAILED": 0
+        },
+        "suite_results": [
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 451 filtered out;"
+          ],
+          [
+            "ok",
+            "450 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 499 filtered out;"
+          ],
+          [
+            "ok",
+            "493 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "83 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "8 passed; 0 failed; 0 ignored; 0 measured; 446 filtered out;"
+          ]
+        ],
+        "python_suites": [
+          [
+            "5",
+            "OK"
+          ],
+          [
+            "6",
+            "OK"
+          ]
+        ],
+        "individual_multiset_matches_plain": true,
+        "suites_match_plain": true,
+        "python_matches_plain": true,
+        "missing_vs_plain": [],
+        "extra_vs_plain": []
+      }
+    },
+    "bounded": {
+      "phases": {
+        "dev": {
+          "wall_seconds": 42.087,
+          "exit": 0,
+          "compiling": {
+            "log_records": 12,
+            "distinct_packages": 12
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "lint": {
+          "wall_seconds": 29.805,
+          "exit": 0,
+          "compiling": {
+            "log_records": 6,
+            "distinct_packages": 5
+          },
+          "checking": {
+            "log_records": 9,
+            "distinct_packages": 9
+          }
+        },
+        "test": {
+          "wall_seconds": 320.212,
+          "exit": 0,
+          "compiling": {
+            "log_records": 13,
+            "distinct_packages": 12
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "release": {
+          "wall_seconds": 86.406,
+          "exit": 0,
+          "compiling": {
+            "log_records": 12,
+            "distinct_packages": 12
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        }
+      },
+      "workflow_seconds": 478.51,
+      "tests": {
+        "individual_results": {
+          "ok": 1073,
+          "ignored": 9,
+          "FAILED": 0
+        },
+        "suite_results": [
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 451 filtered out;"
+          ],
+          [
+            "ok",
+            "450 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 499 filtered out;"
+          ],
+          [
+            "ok",
+            "493 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "83 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "8 passed; 0 failed; 0 ignored; 0 measured; 446 filtered out;"
+          ]
+        ],
+        "python_suites": [
+          [
+            "5",
+            "OK"
+          ],
+          [
+            "6",
+            "OK"
+          ]
+        ],
+        "individual_multiset_matches_plain": true,
+        "suites_match_plain": true,
+        "python_matches_plain": true,
+        "missing_vs_plain": [],
+        "extra_vs_plain": []
+      }
+    },
+    "strict": {
+      "phases": {
+        "dev": {
+          "wall_seconds": 133.264,
+          "exit": 0,
+          "compiling": {
+            "log_records": 85,
+            "distinct_packages": 85
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "lint": {
+          "wall_seconds": 59.798,
+          "exit": 0,
+          "compiling": {
+            "log_records": 32,
+            "distinct_packages": 30
+          },
+          "checking": {
+            "log_records": 59,
+            "distinct_packages": 59
+          }
+        },
+        "test": {
+          "wall_seconds": 378.782,
+          "exit": 0,
+          "compiling": {
+            "log_records": 25,
+            "distinct_packages": 24
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        },
+        "release": {
+          "wall_seconds": 123.111,
+          "exit": 0,
+          "compiling": {
+            "log_records": 85,
+            "distinct_packages": 85
+          },
+          "checking": {
+            "log_records": 0,
+            "distinct_packages": 0
+          }
+        }
+      },
+      "workflow_seconds": 694.955,
+      "tests": {
+        "individual_results": {
+          "ok": 1073,
+          "ignored": 9,
+          "FAILED": 0
+        },
+        "suite_results": [
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 451 filtered out;"
+          ],
+          [
+            "ok",
+            "450 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 499 filtered out;"
+          ],
+          [
+            "ok",
+            "493 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "83 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
+          ],
+          [
+            "ok",
+            "8 passed; 0 failed; 0 ignored; 0 measured; 446 filtered out;"
+          ]
+        ],
+        "python_suites": [
+          [
+            "5",
+            "OK"
+          ],
+          [
+            "6",
+            "OK"
+          ]
+        ],
+        "individual_multiset_matches_plain": true,
+        "suites_match_plain": true,
+        "python_matches_plain": true,
+        "missing_vs_plain": [],
+        "extra_vs_plain": []
+      }
+    }
+  },
+  "seed_reports": {
+    "bounded": {
+      "unitsSeeded": 1659,
+      "packagesSeeded": 455,
+      "unitsSkipped": {
+        "depends-on-rejected": 17,
+        "donor-path": 7
+      },
+      "packagesRejected": {
+        "depends-on-rejected": 5,
+        "donor-path": 1,
+        "not-built": 75,
+        "workspace": 6
+      },
+      "cloneCount": 10976,
+      "copyCount": 0,
+      "rewrittenCount": 1541,
+      "mode": "bounded",
+      "unitsSeededWithDonorOutDirPaths": 32,
+      "unitsSeededWithDonorDebugMaps": 9,
+      "detail": "ring/ring-df3a2930abd19f91: debug/.fingerprint/ring-df3a2930abd19f91/run-build-script-build-script-build.json names the donor"
+    },
+    "strict": {
+      "unitsSeeded": 1307,
+      "packagesSeeded": 380,
+      "unitsSkipped": {
+        "depends-on-rejected": 255,
+        "donor-path": 121
+      },
+      "packagesRejected": {
+        "depends-on-rejected": 65,
+        "donor-path": 16,
+        "not-built": 75,
+        "workspace": 6
+      },
+      "cloneCount": 8314,
+      "copyCount": 0,
+      "rewrittenCount": 1233,
+      "mode": "strict",
+      "unitsSeededWithDonorOutDirPaths": 0,
+      "unitsSeededWithDonorDebugMaps": 0,
+      "detail": "derive_more-impl/derive_more-impl-c81130d7b8b7f204: debug/deps/libderive_more_impl-c81130d7b8b7f204.dylib names the donor; gpui-base/gpui-base-49096b9f0d1b3dc8: debug/deps/libgpui_base-49096b9f0d1b3dc8.rlib names the donor; gpui-base/gpui-base-6785ed0f5f2b5611: debug/deps/gpui_base-6785ed0f5f2b5611.gpui_base.f6e8d0962d6f01f1-cgu.11.rcgu.o names the donor; gpui-kit-assets/gpui-kit-assets-767cb39c34c4d3c8: debug/deps/gpui_kit_assets-767cb39c34c4d3c8.gpui_kit_assets.b7ff84bda8782c6b-cgu.3.rcgu.o names the donor; gpui-kit-assets/gpui-kit-assets-b2c1a359ef0d4258: debug/deps/gpui_kit_assets-b2c1a359ef0d4258.gpui_kit_assets.dd972e3542f595cb-cgu.5.rcgu.o names the donor; gpui-kit-assets/gpui-kit-assets-c5ea18f03b5a6121: debug/deps/libgpui_kit_assets-c5ea18f03b5a6121.rmeta names the donor; gpui-kit-assets/gpui-kit-assets-e2834d2bc1c51c46: release/deps/libgpui_kit_assets-e2834d2bc1c51c46.rmeta names the donor; gpui-pre-apple/gpui-pre-apple-0f7014cb480a8236: debug/build/gpui-pre-apple-0f7014cb480a8236/build-script-build names the donor; gpui-pre-apple/gpui-pre-apple-a14705689ea1420c: debug/build/gpui-pre-apple-a14705689ea1420c/build_script_build-a14705689ea1420c names the donor; gpui-pre-macros/gpui-pre-macros-31e19772a88ef86b: debug/deps/libgpui_macros-31e19772a88ef86b.dylib names the donor; gpui-pre/gpui-pre-3e84527b49dc80be: debug/build/gpui-pre-3e84527b49dc80be/build_script_build-3e84527b49dc80be names the donor; gpui-pre/gpui-pre-f61c96196666eb3e: debug/build/gpui-pre-f61c96196666eb3e/build_script_build-f61c96196666eb3e names the donor; 30 more"
+    }
+  },
+  "seed_setup": {
+    "bounded": {
+      "checkout_seconds": 0.18593333382159472,
+      "seed_seconds": 4.048106875037774,
+      "seed_exit": 0
+    },
+    "strict": {
+      "checkout_seconds": 0.1477669170126319,
+      "seed_seconds": 4.208773541962728,
+      "seed_exit": 0
+    }
+  },
+  "disk_snapshots": {
+    "cold_before_seeding": {
+      "at_epoch": 1794438725.348146,
+      "available_bytes": 103839588352,
+      "load_average": [
+        5.8525390625,
+        6.5654296875,
+        5.7919921875
+      ],
+      "areas": {
+        "setup-and-evidence": {
+          "files": 83189,
+          "logical_bytes": 2122987602,
+          "allocated_bytes": 2334781440,
+          "apfs_data_allocation_bytes": 2334781440,
+          "apfs_private_bytes": 39628800,
+          "apfs_unavailable_files": 0
+        },
+        "source-d": {
+          "files": 18507,
+          "logical_bytes": 8027844199,
+          "allocated_bytes": 8082399232,
+          "apfs_data_allocation_bytes": 8082399232,
+          "apfs_private_bytes": 7477325824,
+          "apfs_unavailable_files": 0
+        },
+        "source-b": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "source-s": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-d": {
+          "files": 18189,
+          "logical_bytes": 8019879467,
+          "allocated_bytes": 8073678848,
+          "apfs_data_allocation_bytes": 8073678848,
+          "apfs_private_bytes": 7468605440,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-b": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-s": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cargo-home": {
+          "files": 82909,
+          "logical_bytes": 2073934498,
+          "allocated_bytes": 2284888064,
+          "apfs_data_allocation_bytes": 2284888064,
+          "apfs_private_bytes": 196608,
+          "apfs_unavailable_files": 0
+        },
+        "detail-tool-target": {
+          "files": 196,
+          "logical_bytes": 47382026,
+          "allocated_bytes": 48009216,
+          "apfs_data_allocation_bytes": 48009216,
+          "apfs_private_bytes": 37548032,
+          "apfs_unavailable_files": 0
+        },
+        "detail-tool-git": {
+          "files": 60,
+          "logical_bytes": 986405,
+          "allocated_bytes": 1146880,
+          "apfs_data_allocation_bytes": 1146880,
+          "apfs_private_bytes": 1146880,
+          "apfs_unavailable_files": 0
+        }
+      },
+      "totals_inode_dedup": {
+        "files": 101696,
+        "logical_bytes": 10150832073,
+        "allocated_bytes": 10417180672,
+        "apfs_data_allocation_bytes": 10417180672,
+        "apfs_private_bytes": 7516954624,
+        "apfs_unavailable_files": 0
+      }
+    },
+    "all_arms_complete": {
+      "at_epoch": 1794439969.457729,
+      "available_bytes": 95846400000,
+      "load_average": [
+        5.1015625,
+        6.52880859375,
+        6.75439453125
+      ],
+      "areas": {
+        "setup-and-evidence": {
+          "files": 83220,
+          "logical_bytes": 2124220426,
+          "allocated_bytes": 2336112640,
+          "apfs_data_allocation_bytes": 2336112640,
+          "apfs_private_bytes": 40960000,
+          "apfs_unavailable_files": 0
+        },
+        "source-d": {
+          "files": 18519,
+          "logical_bytes": 8027909647,
+          "allocated_bytes": 8079171584,
+          "apfs_data_allocation_bytes": 8079171584,
+          "apfs_private_bytes": 2649350144,
+          "apfs_unavailable_files": 0
+        },
+        "source-b": {
+          "files": 18483,
+          "logical_bytes": 8027781060,
+          "allocated_bytes": 8079458304,
+          "apfs_data_allocation_bytes": 8079458304,
+          "apfs_private_bytes": 2649636864,
+          "apfs_unavailable_files": 0
+        },
+        "source-s": {
+          "files": 18483,
+          "logical_bytes": 8027778040,
+          "allocated_bytes": 8090558464,
+          "apfs_data_allocation_bytes": 8090558464,
+          "apfs_private_bytes": 4514025472,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-d": {
+          "files": 18189,
+          "logical_bytes": 8019879467,
+          "allocated_bytes": 8070344704,
+          "apfs_data_allocation_bytes": 8070344704,
+          "apfs_private_bytes": 2640523264,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-b": {
+          "files": 18190,
+          "logical_bytes": 8019881851,
+          "allocated_bytes": 8070881280,
+          "apfs_data_allocation_bytes": 8070881280,
+          "apfs_private_bytes": 2641059840,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-s": {
+          "files": 18190,
+          "logical_bytes": 8019878831,
+          "allocated_bytes": 8081981440,
+          "apfs_data_allocation_bytes": 8081981440,
+          "apfs_private_bytes": 4505448448,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cargo-home": {
+          "files": 82909,
+          "logical_bytes": 2073934498,
+          "allocated_bytes": 2284888064,
+          "apfs_data_allocation_bytes": 2284888064,
+          "apfs_private_bytes": 196608,
+          "apfs_unavailable_files": 0
+        },
+        "detail-tool-target": {
+          "files": 196,
+          "logical_bytes": 47382026,
+          "allocated_bytes": 48009216,
+          "apfs_data_allocation_bytes": 48009216,
+          "apfs_private_bytes": 37548032,
+          "apfs_unavailable_files": 0
+        },
+        "detail-tool-git": {
+          "files": 60,
+          "logical_bytes": 986405,
+          "allocated_bytes": 1146880,
+          "apfs_data_allocation_bytes": 1146880,
+          "apfs_private_bytes": 1146880,
+          "apfs_unavailable_files": 0
+        }
+      },
+      "totals_inode_dedup": {
+        "files": 138705,
+        "logical_bytes": 26207689173,
+        "allocated_bytes": 26585300992,
+        "apfs_data_allocation_bytes": 26585300992,
+        "apfs_private_bytes": 9853972480,
+        "apfs_unavailable_files": 0
+      }
+    },
+    "bounded_complete": {
+      "at_epoch": 1794439227.124762,
+      "available_bytes": 100959158272,
+      "load_average": [
+        5.89453125,
+        7.3994140625,
+        6.75146484375
+      ],
+      "areas": {
+        "setup-and-evidence": {
+          "files": 83202,
+          "logical_bytes": 2123577560,
+          "allocated_bytes": 2335408128,
+          "apfs_data_allocation_bytes": 2335408128,
+          "apfs_private_bytes": 40255488,
+          "apfs_unavailable_files": 0
+        },
+        "source-d": {
+          "files": 18513,
+          "logical_bytes": 8027876923,
+          "allocated_bytes": 8079118336,
+          "apfs_data_allocation_bytes": 8079118336,
+          "apfs_private_bytes": 2649296896,
+          "apfs_unavailable_files": 0
+        },
+        "source-b": {
+          "files": 18483,
+          "logical_bytes": 8027781060,
+          "allocated_bytes": 8079458304,
+          "apfs_data_allocation_bytes": 8079458304,
+          "apfs_private_bytes": 2649636864,
+          "apfs_unavailable_files": 0
+        },
+        "source-s": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-d": {
+          "files": 18189,
+          "logical_bytes": 8019879467,
+          "allocated_bytes": 8070344704,
+          "apfs_data_allocation_bytes": 8070344704,
+          "apfs_private_bytes": 2640523264,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-b": {
+          "files": 18190,
+          "logical_bytes": 8019881851,
+          "allocated_bytes": 8070881280,
+          "apfs_data_allocation_bytes": 8070881280,
+          "apfs_private_bytes": 2641059840,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-s": {
+          "files": 0,
+          "logical_bytes": 0,
+          "allocated_bytes": 0,
+          "apfs_data_allocation_bytes": 0,
+          "apfs_private_bytes": 0,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cargo-home": {
+          "files": 82909,
+          "logical_bytes": 2073934498,
+          "allocated_bytes": 2284888064,
+          "apfs_data_allocation_bytes": 2284888064,
+          "apfs_private_bytes": 196608,
+          "apfs_unavailable_files": 0
+        },
+        "detail-tool-target": {
+          "files": 196,
+          "logical_bytes": 47382026,
+          "allocated_bytes": 48009216,
+          "apfs_data_allocation_bytes": 48009216,
+          "apfs_private_bytes": 37548032,
+          "apfs_unavailable_files": 0
+        },
+        "detail-tool-git": {
+          "files": 60,
+          "logical_bytes": 986405,
+          "allocated_bytes": 1146880,
+          "apfs_data_allocation_bytes": 1146880,
+          "apfs_private_bytes": 1146880,
+          "apfs_unavailable_files": 0
+        }
+      },
+      "totals_inode_dedup": {
+        "files": 120198,
+        "logical_bytes": 18179235543,
+        "allocated_bytes": 18493984768,
+        "apfs_data_allocation_bytes": 18493984768,
+        "apfs_private_bytes": 5339189248,
+        "apfs_unavailable_files": 0
+      }
+    },
+    "strict_seeded": {
+      "at_epoch": 1794439238.3550851,
+      "available_bytes": 100927455232,
+      "load_average": [
+        5.36279296875,
+        7.2373046875,
+        6.701171875
+      ],
+      "areas": {
+        "setup-and-evidence": {
+          "files": 83207,
+          "logical_bytes": 2123582819,
+          "allocated_bytes": 2335424512,
+          "apfs_data_allocation_bytes": 2335424512,
+          "apfs_private_bytes": 40271872,
+          "apfs_unavailable_files": 0
+        },
+        "source-d": {
+          "files": 18519,
+          "logical_bytes": 8027909647,
+          "allocated_bytes": 8079171584,
+          "apfs_data_allocation_bytes": 8079171584,
+          "apfs_private_bytes": 2649350144,
+          "apfs_unavailable_files": 0
+        },
+        "source-b": {
+          "files": 18483,
+          "logical_bytes": 8027781060,
+          "allocated_bytes": 8079458304,
+          "apfs_data_allocation_bytes": 8079458304,
+          "apfs_private_bytes": 2649636864,
+          "apfs_unavailable_files": 0
+        },
+        "source-s": {
+          "files": 9841,
+          "logical_bytes": 3030745276,
+          "allocated_bytes": 3061223424,
+          "apfs_data_allocation_bytes": 3061223424,
+          "apfs_private_bytes": 23052288,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-d": {
+          "files": 18189,
+          "logical_bytes": 8019879467,
+          "allocated_bytes": 8070344704,
+          "apfs_data_allocation_bytes": 8070344704,
+          "apfs_private_bytes": 2640523264,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-b": {
+          "files": 18190,
+          "logical_bytes": 8019881851,
+          "allocated_bytes": 8070881280,
+          "apfs_data_allocation_bytes": 8070881280,
+          "apfs_private_bytes": 2641059840,
+          "apfs_unavailable_files": 0
+        },
+        "detail-target-s": {
+          "files": 9548,
+          "logical_bytes": 3022846067,
+          "allocated_bytes": 3052646400,
+          "apfs_data_allocation_bytes": 3052646400,
+          "apfs_private_bytes": 14475264,
+          "apfs_unavailable_files": 0
+        },
+        "detail-cargo-home": {
+          "files": 82909,
+          "logical_bytes": 2073934498,
+          "allocated_bytes": 2284888064,
+          "apfs_data_allocation_bytes": 2284888064,
+          "apfs_private_bytes": 196608,
+          "apfs_unavailable_files": 0
+        },
+        "detail-tool-target": {
+          "files": 196,
+          "logical_bytes": 47382026,
+          "allocated_bytes": 48009216,
+          "apfs_data_allocation_bytes": 48009216,
+          "apfs_private_bytes": 37548032,
+          "apfs_unavailable_files": 0
+        },
+        "detail-tool-git": {
+          "files": 60,
+          "logical_bytes": 986405,
+          "allocated_bytes": 1146880,
+          "apfs_data_allocation_bytes": 1146880,
+          "apfs_private_bytes": 1146880,
+          "apfs_unavailable_files": 0
+        }
+      },
+      "totals_inode_dedup": {
+        "files": 130050,
+        "logical_bytes": 21210018802,
+        "allocated_bytes": 21555277824,
+        "apfs_data_allocation_bytes": 21555277824,
+        "apfs_private_bytes": 5362311168,
+        "apfs_unavailable_files": 0
+      }
+    }
+  },
+  "resource_limits": {
+    "jobs": 4,
+    "available_floor_bytes": 51539607552,
+    "summed_allocation_limit_bytes": 42949672960,
+    "process_physical_limit_bytes": 21474836480,
+    "phase_seconds": 1200,
+    "release_seconds": 1800,
+    "arm_seconds": 3600
+  },
+  "observed_resources": {
+    "minimum_sampled_available_bytes": 96109314048,
+    "peak_sampled_summed_allocation_bytes": 26580561920,
+    "peak_sampled_process_physical_bytes": {
+      "plain": 3990199184,
+      "bounded": 1984613184,
+      "strict": 3828849744
+    },
+    "phase_end_load_averages": {
+      "plain": [
+        [
+          7.61865234375,
+          6.33251953125,
+          4.53466796875
+        ],
+        [
+          6.26318359375,
+          6.25830078125,
+          4.6875
+        ],
+        [
+          5.78125,
+          6.81298828125,
+          5.64501953125
+        ],
+        [
+          6.29443359375,
+          6.681640625,
+          5.818359375
+        ]
+      ],
+      "bounded": [
+        [
+          5.51611328125,
+          6.3798828125,
+          5.7666015625
+        ],
+        [
+          4.859375,
+          6.1162109375,
+          5.6943359375
+        ],
+        [
+          7.33056640625,
+          7.99658203125,
+          6.861328125
+        ],
+        [
+          6.0595703125,
+          7.45703125,
+          6.76806640625
+        ]
+      ],
+      "strict": [
+        [
+          6.49169921875,
+          7.0458984375,
+          6.69970703125
+        ],
+        [
+          5.96044921875,
+          6.8291015625,
+          6.64111328125
+        ],
+        [
+          6.76123046875,
+          7.267578125,
+          7.0048828125
+        ],
+        [
+          6.54736328125,
+          6.93408203125,
+          6.9013671875
+        ]
+      ]
+    }
+  },
+  "source_validation": {
+    "d": {
+      "head": "6a7bad7e5fc53fd54bdbb271fc5b68f789b2d597",
+      "tracked_status": "",
+      "cargo_lock_sha256": "c479f469ba5757cfdaa3e6ffcad435ab5b12c607d78faa5aee98eca3d781d8a5"
+    },
+    "b": {
+      "head": "6a7bad7e5fc53fd54bdbb271fc5b68f789b2d597",
+      "tracked_status": "",
+      "cargo_lock_sha256": "c479f469ba5757cfdaa3e6ffcad435ab5b12c607d78faa5aee98eca3d781d8a5"
+    },
+    "s": {
+      "head": "6a7bad7e5fc53fd54bdbb271fc5b68f789b2d597",
+      "tracked_status": "",
+      "cargo_lock_sha256": "c479f469ba5757cfdaa3e6ffcad435ab5b12c607d78faa5aee98eca3d781d8a5"
+    }
+  },
+  "output_checks": [
+    {
+      "lane": "d",
+      "profile": "debug",
+      "binary": "pwrdisk",
+      "exit": 0,
+      "sha256": "374f81526b563cf475f2939673de9da8bea3d6c81c0e420de5c281a0d510b775",
+      "help_matches_plain": true
+    },
+    {
+      "lane": "d",
+      "profile": "debug",
+      "binary": "disktree-scan",
+      "exit": 0,
+      "sha256": "e4879940d681c2cd5465046fe6f431df50ddcfb13e6c3851d6abefc0dd608610",
+      "help_matches_plain": true
+    },
+    {
+      "lane": "d",
+      "profile": "release",
+      "binary": "pwrdisk",
+      "exit": 0,
+      "sha256": "b90a193e97be5e91b0b964260c34ff0e582f576c21d55b2f052c2978e5564c77",
+      "help_matches_plain": true
+    },
+    {
+      "lane": "d",
+      "profile": "release",
+      "binary": "disktree-scan",
+      "exit": 0,
+      "sha256": "16da8db4ed8682a6e94daf20160ec64e9094db5bf31f11856f79a67b54547aaa",
+      "help_matches_plain": true
+    },
+    {
+      "lane": "b",
+      "profile": "debug",
+      "binary": "pwrdisk",
+      "exit": 0,
+      "sha256": "158b356d2c22d17e6801781e6934dafc86ac9ff70149fcde7c723fd84740e43d",
+      "help_matches_plain": true
+    },
+    {
+      "lane": "b",
+      "profile": "debug",
+      "binary": "disktree-scan",
+      "exit": 0,
+      "sha256": "33cf10055ff237e8ba464744747e27460031a827f9b981e006a2d4134c9f304a",
+      "help_matches_plain": true
+    },
+    {
+      "lane": "b",
+      "profile": "release",
+      "binary": "pwrdisk",
+      "exit": 0,
+      "sha256": "906aed1ed9a42021bb1f1a84d2f0c287a117d915c83bc813c462dd5b1d7fc92f",
+      "help_matches_plain": true
+    },
+    {
+      "lane": "b",
+      "profile": "release",
+      "binary": "disktree-scan",
+      "exit": 0,
+      "sha256": "16da8db4ed8682a6e94daf20160ec64e9094db5bf31f11856f79a67b54547aaa",
+      "help_matches_plain": true
+    },
+    {
+      "lane": "s",
+      "profile": "debug",
+      "binary": "pwrdisk",
+      "exit": 0,
+      "sha256": "969a09ca163e90038f1984df41a955e233b9085598f79f45a9a464220aaa0430",
+      "help_matches_plain": true
+    },
+    {
+      "lane": "s",
+      "profile": "debug",
+      "binary": "disktree-scan",
+      "exit": 0,
+      "sha256": "a0ece66252629ffe24d334229c90c948b496c4294da8a053561144f903e652ca",
+      "help_matches_plain": true
+    },
+    {
+      "lane": "s",
+      "profile": "release",
+      "binary": "pwrdisk",
+      "exit": 0,
+      "sha256": "71e2664485a9eae8584e5303925c5fe6c087dbce4237efe08dac9d8ce76c083d",
+      "help_matches_plain": true
+    },
+    {
+      "lane": "s",
+      "profile": "release",
+      "binary": "disktree-scan",
+      "exit": 0,
+      "sha256": "16da8db4ed8682a6e94daf20160ec64e9094db5bf31f11856f79a67b54547aaa",
+      "help_matches_plain": true
+    }
+  ],
+  "cleanup": {
+    "removed": [
+      "d/",
+      "b/",
+      "s/",
+      "target/cargo-seed-2026-11-11/tool-target/",
+      "target/cargo-seed-2026-11-11/tool-git/",
+      "target/cargo-seed-2026-11-11/cargo-home/",
+      "target/cargo-seed-2026-11-11/cli-home/",
+      "target/cargo-seed-2026-11-11/__pycache__/",
+      "target/cargo-seed-2026-11-11/Cargo.toml",
+      "target/cargo-seed-2026-11-11/Cargo.lock"
+    ],
+    "at_epoch": 1794440028.0861921,
+    "available_bytes_after": 111411200000,
+    "scope": "Only owned experiment data; prior Blaze evidence retained."
+  },
+  "retained_evidence_snapshot": {
+    "regular_files": 57,
+    "logical_bytes": 1906936,
+    "allocated_bytes": 2035712,
+    "note": "Post-cleanup evidence snapshot; documentation generation adds a few small text files."
+  }
+}

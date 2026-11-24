@@ -1,0 +1,101 @@
+"""Owned, disposable Blaze compatibility experiment; no global installation."""
+import json, os, pathlib, signal, subprocess, sys, time
+ROOT = pathlib.Path(__file__).resolve().parent
+WORKSPACE = ROOT.parent.parent
+STATE = WORKSPACE / 'target' / 'bv'
+BOOTSTRAP = WORKSPACE / 'target' / 'bs'
+OWNER = 'Blaze recheck 2026-11-08 mw8odhs6/disktree'
+for area in (STATE, BOOTSTRAP):
+    area.mkdir(mode=0o700, exist_ok=True)
+    marker = area / 'OWNER.txt'
+    if marker.exists():
+        assert marker.read_text().strip() == OWNER
+    else:
+        marker.write_text(OWNER + '\n')
+for name in ('logs', 'tmp', 'user-home'):
+    (ROOT / name).mkdir(exist_ok=True)
+
+def allocation(areas):
+    seen = set()
+    logical = allocated = files = 0
+    for area in areas:
+        for base, dirs, names in os.walk(area, followlinks=False):
+            for name in names:
+                p = pathlib.Path(base) / name
+                try:
+                    s = p.lstat()
+                except FileNotFoundError:
+                    continue
+                if p.is_symlink():
+                    continue
+                key = (s.st_dev, s.st_ino)
+                if key in seen:
+                    continue
+                seen.add(key)
+                logical += s.st_size
+                allocated += s.st_blocks * 512
+                files += 1
+    return dict(logical_bytes=logical, allocated_bytes=allocated, files=files)
+
+keep = ('HOME', 'PATH', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'SDKROOT',
+        'DEVELOPER_DIR', 'MACOSX_DEPLOYMENT_TARGET', 'RUSTUP_HOME', 'CARGO_HOME')
+base_env = {k: os.environ[k] for k in keep if k in os.environ}
+base_env.update(TMPDIR=str(ROOT/'tmp'), CARGO_BUILD_JOBS='2')
+name, flavor, *args = sys.argv[1:]
+env = base_env.copy()
+blaze = next((ROOT / f'{flavor}-bin').glob('*/blaze'))
+if flavor == 'stable':
+    env.update(BLAZE_HOME=str(BOOTSTRAP), BLAZE_CACHE=str(ROOT/'stable-store'),
+               BLAZE_CACHE_MAX='512M', BLAZE_REMOTE='', BLAZE_IDLE_SECS='60',
+               BLAZE_MEMORY_MAX='4G', BLAZE_SPARE='0',
+               CARGO_TARGET_DIR=str(ROOT/'stable-target'))
+else:
+    env.update(HOME=str(ROOT/'user-home'), XDG_CACHE_HOME=str(ROOT/'user-home/cache'),
+               BLAZE_HOME=str(STATE), BLAZE_DAEMON_MEMORY_GB='4', BLAZE_CORES='2',
+               CARGO_TARGET_DIR=str(ROOT/'canary-target'))
+    link = ROOT/'user-home/.blaze/toolchains'
+    link.parent.mkdir(exist_ok=True)
+    if not link.exists():
+        link.symlink_to(BOOTSTRAP/'toolchains', target_is_directory=True)
+command = [str(blaze), *args]
+start = time.monotonic()
+limit = 600 if name == 'canary-helper' else 120
+budgeted = name == 'canary-helper'
+reason = None
+peak_allocated = 0
+next_size = 0
+with (ROOT/'logs'/f'{name}.log').open('w') as log:
+    proc = subprocess.Popen(command, env=env, stdout=log, stderr=log,
+                            start_new_session=True)
+    while proc.poll() is None:
+        elapsed = time.monotonic()-start
+        s = os.statvfs(ROOT)
+        if elapsed >= limit:
+            reason = f'{limit} second limit'
+        if budgeted and s.f_bavail*s.f_frsize < 90*1024**3:
+            reason = '90 GiB available-space floor'
+        if budgeted and elapsed >= next_size:
+            size = allocation((ROOT, STATE, BOOTSTRAP))
+            peak_allocated = max(peak_allocated, size['allocated_bytes'])
+            next_size = elapsed+15
+            with (ROOT/'logs/monitor.jsonl').open('a') as monitor:
+                monitor.write(json.dumps(dict(wall_seconds=elapsed,
+                    available_bytes=s.f_bavail*s.f_frsize, **size))+'\n')
+            if size['allocated_bytes'] > 32*1024**3:
+                reason = '32 GiB summed allocated-byte allowance'
+        if reason:
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+            break
+        time.sleep(0.5)
+result = dict(name=name, command=command, exit=proc.returncode,
+              wall_seconds=round(time.monotonic()-start,3), stopped_by=reason,
+              peak_sampled_allocated_bytes=peak_allocated,
+              environment=env)
+(ROOT/'logs'/f'{name}.json').write_text(json.dumps(result, indent=2)+'\n')
+print(json.dumps({k:result[k] for k in ('name','exit','wall_seconds','stopped_by')}))
+print((ROOT/'logs'/f'{name}.log').read_text()[-1800:])

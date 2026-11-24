@@ -1,0 +1,32 @@
+"""Read only file inventories: allocated sums do not deduplicate APFS clones."""
+import pathlib,os,stat,json,sys,time
+root=pathlib.Path(__file__).resolve().parents[2]
+areas={'experiment':root/'target/blaze-full','bootstrap':root/'target/fB','blaze-state':root/'target/fV','temp':root/'.t','source-a':root/'a','source-b':root/'b'}
+rows={}
+global_seen=set();global_logical=global_allocated=global_files=0
+for label,p in areas.items():
+ logical=allocated=files=0;seen=set()
+ for base,dirs,names in os.walk(p,followlinks=False):
+  for name in names:
+   try:s=(pathlib.Path(base)/name).lstat()
+   except FileNotFoundError:continue
+   if not stat.S_ISREG(s.st_mode) or (s.st_dev,s.st_ino) in seen:continue
+   seen.add((s.st_dev,s.st_ino));logical+=s.st_size;allocated+=s.st_blocks*512;files+=1
+   if (s.st_dev,s.st_ino) not in global_seen:
+    global_seen.add((s.st_dev,s.st_ino));global_logical+=s.st_size;global_allocated+=s.st_blocks*512;global_files+=1
+ rows[label]={'logical_bytes':logical,'allocated_bytes':allocated,'files':files}
+# Disjoint subdirectories of experiment shown separately, without adding twice.
+for p in sorted((root/'target/blaze-full').iterdir()):
+ if p.is_dir() and ('target' in p.name or 'store' in p.name or p.name.startswith('candidate-lint') or p.name in ('stable-bin','canary-bin','user-home')):
+  logical=allocated=files=0;detail_seen=set()
+  for base,dirs,names in os.walk(p,followlinks=False):
+   for name in names:
+    try:s=(pathlib.Path(base)/name).lstat()
+    except FileNotFoundError:continue
+    if not stat.S_ISREG(s.st_mode) or (s.st_dev,s.st_ino) in detail_seen:continue
+    detail_seen.add((s.st_dev,s.st_ino))
+    logical+=s.st_size;allocated+=s.st_blocks*512;files+=1
+  rows['detail-'+p.name]={'logical_bytes':logical,'allocated_bytes':allocated,'files':files}
+s=os.statvfs(root);d={'at_epoch':time.time(),'available_bytes':s.f_bavail*s.f_frsize,'areas':rows,'totals_inode_dedup':{'logical_bytes':global_logical,'allocated_bytes':global_allocated,'files':global_files}}
+out=root/'target/blaze-full/logs'/sys.argv[1];out.write_text(json.dumps(d,indent=2)+'\n')
+print({k:round(v['allocated_bytes']/2**30,3) for k,v in rows.items()})
