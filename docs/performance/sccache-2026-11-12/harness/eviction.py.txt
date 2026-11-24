@@ -1,0 +1,38 @@
+"""Tiny separate local cache proves eviction mechanics, not performance."""
+import guard as g
+import pathlib,subprocess,json,time,signal,hashlib,os
+R=g.ROOT;P=R/'eviction';P.mkdir(exist_ok=True)
+conf=P/'config.toml';conf.write_text('[cache.disk]\ndir="'+str(P/'cache')+'"\nsize=131072\n')
+env=g.cache_env();env.update(SCCACHE_DIR=str(P/'cache'),SCCACHE_CACHE_SIZE='128K',SCCACHE_CONF=str(conf),SCCACHE_CACHED_CONF=str(P/'cached-config'))
+e=env.copy();e.update(SCCACHE_START_SERVER='1',SCCACHE_NO_DAEMON='1')
+log=(R/'logs/eviction-server.log').open('w');server=subprocess.Popen([str(g.BIN)],env=e,cwd=R,stdout=log,stderr=log,start_new_session=True)
+def stats(args):return subprocess.check_output([str(g.BIN),*args],env=env,text=True)
+def build(i,label):
+ src=P/f'c{i}.rs';out=P/'out';out.mkdir(exist_ok=True)
+ if not src.exists():
+  # Deterministic high entropy discourages compression from hiding eviction.
+  text=''.join(hashlib.sha256(f'{i}-{n}'.encode()).hexdigest() for n in range(1024))
+  src.write_text('pub const PAYLOAD: &str = "'+text+'";\n')
+ g.run(label,[str(g.BIN),'rustc','--crate-name',f'c{i}','--crate-type','rlib','--emit=link,metadata,dep-info','--out-dir',str(out),str(src)],env,P,120,(server.pid,))
+ data=json.loads(stats(['--show-stats','--stats-format','json']))
+ data['observed_artifact_sha256']={f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in sorted(out.glob(f'libc{i}.*'))}
+ return data
+rows=[]
+try:
+ for _ in range(200):
+  if (R/'s.sock').exists():break
+  if server.poll() is not None:raise RuntimeError('server failed')
+  time.sleep(.05)
+ stats(['--zero-stats']);s=build(0,'eviction-first');rows.append({'label':'first','stats':s})
+ # First output remains materialized, but invoke the wrapper directly again.
+ stats(['--zero-stats']);s=build(0,'eviction-hit');rows.append({'label':'hit','stats':s});assert sum(s['stats']['cache_hits']['counts'].values())==1
+ for i in range(1,5):stats(['--zero-stats']);s=build(i,f'eviction-fill-{i}');rows.append({'label':f'fill-{i}','stats':s})
+ stats(['--zero-stats']);s=build(0,'eviction-refetch');rows.append({'label':'refetch','stats':s});assert sum(s['stats']['cache_misses']['counts'].values())==1
+ assert s['cache_size']<=131072
+ assert rows[0]['stats']['observed_artifact_sha256']==rows[1]['stats']['observed_artifact_sha256']==rows[-1]['stats']['observed_artifact_sha256']
+ (R/'logs/eviction-outcomes.json').write_text(json.dumps(rows,indent=2))
+finally:
+ try:(R/'logs/eviction-shutdown.txt').write_text(stats(['--stop-server']))
+ finally:
+  try:server.wait(timeout=10)
+  except subprocess.TimeoutExpired:os.killpg(server.pid,signal.SIGKILL);server.wait()
