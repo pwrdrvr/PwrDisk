@@ -1,0 +1,24 @@
+   Compiling disktree-scan v0.21.0 (${WORKSPACE}/crates/disktree-scan)
+error: `disktree-scan` reaches functions blaze could not compile, so it is not built:
+  disktree_scan::main: unsupported: callee `spawn`: callee `spawn_unchecked`: callee `spawn_unchecked`: callee `unwrap_or_else`: callee `{closure}`: unsupported: writable static `MIN` without a rustc symbol
+(what blaze said is in target/bh/workers/d0fb36d1ad73add9/log)
+real 5.58
+user 0.21
+sys 0.13
+            97173504  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               10705  page reclaims
+                 254  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   2  messages sent
+                   2  messages received
+                   0  signals received
+                   9  voluntary context switches
+                 520  involuntary context switches
+            21488170  instructions retired
+            11151768  cycles elapsed
+             1212800  peak memory footprint
